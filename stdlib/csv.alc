@@ -1,0 +1,47 @@
+; The standard CSV renderer: TableRows in, Text out, in the always-quoted
+; RFC 4180 profile (design document sections 13.1 and 13.2). The runtime
+; runs `csv` natively when the options record maps onto the renderer's
+; dialect, and the differential test proves that path and this text
+; produce the same bytes.
+
+def csv-options
+  record
+    entry :delimiter ","
+    entry :newline "\r\n"
+    entry :header true
+    entry :null-text ""
+    entry :missing :error
+
+def csv-field [options cell]
+  concat
+    "\""
+    replace-text "\"" "\"\""
+      scalar-text options cell
+    "\""
+
+def csv-row [options cells]
+  concat
+    join (get :delimiter options)
+      map
+        fn [cell]
+          csv-field options cell
+        cells
+    get :newline options
+
+def csv [options events]
+  concat-map
+    fn [event]
+      match event
+        case (schema columns)
+          if (get :header options)
+            csv-row options
+              map
+                fn [column]
+                  get :label column
+                columns
+            ""
+        case (row cells)
+          csv-row options cells
+        case table-end
+          ""
+    events

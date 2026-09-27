@@ -1,0 +1,44 @@
+; The standard table transducer: JsonEvents in, TableRows out, with the
+; metadata-first policy (design document section 12.2). The only engine
+; operations here are route capture, transitions, value operations and
+; stream scanning; the runtime runs `table-from-json` natively when the
+; binding is a record of two selectors and a column function, and the
+; differential test proves that path and this text produce the same bytes.
+
+def public-column [column]
+  record
+    entry :label (get :label column)
+
+def table-step [binding state event]
+  match event
+    case (selected :columns raw)
+      if (is-ready state)
+        fail "Metadata selected more than once"
+        let [columns (map (get :column binding) (as-vector raw))]
+          transition (ready columns)
+            vector
+              schema
+                map public-column columns
+    case (selected :row raw)
+      let [columns (require-columns state)]
+        transition state
+          vector
+            row
+              map
+                fn [column]
+                  get-path (get :source column) raw
+                columns
+
+def table-finish [state]
+  if (is-ready state)
+    vector
+      table-end
+    fail "Required metadata was not found"
+
+def table-from-json [binding input]
+  pipe input
+    route
+      vector
+        capture :columns (get :columns binding)
+        capture :row (get :rows binding)
+    scan-emit no-schema (partial table-step binding) table-finish

@@ -37,7 +37,12 @@ mod readme_examples {}
 pub mod ast;
 pub mod desugar;
 pub mod grammar;
+pub mod interp;
 pub mod lex;
+pub mod lower;
+pub mod resolve;
+pub mod stdlib;
+pub mod value;
 
 pub use ast::{canonical, canonical_form, format, same_program, Expr, SourceSpan, MAX_NESTING};
 pub use grammar::{alchemy, make, parse, parse_file, parse_value, UNNAMED};
