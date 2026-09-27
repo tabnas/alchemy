@@ -40,10 +40,15 @@ language and [`AGENTS.md`](AGENTS.md) for how the repository is worked on.
 | Path | What it is |
 |---|---|
 | [`rs/`](rs/) | the `tabnas-alchemy` crate (library `tabnas_alchemy`, binary `alchemy`) |
-| [`stdlib/`](stdlib/) | the standard library's own definitions in alchemy |
-| [`test/spec/`](test/spec/) | shared fixtures, run by the fleet's fixture runner |
-| [`docs/language.md`](docs/language.md) | the language reference |
+| [`test/spec/`](test/spec/) | shared fixtures, run by the fleet's fixture runner: `reader.tsv` (layout to canonical) and `pipe.tsv` (desugared) |
+| [`docs/language.md`](docs/language.md) | the language reference; every example in it is a fixture row |
+| [`stdlib/`](stdlib/) | the standard library's own definitions in alchemy (with the interpreter) |
 | [`ci/rust/run.sh`](ci/rust/run.sh) | the gate CI runs |
+
+What exists today is the reader: the grammar plugin, the syntax tree with
+spans, the canonical and layout printers, desugaring, and the `alchemy`
+command's `canon`, `format` and `check`. The checker, the planner
+(`explain`) and the interpreter (`run`) follow.
 
 ## Build and test
 
@@ -53,6 +58,12 @@ Sibling checkouts (`../parser`, `../transduce`, `../render`, `../support`,
 ```bash
 make build
 make test
+```
+
+```bash
+rs/target/debug/alchemy canon export.alc    # fully parenthesized, one form per line
+rs/target/debug/alchemy format export.alc   # layout form
+rs/target/debug/alchemy check export.alc    # parses and desugars; silent when it does
 ```
 
 ## License

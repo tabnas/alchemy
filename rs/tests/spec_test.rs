@@ -8,12 +8,14 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tabnas_alchemy::{canonical, desugar, format, parse, same_program};
-use tabnas_support::{is_error_expect, load_spec_dir, Runner, SpecOptions};
+use tabnas_support::{
+    is_error_expect, load_spec, load_spec_dir, parse_expect, Runner, SpecOptions, Value,
+};
 
-use common::{spec_dir, text_value, to_failure};
+use common::{repo_root, spec_dir, text_value, to_failure};
 
 /// Every fixture the directory holds has a runner below; a new file added
 /// without one fails here rather than passing silently.
@@ -90,6 +92,94 @@ fn format_round_trips_every_fixture_row() {
     assert!(
         failures.is_empty(),
         "{} row(s) do not round-trip:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The fenced examples of `docs/language.md`, each `alchemy` block with
+/// the `canonical` or `core` block after it, are fixture rows: the input
+/// is a row of reader.tsv (canonical) or pipe.tsv (core), and the result
+/// shown is that row's expected value. A stale example fails here.
+#[test]
+fn every_language_reference_example_is_a_fixture_row() {
+    let doc = std::fs::read_to_string(repo_root().join("docs/language.md"))
+        .expect("docs/language.md is readable");
+    let rows = |file: &str| -> BTreeMap<String, String> {
+        load_spec(spec_dir().join(file), &SpecOptions::default())
+            .expect("the fixture loads")
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.unesc(0).trim_end_matches('\n').to_string(),
+                    row.col(1).to_string(),
+                )
+            })
+            .collect()
+    };
+    let reader = rows("reader.tsv");
+    let pipe = rows("pipe.tsv");
+
+    // The fences, in order: (language, text).
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    let mut open: Option<(String, Vec<&str>)> = None;
+    for line in doc.lines() {
+        match (&mut open, line.strip_prefix("```")) {
+            (None, Some(language)) if !language.is_empty() => {
+                open = Some((language.to_string(), Vec::new()));
+            }
+            (Some((language, text)), Some("")) => {
+                blocks.push((language.clone(), text.join("\n")));
+                open = None;
+            }
+            (Some((_, text)), _) => text.push(line),
+            (None, _) => {}
+        }
+    }
+
+    let mut examples = 0;
+    let mut failures = Vec::new();
+    for (index, (language, input)) in blocks.iter().enumerate() {
+        if language != "alchemy" {
+            continue;
+        }
+        examples += 1;
+        let (fixture, expected) = match blocks.get(index + 1) {
+            Some((kind, text)) if kind == "canonical" => (&reader, text),
+            Some((kind, text)) if kind == "core" => (&pipe, text),
+            _ => {
+                failures.push(format!(
+                    "{input:?}: an alchemy block is followed by a canonical or core block"
+                ));
+                continue;
+            }
+        };
+        let Some(cell) = fixture.get(input.trim_end_matches('\n')) else {
+            failures.push(format!("{input:?}: not a fixture row"));
+            continue;
+        };
+        let shown = if is_error_expect(cell) {
+            cell.clone()
+        } else {
+            match parse_expect(cell) {
+                Ok(Value::String(text)) => text,
+                other => {
+                    failures.push(format!("{input:?}: the fixture expects {other:?}"));
+                    continue;
+                }
+            }
+        };
+        if shown != *expected {
+            failures.push(format!(
+                "{input:?}: the page shows {expected:?}, the fixture pins {shown:?}"
+            ));
+        }
+    }
+    assert!(examples > 0, "the reference holds examples");
+    assert!(
+        failures.is_empty(),
+        "{} example(s) disagree with the fixtures:\n{}",
         failures.len(),
         failures.join("\n")
     );
