@@ -42,7 +42,7 @@ language and [`AGENTS.md`](AGENTS.md) for how the repository is worked on.
 | [`rs/`](rs/) | the `tabnas-alchemy` crate (library `tabnas_alchemy`, binary `alchemy`) |
 | [`test/spec/`](test/spec/) | shared fixtures, run by the fleet's fixture runner: `reader.tsv` (layout to canonical) and `pipe.tsv` (desugared) |
 | [`docs/language.md`](docs/language.md) | the language reference; every example in it is a fixture row |
-| [`stdlib/`](stdlib/) | the standard library's own definitions in alchemy (with the interpreter) |
+| `stdlib/` | *later*: the standard library's own definitions in alchemy, which arrive with the interpreter; nothing is tracked there yet |
 | [`ci/rust/run.sh`](ci/rust/run.sh) | the gate CI runs |
 
 What exists today is the reader: the grammar plugin, the syntax tree with

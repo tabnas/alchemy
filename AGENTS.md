@@ -120,8 +120,18 @@ hint.
 
 **A program is code; a document is data; the two never mix.** Data-supplied
 paths are validated segment vectors (`as-path`) and are never read as
-source. The interpreter resolves only registered operators: there is no
-`eval`, no host function access, no I/O from a program. Programs are
-bounded: syntax nesting, AST size, selector length, route count and every
-transduce limit apply, and a pure program can still ask for very large
-output, so hosts set `max_output_bytes` and a timeout.
+source. The interpreter, when it exists, resolves only registered
+operators: there is no `eval`, no host function access, no I/O from a
+program.
+
+What bounds a program today is its nesting: at most `MAX_NESTING` (256)
+levels, counting a layout line, each indentation level and each open
+delimiter as one, refused by the reader as `too_deep` before anything is
+built, and held after desugaring, where a `pipe` nests a level per step.
+The bound is what lets the printers, the desugarer and `Drop` recurse per
+level; without it a two-kilobyte program of nested parentheses aborted
+the process with a stack overflow. The syntax tree is otherwise bounded
+by the source's size. Selector length, route count and every transduce
+limit will apply when the interpreter exists, and a pure program can
+still ask for very large output, so hosts set `max_output_bytes` and a
+timeout.
