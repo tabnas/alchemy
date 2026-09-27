@@ -17,6 +17,7 @@
 //! information as one object, for a host's `--explain`.
 
 use serde_json::{json, Value as Json};
+use tabnas_render::{CsvOptions, Newline};
 use tabnas_transduce::{Duplicates, Selector};
 
 use crate::ast::Expr;
@@ -112,9 +113,10 @@ impl Confidence {
 /// The renderer that writes the text, when one does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RendererProfile {
-    /// The CSV renderer: always quoted, CRLF, header; `host` when the host
-    /// chose it for a table result.
-    Csv { host: bool },
+    /// The CSV renderer, always quoted, in the dialect it is built with:
+    /// the program's own options for its `csv`, the defaults (CRLF, a
+    /// header) when the host chose it for a table result (`host`).
+    Csv { host: bool, options: CsvOptions },
     /// The JSON renderer: compact, one document, a trailing newline.
     Json { host: bool },
     /// The program's own text algebra.
@@ -319,11 +321,20 @@ pub fn summarize(program: &Program) -> EffectSummary {
         }
     }
     let renderer = match (stages.last(), output) {
-        (Some(Plan::Csv { .. }), _) => RendererProfile::Csv { host: false },
+        // The fast path builds `Plan::Csv` only for options that map onto
+        // the renderer's dialect, and lowering builds the renderer with them.
+        (Some(Plan::Csv { options, .. }), _) => RendererProfile::Csv {
+            host: false,
+            options: crate::lower::csv_options(options).unwrap_or_default(),
+        },
         (Some(Plan::Json { .. }), _) => RendererProfile::Json { host: false },
         (_, Output::TableRows) => {
             protocol.push("Text".to_string());
-            RendererProfile::Csv { host: true }
+            // The host's renderer, as lowering builds it.
+            RendererProfile::Csv {
+                host: true,
+                options: CsvOptions::default(),
+            }
         }
         (_, Output::JsonEvents) => {
             protocol.push("Text".to_string());
@@ -533,7 +544,7 @@ impl EffectSummary {
         lines.push(("Ordering contract:".into(), contract));
         lines.push(("Contract verification:".into(), verification));
         match &self.renderer {
-            RendererProfile::Csv { host } => lines.push((
+            RendererProfile::Csv { host, .. } => lines.push((
                 "CSV quoting:".into(),
                 if *host {
                     "always (the host's renderer)".to_string()
@@ -583,9 +594,17 @@ impl EffectSummary {
     /// The same facts as one JSON object.
     pub fn json(&self) -> Json {
         let renderer = match &self.renderer {
-            RendererProfile::Csv { host } => {
-                json!({"name": "csv", "quoting": "always", "newline": "\r\n", "header": true, "host": host})
-            }
+            RendererProfile::Csv { host, options } => json!({
+                "name": "csv",
+                "quoting": "always",
+                "delimiter": options.delimiter.to_string(),
+                "newline": match options.newline {
+                    Newline::CrLf => "\r\n",
+                    Newline::Lf => "\n",
+                },
+                "header": options.header,
+                "host": host,
+            }),
             RendererProfile::Json { host } => {
                 json!({"name": "json", "indent": null, "trailing_newline": true, "host": host})
             }
@@ -820,6 +839,38 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Protocol:              Text\n"), "{text}");
+    }
+
+    /// The CSV renderer is reported with the dialect it is built with: the
+    /// program's own options when its `csv` runs natively, the defaults when
+    /// the host renders a table; and what it reports is what it writes.
+    #[test]
+    fn a_custom_csv_dialect_is_reported_as_it_runs() {
+        let lf = PROGRAM.replace("    csv csv-options\n", "    csv lf\n")
+            + "\ndef lf (record (entry :delimiter \";\") (entry :newline \"\\n\") (entry :header false) (entry :null-text \"NULL\") (entry :missing \"-\"))\n";
+        let program = compile(&lf, "lf.alc").unwrap();
+        assert!(program.native());
+        let r = &explain_json(&program)["renderer"];
+        assert_eq!(r["name"], "csv");
+        assert_eq!(r["host"], false);
+        assert_eq!(r["newline"], "\n");
+        assert_eq!(r["header"], false);
+        assert_eq!(r["delimiter"], ";");
+        assert_eq!(
+            crate::lower::tests::run(&lf, crate::lower::tests::RECORDS, true, None).unwrap(),
+            "\"123\";\"Alice\";\"50.25\"\n\"456\";\"Bob\";\"72\"\n"
+        );
+        // The default dialect, and the host's renderer, report the defaults.
+        let default = compile(PROGRAM, "export.alc").unwrap();
+        let host = compile(&PROGRAM.replace("    csv csv-options\n", ""), "host.alc").unwrap();
+        for (name, program, is_host) in [("default", default, false), ("host", host, true)] {
+            let r = &explain_json(&program)["renderer"];
+            assert_eq!(r["name"], "csv", "{name}");
+            assert_eq!(r["host"], is_host, "{name}");
+            assert_eq!(r["delimiter"], ",", "{name}");
+            assert_eq!(r["newline"], "\r\n", "{name}");
+            assert_eq!(r["header"], true, "{name}");
+        }
     }
 
     #[test]

@@ -979,7 +979,10 @@ Qualification:
 `Program::explain_json` is the same information as one object
 (`chain`, `finite`, `protocol`, `selection`, `duplicates`, `retention`,
 `readiness`, `order_constraints`, `renderer`, `confidence`,
-`guarantee`, `qualification`, ...), for a host's `--explain`.
+`guarantee`, `qualification`, ...), for a host's `--explain`. A CSV
+`renderer` carries the dialect it is built with (`delimiter`, `newline`,
+`header`): the program's own options when its `csv` runs natively, the
+defaults when the host renders a table.
 
 ## run
 
