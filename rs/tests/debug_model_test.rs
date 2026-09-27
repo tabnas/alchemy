@@ -83,8 +83,13 @@ fn the_model_is_the_structured_alchemy_grammar() {
     }
 }
 
+/// The grammar portion of the model, serialised as a tool would receive
+/// it and read back, still describes this grammar: the rules, how a line
+/// closes, the tokens the layout matcher registered and which of the
+/// engine's own lexers are on. A grammar change shows up here, in the
+/// text, as it would to the tool.
 #[test]
-fn the_grammar_portion_serialises_and_round_trips() {
+fn the_grammar_portion_serialises_and_reads_back_with_its_content() {
     let parser = build();
     let m = model(&parser);
     let grammar = serde_json::json!({
@@ -96,6 +101,82 @@ fn the_grammar_portion_serialises_and_round_trips() {
     });
     let text = serde_json::to_string(&grammar).expect("the grammar portion serialises");
     let back: serde_json::Value = serde_json::from_str(&text).expect("and parses back");
-    assert_eq!(back, grammar);
+
+    let mut names: Vec<&str> = back["rules"]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .filter_map(|rule| rule["name"].as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["block", "bracket", "form", "line", "paren", "program"]
+    );
+
+    // A line opens on a form; it closes on `#IN` (pushing its block), on
+    // `#NL`, on `#DE` or `#ZZ` left for the rule above, on the condition
+    // that it took a block, or on another form.
+    let line = back["rules"]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .find(|rule| rule["name"] == "line")
+        .expect("the line rule");
+    let alts = |phase: &str| -> Vec<serde_json::Value> {
+        line[phase]
+            .as_array()
+            .expect("alternates")
+            .iter()
+            .map(|alt| serde_json::json!([alt["seq"], alt["push"], alt["back"], alt["cond"]]))
+            .collect()
+    };
+    assert_eq!(alts("open"), [serde_json::json!([[], "form", null, false])]);
+    assert_eq!(
+        alts("close"),
+        [
+            serde_json::json!([["#IN"], "block", null, false]),
+            serde_json::json!([["#NL"], null, null, false]),
+            serde_json::json!([["#DE"], null, 1, false]),
+            serde_json::json!([["#ZZ"], null, 1, false]),
+            serde_json::json!([[], null, null, true]),
+            serde_json::json!([[], "form", null, false]),
+        ]
+    );
+
+    // The layout matcher's tokens are registered, the delimiters are the
+    // only fixed tokens, and the engine lexes strings and comments but
+    // leaves words to the matcher.
+    let tokens: Vec<(&str, Option<&str>)> = back["tokens"]
+        .as_array()
+        .expect("tokens")
+        .iter()
+        .filter_map(|token| Some((token["name"].as_str()?, token["fixed"].as_str())))
+        .collect();
+    for name in ["#IN", "#DE", "#NL", "#KW"] {
+        assert!(tokens.contains(&(name, None)), "token {name} in {tokens:?}");
+    }
+    let fixed: Vec<(&str, &str)> = tokens
+        .iter()
+        .filter_map(|(name, fixed)| Some((*name, (*fixed)?)))
+        .collect();
+    assert_eq!(
+        fixed,
+        [("#OS", "["), ("#CS", "]"), ("#OP", "("), ("#CP", ")")]
+    );
     assert_eq!(back["config"]["start"], "program");
+    assert_eq!(
+        back["config"]["lex"],
+        serde_json::json!({
+            "fixed": true, "space": true, "line": true, "text": false,
+            "number": false, "comment": true, "string": true, "value": false,
+        })
+    );
+    assert!(
+        back["abnf"]
+            .as_str()
+            .is_some_and(|abnf| abnf.contains("line = form [ IN block ]")),
+        "{}",
+        back["abnf"]
+    );
 }
