@@ -33,15 +33,24 @@ jobs:
         with:
           path: alchemy
 
+      # A sibling is taken from the branch of the same name when it has one,
+      # else from main: cross-repository work lands on same-named branches
+      # in each repo, and a pull request here can then be gated against the
+      # sibling changes it needs before they merge.
       - name: Check out the sibling crates
         run: |
           set -euo pipefail
+          BRANCH="${{ github.head_ref || github.ref_name }}"
           SIBLINGS=$(sed -n 's/^SIBLINGS="\(.*\)"$/\1/p' alchemy/ci/rust/run.sh)
           n=0; total=$(echo "$SIBLINGS" | wc -w)
           for s in $SIBLINGS; do
             n=$((n+1))
-            echo "siblings: $n of $total ($((n*100/total))%) $s"
-            git clone --depth 1 "https://github.com/tabnas/$s" "$s"
+            if git clone -q --depth 1 --branch "$BRANCH" "https://github.com/tabnas/$s" "$s" 2>/dev/null; then
+              echo "siblings: $n of $total ($((n*100/total))%) $s @ $BRANCH"
+            else
+              git clone -q --depth 1 "https://github.com/tabnas/$s" "$s"
+              echo "siblings: $n of $total ($((n*100/total))%) $s @ main"
+            fi
           done
 
       - name: Install the MSRV toolchain
