@@ -387,7 +387,25 @@ A program is a sequence of `def`s, in any order: every definition sees
 every other, so there is no forward-reference problem, and a name bound
 nowhere is `unknown_name`. A definition that reaches itself, directly or
 through others, is refused (`recursion`): strict mode allows known
-combinators, not unrestricted recursion. Locals come from `fn`
+combinators, not unrestricted recursion. A function handed itself
+recurses through values the resolver cannot see, so evaluation carries a
+bound of its own: nested past `MAX_EVAL_DEPTH` (1,000) levels, a form
+inside a form, a body inside the call that applied it, a definition's
+value inside the form that named it, it is `recursion` too. A chain of
+definitions or calls that deep meets the same bound, which is also what
+bounds how deep a value a program builds can nest.
+
+```alchemy
+def w [f] (f f)
+def export [input]
+  let [x (w w)]
+    json input
+```
+```check
+ERROR:recursion@1:12
+```
+
+Locals come from `fn`
 parameters, `let` bindings and the bindings a `match` pattern makes;
 each shadows what is outside it. A program's definition of a library
 name (`csv`, say) shadows the library's for that program and for nothing
@@ -433,8 +451,12 @@ A binding of an affine type is **consumed at most once** in its scope
 (`STREAM_REUSED`, finer code `reused`); the two arms of an `if` and the
 cases of a `match` are alternatives, not two uses. A `fn` body may not
 use an affine binding of the scope around it (`captured`): a function
-may run more than once, and a stream is consumed once. A vector, a
-record or a transition's state cannot hold a stream (`type_mismatch`).
+may run more than once, and a stream is consumed once. A record, a
+partial application and a state cannot hold a stream or a text
+(`type_mismatch`). A vector cannot hold a stream either; it may hold a
+text, since a text may be finite (the library's `csv-row` joins the
+texts a `map` answers), and the runtime refuses a live one where the
+vector is built, naming it a live text.
 
 ```alchemy
 def export [input] (concat (json input) (json input))
@@ -449,6 +471,24 @@ def export [input]
 ```
 ```check
 ERROR:captured@2:28
+```
+
+A stream passed to a definition, or to a `fn` applied to it, is affine
+in that body as well: the checker types the body again with its
+parameters bound to the arguments' types, and reports a second use, a
+capture or a value holding it where the body does it, however many
+definitions the stream went through, to `MAX_APPLIED` (32) of them.
+Past that bound, and through a function value (a `partial`, a
+parameter), the runtime's guard is what holds: a live plan is lowered
+once, so `concat` refuses two live texts, and a vector or a finite text
+refuses a live one.
+
+```alchemy
+def g [s] (concat-map (fn [x] (json s)) [1])
+def export [input] (g input)
+```
+```check
+ERROR:captured@1:37
 ```
 
 Arguments are checked against a native's signature, a library
@@ -499,23 +539,23 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `as-path` | `as-path data -> Selector` | validates a data-supplied array of segments; never reads data as source |
 | `as-vector` | `as-vector data -> Vector` | a captured array as a vector; `INPUT_INVALID` otherwise |
 | `record`, `entry` | `record entry... -> Record`, `entry :key value -> Entry` | a retained record; duplicate keys are `duplicate_key` |
-| `vector` | `vector item... -> Vector` | a retained vector; it cannot hold a stream |
+| `vector` | `vector item... -> Vector` | a retained vector; it cannot hold a stream or a live text |
 | `path` | `path segment... -> Selector` | a selector from strings, indexes and selectors |
 | `root`, `each-index`, `each-member` | `-> Selector` | the document; every element of an array; every member value of an object |
 | `property`, `index`, `compose` | `property name`, `index n`, `compose outer inner -> Selector` | one member; one element; inner below every location outer names |
-| `capture` | `capture :tag selector -> CaptureSpec` | materialize each selected scope under `max_capture_bytes` |
+| `capture` | `capture :tag selector [:limit] -> CaptureSpec` | materialize each selected scope under `max_capture_bytes`, or under the `Limits` field the keyword names (`:max_metadata_bytes`, `:max_record_bytes`), the host's value for it |
 | `route` | `route captures input -> Stream<Selected>` | one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap |
 | `select` | `select selector input -> Stream<Value>` | route with one capture, delivering the values |
-| `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains the state the step returns; ready after each item; finish runs once at the validated end |
+| `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains the state the step returns, measured as it changes: at most `max_metadata_bytes`, no deeper than `max_depth`, reported in `retained_bytes_high`; ready after each item; finish runs once at the validated end |
 | `transition` | `transition state outputs -> Transition` | one step's result: the next state and a vector of outputs |
 | `partial` | `partial f arg... -> Fn` | `f` with its first arguments supplied |
 | `map`, `filter` | `map f items`, `filter predicate items -> Vector \| Stream` | eager over a vector; per item over a stream, retaining nothing |
-| `concat-map` | `concat-map f items -> Text` | `f` answers a string or a text per item; written as items arrive |
-| `join` | `join separator items -> Text` | the separator between items, never between the fragments of one |
+| `concat-map` | `concat-map f items -> Text` | `f` answers a string or a text per item; each item's text is assembled whole, under `max_output_bytes`, and written as items arrive, so a failure leaves no half item |
+| `join` | `join separator items -> Text` | the separator between items, never between the fragments of one; each item assembled as `concat-map`'s is |
 | `concat` | `concat item... -> Text` | in order, without assembling the result |
 | `text` | `text string -> Text` | a string as a text |
-| `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries; retains at most the literal's length |
-| `scalar-text` | `scalar-text options cell -> String` | a scalar's text under the options' null and missing policies; numbers by lexeme |
+| `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length |
+| `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
 | `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema; one row, as wide as the schema; the end, after the source validated |
@@ -523,6 +563,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `missing` | `missing -> Value` | an absent member, distinct from `null` |
 | `json` | `json events -> Text` | `JsonEvents` as compact JSON text, event by event, with a final newline |
 | `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
+| `csv-table` | `csv-table options events -> TableEvents` | the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most `max_columns`, labels strings, numbers or booleans; rows as wide as the schema; one `table-end`; a delimiter that holds the quote, a line break or NUL is refused before anything runs |
 
 Selecting, capturing and scanning:
 
@@ -605,11 +646,23 @@ fail "Required metadata was not found"
 The rest of the library is written in alchemy, embedded from
 [`stdlib/table.alc`](../stdlib/table.alc) and
 [`stdlib/csv.alc`](../stdlib/csv.alc), and checked against its declared
-signatures as it loads. These are the spec's definitions (sections 12.2,
-13.1 and 13.2), and they are the reference: the runtime runs
-`table-from-json` and `csv` natively when their arguments have the
-standard shapes, and `rs/tests/stdlib_test.rs` proves the native path
-and this text produce the same bytes.
+signatures as it loads. The blocks below are those files' text, word for
+word (`rs/tests/spec_test.rs` holds the two together), and they are the
+reference: the runtime runs `table-from-json` and `csv` natively when
+their arguments have the standard shapes, and `rs/tests/stdlib_test.rs`
+proves the native path and this text produce the same bytes, or fail
+with the same code.
+
+They are the spec's definitions (sections 12.2, 13.1 and 13.2) with
+three differences. The spec writes a `let` as a line `let columns` over
+two child lines, the value and the body; here `let` has one shape,
+`let [name value] body`, and the library is written in it. The two
+captures of `table-from-json` name the limits the native table holds the
+same scopes to (`:max_metadata_bytes`, `:max_record_bytes`), where the
+spec's generic `capture` would take `max_capture_bytes`. And `csv`
+passes its events through `csv-table`, the protocol validator section
+13.2 asks for, so a stream that breaks the table protocol fails as the
+native renderer fails it rather than being printed.
 
 The metadata-first table transducer, `JsonEvents` in, `TableEvents` out:
 
@@ -663,12 +716,12 @@ def table-from-json [binding input]
   pipe input
     route
       vector
-        capture :columns (get :columns binding)
-        capture :row (get :rows binding)
+        capture :columns (get :columns binding) :max_metadata_bytes
+        capture :row (get :rows binding) :max_record_bytes
     scan-emit no-schema (partial table-step binding) table-finish
 ```
 ```core
-(def table-from-json (fn [binding input] (scan-emit no-schema (partial table-step binding) table-finish (route (vector (capture :columns (get :columns binding)) (capture :row (get :rows binding))) input))))
+(def table-from-json (fn [binding input] (scan-emit no-schema (partial table-step binding) table-finish (route (vector (capture :columns (get :columns binding) :max_metadata_bytes) (capture :row (get :rows binding) :max_record_bytes)) input))))
 ```
 
 The binding is a record of `:columns` (the selector of the metadata
@@ -735,10 +788,10 @@ def csv [options events]
           csv-row options cells
         case table-end
           ""
-    events
+    csv-table options events
 ```
 ```core
-(def csv (fn [options events] (concat-map (fn [event] (match event (case (schema columns) (if (get :header options) (csv-row options (map (fn [column] (get :label column)) columns)) "")) (case (row cells) (csv-row options cells)) (case table-end ""))) events)))
+(def csv (fn [options events] (concat-map (fn [event] (match event (case (schema columns) (if (get :header options) (csv-row options (map (fn [column] (get :label column)) columns)) "")) (case (row cells) (csv-row options cells)) (case table-end ""))) (csv-table options events))))
 ```
 
 The native path substitutes transduce's `TableFromJson` for
@@ -746,15 +799,31 @@ The native path substitutes transduce's `TableFromJson` for
 `CsvRenderer` for `csv` when every option maps onto the renderer's
 dialect (`:delimiter` one character, `:newline` CRLF or LF, `:header` a
 boolean, `:null-text` a string, `:missing` `:error` or a string); any
-other options run the text above. Two differences the standard shapes
-never reach are known and pinned by the differential test: metadata
-selected twice is `INPUT_ORDER_VIOLATION` natively and `INPUT_INVALID`
-(the text's `fail`) interpreted, and a title that is not a string is
-`INPUT_INVALID` natively (the binding requires a string label, as
-transduce's own column mapper does) where the text renders the scalar.
-The generic `capture` is bounded by `max_capture_bytes`; the native
-table's rows by `max_record_bytes` and its metadata by
-`max_metadata_bytes`, which is what a limit failure names on each path.
+other options run the text above. The two paths agree on more than the
+standard shapes, and `rs/tests/stdlib_test.rs` pins each agreement:
+
+- **the protocol**: a stream that has rows before its schema, a second
+  schema, a row wider or narrower than the schema, no `table-end` or a
+  second one, an item that is not a table event, or no items at all is
+  `PROTOCOL_ORDER_ERROR` both ways;
+- **what has no CSV form**: a schema of no columns (a document whose
+  metadata array is empty, say) and a delimiter that holds the quote, a
+  line break or NUL are `TARGET_VALUE_UNREPRESENTABLE` both ways;
+- **labels**: one policy for every table, a string as it is, a number by
+  its lexeme, a boolean by its name, an absent one `MISSING_VALUE` and
+  anything else `INPUT_INVALID`; a column function that answers
+  something other than a record fails as `get` does;
+- **cells**: a vector or a record is its compact JSON text, number
+  lexemes kept, under `max_scalar_bytes`;
+- **limits**: the metadata is held to `max_metadata_bytes`, each row to
+  `max_record_bytes` and the schema to `max_columns`, and a failure names
+  the same limit both ways; `max_capture_bytes` decides neither table;
+  both count the rows in `metrics.rows`.
+
+One difference remains, in a shape the standard binding never reaches,
+and is pinned: metadata selected twice (a `:columns` selector naming
+several locations) is `INPUT_ORDER_VIOLATION` natively, since a table has
+one schema, and `INPUT_INVALID` interpreted, the text's own `fail`.
 
 ## Programs
 
@@ -795,6 +864,7 @@ export: api-table → csv
 Source reads:          1
 Protocol:              JsonEvents/1 → TableRows/1 → Text
 Selection:             shared prefix matcher, two capture routes
+Duplicate members:     rejected in captured scopes (DUPLICATE_MEMBER)
 Retained metadata:     .response.metadata.fields, capped at max_metadata_bytes
 Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes
 Output order:          schema first; cells in schema order
@@ -826,6 +896,7 @@ export: json
 Source reads:          1
 Protocol:              JsonEvents/1 → Text
 Selection:             none; every event passes through
+Duplicate members:     preserved; the events are copied as they arrive, not mapped by key
 Output order:          source order
 Ordering contract:     none
 Contract verification: static
@@ -847,23 +918,58 @@ Qualification:
 section 15.5, computed from the plan the program built rather than from
 its text: the chain of calls on `export`'s data-last spine; the source
 reads (one pass); the protocol chain; the selection (how many capture
-routes share the one matcher); each live retention requirement with the
-selector it holds and the `Limits` field that caps it, summed rather
-than maxed, since the standard table holds its metadata and one row at
-the same time; the output order; the ordering contract and whether the
-run checks it (`runtime`) or the plan cannot break it (`static`); the
-renderer's profile; external storage (always disabled); then the
-guarantee and its qualification. A `scan-emit` whose state is the
-program's makes the guarantee conditional and says so. `Program::
-explain_json` is the same information as one object (`chain`,
-`protocol`, `selection`, `retention`, `readiness`, `order_constraints`,
-`renderer`, `confidence`, `guarantee`, `qualification`, ...), for a
-host's `--explain`.
+routes share the one matcher); what happens to a member name an object
+repeats (spec 18.2: rejected in captured scopes under the default
+policy, or the first or last value winning under `with_duplicates`, and
+preserved where the events are copied as they arrive, as the `json` echo
+copies them, which is not a unique-key mapping); each live retention
+requirement with the selector it holds and the `Limits` field that caps
+it, summed rather than maxed, since the standard table holds its
+metadata and one row at the same time; the output order; the ordering
+contract and whether the run checks it (`runtime`) or the plan cannot
+break it (`static`); the renderer's profile; external storage (always
+disabled); then the guarantee and its qualification. A `scan-emit`
+state is capped at `max_metadata_bytes` and `max_depth`; what one step
+computes is the program's, so it makes the guarantee conditional, and
+the report says so. A result that never reaches the input, a text of
+the program's own, is reported as such: the input is read and validated
+and nothing of it is used, and nothing is written before it has
+validated.
+
+```alchemy
+def export [input] "done"
+```
+```check
+export: a text of its own
+
+Source reads:          1
+Protocol:              Text
+Selection:             none; the input is read and validated, and nothing of it is used
+Duplicate members:     not examined; the input is only validated
+Output order:          the program's own text, written once the input has validated
+Ordering contract:     none
+Contract verification: static
+External storage:      disabled
+
+Guarantee:
+  Memory is independent of the document's size under the configured
+  depth and scalar/key limits: nothing of the input is kept. The text
+  is the program's own, written under the output limit.
+
+Qualification:
+  The text is written only after the whole input has validated; an
+  invalid input writes nothing.
+```
+
+`Program::explain_json` is the same information as one object
+(`chain`, `finite`, `protocol`, `selection`, `duplicates`, `retention`,
+`readiness`, `order_constraints`, `renderer`, `confidence`,
+`guarantee`, `qualification`, ...), for a host's `--explain`.
 
 ## run
 
 ```text
-alchemy run [--render csv|json] [--no-native] PROGRAM INPUT
+alchemy run [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
 ```
 
 Parses `INPUT`, a JSON document, with the tabnas JSON grammar through
@@ -873,8 +979,11 @@ events through the program's sink to standard output, coalesced and
 flushed at the end. `--render` chooses how a table or JSON-events result
 is rendered (a program that renders its own text takes none:
 `render_of_text`); `--no-native` runs the standard compositions through
-the library's text. Other input formats are aless's business: it runs
-alchemy programs against every format its parsers read.
+the library's text; `--max-output-bytes` sets the writer's
+`max_output_bytes`, which also bounds what a finite text or one item's
+text may hold as it is built (the other limits are transduce's
+defaults). Other input formats are aless's business: it runs alchemy
+programs against every format its parsers read.
 
 A failure is one `Fail` JSON object on standard error, with `output:
 "partial"` when bytes had already reached standard output, and the exit
@@ -908,9 +1017,21 @@ let _ = Renderer::Json;
 # Ok::<(), tabnas_transduce::Fail>(())
 ```
 
-- `compile(src, file)` parses, desugars, resolves and checks; a failure
-  is a `Fail` with the code and the finer code, at the position it names
-  in `file`.
+- `compile(src, file)` parses, desugars, resolves and checks, then
+  builds the plan: it applies `export` to the input's plan, which
+  evaluates every value a stream does not defer (definitions, records,
+  selectors, `let` values on `export`'s own path) and consumes nothing.
+  A failure is a `Fail` with the code and the finer code, at the
+  position it names in `file`. Since building the plan runs the program's
+  definitions, a failure that evaluation finds on that path comes back
+  from `compile` with its own code: a `fail` is `INPUT_INVALID` (exit 1
+  from `alchemy check`, although no document was read), a record with a
+  key twice `duplicate_key`, a `match` no case takes `no_match`. The
+  work is bounded: at most `MAX_PLAN_STEPS` (1,000,000) evaluation steps,
+  `RESOURCE_LIMIT_EXCEEDED` naming `max_plan_steps` past them, and at
+  most `MAX_EVAL_DEPTH` (1,000) levels of nesting, `recursion` past them.
+  It runs on a thread of `STACK_BYTES` (64 MiB) whatever thread calls it,
+  so those bounds hold in a debug build as in a release one.
 - `Program::output()` is what the program produces (`Text`,
   `TableRows`, `JsonEvents`), so the host knows whether `--render`
   applies; `row_selector()` is the selector under which the source is
@@ -934,14 +1055,41 @@ let _ = Renderer::Json;
 - `with_native(false)` runs the standard compositions through the
   library's text; `with_duplicates` sets the policy for repeated member
   names in captured values (rejected by default, spec section 18.2).
+- `with_abort(flag)` hands the program the host's `AbortFlag`: the
+  program's own functions read it every few evaluation steps, so a long
+  computation on one item stops with `ABORTED` rather than finishing the
+  item first. The host gives the source the same flag
+  (`ParserSource::abort`), which stops between events.
+- The per-item functions run on the thread that pushes the events, and
+  that thread needs `STACK_BYTES` of stack for the evaluation bound to be
+  reached before the stack's end (the `alchemy` command runs on such a
+  thread; aless's parse thread is one).
+- What bounds a run is the host's `Limits`, each where the stage holding
+  the data names it: the source's `max_depth`, `max_key_bytes` and
+  `max_scalar_bytes`; the tables' `max_metadata_bytes`,
+  `max_record_bytes` and `max_columns`; a program's `capture` under
+  `max_capture_bytes` or the limit it names; a `scan-emit` state under
+  `max_metadata_bytes` and `max_depth`; a cell's JSON text under
+  `max_scalar_bytes`; and the writer's `max_output_bytes`, which also
+  bounds a finite text and one item's text as they are built. A host
+  that runs programs it did not write sets `max_output_bytes` and a
+  timeout through the abort flag.
 
 ## Spans and errors
 
 Every form carries a `SourceSpan`: the file name and the byte range of
 its text. Rows and columns (1-based, columns in characters) are derived
 from the source when a diagnostic needs them, and a generated node
-carries the span of the form it came from. A failure inside the standard
-library names the library file and its line.
+carries the span of the form it came from. A failure raised inside the
+standard library carries no row or column of its own, since a row there
+would name a line of the user's file that says something else; its
+message ends with the library file, row and column instead,
+`Required metadata was not found (at stdlib/table.alc:38:5)`, and when
+it passes a form of the program on its way out (a native the program
+called applied the library's function), that form's row and column are
+the failure's. Library spans are told apart from the program's by the
+file they were read from, not by its name, so a program that happens to
+be named `stdlib/table.alc` is still read as its own text.
 
 Failures are `tabnas_transduce::Fail` values. The message begins with the
 finer code and a colon, `bad_dedent: dedent to a level no block opened,
@@ -959,16 +1107,19 @@ repurposed; one may be added.
 Runtime failures carry the transduce and render codes unchanged
 (`INPUT_ORDER_VIOLATION`, `MISSING_VALUE`, `RESOURCE_LIMIT_EXCEEDED` with
 the limit's name, `PROTOCOL_ORDER_ERROR`, ...); a `fail "message"` in a
-program is `INPUT_INVALID` with the message and the form's position.
+program is `INPUT_INVALID` with the message and the form's position. A
+failure's message names a value by its kind and a short prefix of its
+text (`no_match: no case matches a vector ([...)`), never the whole of
+it, so a failure over a large document does not carry the document.
 
 ## The command
 
 ```text
 alchemy canon FILE       print the program in canonical form
 alchemy format FILE      print the program in layout form
-alchemy check FILE       parse, desugar, resolve and check; print nothing and exit 0
+alchemy check FILE       parse, desugar, resolve, check and build the plan; print nothing and exit 0
 alchemy explain FILE     print the plan report
-alchemy run [--render csv|json] [--no-native] PROGRAM INPUT
+alchemy run [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
                          run the program over the JSON document INPUT
 ```
 
@@ -976,4 +1127,5 @@ alchemy run [--render csv|json] [--no-native] PROGRAM INPUT
 per run). A failure is the `Fail` as one JSON object on standard error
 (`code`, `message`, `row`, `col`, `output`, and `path` and `limit` when
 they apply) with the exit status [run](#run) lists; standard output
-carries nothing but the answer.
+carries nothing but the answer. A standard error that cannot be
+written loses the report, not the status.

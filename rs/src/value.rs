@@ -169,6 +169,11 @@ impl Env {
     pub fn has(&self, name: &str) -> bool {
         self.get(name).is_some()
     }
+
+    /// The innermost binding's value and the environment outside it.
+    pub fn frame(&self) -> Option<(&Val, &Env)> {
+        self.0.as_deref().map(|f| (&f.value, &f.next))
+    }
 }
 
 impl fmt::Debug for Env {
@@ -232,10 +237,21 @@ pub enum Plan {
     },
     /// `records table-events`: `JsonEvents/1` from `TableRows/1`.
     Records { source: Arc<Plan> },
+    /// `csv-table options events`: the tagged table events, validated as
+    /// the CSV renderer validates them, passed on unchanged.
+    CsvTable { options: Val, source: Arc<Plan> },
     /// A literal text.
     Lit(Arc<str>),
-    /// `concat items...`: each a string or a text.
-    Concat(Vec<Val>),
+    /// `concat items...`: each a string or a text; `live` is the position
+    /// of the one item that reaches the input, found once when the plan is
+    /// built ([`Plan::concat`]), so asking whether a concat is live never
+    /// walks its items again: a program that nests `concat` over shared
+    /// definitions builds a plan whose items, unshared, are exponentially
+    /// many.
+    Concat {
+        items: Vec<Val>,
+        live: Option<usize>,
+    },
     /// `join separator items`.
     Join { sep: Arc<str>, items: Seq },
     /// `concat-map f items`: `f` answers a string or a text per item.
@@ -253,6 +269,12 @@ pub enum Plan {
 }
 
 impl Plan {
+    /// A `concat` of `items`, with its live item found once.
+    pub fn concat(items: Vec<Val>) -> Plan {
+        let live = items.iter().position(Val::is_live);
+        Plan::Concat { items, live }
+    }
+
     /// Whether the plan reaches the host's input: a live plan runs as the
     /// events arrive; a plan that does not is finite and is written whole.
     pub fn is_live(&self) -> bool {
@@ -265,10 +287,11 @@ impl Plan {
             | Plan::Filter { source, .. }
             | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
+            | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
             | Plan::Json { source } => source.is_live(),
             Plan::Lit(_) => false,
-            Plan::Concat(items) => items.iter().any(Val::is_live),
+            Plan::Concat { live, .. } => live.is_some(),
             Plan::Join { items, .. } | Plan::ConcatMap { items, .. } => {
                 matches!(items, Seq::Stream(_))
             }
@@ -281,7 +304,7 @@ impl Plan {
         matches!(
             self,
             Plan::Lit(_)
-                | Plan::Concat(_)
+                | Plan::Concat { .. }
                 | Plan::Join { .. }
                 | Plan::ConcatMap { .. }
                 | Plan::Replace { .. }
@@ -301,7 +324,8 @@ impl Plan {
             | Plan::Select { .. }
             | Plan::ScanEmit { .. }
             | Plan::Map { .. }
-            | Plan::Filter { .. } => Protocol::Items,
+            | Plan::Filter { .. }
+            | Plan::CsvTable { .. } => Protocol::Items,
             _ => Protocol::Text,
         }
     }
@@ -352,6 +376,20 @@ impl Val {
         matches!(self, Val::Tagged { tag, fields } if &**tag == MISSING && fields.is_empty())
     }
 
+    /// Whether two values are the same retained value, not merely equal:
+    /// one allocation behind both. A scalar is never the same as anything,
+    /// which only costs a re-measure where this is asked.
+    pub fn same(&self, other: &Val) -> bool {
+        match (self, other) {
+            (Val::Vector(a), Val::Vector(b)) => Arc::ptr_eq(a, b),
+            (Val::Record(a), Val::Record(b)) => Arc::ptr_eq(a, b),
+            (Val::Tagged { fields: a, .. }, Val::Tagged { fields: b, .. }) => Arc::ptr_eq(a, b),
+            (Val::Selector(a), Val::Selector(b)) => Arc::ptr_eq(a, b),
+            (Val::Stream(a), Val::Stream(b)) | (Val::Text(a), Val::Text(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
     /// Whether this value holds a live stream or text: the one-shot
     /// resources a vector may not hide and a `fn` may not capture.
     pub fn is_live(&self) -> bool {
@@ -378,6 +416,15 @@ impl Val {
             Val::Tagged { .. } => "a tagged value",
             Val::Stream(_) => "a stream",
             Val::Text(_) => "a text",
+        }
+    }
+
+    /// What a live value is, for a message that refuses to hold it: a
+    /// text is named live, since a finite one could have been held.
+    pub fn live_kind(&self) -> &'static str {
+        match self {
+            Val::Text(_) => "a live text",
+            other => other.kind(),
         }
     }
 
@@ -578,8 +625,9 @@ pub fn plan_name(plan: &Plan) -> &'static str {
         Plan::Filter { .. } => "filter",
         Plan::TableFromJson { .. } => "table-from-json",
         Plan::Records { .. } => "records",
+        Plan::CsvTable { .. } => "csv-table",
         Plan::Lit(_) => "text",
-        Plan::Concat(_) => "concat",
+        Plan::Concat { .. } => "concat",
         Plan::Join { .. } => "join",
         Plan::ConcatMap { .. } => "concat-map",
         Plan::Replace { .. } => "replace-text",
@@ -648,13 +696,13 @@ mod tests {
         };
         assert!(live.is_live());
         assert_eq!(live.protocol(), Protocol::Items);
-        let finite = Plan::Concat(vec![
+        let finite = Plan::concat(vec![
             Val::str("a"),
             Val::Text(Arc::new(Plan::Lit("b".into()))),
         ]);
         assert!(!finite.is_live());
         assert!(finite.is_text());
-        let mixed = Plan::Concat(vec![Val::str("a"), Val::Text(Arc::new(live))]);
+        let mixed = Plan::concat(vec![Val::str("a"), Val::Text(Arc::new(live))]);
         assert!(mixed.is_live());
         assert_eq!(Plan::Input.protocol(), Protocol::JsonEvents);
     }

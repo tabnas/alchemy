@@ -1,8 +1,11 @@
 ; The standard CSV renderer: TableRows in, Text out, in the always-quoted
-; RFC 4180 profile (design document sections 13.1 and 13.2). The runtime
-; runs `csv` natively when the options record maps onto the renderer's
-; dialect, and the differential test proves that path and this text
-; produce the same bytes.
+; RFC 4180 profile (design document sections 13.1 and 13.2). `csv-table`
+; is the protocol validator section 13.2 asks for (one schema first, rows
+; as wide as it, one end), with the renderer's own refusals: a table of no
+; columns, and a delimiter no reader could take. The runtime runs `csv`
+; natively when the options record maps onto the renderer's dialect, and
+; the differential test proves that path and this text produce the same
+; bytes, or fail with the same code.
 
 def csv-options
   record
@@ -44,4 +47,4 @@ def csv [options events]
           csv-row options cells
         case table-end
           ""
-    events
+    csv-table options events

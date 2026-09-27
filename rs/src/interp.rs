@@ -28,15 +28,46 @@
 //! are the runtime's own answers for what it could not see.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tabnas_transduce::{Code, Datum, Duplicates, Fail};
+use tabnas_transduce::{AbortFlag, Code, Datum, Duplicates, Fail, Limits};
 
 use crate::ast::{Expr, SourceSpan};
 use crate::resolve::{fn_form, fn_params, Resolved};
 use crate::stdlib::registry::{self, native, truth, Kind, Native};
 use crate::stdlib::{self, Stdlib};
-use crate::value::{type_error, Closure, Env, Func, Partial, Plan, Scope, Val};
+use crate::value::{type_error, Closure, Env, Func, Partial, Plan, Scope, Seq, Val};
+
+/// How deep evaluation may nest: a form inside a form, a function's body
+/// inside the call that applied it, a definition's value inside the form
+/// that named it. The resolver refuses a definition that names itself, but
+/// a function that is handed itself (`def w [f] (f f)`, then `(w w)`)
+/// recurses through values the resolver cannot see; this bound turns that
+/// into a `recursion` failure where it would otherwise overflow the stack
+/// and abort the process. A chain of definitions each naming the next, or
+/// of functions each calling the next, nests a level per link and meets
+/// the same bound, which is therefore also the bound on how deep a value a
+/// program builds can nest: what the evaluator, the equality of patterns
+/// and `Drop` walk one level at a time. Evaluation at this depth needs
+/// [`crate::STACK_BYTES`] of stack, which `compile` and the command give it
+/// and a host's run thread must.
+pub const MAX_EVAL_DEPTH: usize = 1_000;
+
+/// How many forms building a plan may evaluate: `compile` runs `export`
+/// over the input's plan, which evaluates everything not under a stream,
+/// and a small program can ask for an exponential amount of that work
+/// (`def d [g] (fn [x] (g (g x)))` nested forty deep). Past this bound
+/// building the plan is `RESOURCE_LIMIT_EXCEEDED` naming `max_plan_steps`.
+/// The work a stream does per item is bounded by the host's abort flag
+/// instead ([`Runtime::with_abort`]).
+pub const MAX_PLAN_STEPS: u64 = 1_000_000;
+
+/// How often, in evaluation steps, the abort flag is read.
+const ABORT_EVERY: u64 = 64;
+
+/// What a message that already names a standard-library position holds.
+const LIBRARY_AT: &str = " (at stdlib/";
 
 /// The evaluator for one program.
 pub struct Runtime {
@@ -45,8 +76,29 @@ pub struct Runtime {
     stdlib: &'static Stdlib,
     native: bool,
     duplicates: Duplicates,
+    /// The limits values a program builds are measured against (a cell's
+    /// text under `max_scalar_bytes`, a `scan-emit` state under
+    /// `max_metadata_bytes` and `max_depth`): the host's at run time, the
+    /// defaults while `compile` builds the plan.
+    limits: Limits,
+    /// The host's cancellation, read every [`ABORT_EVERY`] steps.
+    abort: AbortFlag,
+    /// The evaluation steps this runtime may take, when bounded
+    /// ([`MAX_PLAN_STEPS`] while building a plan).
+    fuel: Option<u64>,
+    steps: AtomicU64,
+    depth: AtomicUsize,
     /// Definition values, evaluated on first use.
     cache: Mutex<HashMap<(Scope, Arc<str>), Val>>,
+}
+
+/// One level of evaluation, given back when it ends.
+struct Level<'r>(&'r AtomicUsize);
+
+impl Drop for Level<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl std::fmt::Debug for Runtime {
@@ -77,8 +129,82 @@ impl Runtime {
             stdlib: stdlib::stdlib(),
             native: true,
             duplicates: Duplicates::Reject,
+            limits: Limits::default(),
+            abort: AbortFlag::new(),
+            fuel: None,
+            steps: AtomicU64::new(0),
+            depth: AtomicUsize::new(0),
             cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The limits the values a program builds are measured against.
+    pub fn with_limits(mut self, limits: &Limits) -> Runtime {
+        self.limits = limits.clone();
+        self
+    }
+
+    /// The host's cancellation: once it is set, the next evaluation step
+    /// fails with `ABORTED`, however long the item's computation would
+    /// have run.
+    pub fn with_abort(mut self, abort: AbortFlag) -> Runtime {
+        self.abort = abort;
+        self
+    }
+
+    /// Bound the evaluation steps this runtime may take (`None`: no bound).
+    pub fn with_fuel(mut self, fuel: Option<u64>) -> Runtime {
+        self.fuel = fuel;
+        self
+    }
+
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
+    /// One evaluation step: the fuel, and every [`ABORT_EVERY`] steps the
+    /// abort flag. Every form evaluated takes one, and so does every node
+    /// a finite text or a measured value walks.
+    pub fn tick(&self) -> Result<(), Fail> {
+        let n = self.steps.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(max) = self.fuel {
+            if n > max {
+                return Err(Fail::limit(
+                    "max_plan_steps",
+                    max,
+                    format!(
+                        "building the plan took more than {max} evaluation steps; a program that computes this much before it reads its input is refused"
+                    ),
+                ));
+            }
+        }
+        if n % ABORT_EVERY == 0 && self.abort.is_aborted() {
+            return Err(Fail::aborted());
+        }
+        Ok(())
+    }
+
+    /// Enter one level of evaluation at `at`, or the `recursion` failure
+    /// past [`MAX_EVAL_DEPTH`]. The evaluator takes a level per form, and
+    /// so does writing a finite text, whose `concat-map` applies its
+    /// function as it writes: a function that answers a text applying
+    /// itself recurses there, not in the evaluator.
+    pub fn enter(&self, at: Option<&SourceSpan>) -> Result<impl Drop + '_, Fail> {
+        let depth = self.depth.fetch_add(1, Ordering::Relaxed) + 1;
+        let level = Level(&self.depth);
+        if depth > MAX_EVAL_DEPTH {
+            let fail = Fail::new(
+                Code::StreamabilityUnknown,
+                format!(
+                    "recursion: evaluation nested past {MAX_EVAL_DEPTH} levels: a function applied to itself, or definitions or calls chained that deep; strict mode refuses recursion without a bound"
+                ),
+            );
+            return Err(match at {
+                Some(at) => self.fail_at(fail, at),
+                None => fail,
+            });
+        }
+        Ok(level)
     }
 
     /// Run the standard compositions natively (the default) or through
@@ -107,26 +233,41 @@ impl Runtime {
         &self.program
     }
 
-    /// The 1-based row and column of a span, in the file it names: the
-    /// program's, or an embedded standard-library file's.
+    /// The 1-based row and column of a span of the program's own text;
+    /// `None` for a span of the standard library's, whose rows are not
+    /// the program's.
     pub fn position(&self, span: &SourceSpan) -> Option<(u64, u64)> {
-        let src: &str = if *span.file == *self.program.file {
-            &self.src
-        } else {
-            stdlib::source(&span.file)?
-        };
-        let (row, col) = span.position(src);
+        if stdlib::file_of(span).is_some() {
+            return None;
+        }
+        let (row, col) = span.position(&self.src);
         Some((row as u64, col as u64))
     }
 
-    /// `fail` with the position of `at`, when it has one.
+    /// `fail` with the position of `at`, when it has none yet. A form of
+    /// the program gives its row and column. A form of the standard
+    /// library gives none, since a row there would name a line of the
+    /// user's file that says something else; the message ends with the
+    /// library file, row and column instead, `(at stdlib/table.alc:38:5)`,
+    /// once, and a form of the program around the library's call, when
+    /// the failure passes one on its way out, gives the row and column.
     pub fn fail_at(&self, mut fail: Fail, at: &SourceSpan) -> Fail {
-        if fail.row.is_none() {
-            if let Some((row, col)) = self.position(at) {
-                fail = fail.at(row, col);
+        if fail.row.is_some() {
+            return fail;
+        }
+        match stdlib::file_of(at) {
+            Some((file, src)) => {
+                if !fail.message.contains(LIBRARY_AT) {
+                    let (row, col) = at.position(src);
+                    fail.message = format!("{} (at {file}:{row}:{col})", fail.message);
+                }
+                fail
+            }
+            None => {
+                let (row, col) = at.position(&self.src);
+                fail.at(row as u64, col as u64)
             }
         }
-        fail
     }
 
     /// The definition `name` denotes in `scope`, with the scope it was
@@ -195,6 +336,8 @@ impl Runtime {
 
     /// Evaluate one form.
     pub fn eval(&self, expr: &Expr, env: &Env, scope: Scope) -> Result<Val, Fail> {
+        self.tick()?;
+        let _level = self.enter(Some(expr.span()))?;
         match expr {
             Expr::Symbol { name, span } => match env.get(name) {
                 Some(v) => Ok(v.clone()),
@@ -221,7 +364,7 @@ impl Runtime {
                         return Err(self.fail_at(
                             type_error(format!(
                                 "a vector cannot hold {}; a stream is used once, where it is",
-                                v.kind()
+                                v.live_kind()
                             )),
                             span,
                         ));
@@ -337,7 +480,7 @@ impl Runtime {
                 Err(self.fail_at(
                     Fail::new(
                         Code::DslTypeError,
-                        format!("no_match: no case matches {value:?}"),
+                        format!("no_match: no case matches {}", crate::lower::brief(&value)),
                     ),
                     span,
                 ))
@@ -579,6 +722,213 @@ impl Runtime {
     }
 }
 
+/// What a bounded walk over a value found: its size in the transduce
+/// measure (payload bytes plus an allowance per node) and its nesting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Measure {
+    pub bytes: u64,
+    pub depth: usize,
+}
+
+/// The bounds a [`Runtime::measure`] walk holds a value to.
+#[derive(Clone, Copy, Debug)]
+pub struct Bounds {
+    /// Bytes counted for every node on top of its payload.
+    pub node_bytes: u64,
+    pub max_bytes: u64,
+    /// The `Limits` field `max_bytes` came from, for the failure.
+    pub bytes_limit: &'static str,
+    /// The deepest nesting allowed, under `max_depth`.
+    pub max_depth: usize,
+    /// What is being measured, for the message.
+    pub what: &'static str,
+}
+
+/// One thing a measure walk still has to visit.
+enum Node<'v> {
+    Val(&'v Val),
+    Plan(&'v Plan),
+    Env(&'v Env),
+}
+
+impl Runtime {
+    /// Walk `v` without recursing, counting its size and nesting, and fail
+    /// as soon as either passes its bound: `RESOURCE_LIMIT_EXCEEDED`
+    /// naming the byte limit, or `max_depth`. The walk visits a shared
+    /// part once per reference, so a value built by sharing (a vector of
+    /// itself twice, forty times over) counts as large as it would be
+    /// written, and the walk ends at the bound rather than visiting it
+    /// all. Every node takes an evaluation step, so the abort flag stops
+    /// it too.
+    pub fn measure(&self, v: &Val, bounds: Bounds) -> Result<Measure, Fail> {
+        let mut found = Measure::default();
+        let mut pending: Vec<(Node<'_>, usize)> = vec![(Node::Val(v), 1)];
+        while let Some((node, depth)) = pending.pop() {
+            self.tick()?;
+            if depth > bounds.max_depth {
+                return Err(Fail::limit(
+                    "max_depth",
+                    bounds.max_depth as u64,
+                    format!(
+                        "{} nests more than {} levels deep",
+                        bounds.what, bounds.max_depth
+                    ),
+                ));
+            }
+            found.depth = found.depth.max(depth);
+            let payload: usize = match node {
+                Node::Val(v) => match v {
+                    Val::Null | Val::Bool(_) => 0,
+                    Val::Num { lexeme, .. } => lexeme.as_ref().map_or(8, |l| l.len()),
+                    Val::Str(s) | Val::Keyword(s) => s.len(),
+                    Val::Vector(items) => {
+                        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
+                        0
+                    }
+                    Val::Record(fields) => {
+                        pending.extend(fields.values().map(|i| (Node::Val(i), depth + 1)));
+                        fields.keys().map(|k| k.len()).sum()
+                    }
+                    Val::Tagged { tag, fields } => {
+                        pending.extend(fields.iter().map(|i| (Node::Val(i), depth + 1)));
+                        tag.len()
+                    }
+                    Val::Selector(s) => s.to_string().len(),
+                    Val::CaptureSpec(c) => c.tag.len() + c.selector.to_string().len(),
+                    Val::Fn(Func::Native(_)) => 0,
+                    Val::Fn(Func::Closure(c)) => {
+                        pending.push((Node::Env(&c.env), depth + 1));
+                        0
+                    }
+                    Val::Fn(Func::Partial(p)) => {
+                        pending.extend(p.args.iter().map(|i| (Node::Val(i), depth + 1)));
+                        if let Func::Closure(c) = &p.f {
+                            pending.push((Node::Env(&c.env), depth + 1));
+                        }
+                        0
+                    }
+                    Val::Stream(plan) | Val::Text(plan) => {
+                        pending.push((Node::Plan(plan), depth + 1));
+                        0
+                    }
+                },
+                Node::Plan(plan) => match plan {
+                    Plan::Lit(s) => s.len(),
+                    Plan::Concat { items, .. } => {
+                        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
+                        0
+                    }
+                    Plan::Join {
+                        sep,
+                        items: Seq::Vector(items),
+                    } => {
+                        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
+                        sep.len()
+                    }
+                    Plan::ConcatMap {
+                        items: Seq::Vector(items),
+                        ..
+                    } => {
+                        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
+                        0
+                    }
+                    Plan::Replace { from, to, source } => {
+                        pending.push((Node::Val(source), depth + 1));
+                        from.len() + to.len()
+                    }
+                    // A live plan is the one pass over the input, not a
+                    // retained value.
+                    _ => 0,
+                },
+                // A frame's value, and the frames outside it one level
+                // further: a chain of frames is dropped one inside another.
+                Node::Env(env) => match env.frame() {
+                    Some((value, next)) => {
+                        pending.push((Node::Val(value), depth + 1));
+                        pending.push((Node::Env(next), depth + 1));
+                        0
+                    }
+                    None => 0,
+                },
+            };
+            found.bytes = found
+                .bytes
+                .saturating_add(bounds.node_bytes)
+                .saturating_add(payload as u64);
+            if found.bytes > bounds.max_bytes {
+                return Err(Fail::limit(
+                    bounds.bytes_limit,
+                    bounds.max_bytes,
+                    format!("{} holds more than {} bytes", bounds.what, bounds.max_bytes),
+                ));
+            }
+        }
+        Ok(found)
+    }
+
+    /// The compact JSON text of a vector or a record, as a cell writes it
+    /// (number lexemes kept), bounded by `max_scalar_bytes`: the text is
+    /// one scalar of the output, and the native table holds a container
+    /// cell's text to the same bound. The failure comes exactly when the
+    /// text is longer than the bound; a lower bound of its length is
+    /// counted first, without writing it, so a value built by sharing (a
+    /// vector of a vector of itself, forty levels deep) fails at the limit
+    /// rather than being written out.
+    pub fn json_text(&self, v: &Val) -> Result<String, Fail> {
+        let max = self.limits.max_scalar_bytes as u64;
+        let too_long = || {
+            Fail::limit(
+                "max_scalar_bytes",
+                max,
+                format!("a cell's JSON text holds more than {max} bytes"),
+            )
+        };
+        if self.json_text_floor(v, max)? > max {
+            return Err(too_long());
+        }
+        let text = v.to_json_text()?;
+        if text.len() as u64 > max {
+            return Err(too_long());
+        }
+        Ok(text)
+    }
+
+    /// At most the length of `v`'s compact JSON text, counted without
+    /// writing it or recursing, and without going on once it passes `max`:
+    /// a container's brackets, a member's quoted key and colon, a string's
+    /// quotes around its bytes (escapes only lengthen it), a number's
+    /// lexeme (or one digit), four for `null` and the booleans. Every value
+    /// counts at least one, so the walk ends within `max` values, and every
+    /// one takes an evaluation step, so the abort flag stops it too.
+    fn json_text_floor(&self, v: &Val, max: u64) -> Result<u64, Fail> {
+        let mut total: u64 = 0;
+        let mut pending: Vec<&Val> = vec![v];
+        while let Some(v) = pending.pop() {
+            self.tick()?;
+            let here: usize = match v {
+                Val::Null | Val::Bool(_) => 4,
+                Val::Num { lexeme, .. } => lexeme.as_ref().map_or(1, |l| l.len().max(1)),
+                Val::Str(s) => s.len() + 2,
+                Val::Vector(items) => {
+                    pending.extend(items.iter());
+                    2
+                }
+                Val::Record(fields) => {
+                    pending.extend(fields.values());
+                    2 + fields.keys().map(|k| k.len() + 3).sum::<usize>()
+                }
+                // Not JSON: the conversion refuses it.
+                _ => 0,
+            };
+            total = total.saturating_add(here as u64);
+            if total > max {
+                break;
+            }
+        }
+        Ok(total)
+    }
+}
+
 fn poisoned<T>(_: std::sync::PoisonError<T>) -> Fail {
     Fail::new(
         Code::DslTypeError,
@@ -651,6 +1001,16 @@ mod tests {
         assert_eq!(eval(src, "tag no-schema").unwrap(), Val::str("other"));
         let no = eval("", "match 3 (case 1 1)").unwrap_err();
         assert!(no.message.starts_with("no_match: "), "{no}");
+        // A value no case takes is named by its kind and a short prefix,
+        // so a failure over a large document does not carry the document.
+        let big = format!("match [{}] (case 1 1)", "\"abcdefgh\" ".repeat(10_000));
+        let no = eval("", &big).unwrap_err();
+        assert!(
+            no.message
+                .starts_with("no_match: no case matches a vector ("),
+            "{no}"
+        );
+        assert!(no.message.len() < 200, "{}", no.message.len());
     }
 
     #[test]
@@ -684,11 +1044,42 @@ mod tests {
         assert_eq!(f.code, Code::InputInvalid);
         assert_eq!(f.message, "no");
         assert_eq!((f.row, f.column), (Some(2), Some(3)));
-        // A failure inside the library names the library's line.
+        // A failure inside the library names the library's file and line
+        // in its message, and no row of the program's.
         let f = eval("", "table-finish no-schema").unwrap_err();
         assert_eq!(f.code, Code::InputInvalid);
-        assert_eq!(f.message, "Required metadata was not found");
-        assert!(f.row.is_some());
+        let lib = stdlib::source("stdlib/table.alc").unwrap();
+        let row = lib
+            .lines()
+            .position(|l| l.contains("fail \"Required metadata was not found\""))
+            .unwrap()
+            + 1;
+        assert_eq!(
+            f.message,
+            format!("Required metadata was not found (at stdlib/table.alc:{row}:5)")
+        );
+        assert_eq!((f.row, f.column), (None, None));
+        // A program named like a library file is still its own text.
+        let src = "def boom [x]\n  fail \"no\"";
+        let forms = desugar::program(parse_file(src, "stdlib/table.alc").unwrap(), src).unwrap();
+        let resolved =
+            crate::resolve::resolve(forms, src, "stdlib/table.alc", &stdlib::outer).unwrap();
+        let rt = Runtime::new(Arc::new(resolved), src);
+        let call = desugar::program(parse_file("boom 1", "e.alc").unwrap(), "boom 1").unwrap();
+        let f = rt.eval_program_expr(&call[0]).unwrap_err();
+        assert_eq!(
+            (f.message.as_str(), f.row, f.column),
+            ("no", Some(2), Some(3))
+        );
+        // A library failure under a native the program called takes the
+        // program's position too.
+        let f = eval("", "map (fn [s] (table-finish s)) [no-schema]").unwrap_err();
+        assert!(
+            f.message
+                .ends_with(&format!("(at stdlib/table.alc:{row}:5)")),
+            "{f}"
+        );
+        assert_eq!((f.row, f.column), (Some(1), Some(1)));
     }
 
     #[test]

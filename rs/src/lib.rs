@@ -56,8 +56,18 @@ pub mod types;
 pub mod value;
 
 pub use ast::{canonical, canonical_form, format, same_program, Expr, SourceSpan, MAX_NESTING};
+pub use check::MAX_APPLIED;
 pub use grammar::{alchemy, make, parse, parse_file, parse_value, UNNAMED};
+pub use interp::{MAX_EVAL_DEPTH, MAX_PLAN_STEPS};
 pub use program::{compile, Output, Program, Renderer};
+
+/// The stack the checker and the evaluator are given: [`compile`] runs on
+/// a thread of this size, and so does the `alchemy` command, so a program
+/// at [`MAX_NESTING`] and an evaluation at [`MAX_EVAL_DEPTH`] fit in a
+/// debug build as in a release one. A host that pushes events into a
+/// [`Program::sink`] runs the program's per-item functions on its own
+/// thread and gives it at least this much (aless's parse thread has it).
+pub const STACK_BYTES: usize = 64 << 20;
 
 /// This crate's version, as `Cargo.toml` declares it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

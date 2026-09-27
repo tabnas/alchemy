@@ -12,9 +12,9 @@ use std::io::Write;
 use std::sync::Arc;
 
 use tabnas_render::{TextOut, WriteOut};
-use tabnas_transduce::{Duplicates, Fail, Limits, Metrics, Selector, Sink};
+use tabnas_transduce::{AbortFlag, Code, Duplicates, Fail, Limits, Metrics, Selector, Sink};
 
-use crate::interp::Runtime;
+use crate::interp::{Runtime, MAX_PLAN_STEPS};
 use crate::lower::{EventSink, Lowering, Out};
 use crate::resolve::{resolve, Resolved};
 use crate::value::{Plan, Protocol, Seq, Val};
@@ -53,6 +53,8 @@ pub struct Program {
     output: Output,
     native: bool,
     duplicates: Duplicates,
+    /// The host's cancellation, handed to every sink's runtime.
+    abort: AbortFlag,
     /// `export` applied to the input plan under the flags above.
     result: Val,
 }
@@ -67,12 +69,47 @@ impl std::fmt::Debug for Program {
     }
 }
 
-/// Parse, desugar, resolve and check `src`, named `file` in diagnostics.
+/// Parse, desugar, resolve and check `src`, named `file` in diagnostics,
+/// and build its plan: `export` applied to the input's plan, which
+/// evaluates everything a stream does not defer, so a `fail` or a
+/// `no_match` on that path is reported here, with its own code. The work
+/// runs on a thread of [`crate::STACK_BYTES`], and building the plan is
+/// bounded by [`MAX_PLAN_STEPS`] and [`crate::MAX_EVAL_DEPTH`].
 pub fn compile(src: &str, file: &str) -> Result<Program, Fail> {
-    let forms = desugar::program(parse_file(src, file)?, src)?;
-    let resolved = Arc::new(resolve(forms, src, file, &stdlib::outer)?);
-    let checked = crate::check::program(&resolved, src)?;
-    Program::build(resolved, src, checked.output, true, Duplicates::Reject)
+    on_stack(|| {
+        let forms = desugar::program(parse_file(src, file)?, src)?;
+        let resolved = Arc::new(resolve(forms, src, file, &stdlib::outer)?);
+        let checked = crate::check::program(&resolved, src)?;
+        Program::build_here(
+            resolved,
+            src,
+            checked.output,
+            true,
+            Duplicates::Reject,
+            AbortFlag::new(),
+        )
+    })
+}
+
+/// Run `work` on a thread of [`crate::STACK_BYTES`], so the checker's and
+/// the evaluator's recursion has the room their bounds promise whatever
+/// thread the caller is on.
+fn on_stack<T: Send>(work: impl FnOnce() -> Result<T, Fail> + Send) -> Result<T, Fail> {
+    std::thread::scope(|scope| {
+        let thread = std::thread::Builder::new()
+            .name("alchemy-compile".into())
+            .stack_size(crate::STACK_BYTES)
+            .spawn_scoped(scope, work)
+            .map_err(|error| {
+                Fail::new(
+                    Code::ResourceLimitExceeded,
+                    format!("no thread could be started to compile the program: {error}"),
+                )
+            })?;
+        thread
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
 }
 
 impl Program {
@@ -82,10 +119,24 @@ impl Program {
         output: Output,
         native: bool,
         duplicates: Duplicates,
+        abort: AbortFlag,
+    ) -> Result<Program, Fail> {
+        on_stack(|| Program::build_here(resolved, src, output, native, duplicates, abort))
+    }
+
+    fn build_here(
+        resolved: Arc<Resolved>,
+        src: &str,
+        output: Output,
+        native: bool,
+        duplicates: Duplicates,
+        abort: AbortFlag,
     ) -> Result<Program, Fail> {
         let result = Runtime::new(resolved.clone(), src)
             .with_native(native)
             .with_duplicates(duplicates)
+            .with_fuel(Some(MAX_PLAN_STEPS))
+            .with_abort(abort.clone())
             .export()?;
         Ok(Program {
             resolved,
@@ -93,6 +144,7 @@ impl Program {
             output,
             native,
             duplicates,
+            abort,
             result,
         })
     }
@@ -107,6 +159,7 @@ impl Program {
             self.output,
             native,
             self.duplicates,
+            self.abort.clone(),
         )
     }
 
@@ -119,11 +172,29 @@ impl Program {
             self.output,
             self.native,
             duplicates,
+            self.abort.clone(),
         )
+    }
+
+    /// The same program with the host's cancellation: every sink it makes
+    /// reads the flag as the program's functions run, so a timeout stops
+    /// a long computation on one item with `ABORTED` rather than waiting
+    /// for the item to finish. The source takes the same flag
+    /// (`ParserSource::abort`) to stop between events.
+    pub fn with_abort(&self, abort: AbortFlag) -> Program {
+        Program {
+            abort,
+            ..self.clone()
+        }
     }
 
     pub fn native(&self) -> bool {
         self.native
+    }
+
+    /// The policy for a member name repeated in a captured scope.
+    pub fn duplicates(&self) -> Duplicates {
+        self.duplicates
     }
 
     /// The file name the program was compiled under.
@@ -239,7 +310,9 @@ impl Program {
         let rt = Arc::new(
             Runtime::new(self.resolved.clone(), &self.src)
                 .with_native(self.native)
-                .with_duplicates(self.duplicates),
+                .with_duplicates(self.duplicates)
+                .with_limits(limits)
+                .with_abort(self.abort.clone()),
         );
         let out: Out = out;
         Lowering::new(rt, limits, metrics).sink(&self.result, out, render)
@@ -260,6 +333,7 @@ fn root_stage(plan: &Plan) -> &Plan {
             | Plan::Filter { source, .. }
             | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
+            | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
             | Plan::Json { source } => {
                 if matches!(**source, Plan::Input) {
@@ -275,7 +349,7 @@ fn root_stage(plan: &Plan) -> &Plan {
                 items: Seq::Stream(source),
                 ..
             } => source,
-            Plan::Concat(items) => match items.iter().find(|v| v.is_live()) {
+            Plan::Concat { items, live } => match live.and_then(|i| items.get(i)) {
                 Some(Val::Text(inner)) | Some(Val::Stream(inner)) => inner,
                 _ => return here,
             },

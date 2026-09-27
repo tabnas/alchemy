@@ -83,13 +83,19 @@ fn run(
     events: &[OwnedJsonEvent],
     render: Option<Renderer>,
 ) -> Result<String, Fail> {
+    run_under(program, events, render, &Limits::default(), Metrics::new())
+}
+
+/// [`run`] under the host's `limits`, counting in `metrics`.
+fn run_under(
+    program: &Program,
+    events: &[OwnedJsonEvent],
+    render: Option<Renderer>,
+    limits: &Limits,
+    metrics: Arc<Metrics>,
+) -> Result<String, Fail> {
     let buffer = Shared::default();
-    let mut sink = program.sink(
-        Box::new(buffer.clone()),
-        render,
-        &Limits::default(),
-        Metrics::new(),
-    )?;
+    let mut sink = program.sink(Box::new(buffer.clone()), render, limits, metrics)?;
     replay(events, &mut sink)?;
     let bytes = buffer.0.lock().unwrap().clone();
     Ok(String::from_utf8(bytes).expect("utf-8 output"))
@@ -323,7 +329,280 @@ fn interpreted_and_native_agree_on_other_renderings() {
     );
 }
 
-/// The two paths differ, knowingly, in two places the standard shapes
+/// The spec's worked example, byte for byte as aless's fixture has it.
+const RECORDS: &str = r#"{"response":{"metadata":{"fields":[{"title":"Identifier","path":["id"]},{"title":"Full name","path":["person","name"]},{"title":"Balance","path":["account","balance"]}]},"payload":{"deep":{"records":[{"id":123,"person":{"name":"Alice"},"account":{"balance":50.25}},{"account":{"balance":72},"person":{"name":"Bob"},"id":456}]}}}}"#;
+
+const EXPECTED_CSV: &str =
+    "\"Identifier\",\"Full name\",\"Balance\"\r\n\"123\",\"Alice\",\"50.25\"\r\n\"456\",\"Bob\",\"72\"\r\n";
+
+/// Both ways, one outcome: the same bytes, or the same code and the same
+/// limit named; `expected` is that outcome.
+fn agree(
+    name: &str,
+    program: &Program,
+    events: &[OwnedJsonEvent],
+    limits: &Limits,
+    expected: Result<&str, Code>,
+) {
+    let interpreted = program.with_native(false).unwrap();
+    let native_rows = Metrics::new();
+    let interpreted_rows = Metrics::new();
+    let a = run_under(program, events, None, limits, native_rows.clone());
+    let b = run_under(&interpreted, events, None, limits, interpreted_rows.clone());
+    match (&a, &b, expected) {
+        (Ok(a), Ok(b), Ok(want)) => {
+            assert_eq!(a, want, "{name}: native");
+            assert_eq!(b, want, "{name}: interpreted");
+            assert_eq!(
+                Metrics::get(&native_rows.rows),
+                Metrics::get(&interpreted_rows.rows),
+                "{name}: rows counted"
+            );
+        }
+        (Err(a), Err(b), Err(code)) => {
+            assert_eq!(
+                (a.code, b.code),
+                (code, code),
+                "{name}:\n  native: {a}\n  interpreted: {b}"
+            );
+            assert_eq!(
+                a.limit.as_ref().map(|l| l.name),
+                b.limit.as_ref().map(|l| l.name),
+                "{name}: the limit named"
+            );
+        }
+        _ => panic!("{name}: expected {expected:?}\n  native: {a:?}\n  interpreted: {b:?}"),
+    }
+}
+
+/// The library's `csv` validates the table events it renders as the
+/// native renderer does (spec 13.2: the protocol validator is not
+/// omitted), so a program that produces its own table events, or a
+/// document or an options record the renderer refuses, fails with the
+/// same code both ways, and a sound one prints the same bytes.
+#[test]
+fn the_library_csv_validates_what_the_renderer_validates() {
+    let items = events(
+        tabnas_json::make,
+        r#"{"items":[{"n":"a","v":1},{"n":"b\"q","v":-2},{"n":"c","v":null}],"tail":"t"}"#,
+    )
+    .unwrap();
+    let limits = Limits::default();
+    let label = |l: &str| format!("(record (entry :label \"{l}\"))");
+    let table = |step: &str, finish: &str| {
+        format!(
+            "def export [input] (csv csv-options (scan-emit no-schema {step} {finish} (select (path \"items\" each-index) input)))"
+        )
+    };
+    // One schema on the first item, a row per item: the sound shape.
+    let first = |schema: &str, row: &str| {
+        format!(
+            "(fn [s x] (transition (ready []) (if (is-ready s) [(row {row})] [(schema {schema}) (row {row})])))"
+        )
+    };
+    let n = label("N");
+    let v = label("V");
+    let cases: Vec<(&str, String, Result<&str, Code>)> = vec![
+        (
+            "sound",
+            table(&first(&format!("[{n} {v}]"), "[(get :n x) (get :v x)]"), "(fn [s] [table-end])"),
+            Ok("\"N\",\"V\"\r\n\"a\",\"1\"\r\n\"b\"\"q\",\"-2\"\r\n\"c\",\"\"\r\n"),
+        ),
+        (
+            "rows without a schema",
+            table("(fn [s x] (transition s [(row [(get :n x)])]))", "(fn [s] [table-end])"),
+            Err(Code::ProtocolOrderError),
+        ),
+        (
+            "a schema per item",
+            table(&format!("(fn [s x] (transition s [(schema [{n}])]))"), "(fn [s] [table-end])"),
+            Err(Code::ProtocolOrderError),
+        ),
+        (
+            "a row wider than the schema",
+            table(&first(&format!("[{n}]"), "[(get :n x) (get :v x)]"), "(fn [s] [table-end])"),
+            Err(Code::ProtocolOrderError),
+        ),
+        (
+            "no table-end",
+            table(&first(&format!("[{n}]"), "[(get :n x)]"), "(fn [s] [])"),
+            Err(Code::ProtocolOrderError),
+        ),
+        (
+            "two table-ends",
+            table(&first(&format!("[{n}]"), "[(get :n x)]"), "(fn [s] [table-end table-end])"),
+            Err(Code::ProtocolOrderError),
+        ),
+        (
+            "an item that is not a table event",
+            "def export [input] (csv csv-options (map (fn [x] (get :n x)) (select (path \"items\" each-index) input)))".to_string(),
+            Err(Code::ProtocolOrderError),
+        ),
+        (
+            "no items at all",
+            "def export [input] (csv csv-options (scan-emit no-schema (fn [s x] (transition s [x])) (fn [s] []) (select (path \"none\" each-index) input)))".to_string(),
+            Err(Code::ProtocolOrderError),
+        ),
+        (
+            "a schema of no columns",
+            table(&first("[]", "[]"), "(fn [s] [table-end])"),
+            Err(Code::TargetValueUnrepresentable),
+        ),
+        (
+            "a column without a label",
+            table(&first("[(record (entry :x \"N\"))]", "[(get :n x)]"), "(fn [s] [table-end])"),
+            Err(Code::MissingValue),
+        ),
+        (
+            "a label that is a record",
+            table(&first("[(record (entry :label (record)))]", "[(get :n x)]"), "(fn [s] [table-end])"),
+            Err(Code::InputInvalid),
+        ),
+    ];
+    for (name, src, expected) in cases {
+        let program = compile(&src, "table.alc").unwrap_or_else(|f| panic!("{name}: {f}"));
+        agree(name, &program, &items, &limits, expected);
+    }
+
+    // The worked example over a document whose metadata is empty: a table
+    // of no columns has no CSV form, whichever path renders it.
+    let program = compile(PROGRAM, "export.alc").unwrap();
+    let empty = events(
+        tabnas_json::make,
+        r#"{"response":{"metadata":{"fields":[]},"payload":{"deep":{"records":[{"id":1}]}}}}"#,
+    )
+    .unwrap();
+    agree(
+        "no columns",
+        &program,
+        &empty,
+        &limits,
+        Err(Code::TargetValueUnrepresentable),
+    );
+
+    // A delimiter no CSV reader could take is refused before anything
+    // runs, natively (the renderer) and interpreted (`csv-table`).
+    let records = events(tabnas_json::make, RECORDS).unwrap();
+    for delimiter in ["\\\"", "\\n", "\\r"] {
+        let src = PROGRAM.replace(
+            "    csv csv-options\n",
+            &format!("    csv (record (entry :delimiter \"{delimiter}\") (entry :newline \"\\r\\n\") (entry :header true) (entry :null-text \"\") (entry :missing :error))\n"),
+        );
+        let program = compile(&src, "delimiter.alc").unwrap();
+        agree(
+            &format!("delimiter {delimiter}"),
+            &program,
+            &records,
+            &limits,
+            Err(Code::TargetValueUnrepresentable),
+        );
+    }
+
+    // A column function that answers something other than a record fails
+    // as `get` does, both ways.
+    let keyword = compile(
+        "def b (record (entry :columns (path \"m\")) (entry :rows (path \"r\" each-index)) (entry :column (fn [d] :oops)))\ndef export [input] (csv csv-options (table-from-json b input))",
+        "keyword.alc",
+    )
+    .unwrap();
+    let doc = events(
+        tabnas_json::make,
+        r#"{"m":[{"title":"t","path":["a"]}],"r":[{"a":"x"}]}"#,
+    )
+    .unwrap();
+    agree(
+        "a column that is a keyword",
+        &keyword,
+        &doc,
+        &limits,
+        Err(Code::DslTypeError),
+    );
+}
+
+/// The library's table holds the scopes it captures to the limits the
+/// native table does (the metadata under `max_metadata_bytes`, each row
+/// under `max_record_bytes`, at most `max_columns` columns), so under the
+/// host's own limits both ways fail alike or print alike, and count the
+/// same rows.
+#[test]
+fn the_limits_hold_alike_both_ways() {
+    let program = compile(PROGRAM, "export.alc").unwrap();
+    let records = events(tabnas_json::make, RECORDS).unwrap();
+    let cases: Vec<(&str, Limits, Result<&str, Code>)> = vec![
+        ("defaults", Limits::default(), Ok(EXPECTED_CSV)),
+        (
+            "max_record_bytes",
+            Limits {
+                max_record_bytes: 100,
+                ..Limits::default()
+            },
+            Err(Code::ResourceLimitExceeded),
+        ),
+        (
+            "max_metadata_bytes",
+            Limits {
+                max_metadata_bytes: 50,
+                ..Limits::default()
+            },
+            Err(Code::ResourceLimitExceeded),
+        ),
+        (
+            "max_columns",
+            Limits {
+                max_columns: 2,
+                ..Limits::default()
+            },
+            Err(Code::ResourceLimitExceeded),
+        ),
+        (
+            "max_capture_bytes decides neither table",
+            Limits {
+                max_capture_bytes: 100,
+                ..Limits::default()
+            },
+            Ok(EXPECTED_CSV),
+        ),
+    ];
+    for (name, limits, expected) in cases {
+        agree(name, &program, &records, &limits, expected);
+    }
+    // A cell that is a vector is its compact JSON text, one scalar of the
+    // output, held to max_scalar_bytes both ways.
+    let containers = events(
+        tabnas_json::make,
+        &RECORDS.replace(r#""id":123"#, r#""id":[1,2,3,4,5,6]"#),
+    )
+    .unwrap();
+    agree(
+        "a container cell under max_scalar_bytes",
+        &program,
+        &containers,
+        &Limits {
+            max_scalar_bytes: 12,
+            ..Limits::default()
+        },
+        Err(Code::ResourceLimitExceeded),
+    );
+    agree(
+        "a container cell within it",
+        &program,
+        &containers,
+        &Limits { max_scalar_bytes: 13, ..Limits::default() },
+        Ok("\"Identifier\",\"Full name\",\"Balance\"\r\n\"[1,2,3,4,5,6]\",\"Alice\",\"50.25\"\r\n\"456\",\"Bob\",\"72\"\r\n"),
+    );
+    let metrics = Metrics::new();
+    run_under(
+        &program.with_native(false).unwrap(),
+        &records,
+        None,
+        &Limits::default(),
+        metrics.clone(),
+    )
+    .unwrap();
+    assert_eq!(Metrics::get(&metrics.rows), 2);
+}
+
+/// The two paths differ, knowingly, in one place the standard shapes
 /// never reach; pinned so a change to either is seen.
 #[test]
 fn the_known_differences_are_pinned() {
@@ -352,22 +631,21 @@ fn the_known_differences_are_pinned() {
             .code,
         Code::InputInvalid
     );
-    // A numeric title: the native binding requires a string label, as
-    // transduce's own `column_from_meta` does; the library text renders
-    // the number's lexeme as the header cell.
+    // A numeric title was a second difference; one label policy now
+    // serves every table (a string as it is, a number by its lexeme, a
+    // boolean by its name), so both ways render the lexeme.
     let program = compile(PROGRAM, "export.alc").unwrap();
     let doc = format!(
         r#"{{"response":{{"metadata":{{"fields":[{{"title":42,"path":["id"]}}]}},"payload":{{"deep":{{"records":[{}]}}}}}}}}"#,
         support::record(1)
     );
     let numeric = events(tabnas_json::make, &doc).unwrap();
-    assert_eq!(
-        run(&program, &numeric, None).unwrap_err().code,
-        Code::InputInvalid
-    );
-    assert_eq!(
-        run(&program.with_native(false).unwrap(), &numeric, None).unwrap(),
-        "\"42\"\r\n\"1\"\r\n"
+    agree(
+        "a numeric title",
+        &program,
+        &numeric,
+        &Limits::default(),
+        Ok("\"42\"\r\n\"1\"\r\n"),
     );
 }
 

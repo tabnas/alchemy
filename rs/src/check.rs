@@ -103,6 +103,15 @@ fn lookup<'e>(env: &'e Env, name: &str) -> Option<&'e Type> {
     env.iter().rev().find(|l| &*l.name == name).map(|l| &l.ty)
 }
 
+/// How many definitions deep the checker follows a stream into the
+/// bodies it is passed to ([`Checker::applied`]). Each level types a body
+/// again inside the call that reached it, so the bound keeps the checker's
+/// own recursion shallow; past it a definition is typed by what its body
+/// inferred with its parameters unknown, and the runtime's guard (a live
+/// plan is lowered once: `concat` refuses two live texts, a vector or a
+/// finite text refuses a live one) is what stops a second use.
+pub const MAX_APPLIED: usize = 32;
+
 /// The checker for one scope's definitions: a program's, or one standard
 /// library file's.
 struct Checker<'a> {
@@ -112,6 +121,13 @@ struct Checker<'a> {
     /// a program's are inferred.
     declared: bool,
     memo: HashMap<Arc<str>, Type>,
+    /// A definition's type with its parameters bound to the argument
+    /// types of a call that passes it a stream, by name and argument
+    /// types.
+    applied: Vec<(Arc<str>, Vec<Type>, Type)>,
+    /// How many [`Checker::applied`] bodies are being typed, one inside
+    /// the next.
+    applying: usize,
 }
 
 impl Checker<'_> {
@@ -509,7 +525,7 @@ impl Checker<'_> {
                 let mut item = Type::Never;
                 for i in items {
                     let t = self.infer(i, env)?;
-                    if t.is_affine() {
+                    if t.is_stream_or_source() {
                         return Err(self.type_error(
                             "type_mismatch",
                             format!(
@@ -631,6 +647,11 @@ impl Checker<'_> {
         for arg in args {
             arg_types.push(self.infer(arg, env)?);
         }
+        let f = if arg_types.iter().any(Type::is_affine) {
+            self.applied(head, &arg_types, env)?.unwrap_or(f)
+        } else {
+            f
+        };
         match f {
             Type::Fn(params, result) => {
                 if params.len() != args.len() {
@@ -661,6 +682,61 @@ impl Checker<'_> {
                 format!("{} is a {other} and cannot be called", describe(head)),
                 head.span(),
             )),
+        }
+    }
+
+    /// The type of a definition or a `fn` literal applied to arguments of
+    /// which one is a stream, a text or the source, typed again with its
+    /// parameters bound to the arguments' types (spec 10.2): the parameter
+    /// is then affine in the body, as `export`'s `input` is in its own, so
+    /// a second use of it (`reused`), a use inside a nested `fn`
+    /// (`captured`), or a vector, record or partial application holding it
+    /// (`type_mismatch`) is reported where the body does it, however many
+    /// definitions the stream was passed through (to [`MAX_APPLIED`]). A
+    /// definition typed with its parameters unknown cannot see any of
+    /// that. `None` for any other head, a count that does not match (the
+    /// call reports it), or past the bound.
+    fn applied(&mut self, head: &Expr, args: &[Type], env: &mut Env) -> Result<Option<Type>, Fail> {
+        if self.applying >= MAX_APPLIED {
+            return Ok(None);
+        }
+        match head {
+            Expr::Symbol { name, .. }
+                if lookup(env, name).is_none() && self.defs.contains_key(name.as_str()) =>
+            {
+                let def = self.defs[name.as_str()].clone();
+                let Expr::List { items, .. } = &*def.value else {
+                    return Ok(None);
+                };
+                match fn_form(items) {
+                    Some((params, _)) if params.len() == args.len() => {}
+                    _ => return Ok(None),
+                }
+                if let Some((.., t)) = self
+                    .applied
+                    .iter()
+                    .find(|(n, a, _)| **n == **name && a.as_slice() == args)
+                {
+                    return Ok(Some(t.clone()));
+                }
+                self.applying += 1;
+                let typed = self.fn_type(items, args, &mut Vec::new());
+                self.applying -= 1;
+                let typed = typed?;
+                self.applied
+                    .push((def.name.clone(), args.to_vec(), typed.clone()));
+                Ok(Some(typed))
+            }
+            Expr::List { items, .. }
+                if lookup(env, "fn").is_none()
+                    && fn_form(items).is_some_and(|(params, _)| params.len() == args.len()) =>
+            {
+                self.applying += 1;
+                let typed = self.fn_type(items, args, env);
+                self.applying -= 1;
+                typed.map(Some)
+            }
+            _ => Ok(None),
         }
     }
 
@@ -842,7 +918,7 @@ impl Checker<'_> {
                 Err(this.type_error(
                     "type_mismatch",
                     format!(
-                        "{what} cannot hold a {}; a stream is used once, where it is",
+                        "{what} cannot hold a {}; a stream or a text is used once, where it is",
                         t(i)
                     ),
                     at(i),
@@ -898,7 +974,9 @@ impl Checker<'_> {
             "vector" => {
                 let mut item = Never;
                 for i in 0..args.len() {
-                    no_stream(self, i, "a vector")?;
+                    if t(i).is_stream_or_source() {
+                        no_stream(self, i, "a vector")?;
+                    }
                     item = Type::join(&item, t(i));
                 }
                 Type::vector(if item == Never { Unknown } else { item })
@@ -930,6 +1008,9 @@ impl Checker<'_> {
             "capture" => {
                 self.expect("the tag of capture", &Keyword, t(0), at(0))?;
                 self.expect("the selector of capture", &Selector, t(1), at(1))?;
+                if args.len() == 3 {
+                    self.expect("the limit of capture", &Keyword, t(2), at(2))?;
+                }
                 CaptureSpec
             }
             "route" => {
@@ -1041,6 +1122,16 @@ impl Checker<'_> {
                 self.expect("the events of json", &JsonEvents, t(0), at(0))?;
                 Text
             }
+            "csv-table" => {
+                self.expect("the options of csv-table", &Record, t(0), at(0))?;
+                self.expect(
+                    "the table events of csv-table",
+                    &Type::table_events(),
+                    t(1),
+                    at(1),
+                )?;
+                Type::table_events()
+            }
             "records" => {
                 self.expect(
                     "the table events of records",
@@ -1106,6 +1197,8 @@ pub fn program(resolved: &Resolved, src: &str) -> Result<Checked, Fail> {
         defs: &resolved.defs,
         declared: false,
         memo: HashMap::new(),
+        applied: Vec::new(),
+        applying: 0,
     };
     let Some(export) = resolved.get("export") else {
         return Err(Fail::new(
@@ -1137,6 +1230,17 @@ pub fn program(resolved: &Resolved, src: &str) -> Result<Checked, Fail> {
             &export.span,
         ));
     }
+    // The definitions `export` reaches, typed first and each after the
+    // ones it names, so typing `export` finds them memoized and never
+    // recurses along a chain of definitions (the order is the resolver's
+    // iterative search; a chain ten thousand long would otherwise nest the
+    // checker ten thousand deep).
+    let order = resolved.dependency_order();
+    let reached: std::collections::HashSet<Arc<str>> =
+        resolved.reachable("export").into_iter().collect();
+    for name in order.iter().filter(|n| reached.contains(*n)) {
+        checker.def_type(name)?;
+    }
     let Type::Fn(_, result) = checker.fn_type(items, &[Type::JsonEvents], &mut Vec::new())? else {
         unreachable!("fn_type answers a Fn");
     };
@@ -1147,6 +1251,11 @@ pub fn program(resolved: &Resolved, src: &str) -> Result<Checked, Fail> {
         Arc::from("export"),
         Type::func(vec![Type::JsonEvents], export_type.clone()),
     );
+    for name in &order {
+        if &**name != "export" {
+            checker.def_type(name)?;
+        }
+    }
     let mut defs = IndexMap::new();
     for name in resolved.defs.keys() {
         if &**name != "export" {
@@ -1169,6 +1278,8 @@ pub fn stdlib_file(resolved: &Resolved, src: &str) -> Result<(), Fail> {
         defs: &resolved.defs,
         declared: true,
         memo: HashMap::new(),
+        applied: Vec::new(),
+        applying: 0,
     };
     for def in resolved.defs.values() {
         let Some(declared) = stdlib_signature(&def.name) else {
@@ -1364,6 +1475,135 @@ mod tests {
         // Shadowing ends the scope.
         check("def export [input] (concat (json input) (concat-map (fn [input] input) [\"a\"]))")
             .unwrap();
+    }
+
+    /// The column of the `n`th (from 1) occurrence of `needle` in the
+    /// one-line program `src`, 1-based: where a diagnostic should point.
+    fn col(src: &str, needle: &str, n: usize) -> Option<u64> {
+        let line = src.lines().find(|l| l.contains(needle))?;
+        let at = line.match_indices(needle).nth(n - 1)?.0;
+        Some(line[..at].chars().count() as u64 + 1)
+    }
+
+    #[test]
+    fn a_stream_passed_to_a_definition_is_affine_in_its_body() {
+        // Captured by a fn inside the definition: at the capture.
+        let src = "def g [s] (concat-map (fn [x] (json s)) [1])\ndef export [input] (g input)";
+        let (c, finer, row, column) = code(src);
+        assert_eq!((c, finer.as_str()), (Code::StreamReused, "captured"));
+        assert_eq!((row, column), (Some(1), col(src, "s)", 1)));
+        let src =
+            "def g [s] (join \",\" (map (fn [x] (json s)) [1 2]))\ndef export [input] (g input)";
+        assert_eq!(code(src).1, "captured");
+        // Returned inside a fn, to be applied later.
+        let src = "def mk [s] (fn [] s)\ndef export [input]\n  let [g (mk input)]\n    concat (json (g)) \"x\"";
+        let (c, finer, row, column) = code(src);
+        assert_eq!(
+            (c, finer.as_str(), row),
+            (Code::StreamReused, "captured", Some(1))
+        );
+        assert_eq!(column, col(src, "s)", 1));
+        // Used twice in the body.
+        let src = "def twice [s] (concat (json s) (json s))\ndef export [input] (twice input)";
+        let (c, finer, row, column) = code(src);
+        assert_eq!(
+            (c, finer.as_str(), row),
+            (Code::StreamReused, "reused", Some(1))
+        );
+        assert_eq!(column, col(src, "s)", 2));
+        // Held by a partial application or a record, to be used again.
+        let partial = "def mk [s] (partial json s)\ndef export [input]\n  let [g (mk input)]\n    concat (g) (g)";
+        assert_eq!(code(partial).1, "type_mismatch");
+        let record = "def mk [s] (record (entry :s s))\ndef export [input]\n  let [r (mk input)]\n    concat (json (get :s r)) (json (get :s r))";
+        assert_eq!(code(record).1, "type_mismatch");
+        // Through a chain of definitions, at the use that captures it.
+        let src = "def h [t] (concat-map (fn [x] (json t)) [1])\ndef g [s] (h s)\ndef export [input] (g input)";
+        let (c, finer, row, _) = code(src);
+        assert_eq!(
+            (c, finer.as_str(), row),
+            (Code::StreamReused, "captured", Some(1))
+        );
+        // A text passed to a definition that writes it twice.
+        let src = "def twice [t] (concat t t)\ndef export [input] (twice (json input))";
+        assert_eq!(code(src).1, "reused");
+        // A fn literal applied to the stream directly.
+        let src = "def export [input] ((fn [s] (concat (json s) (json s))) input)";
+        assert_eq!(code(src).1, "reused");
+        // Passed once, it is fine, and the call's type is the body's with
+        // the stream's type in it.
+        assert_eq!(
+            check("def g [s] s\ndef export [input] (g input)")
+                .unwrap()
+                .output,
+            Output::JsonEvents
+        );
+        assert_eq!(
+            check("def g [s] (json s)\ndef export [input] (g input)")
+                .unwrap()
+                .export,
+            Type::Text
+        );
+        // An alternative is not a second use, in a body as in export.
+        check("def g [s] (if true (json s) (json s))\ndef export [input] (g input)").unwrap();
+    }
+
+    #[test]
+    fn a_vector_may_hold_a_finite_text_and_never_a_stream() {
+        check("def export [input] (concat (join \",\" [(text \"i\")]) (json input))").unwrap();
+        check("def export [input] (concat (join \",\" (vector (text \"i\") \"j\")) (json input))")
+            .unwrap();
+        check("def export [input] (concat (join \",\" (map text [\"a\" \"b\"])) (json input))")
+            .unwrap();
+        assert_eq!(code("def export [input] (json [input])").1, "type_mismatch");
+        assert_eq!(
+            code("def export [input] (join \",\" [(select (path each-index) input)])").1,
+            "type_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (join \",\" (vector (select (path each-index) input)))").1,
+            "type_mismatch"
+        );
+        // A live text is refused where the vector is built, with its name.
+        let f =
+            crate::compile("def export [input] (join \",\" [(json input)])", "t.alc").unwrap_err();
+        assert_eq!(f.code, Code::DslTypeError);
+        assert!(f.message.contains("cannot hold a live text"), "{f}");
+        let f = crate::compile(
+            "def export [input] (join \",\" (vector (json input)))",
+            "t.alc",
+        )
+        .unwrap_err();
+        assert!(f.message.contains("cannot hold a live text"), "{f}");
+        assert_eq!(
+            crate::compile(
+                "def export [input] (concat (join \",\" [(text \"i\") \"j\"]) (json input))",
+                "t.alc"
+            )
+            .map(|p| p.output()),
+            Ok(Output::Text)
+        );
+    }
+
+    #[test]
+    fn a_chain_of_definitions_is_typed_without_nesting_the_checker() {
+        // Ten thousand definitions each naming the next: typed in
+        // dependency order, each finds the one it names already typed.
+        let mut src = String::from("def a0 1\n");
+        for i in 1..10_000 {
+            src.push_str(&format!("def a{i} a{}\n", i - 1));
+        }
+        src.push_str("def export [input] (if false (let [y a9999] (json input)) (json input))\n");
+        let checked = check(&src).unwrap();
+        assert_eq!(checked.defs["a9999"], Type::Number);
+        // A stream passed down five hundred definitions is followed to
+        // MAX_APPLIED of them and typed from there on as the body inferred,
+        // so the checker's recursion stays bounded.
+        let mut src = String::from("def f0 [s] (json s)\n");
+        for i in 1..500 {
+            src.push_str(&format!("def f{i} [s] (f{} s)\n", i - 1));
+        }
+        src.push_str("def export [input] (f499 input)\n");
+        check(&src).unwrap();
     }
 
     #[test]

@@ -228,6 +228,44 @@ pub fn resolve(
 }
 
 impl Resolved {
+    /// Every definition, each after all the definitions it refers to: the
+    /// order in which typing or evaluating them one by one never has to
+    /// reach through a definition not yet done, so no walk nests deeper
+    /// than one definition's own forms however long a chain of
+    /// definitions naming definitions is. An iterative depth-first
+    /// search; recursion was refused, so the graph has no cycle.
+    pub fn dependency_order(&self) -> Vec<Arc<str>> {
+        let mut order = Vec::with_capacity(self.defs.len());
+        let mut done: HashSet<&str> = HashSet::with_capacity(self.defs.len());
+        let mut open: HashSet<&str> = HashSet::new();
+        for start in self.defs.keys() {
+            if done.contains(&**start) {
+                continue;
+            }
+            let mut path: Vec<(&Arc<str>, usize)> = vec![(start, 0)];
+            open.insert(start);
+            while let Some((name, next)) = path.last_mut() {
+                let refs = self.references.get(*name).map(Vec::as_slice).unwrap_or(&[]);
+                match refs.get(*next) {
+                    Some(child) => {
+                        *next += 1;
+                        if !done.contains(&**child) && open.insert(child) {
+                            path.push((child, 0));
+                        }
+                    }
+                    None => {
+                        let name: &Arc<str> = name;
+                        open.remove(&**name);
+                        done.insert(name);
+                        order.push(name.clone());
+                        path.pop();
+                    }
+                }
+            }
+        }
+        order
+    }
+
     /// `recursion` at the first definition on a cycle, naming the cycle.
     fn refuse_recursion(&self, src: &str) -> Result<(), Fail> {
         #[derive(Clone, Copy, PartialEq)]

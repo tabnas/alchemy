@@ -11,10 +11,12 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use std::time::{Duration, Instant};
+
 use tabnas_alchemy::{compile, Output, Program, Renderer};
 use tabnas_render::{JsonOptions, JsonRenderer, StringOut, WriteOut};
 use tabnas_transduce::{
-    replay, Code, Fail, Limits, Metrics, OwnedJsonEvent, ParserSource, Prune, SourceMode,
+    replay, AbortFlag, Code, Fail, Limits, Metrics, OwnedJsonEvent, ParserSource, Prune, SourceMode,
 };
 
 /// The spec's worked example: aless's `tests/fixtures/records.json`,
@@ -225,9 +227,11 @@ fn invalid_trailing_input_fails_after_rows_were_exported() {
 }
 
 /// Spec 19.5: a very large selected row fails clearly under the limit
-/// that bounds it. The native transducer materializes rows under
-/// `max_record_bytes`; the library's generic `capture` is bounded by
-/// `max_capture_bytes`, which is the one it names.
+/// that bounds it, the same one both ways: the native transducer
+/// materializes rows under `max_record_bytes`, and the library's
+/// `table-from-json` captures its rows under the same limit
+/// (`capture :row ... :max_record_bytes`), so the generic
+/// `max_capture_bytes` does not decide either.
 #[test]
 fn a_very_large_selected_row_names_the_limit() {
     let big = format!(
@@ -237,24 +241,32 @@ fn a_very_large_selected_row_names_the_limit() {
     let doc = shaped(&format!("{},{big}", support::record(0)));
     let limits = Limits {
         max_record_bytes: 1024,
-        max_capture_bytes: 1024,
         ..Limits::default()
     };
-    let [native, interpreted] = both();
-    let (fail, _) = err(&native, &doc, &limits);
-    assert_eq!(fail.code, Code::ResourceLimitExceeded);
-    assert_eq!(fail.limit.as_ref().unwrap().name, "max_record_bytes");
-    assert_eq!(
-        fail.path.as_deref(),
-        Some(".response.payload.deep.records[1]")
-    );
-    let (fail, _) = err(&interpreted, &doc, &limits);
-    assert_eq!(fail.code, Code::ResourceLimitExceeded);
-    assert_eq!(fail.limit.as_ref().unwrap().name, "max_capture_bytes");
-    assert_eq!(
-        fail.path.as_deref(),
-        Some(".response.payload.deep.records[1]")
-    );
+    for program in both() {
+        let (fail, _) = err(&program, &doc, &limits);
+        assert_eq!(fail.code, Code::ResourceLimitExceeded);
+        assert_eq!(
+            fail.limit.as_ref().unwrap().name,
+            "max_record_bytes",
+            "native={}",
+            program.native()
+        );
+        assert_eq!(
+            fail.path.as_deref(),
+            Some(".response.payload.deep.records[1]")
+        );
+    }
+    // A small generic capture limit decides neither: both print the rows.
+    let capture = Limits {
+        max_capture_bytes: 64,
+        ..Limits::default()
+    };
+    for program in both() {
+        let (outcome, out) = drive(&program, RECORDS, None, &capture);
+        outcome.unwrap_or_else(|f| panic!("native={}: {f}", program.native()));
+        assert_eq!(out, EXPECTED_CSV);
+    }
 }
 
 /// A missing cell under the standard options is `MISSING_VALUE`, and a
@@ -421,4 +433,206 @@ fn sink_out_takes_the_hosts_own_text_output() {
         String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap(),
         EXPECTED_CSV
     );
+}
+
+/// Run `work` on a thread of the stack the evaluator's bound is promised,
+/// as the command and a host's run thread give it.
+fn on_stack<T: Send>(work: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(tabnas_alchemy::STACK_BYTES)
+            .spawn_scoped(scope, work)
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+}
+
+/// Definitions `a0` to `a{levels}`, each the concatenation of the one
+/// before it with itself: a text of 10 * 2^levels bytes, built of shared
+/// parts in linear time.
+fn doubling(levels: usize) -> String {
+    let mut src = String::from("def a0 \"0123456789\"\n");
+    for i in 1..=levels {
+        src.push_str(&format!("def a{i} (concat a{} a{})\n", i - 1, i - 1));
+    }
+    src
+}
+
+/// A program is code, and code can ask for too much before it reads a
+/// byte. Building the plan is bounded: its steps by `max_plan_steps`, its
+/// nesting by the evaluation depth (a function applied to itself is
+/// `recursion`, not a stack overflow), and a `concat` over shared parts
+/// knows which item is live without walking them again.
+#[test]
+fn building_the_plan_is_bounded() {
+    let d = format!("{}id{}", "(d ".repeat(40), ")".repeat(40));
+    let expo = format!(
+        "def id [x] x\ndef d [g] (fn [x] (g (g x)))\ndef export [input]\n  let [y ({d} 1)]\n    json input\n"
+    );
+    let fail = compile(&expo, "expo.alc").unwrap_err();
+    assert_eq!(fail.code, Code::ResourceLimitExceeded, "{fail}");
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_plan_steps");
+    let mut wide = String::from("def v0 [1 2 3]\n");
+    for i in 1..=40 {
+        wide.push_str(&format!("def v{i} (vector v{} v{})\n", i - 1, i - 1));
+    }
+    wide.push_str("def export [input] (concat (scalar-text csv-options v40) (json input))\n");
+    let fail = compile(&wide, "wide.alc").unwrap_err();
+    assert_eq!(fail.code, Code::ResourceLimitExceeded, "{fail}");
+    let omega = "def w [f] (f f)\ndef export [input]\n  let [x (w w)]\n    json input\n";
+    let fail = compile(omega, "omega.alc").unwrap_err();
+    assert_eq!(fail.code, Code::StreamabilityUnknown, "{fail}");
+    assert!(fail.message.starts_with("recursion: "), "{fail}");
+    assert_eq!((fail.row, fail.column), (Some(1), Some(12)));
+    let start = Instant::now();
+    let shared = doubling(40) + "def export [input] (concat a40 (json input))\n";
+    let program = compile(&shared, "shared.alc").unwrap();
+    assert!(
+        start.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        start.elapsed()
+    );
+    // Its prefix is 10 TB; the output limit ends it.
+    let limits = Limits {
+        max_output_bytes: Some(1000),
+        ..Limits::default()
+    };
+    let (fail, out) = err(&program, "1", &limits);
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_output_bytes");
+    assert!(out.len() <= 1000, "{}", out.len());
+}
+
+/// A function applied to itself per item fails with `recursion` at the
+/// item, on the run thread, rather than aborting the host.
+#[test]
+fn self_application_per_item_is_recursion_at_run_time() {
+    let src = "def w [f] (f f)\ndef export [input]\n  pipe input\n    select (path each-index)\n    map (fn [x] (w w))\n    join \",\"\n";
+    let program = compile(src, "omega.alc").unwrap();
+    let (fail, out) = on_stack(|| err(&program, "[1]", &Limits::default()));
+    assert_eq!(fail.code, Code::StreamabilityUnknown, "{fail}");
+    assert!(fail.message.starts_with("recursion: "), "{fail}");
+    assert_eq!(out, "");
+}
+
+/// The host's abort flag reaches the program's own functions: a long
+/// computation on one item stops with `ABORTED` at the next evaluation
+/// step, not when the item is done. The source is not given the flag
+/// here, so only the program can have seen it.
+#[test]
+fn the_abort_flag_stops_a_long_computation_on_one_item() {
+    let d = format!("{}id{}", "(d ".repeat(30), ")".repeat(30));
+    let src = format!(
+        "def id [x] x\ndef d [g] (fn [x] (g (g x)))\ndef export [input]\n  join \",\"\n    map (fn [x] ({d} x)) (select (path each-index) input)\n"
+    );
+    let flag = AbortFlag::new();
+    let program = compile(&src, "long.alc").unwrap().with_abort(flag.clone());
+    let (outcome, events) =
+        ParserSource::new(tabnas_json::make(), "[1,2,3]").run_owned(Vec::<OwnedJsonEvent>::new());
+    outcome.unwrap();
+    let mut sink = program
+        .sink(
+            Box::new(Shared::default()),
+            None,
+            &Limits::default(),
+            Metrics::new(),
+        )
+        .unwrap();
+    flag.abort();
+    let start = Instant::now();
+    let fail = replay(&events, &mut sink).unwrap_err();
+    assert_eq!(fail.code, Code::Aborted, "{fail}");
+    assert!(
+        start.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+/// The output limit bounds what a finite text holds, not only what is
+/// written: `replace-text` over a finite text streams through the
+/// replacer (it holds at most the literal), so the limit stops it at its
+/// first byte past; a `join` or `concat-map` item is assembled whole to
+/// write it atomically, and the assembly fails as soon as it passes the
+/// limit, before anything of it is written.
+#[test]
+fn the_output_limit_bounds_a_finite_text() {
+    let limits = Limits {
+        max_output_bytes: Some(100_000),
+        ..Limits::default()
+    };
+    let replace = doubling(25) + "def export [input] (replace-text \"0\" \"x\" a25)\n";
+    let program = compile(&replace, "replace.alc").unwrap();
+    let (fail, out) = err(&program, "1", &limits);
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_output_bytes");
+    // The writer refuses the fragment that would cross the limit, so what
+    // reached it is the text up to there.
+    assert!(fail.committed_output, "{fail}");
+    assert!(out.len() > 50_000 && out.len() <= 100_000, "{}", out.len());
+    assert!(out.starts_with("x123456789x123456789"), "{}", &out[..20]);
+    for step in ["join \",\"", "concat-map (fn [t] t)"] {
+        let src = doubling(25)
+            + &format!(
+                "def export [input] ({step} (map (fn [x] a25) (select (path each-index) input)))\n"
+            );
+        let program = compile(&src, "items.alc").unwrap();
+        let (fail, out) = err(&program, "[1,2]", &limits);
+        assert_eq!(
+            fail.limit.as_ref().unwrap().name,
+            "max_output_bytes",
+            "{step}"
+        );
+        assert_eq!(out, "", "{step}");
+    }
+}
+
+/// A `scan-emit` state is what a stage retains from item to item, so it is
+/// measured as it changes: no deeper than `max_depth` (a state that wraps
+/// itself once per item fails at the item that passes it, rather than
+/// being dropped one level inside the next on a stack that has a bottom),
+/// no larger than `max_metadata_bytes`, and reported in
+/// `retained_bytes_high`.
+#[test]
+fn a_scan_emit_state_is_measured_and_capped() {
+    let grow = "def step [s x] (transition [s x] [])\ndef fin [s] [\"done\"]\ndef export [input]\n  join \",\"\n    scan-emit null step fin (select (path each-index) input)\n";
+    let program = compile(grow, "grow.alc").unwrap();
+    let numbers = format!("[{}]", vec!["1"; 300].join(","));
+    let (fail, _) = err(&program, &numbers, &Limits::default());
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth", "{fail}");
+    assert_eq!((fail.row, fail.column), (Some(5), Some(5)));
+    // The same state under a small byte limit.
+    let small = Limits {
+        max_metadata_bytes: 256,
+        ..Limits::default()
+    };
+    let (fail, _) = err(&program, &numbers, &small);
+    assert_eq!(
+        fail.limit.as_ref().unwrap().name,
+        "max_metadata_bytes",
+        "{fail}"
+    );
+    // A state that keeps the last item is measured and reported.
+    let last = "def step [s x] (transition x [])\ndef fin [s] [\"done\"]\ndef export [input]\n  join \",\"\n    scan-emit null step fin (select (path each-index) input)\n";
+    let program = compile(last, "last.alc").unwrap();
+    let metrics = Metrics::new();
+    let buffer = Shared::default();
+    let sink = program
+        .sink(
+            Box::new(buffer.clone()),
+            None,
+            &Limits::default(),
+            metrics.clone(),
+        )
+        .unwrap();
+    let doc = format!(r#"[{{"k":"{}"}},{{"k":"b"}}]"#, "a".repeat(500));
+    let (outcome, _) = ParserSource::new(tabnas_json::make(), &doc)
+        .grammar("json")
+        .metrics(metrics.clone())
+        .run_owned(sink);
+    outcome.unwrap();
+    assert_eq!(
+        String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap(),
+        "done"
+    );
+    assert!(Metrics::get(&metrics.retained_bytes_high) >= 500);
 }

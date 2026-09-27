@@ -30,13 +30,15 @@ use crate::value::{type_error, Func, Partial, Plan, Seq, Val, MISSING};
 pub enum Arity {
     Exact(usize),
     AtLeast(usize),
+    /// From the first to the second, both included.
+    Between(usize, usize),
 }
 
 impl Arity {
     pub fn exact(self) -> Option<usize> {
         match self {
             Arity::Exact(n) => Some(n),
-            Arity::AtLeast(_) => None,
+            Arity::AtLeast(_) | Arity::Between(..) => None,
         }
     }
 
@@ -44,6 +46,7 @@ impl Arity {
         match self {
             Arity::Exact(k) => n == k,
             Arity::AtLeast(k) => n >= k,
+            Arity::Between(low, high) => (low..=high).contains(&n),
         }
     }
 }
@@ -53,6 +56,7 @@ impl std::fmt::Display for Arity {
         match self {
             Arity::Exact(n) => write!(f, "{n}"),
             Arity::AtLeast(n) => write!(f, "at least {n}"),
+            Arity::Between(low, high) => write!(f, "{low} to {high}"),
         }
     }
 }
@@ -287,8 +291,17 @@ fn get(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             )))
         }
     };
-    match &a[1] {
-        Val::Record(_) => Ok(a[1].field(key).unwrap_or_else(Val::missing)),
+    get_field(key, &a[1])
+}
+
+/// `get key data`: a record's field, `missing` for an absent one or from
+/// `missing`; `INPUT_INVALID` from other data, `type_mismatch` from what
+/// is not data. The native table binds a column record by the same rule,
+/// so a column function that answers something other than a record fails
+/// alike both ways.
+pub fn get_field(key: &str, data: &Val) -> Result<Val, Fail> {
+    match data {
+        Val::Record(_) => Ok(data.field(key).unwrap_or_else(Val::missing)),
         v if v.is_missing() => Ok(Val::missing()),
         v if is_data(v) => Err(input_invalid(format!(
             "get: {} has no member {key:?}; an object was expected",
@@ -387,7 +400,7 @@ fn vector(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     if let Some(live) = a.iter().find(|v| v.is_live()) {
         return Err(type_error(format!(
             "vector: a vector cannot hold {}; a stream is used once, where it is",
-            live.kind()
+            live.live_kind()
         )));
     }
     Ok(Val::vector(a.to_vec()))
@@ -446,13 +459,41 @@ fn compose(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     )))
 }
 
-fn capture(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+/// The `Limits` fields a capture may be bounded by, by the keyword that
+/// names each; the byte count is the host's, read when the plan is
+/// lowered ([`capture_budget`]).
+pub const CAPTURE_LIMITS: &[&str] = &[
+    "max_capture_bytes",
+    "max_metadata_bytes",
+    "max_record_bytes",
+];
+
+/// The bytes the host's `limits` give the capture limit `name`.
+pub fn capture_budget(limits: &tabnas_transduce::Limits, name: &str) -> Option<usize> {
+    match name {
+        "max_capture_bytes" => Some(limits.max_capture_bytes),
+        "max_metadata_bytes" => Some(limits.max_metadata_bytes),
+        "max_record_bytes" => Some(limits.max_record_bytes),
+        _ => None,
+    }
+}
+
+fn capture(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let tag = as_keyword("capture", "the tag", &a[0])?;
     let selector = as_selector("capture", "the selector", &a[1])?;
-    Ok(Val::CaptureSpec(Arc::new(CaptureSpec::materialize(
-        tag.clone(),
-        Selector::clone(selector),
-    ))))
+    let mut spec = CaptureSpec::materialize(tag.clone(), Selector::clone(selector));
+    if let Some(limit) = a.get(2) {
+        let limit = as_keyword("capture", "the limit", limit)?;
+        let Some(name) = CAPTURE_LIMITS.iter().find(|n| **n == &**limit) else {
+            return Err(type_error(format!(
+                "capture: the limit must be one of :{}, not :{limit}",
+                CAPTURE_LIMITS.join(", :")
+            )));
+        };
+        let bytes = capture_budget(rt.limits(), name).unwrap_or(usize::MAX);
+        spec = spec.budget(bytes, name);
+    }
+    Ok(Val::CaptureSpec(Arc::new(spec)))
 }
 
 fn route(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -594,7 +635,7 @@ fn concat(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             "reused: concat was given two live texts; the input is consumed once",
         ));
     }
-    Ok(Val::Text(Arc::new(Plan::Concat(a.to_vec()))))
+    Ok(Val::Text(Arc::new(Plan::concat(a.to_vec()))))
 }
 
 fn text(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -616,7 +657,7 @@ fn replace_text(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// The text of a scalar cell under the options' policies: what the CSV
 /// renderer writes for the same cell, so that the interpreted and the
 /// native `csv` agree byte for byte.
-fn scalar_text(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let options = &a[0];
     let cell = &a[1];
     let text: Arc<str> = match cell {
@@ -645,7 +686,7 @@ fn scalar_text(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
                 )))
             }
         },
-        Val::Vector(_) | Val::Record(_) => Arc::from(cell.to_json_text()?),
+        Val::Vector(_) | Val::Record(_) => Arc::from(rt.json_text(cell)?),
         other => {
             return Err(type_error(format!(
                 "scalar-text: a scalar was expected, not {}",
@@ -717,6 +758,14 @@ fn missing(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     constructor(MISSING)(rt, a, at)
 }
 
+fn csv_table(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("csv-table", &a[1])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::CsvTable {
+        options: a[0].clone(),
+        source,
+    })))
+}
+
 fn json(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let source = as_stream("json", &a[0])?.clone();
     Ok(Val::Text(Arc::new(Plan::Json { source })))
@@ -781,7 +830,7 @@ const fn k(
     }
 }
 
-use Arity::{AtLeast, Exact};
+use Arity::{AtLeast, Between, Exact};
 
 static NATIVES: &[Native] = &[
     // Values and records.
@@ -801,7 +850,7 @@ static NATIVES: &[Native] = &[
     f("index", Exact(1), index, "index n -> Selector", "one element"),
     f("compose", Exact(2), compose, "compose outer inner -> Selector", "inner below every location outer names"),
     // Streams.
-    f("capture", Exact(2), capture, "capture :tag selector -> CaptureSpec", "materialize each selected scope under max_capture_bytes"),
+    f("capture", Between(2, 3), capture, "capture :tag selector [:limit] -> CaptureSpec", "materialize each selected scope under max_capture_bytes, or under the Limits field the keyword names (:max_metadata_bytes, :max_record_bytes)"),
     f("route", Exact(2), route, "route captures input -> Stream<Selected>", "one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap"),
     f("select", Exact(2), select, "select selector input -> Stream<Value>", "route with one capture, delivering the values"),
     f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains the state the step returns; ready after each item; finish runs once at the validated end"),
@@ -830,6 +879,7 @@ static NATIVES: &[Native] = &[
     // Renderers and protocol adapters.
     f("json", Exact(1), json, "json events -> Text", "JsonEvents as compact JSON text, event by event, with a final newline"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
+    f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "validates what the CSV renderer takes as it passes: one schema first, of at least one column and max_columns at most, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that is the quote, a line break or NUL is refused before anything runs"),
 ];
 
 #[cfg(test)]

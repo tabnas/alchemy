@@ -23,6 +23,7 @@ use std::sync::{Arc, OnceLock};
 use indexmap::IndexMap;
 use tabnas_transduce::Fail;
 
+use crate::ast::SourceSpan;
 use crate::desugar;
 use crate::grammar::parse_file;
 use crate::resolve::{resolve, Def, NameKind, Resolved};
@@ -129,6 +130,26 @@ pub fn source(file: &str) -> Option<&'static str> {
         .iter()
         .find(|(name, _)| *name == file)
         .map(|(_, src)| *src)
+}
+
+/// The embedded file a span belongs to, as its name and its text, by
+/// identity: every span of one file shares the allocation of the file's
+/// name the reader made, and a program's spans never share it, so a
+/// program that happens to be named `stdlib/table.alc` is not mistaken
+/// for the library file.
+pub fn file_of(span: &SourceSpan) -> Option<(&'static str, &'static str)> {
+    stdlib()
+        .files
+        .iter()
+        .zip(SOURCES)
+        .find(|(resolved, _)| {
+            resolved
+                .defs
+                .values()
+                .next()
+                .is_some_and(|def| Arc::ptr_eq(&def.span.file, &span.file))
+        })
+        .map(|(_, (name, src))| (*name, *src))
 }
 
 /// What a program sees outside itself: the library's definitions and the

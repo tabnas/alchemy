@@ -4,6 +4,8 @@
 ; stream scanning; the runtime runs `table-from-json` natively when the
 ; binding is a record of two selectors and a column function, and the
 ; differential test proves that path and this text produce the same bytes.
+; The captures name the limits the native table holds the same scopes to:
+; the metadata under max_metadata_bytes, each row under max_record_bytes.
 
 def public-column [column]
   record
@@ -39,6 +41,6 @@ def table-from-json [binding input]
   pipe input
     route
       vector
-        capture :columns (get :columns binding)
-        capture :row (get :rows binding)
+        capture :columns (get :columns binding) :max_metadata_bytes
+        capture :row (get :rows binding) :max_record_bytes
     scan-emit no-schema (partial table-step binding) table-finish

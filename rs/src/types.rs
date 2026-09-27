@@ -107,6 +107,15 @@ impl Type {
         }
     }
 
+    /// Whether this is a stream or the source: what a vector can never
+    /// hold. A text is affine too, but it may be finite (the library's
+    /// `csv-row` joins the vector of texts a `map` answers), so a vector
+    /// may hold one; the runtime refuses a live one where the vector is
+    /// built, as it refuses one a `map` over a vector answers.
+    pub fn is_stream_or_source(&self) -> bool {
+        matches!(self, Type::Stream(_) | Type::JsonEvents)
+    }
+
     /// Whether this type is a stream: `Stream<T>` in any shape.
     pub fn is_stream(&self) -> bool {
         matches!(self, Type::Stream(_))

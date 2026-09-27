@@ -200,3 +200,41 @@ fn every_language_reference_example_is_a_fixture_row() {
         failures.join("\n")
     );
 }
+
+/// Every definition of the standard library appears on the reference page
+/// as it is in `stdlib/*.alc`, word for word: the page shows the library's
+/// text, not a variant of it.
+#[test]
+fn the_library_definitions_on_the_page_are_the_library_text() {
+    let doc = std::fs::read_to_string(repo_root().join("docs/language.md"))
+        .expect("docs/language.md is readable");
+    let mut shown = 0;
+    for (file, src) in tabnas_alchemy::stdlib::SOURCES {
+        // A definition runs from its `def` line to the line before the
+        // next blank line (comments stay out).
+        let mut defs: Vec<Vec<&str>> = Vec::new();
+        for line in src.lines() {
+            if line.starts_with("def ") {
+                defs.push(vec![line]);
+            } else if line.trim().is_empty() || line.starts_with(';') {
+                if let Some(last) = defs.last() {
+                    if !last.is_empty() && last.last() != Some(&"") {
+                        defs.push(Vec::new());
+                    }
+                }
+            } else if let Some(last) = defs.last_mut() {
+                last.push(line);
+            }
+        }
+        for def in defs.iter().filter(|d| !d.is_empty()) {
+            let block = format!("```alchemy\n{}\n```", def.join("\n"));
+            assert!(
+                doc.contains(&block),
+                "{file}: docs/language.md does not show {:?} as the library has it",
+                def[0]
+            );
+            shown += 1;
+        }
+    }
+    assert_eq!(shown, tabnas_alchemy::stdlib::stdlib().names().count());
+}

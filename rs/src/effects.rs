@@ -17,7 +17,7 @@
 //! information as one object, for a host's `--explain`.
 
 use serde_json::{json, Value as Json};
-use tabnas_transduce::Selector;
+use tabnas_transduce::{Duplicates, Selector};
 
 use crate::ast::Expr;
 use crate::program::{Output, Program};
@@ -126,12 +126,19 @@ pub enum RendererProfile {
 pub struct EffectSummary {
     /// The definition the host applies.
     pub entry: String,
+    /// Whether the result is a text that never reaches the input: the
+    /// source is read and validated, and nothing of it is used.
+    pub finite: bool,
     /// The calls on the data-last spine of the entry's body, innermost
     /// first: `api-table → csv`.
     pub chain: Vec<String>,
     pub passes: u8,
     pub protocol: Vec<String>,
     pub selection: String,
+    /// What happens to a member name repeated in an object of the source
+    /// (spec 18.2): rejected (or resolved by the policy) where a scope is
+    /// captured, preserved where the events are copied as they arrive.
+    pub duplicates: String,
     pub retention: Vec<Retention>,
     pub readiness: Readiness,
     pub output_order: String,
@@ -159,6 +166,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
             | Plan::Filter { source, .. }
             | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
+            | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
             | Plan::Json { source } => source,
             Plan::ConcatMap {
@@ -169,7 +177,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
                 items: Seq::Stream(source),
                 ..
             } => source,
-            Plan::Concat(items) => match items.iter().find(|v| v.is_live()) {
+            Plan::Concat { items, live } => match live.and_then(|i| items.get(i)) {
                 Some(Val::Text(inner)) | Some(Val::Stream(inner)) => inner,
                 _ => break,
             },
@@ -189,7 +197,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
 fn protocol_of(stage: &Plan) -> &'static str {
     match stage {
         Plan::Input | Plan::Records { .. } => "JsonEvents/1",
-        Plan::TableFromJson { .. } => "TableRows/1",
+        Plan::TableFromJson { .. } | Plan::CsvTable { .. } => "TableRows/1",
         Plan::Route { .. } => "Stream<Selected>",
         Plan::Select { .. } => "Stream<Value>",
         Plan::ScanEmit { .. } | Plan::Map { .. } | Plan::Filter { .. } => "Stream<Value>",
@@ -222,9 +230,36 @@ fn tabular(stages: &[&Plan], output: Output) -> bool {
     stages.iter().any(|s| {
         matches!(
             s,
-            Plan::TableFromJson { .. } | Plan::Csv { .. } | Plan::Records { .. }
+            Plan::TableFromJson { .. }
+                | Plan::CsvTable { .. }
+                | Plan::Csv { .. }
+                | Plan::Records { .. }
         )
     }) || output == Output::TableRows
+}
+
+/// The duplicate-member line: what the plan does with a member name an
+/// object of the source repeats.
+fn duplicates_of(stages: &[&Plan], policy: Duplicates, finite: bool) -> String {
+    if finite {
+        return "not examined; the input is only validated".to_string();
+    }
+    let captured = stages.iter().any(|s| {
+        matches!(
+            s,
+            Plan::Route { .. } | Plan::Select { .. } | Plan::TableFromJson { .. }
+        )
+    });
+    if captured {
+        match policy {
+            Duplicates::Reject => "rejected in captured scopes (DUPLICATE_MEMBER)",
+            Duplicates::LastWins => "the last value wins in captured scopes",
+            Duplicates::FirstWins => "the first value wins in captured scopes",
+        }
+        .to_string()
+    } else {
+        "preserved; the events are copied as they arrive, not mapped by key".to_string()
+    }
 }
 
 /// The summary of a compiled program.
@@ -234,7 +269,14 @@ pub fn summarize(program: &Program) -> EffectSummary {
         Val::Stream(p) | Val::Text(p) => Some(p),
         _ => None,
     };
-    let stages: Vec<&Plan> = plan.map(stages).unwrap_or_default();
+    // A result that never reaches the input (a string, or a text of the
+    // program's own) is written at the end; the source is only validated.
+    let finite = !plan.is_some_and(Plan::is_live);
+    let stages: Vec<&Plan> = if finite {
+        Vec::new()
+    } else {
+        plan.map(stages).unwrap_or_default()
+    };
     let chain = program
         .resolved()
         .get("export")
@@ -244,6 +286,31 @@ pub fn summarize(program: &Program) -> EffectSummary {
         })
         .unwrap_or_default();
 
+    if finite {
+        return EffectSummary {
+            entry: "export".to_string(),
+            finite,
+            chain,
+            passes: 1,
+            protocol: vec!["Text".to_string()],
+            selection: "none; the input is read and validated, and nothing of it is used"
+                .to_string(),
+            duplicates: duplicates_of(&stages, program.duplicates(), finite),
+            retention: Vec::new(),
+            readiness: Readiness::ScopeEnd,
+            output_order: "the program's own text, written once the input has validated"
+                .to_string(),
+            order_constraints: Vec::new(),
+            renderer: RendererProfile::Text,
+            external_storage: "disabled",
+            confidence: Confidence::Proven,
+            guarantee: "Memory is independent of the document's size under the configured\n  depth and scalar/key limits: nothing of the input is kept. The text\n  is the program's own, written under the output limit.".to_string(),
+            qualification: vec![
+                "The text is written only after the whole input has validated; an\n  invalid input writes nothing.".to_string(),
+            ],
+            output,
+        };
+    }
     let mut protocol: Vec<String> = vec!["JsonEvents/1".to_string()];
     for stage in stages.iter().skip(1) {
         let p = protocol_of(stage);
@@ -326,7 +393,7 @@ pub fn summarize(program: &Program) -> EffectSummary {
                         .trim_start()
                         .to_string(),
                         selector: Some(spec.selector.clone()),
-                        limit: Some("max_capture_bytes"),
+                        limit: Some(spec.budget.as_ref().map_or("max_capture_bytes", |b| b.name)),
                     });
                 }
             }
@@ -347,10 +414,9 @@ pub fn summarize(program: &Program) -> EffectSummary {
                 retention.push(Retention {
                     scope: RetentionScope::State,
                     label: "Retained state:",
-                    reason: "what the step returns; bounded by the program, not by a limit"
-                        .to_string(),
+                    reason: "what the step returns, no deeper than max_depth".to_string(),
                     selector: None,
-                    limit: None,
+                    limit: Some("max_metadata_bytes"),
                 });
                 order_constraints.push(OrderConstraint {
                     before: "each item".to_string(),
@@ -382,7 +448,7 @@ pub fn summarize(program: &Program) -> EffectSummary {
     } else if confidence == Confidence::Proven {
         "Memory is independent of the number of rows under the configured\n  depth, metadata, record, scalar/key and output limits.".to_string()
     } else {
-        "Memory is independent of the number of rows under the configured\n  depth, capture, scalar/key and output limits, provided the state the\n  step returns stays bounded; the runtime does not cap it.".to_string()
+        "Memory is independent of the number of rows under the configured\n  depth, capture, metadata, scalar/key and output limits: the state the\n  step returns is capped at max_metadata_bytes. What one step computes\n  is the program's, bounded by the host's abort flag.".to_string()
     };
     let mut qualification = Vec::new();
     if order_constraints
@@ -395,12 +461,15 @@ pub fn summarize(program: &Program) -> EffectSummary {
     qualification
         .push("A later error can occur after earlier output has been written.".to_string());
 
+    let duplicates = duplicates_of(&stages, program.duplicates(), finite);
     EffectSummary {
         entry: "export".to_string(),
+        finite,
         chain,
         passes: 1,
         protocol,
         selection,
+        duplicates,
         retention,
         readiness,
         output_order,
@@ -427,10 +496,12 @@ fn count(n: usize) -> String {
 impl EffectSummary {
     /// The report, in the layout of spec 15.5.
     pub fn text(&self) -> String {
-        let mut lines: Vec<(String, String)> = Vec::new();
-        lines.push(("Source reads:".into(), self.passes.to_string()));
-        lines.push(("Protocol:".into(), self.protocol.join(" → ")));
-        lines.push(("Selection:".into(), self.selection.clone()));
+        let mut lines: Vec<(String, String)> = vec![
+            ("Source reads:".into(), self.passes.to_string()),
+            ("Protocol:".into(), self.protocol.join(" → ")),
+            ("Selection:".into(), self.selection.clone()),
+            ("Duplicate members:".into(), self.duplicates.clone()),
+        ];
         for r in &self.retention {
             let mut value = String::new();
             if let Some(s) = &r.selector {
@@ -488,7 +559,11 @@ impl EffectSummary {
         let mut out = String::new();
         out.push_str(&self.entry);
         out.push_str(": ");
-        out.push_str(if self.chain.is_empty() { "input" } else { "" });
+        out.push_str(match (self.chain.is_empty(), self.finite) {
+            (true, true) => "a text of its own",
+            (true, false) => "input",
+            (false, _) => "",
+        });
         out.push_str(&self.chain.join(" → "));
         out.push_str("\n\n");
         for (label, value) in &lines {
@@ -518,11 +593,13 @@ impl EffectSummary {
         };
         json!({
             "entry": self.entry,
+            "finite": self.finite,
             "chain": self.chain,
             "output": self.output.as_str(),
             "passes": self.passes,
             "protocol": self.protocol,
             "selection": self.selection,
+            "duplicates": self.duplicates,
             "retention": self.retention.iter().map(|r| json!({
                 "scope": r.scope.as_str(),
                 "reason": r.reason,
@@ -538,7 +615,7 @@ impl EffectSummary {
             "external_storage": self.external_storage,
             "confidence": self.confidence.as_str(),
             "guarantee": self.guarantee.replace("\n  ", " "),
-            "qualification": self.qualification,
+            "qualification": self.qualification.iter().map(|q| q.replace("\n  ", " ")).collect::<Vec<_>>(),
         })
     }
 }
@@ -570,6 +647,7 @@ mod tests {
              Source reads:          1\n\
              Protocol:              JsonEvents/1 → TableRows/1 → Text\n\
              Selection:             shared prefix matcher, two capture routes\n\
+             Duplicate members:     rejected in captured scopes (DUPLICATE_MEMBER)\n\
              Retained metadata:     .response.metadata.fields, capped at max_metadata_bytes\n\
              Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes\n\
              Output order:          schema first; cells in schema order\n\
@@ -608,9 +686,18 @@ mod tests {
             .with_native(false)
             .unwrap();
         let s = summarize(&program);
+        // The library's `csv` validates the table events it renders
+        // (`csv-table`), so the chain passes through TableRows/1 as the
+        // native one does.
         assert_eq!(
             s.protocol,
-            ["JsonEvents/1", "Stream<Selected>", "Stream<Value>", "Text"]
+            [
+                "JsonEvents/1",
+                "Stream<Selected>",
+                "Stream<Value>",
+                "TableRows/1",
+                "Text"
+            ]
         );
         assert_eq!(s.selection, "shared prefix matcher, two capture routes");
         assert_eq!(s.confidence, Confidence::Conditional);
@@ -623,13 +710,22 @@ mod tests {
             ]
         );
         let text = s.text();
+        // The library's captures name the limits the native table holds
+        // the same scopes to, and the state is capped.
         assert!(
             text.contains(
-                "Capture:               .response.metadata.fields, capped at max_capture_bytes\n"
+                "Capture:               .response.metadata.fields, capped at max_metadata_bytes\n"
             ),
             "{text}"
         );
-        assert!(text.contains("Retained state:        what the step returns; bounded by the program, not by a limit\n"), "{text}");
+        assert!(
+            text.contains(
+                "Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("Retained state:        what the step returns, no deeper than max_depth, capped at max_metadata_bytes\n"), "{text}");
+        assert!(text.contains("Contract verification: runtime\n"), "{text}");
         assert!(
             text.contains("Ordering contract:     each item before its outputs\n"),
             "{text}"
@@ -646,6 +742,7 @@ mod tests {
              Source reads:          1\n\
              Protocol:              JsonEvents/1 → Text\n\
              Selection:             none; every event passes through\n\
+             Duplicate members:     preserved; the events are copied as they arrive, not mapped by key\n\
              Output order:          source order\n\
              Ordering contract:     none\n\
              Contract verification: static\n\
@@ -676,5 +773,76 @@ mod tests {
             "{text}"
         );
         assert_eq!(explain_json(&table)["renderer"]["host"], true);
+    }
+
+    #[test]
+    fn a_text_of_its_own_reads_the_input_only_to_validate_it() {
+        let done = compile("def export [input] \"done\"", "done.alc").unwrap();
+        assert_eq!(
+            explain(&done),
+            "export: a text of its own\n\
+             \n\
+             Source reads:          1\n\
+             Protocol:              Text\n\
+             Selection:             none; the input is read and validated, and nothing of it is used\n\
+             Duplicate members:     not examined; the input is only validated\n\
+             Output order:          the program's own text, written once the input has validated\n\
+             Ordering contract:     none\n\
+             Contract verification: static\n\
+             External storage:      disabled\n\
+             \n\
+             Guarantee:\n\
+             \x20 Memory is independent of the document's size under the configured\n\
+             \x20 depth and scalar/key limits: nothing of the input is kept. The text\n\
+             \x20 is the program's own, written under the output limit.\n\
+             \n\
+             Qualification:\n\
+             \x20 The text is written only after the whole input has validated; an\n\
+             \x20 invalid input writes nothing.\n"
+        );
+        let j = explain_json(&done);
+        assert_eq!(j["finite"], true);
+        assert_eq!(j["protocol"], json!(["Text"]));
+        assert_eq!(j["readiness"], "scope-end");
+        assert_eq!(
+            j["qualification"],
+            json!(["The text is written only after the whole input has validated; an invalid input writes nothing."])
+        );
+        // A finite text built of calls names them.
+        let built = compile(
+            "def export [input] (replace-text \"a\" \"b\" (concat \"x\" \"a\"))",
+            "built.alc",
+        )
+        .unwrap();
+        let text = explain(&built);
+        assert!(
+            text.starts_with("export: concat → replace-text\n"),
+            "{text}"
+        );
+        assert!(text.contains("Protocol:              Text\n"), "{text}");
+    }
+
+    #[test]
+    fn duplicate_members_follow_the_policy_where_scopes_are_captured() {
+        let program = compile(PROGRAM, "export.alc").unwrap();
+        assert_eq!(
+            summarize(&program).duplicates,
+            "rejected in captured scopes (DUPLICATE_MEMBER)"
+        );
+        let last = program.with_duplicates(Duplicates::LastWins).unwrap();
+        assert_eq!(
+            explain_json(&last)["duplicates"],
+            "the last value wins in captured scopes"
+        );
+        let first = program.with_duplicates(Duplicates::FirstWins).unwrap();
+        assert_eq!(
+            summarize(&first).duplicates,
+            "the first value wins in captured scopes"
+        );
+        let identity = compile("def export [input] input", "id.alc").unwrap();
+        assert_eq!(
+            summarize(&identity).duplicates,
+            "preserved; the events are copied as they arrive, not mapped by key"
+        );
     }
 }

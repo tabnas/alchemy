@@ -434,3 +434,160 @@ fn usage_errors_and_unreadable_files_exit_2() {
     assert_eq!(fail["code"], "INPUT_INVALID");
     assert_eq!(stdout(&output), "");
 }
+
+/// A program inside the nesting bound checks, runs and explains in a
+/// debug build too: the command runs on a thread of the stack the checker
+/// and the evaluator are promised, where the main thread's smaller one
+/// overflowed on a pipe of 245 steps.
+#[test]
+fn a_program_inside_the_bound_runs_in_a_debug_build() {
+    let program = format!(
+        "def export [input]\n  pipe input\n    select (path each-index)\n{}    join \",\"\n",
+        "    map (fn [x] x)\n".repeat(245)
+    );
+    let program = temp_file("pipe245.alc", &program);
+    let program = program.to_str().expect("a utf-8 path");
+    for args in [vec!["check", program], vec!["explain", program]] {
+        let output = run(&args, None);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+    let output = run(&["run", program, "-"], Some(r#"["a","b"]"#));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "a,b");
+}
+
+/// A function applied to itself is `recursion` with status 2 from `check`
+/// (which builds the plan) and from `run`, not a stack overflow that
+/// aborts the process.
+#[test]
+fn self_application_is_a_failure_not_an_abort() {
+    let omega = temp_file(
+        "omega.alc",
+        "def w [f] (f f)\ndef export [input]\n  let [x (w w)]\n    json input\n",
+    );
+    let output = run(&["check", omega.to_str().unwrap()], None);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let fail = fail_json(&output);
+    assert_eq!(fail["code"], "STREAMABILITY_UNKNOWN");
+    assert!(
+        fail["message"].as_str().unwrap().starts_with("recursion: "),
+        "{fail}"
+    );
+    let per_item = temp_file(
+        "omega-item.alc",
+        "def w [f] (f f)\ndef export [input]\n  pipe input\n    select (path each-index)\n    map (fn [x] (w w))\n    join \",\"\n",
+    );
+    let output = run(&["run", per_item.to_str().unwrap(), "-"], Some("[1]"));
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(fail_json(&output)["code"], "STREAMABILITY_UNKNOWN");
+}
+
+/// `check` builds the plan, so a `fail` on `export`'s own path is reported
+/// there, with its code (`INPUT_INVALID`, status 1) and the form's
+/// position, although no document was read.
+#[test]
+fn check_reports_a_fail_the_plan_reaches() {
+    let program = temp_file(
+        "fail.alc",
+        "def export [input] (concat \"a\" (fail \"boom\"))\n",
+    );
+    let output = run(&["check", program.to_str().unwrap()], None);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let fail = fail_json(&output);
+    assert_eq!(fail["code"], "INPUT_INVALID");
+    assert_eq!(fail["message"], "boom");
+    assert_eq!(
+        (fail["row"].as_u64(), fail["col"].as_u64()),
+        (Some(1), Some(32))
+    );
+}
+
+/// A failure inside the standard library names the library's file, row
+/// and column in its message, and gives no row or column of the user's
+/// file; a program that happens to share a library file's name is still
+/// read as its own text.
+#[test]
+fn a_library_failure_names_the_library_file() {
+    let lib = tabnas_alchemy::stdlib::source("stdlib/table.alc").unwrap();
+    let row = lib
+        .lines()
+        .position(|l| l.contains("fail \"Required metadata was not found\""))
+        .unwrap()
+        + 1;
+    let dir = std::env::temp_dir().join(format!("alchemy-cli-{}-lib", std::process::id()));
+    std::fs::create_dir_all(dir.join("stdlib")).unwrap();
+    for name in ["export.alc", "stdlib/table.alc"] {
+        let path = dir.join(name);
+        std::fs::write(&path, PROGRAM).unwrap();
+        let output = Command::new(binary())
+            .current_dir(&dir)
+            .args(["run", "--no-native", name, "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.take().unwrap().write_all(b"{}")?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{name}: {}", stderr(&output));
+        let fail = fail_json(&output);
+        assert_eq!(fail["code"], "INPUT_INVALID", "{name}");
+        assert_eq!(
+            fail["message"],
+            format!("Required metadata was not found (at stdlib/table.alc:{row}:5)"),
+            "{name}"
+        );
+        assert!(fail.get("row").is_none(), "{name}: {fail}");
+    }
+}
+
+/// A standard error that cannot be written loses the report, not the
+/// status: the failure's own status comes back, never the 101 of a panic.
+#[test]
+fn a_closed_standard_error_keeps_the_status() {
+    let bad = temp_file("closed.alc", "def export [input] (nope input)\n");
+    let mut child = Command::new(binary())
+        .args(["check", bad.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    assert_eq!(child.wait().unwrap().code(), Some(2));
+}
+
+/// `--max-output-bytes` bounds what `run` writes, and a text longer than
+/// it fails with the limit named, status 5.
+#[test]
+fn run_takes_an_output_limit() {
+    let program = temp_file("limit.alc", PROGRAM);
+    let program = program.to_str().unwrap();
+    let output = run(
+        &["run", "--max-output-bytes", "20", program, "-"],
+        Some(RECORDS),
+    );
+    assert_eq!(output.status.code(), Some(5), "{}", stderr(&output));
+    let fail = fail_json(&output);
+    assert_eq!(fail["limit"]["name"], "max_output_bytes");
+    assert!(output.stdout.len() <= 20);
+    let output = run(
+        &["run", "--max-output-bytes", "1000", program, "-"],
+        Some(RECORDS),
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), EXPECTED_CSV);
+    let output = run(
+        &["run", "--max-output-bytes", "many", program, "-"],
+        Some(RECORDS),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fail_json(&output)["code"], "INPUT_INVALID");
+}

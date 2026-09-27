@@ -3,9 +3,9 @@
 //! ```text
 //! alchemy canon FILE       print the program in canonical form
 //! alchemy format FILE      print the program in layout form
-//! alchemy check FILE       parse, desugar, resolve and check; print nothing and exit 0
+//! alchemy check FILE       parse, desugar, resolve, check and build the plan; print nothing and exit 0
 //! alchemy explain FILE     print the plan report
-//! alchemy run [--render csv|json] [--no-native] PROGRAM INPUT
+//! alchemy run [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
 //!                          run the program over the JSON document INPUT
 //! ```
 //!
@@ -17,8 +17,15 @@
 //! exit status follows the code: 2 for a program that does not read,
 //! resolve or check (`DSL_PARSE_ERROR`, `DSL_TYPE_ERROR`, `STREAM_REUSED`,
 //! `STREAMABILITY_UNKNOWN`), for a usage error and for an unreadable
-//! file; 1 for an input or protocol failure; 5 for
-//! `RESOURCE_LIMIT_EXCEEDED`; 3 for `OUTPUT_FAILED`; 6 for `ABORTED`.
+//! file; 1 for an input or protocol failure (from `check` too, when
+//! building the plan reaches a `fail`); 5 for `RESOURCE_LIMIT_EXCEEDED`;
+//! 3 for `OUTPUT_FAILED`; 6 for `ABORTED`. A standard error that cannot
+//! be written loses the report, not the status.
+//!
+//! Every command runs on a thread of [`tabnas_alchemy::STACK_BYTES`], so
+//! the checker's and the evaluator's bounds are reached before the
+//! stack's end in a debug build as in a release one. `--max-output-bytes`
+//! sets the writer's limit; the others are transduce's defaults.
 //!
 //! `run` parses `INPUT` with the tabnas JSON grammar through transduce's
 //! `ParserSource`, incrementally, pruning the parsed tree under the
@@ -33,11 +40,34 @@ use std::process::ExitCode;
 use tabnas_alchemy::{canonical, compile, format, parse_file, Renderer};
 use tabnas_transduce::{Code, Fail, Limits, Metrics, ParserSource, Prune, SourceMode};
 
-const USAGE: &str = "usage: alchemy canon|format|check|explain FILE\n       alchemy run [--render csv|json] [--no-native] PROGRAM INPUT\n       (a FILE may be - for standard input)";
+const USAGE: &str = "usage: alchemy canon|format|check|explain FILE\n       alchemy run [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT\n       (a FILE may be - for standard input)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
+    // The whole command runs on a thread of the stack the checker and the
+    // evaluator are promised, so a program within their bounds fails with
+    // a code rather than overflowing the main thread's smaller stack.
+    let worker = std::thread::Builder::new()
+        .name("alchemy".into())
+        .stack_size(tabnas_alchemy::STACK_BYTES)
+        .spawn(move || command(&args));
+    match worker {
+        Ok(thread) => thread
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        Err(error) => {
+            report(&Fail::new(
+                Code::ResourceLimitExceeded,
+                format!("no thread could be started for the command: {error}"),
+            ));
+            ExitCode::from(5)
+        }
+    }
+}
+
+/// Run one command line and answer its exit status.
+fn command(args: &[String]) -> ExitCode {
+    match run(args) {
         Ok(text) => {
             let mut out = io::stdout().lock();
             if out
@@ -50,10 +80,19 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(exit) => {
-            eprintln!("{}", exit.fail.to_json());
+            report(&exit.fail);
             ExitCode::from(exit.status)
         }
     }
+}
+
+/// The failure as one JSON object on standard error. A standard error
+/// that cannot be written (a closed pipe) loses the report, not the
+/// status: `eprintln!` would panic there and exit 101 in place of the
+/// failure's own status.
+fn report(fail: &Fail) {
+    let mut err = io::stderr().lock();
+    let _ = writeln!(err, "{}", fail.to_json()).and_then(|()| err.flush());
 }
 
 /// A failure and the status it exits with: the code's, except that a
@@ -133,7 +172,11 @@ fn run(args: &[String]) -> Result<String, Exit> {
                 program = program.with_native(false)?;
             }
             let input = read(&options.input)?;
-            execute(&program, &input, options.render)?;
+            let limits = Limits {
+                max_output_bytes: options.max_output_bytes,
+                ..Limits::default()
+            };
+            execute(&program, &input, options.render, limits)?;
             Ok(String::new())
         }
         _ => Err(usage()),
@@ -143,6 +186,7 @@ fn run(args: &[String]) -> Result<String, Exit> {
 struct RunOptions {
     render: Option<Renderer>,
     native: bool,
+    max_output_bytes: Option<u64>,
     program: String,
     input: String,
 }
@@ -151,6 +195,7 @@ impl RunOptions {
     fn parse(args: &[String]) -> Result<RunOptions, Exit> {
         let mut render = None;
         let mut native = true;
+        let mut max_output_bytes = None;
         let mut files = Vec::new();
         let mut i = 0;
         while i < args.len() {
@@ -166,6 +211,16 @@ impl RunOptions {
                 "--no-native" => {
                     native = false;
                     i += 1;
+                }
+                "--max-output-bytes" => {
+                    let n = args.get(i + 1).ok_or_else(usage)?;
+                    max_output_bytes = Some(n.parse::<u64>().map_err(|_| Exit {
+                        fail: Fail::input(format!(
+                            "--max-output-bytes takes a number of bytes, not {n:?}"
+                        )),
+                        status: 2,
+                    })?);
+                    i += 2;
                 }
                 other if other.starts_with("--") => return Err(usage()),
                 other => {
@@ -186,6 +241,7 @@ impl RunOptions {
         Ok(RunOptions {
             render,
             native,
+            max_output_bytes,
             program: program.clone(),
             input: input.clone(),
         })
@@ -197,8 +253,8 @@ fn execute(
     program: &tabnas_alchemy::Program,
     input: &str,
     render: Option<Renderer>,
+    limits: Limits,
 ) -> Result<(), Fail> {
-    let limits = Limits::default();
     let metrics = Metrics::new();
     let sink = program.sink(Box::new(io::stdout()), render, &limits, metrics.clone())?;
     let prune = match program.row_selector() {
