@@ -59,13 +59,5 @@ jobs:
           rustup toolchain install "$MSRV" --profile minimal --component rustfmt,clippy
           rustup default "$MSRV"
 
-      - uses: actions/cache@0400d5f644dc74513175e3cd8d07eb25b1fa17e1  # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            alchemy/rs/target
-          key: rust-${{ runner.os }}-${{ hashFiles('alchemy/rs/Cargo.lock') }}
-
       - name: Gate
         run: alchemy/ci/rust/run.sh
