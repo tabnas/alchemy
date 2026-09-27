@@ -46,6 +46,23 @@ fn main() -> ExitCode {
     }
 }
 
+enum Command {
+    Canon,
+    Format,
+    Check,
+}
+
+impl Command {
+    fn named(name: &str) -> Option<Command> {
+        match name {
+            "canon" => Some(Command::Canon),
+            "format" => Some(Command::Format),
+            "check" => Some(Command::Check),
+            _ => None,
+        }
+    }
+}
+
 fn read(file: &str) -> Result<String, Fail> {
     let mut text = String::new();
     let outcome = if file == "-" {
@@ -59,18 +76,21 @@ fn read(file: &str) -> Result<String, Fail> {
 
 /// The text to print for `command` over `file`, or the failure.
 fn run(command: &str, file: &str) -> Result<String, Fail> {
+    // The command is judged before the file is read, so an unknown one is
+    // the usage error whatever the file holds, and never waits on standard
+    // input to say so.
+    let command = Command::named(command).ok_or_else(|| Fail::input(USAGE))?;
     let src = read(file)?;
     let program = parse_file(&src, file)?;
     match command {
-        "canon" => {
+        Command::Canon => {
             let text = canonical(&program);
             Ok(if text.is_empty() { text } else { text + "\n" })
         }
-        "format" => Ok(format(&program)),
-        "check" => {
+        Command::Format => Ok(format(&program)),
+        Command::Check => {
             desugar::program(program, &src)?;
             Ok(String::new())
         }
-        _ => Err(Fail::input(USAGE)),
     }
 }

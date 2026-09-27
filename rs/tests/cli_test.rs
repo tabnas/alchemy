@@ -23,12 +23,17 @@ fn run(args: &[&str], stdin: Option<&str>) -> Output {
         .spawn()
         .expect("the alchemy binary starts");
     if let Some(text) = stdin {
-        child
+        // A command refused before standard input is read may have exited
+        // already, closing the pipe: that is the behaviour under test, not
+        // a failure to write.
+        if let Err(error) = child
             .stdin
             .take()
             .expect("a piped stdin")
             .write_all(text.as_bytes())
-            .expect("stdin is written");
+        {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+        }
     }
     child.wait_with_output().expect("the binary finishes")
 }
@@ -180,6 +185,16 @@ fn usage_errors_and_unreadable_files_exit_2() {
         "{}",
         stderr(&output)
     );
+
+    // An unknown command is refused before standard input is read, so
+    // what it holds does not matter: unparsable input is not a parse
+    // error here.
+    let output = run(&["bogus", "-"], Some("("));
+    assert_eq!(output.status.code(), Some(2));
+    let fail: serde_json::Value =
+        serde_json::from_str(stderr(&output).trim()).expect("one JSON object on stderr");
+    assert_eq!(fail["code"], "INPUT_INVALID");
+    assert_eq!(stdout(&output), "");
 
     let output = run(&["canon", "/nonexistent/program.alc"], None);
     assert_eq!(output.status.code(), Some(2));
