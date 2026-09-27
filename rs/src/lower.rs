@@ -668,10 +668,12 @@ impl TableSink for CellBound {
 /// table event at all, of the table protocol's shape (at most
 /// `max_columns` columns, labels by [`label_text`]), and that the stream
 /// did end with `table-end`. Each row counts in `metrics.rows`, as the
-/// native table counts its rows.
+/// native table counts its rows, unless the stage it comes from counted it
+/// already ([`counts_rows`]).
 struct TaggedToTable {
     rt: Arc<Runtime>,
     metrics: Arc<Metrics>,
+    count_rows: bool,
     table: Table,
     columns: Vec<PublicColumn>,
     cells: Vec<Cell>,
@@ -693,7 +695,9 @@ impl ItemSink for TaggedToTable {
             }
             ("row", 1) => {
                 row_cells(&self.rt, fields, &mut self.cells)?;
-                Metrics::add(&self.metrics.rows, 1);
+                if self.count_rows {
+                    Metrics::add(&self.metrics.rows, 1);
+                }
                 self.table.table_event(TableEvent::Row(&self.cells))
             }
             ("table-end", 0) => {
@@ -716,6 +720,15 @@ impl ItemSink for TaggedToTable {
     }
 }
 
+/// Whether the stages `plan` lowers to already count, in `metrics.rows`,
+/// the rows it yields: the native table counts its own, and `csv-table`
+/// those its source did not. A row is counted once, by the stage nearest
+/// its source that knows it for a row, so a table stage over one of these
+/// passes its rows on without counting them again.
+fn counts_rows(plan: &Plan) -> bool {
+    matches!(plan, Plan::TableFromJson { .. } | Plan::CsvTable { .. })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     BeforeSchema,
@@ -734,6 +747,9 @@ enum Phase {
 struct CsvTableStage {
     rt: Arc<Runtime>,
     metrics: Arc<Metrics>,
+    /// Whether this stage counts the rows in `metrics.rows`: those its
+    /// source did not count ([`counts_rows`]).
+    count_rows: bool,
     down: Items,
     phase: Phase,
     width: usize,
@@ -782,7 +798,9 @@ impl ItemSink for CsvTableStage {
                     )));
                 }
                 self.rows += 1;
-                Metrics::add(&self.metrics.rows, 1);
+                if self.count_rows {
+                    Metrics::add(&self.metrics.rows, 1);
+                }
             }
             ("table-end", 0) => match self.phase {
                 Phase::Rows => self.phase = Phase::Done,
@@ -1121,6 +1139,7 @@ impl<'a> Lowering<'a> {
                 Box::new(TaggedToTable {
                     rt: self.rt.clone(),
                     metrics: self.metrics.clone(),
+                    count_rows: !counts_rows(plan),
                     table,
                     columns: Vec::new(),
                     cells: Vec::new(),
@@ -1216,6 +1235,7 @@ impl<'a> Lowering<'a> {
                     Box::new(CsvTableStage {
                         rt: self.rt.clone(),
                         metrics: self.metrics.clone(),
+                        count_rows: !counts_rows(source),
                         down,
                         phase: Phase::BeforeSchema,
                         width: 0,

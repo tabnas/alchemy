@@ -602,6 +602,65 @@ fn the_limits_hold_alike_both_ways() {
     assert_eq!(Metrics::get(&metrics.rows), 2);
 }
 
+/// Each row counts once in `metrics.rows`, however the table stages
+/// compose: the native table counts its own rows, `csv-table` those its
+/// source did not, and the adapter to the host's renderer those neither
+/// did; natively and interpreted alike.
+#[test]
+fn each_row_counts_once_across_composed_table_stages() {
+    let tail = |t: &str| PROGRAM.replace("    csv csv-options\n", t);
+    let cases: Vec<(&str, String, Option<Renderer>)> = vec![
+        ("csv", tail("    csv csv-options\n"), None),
+        (
+            "csv-table as the result",
+            tail("    csv-table csv-options\n"),
+            None,
+        ),
+        (
+            "csv-table as the result, as json",
+            tail("    csv-table csv-options\n"),
+            Some(Renderer::Json),
+        ),
+        (
+            "csv over csv-table",
+            tail("    csv-table csv-options\n    csv csv-options\n"),
+            None,
+        ),
+        (
+            "records over csv-table",
+            tail("    csv-table csv-options\n    records\n    json\n"),
+            None,
+        ),
+        (
+            "csv-table twice",
+            tail("    csv-table csv-options\n    csv-table csv-options\n    csv csv-options\n"),
+            None,
+        ),
+        (
+            "the library csv over the native table",
+            tail("    csv opts\n\ndef opts\n  record\n    entry :delimiter \"||\"\n    entry :newline \"\\r\\n\"\n    entry :header true\n    entry :null-text \"\"\n    entry :missing :error\n"),
+            None,
+        ),
+    ];
+    let records = events(tabnas_json::make, RECORDS).unwrap();
+    for (name, src, render) in cases {
+        let program = compile(&src, "rows.alc").unwrap();
+        for native in [true, false] {
+            let program = program.with_native(native).unwrap();
+            let metrics = Metrics::new();
+            run_under(
+                &program,
+                &records,
+                render,
+                &Limits::default(),
+                metrics.clone(),
+            )
+            .unwrap_or_else(|f| panic!("{name} (native: {native}): {f}"));
+            assert_eq!(Metrics::get(&metrics.rows), 2, "{name} (native: {native})");
+        }
+    }
+}
+
 /// The two paths differ, knowingly, in one place the standard shapes
 /// never reach; pinned so a change to either is seen.
 #[test]
