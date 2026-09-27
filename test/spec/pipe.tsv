@@ -1,0 +1,45 @@
+input	expected
+# pipe: nested data-last application.
+pipe input (select (path "payload" "records" each-index)) (map normalize) (filter active?)	"(filter active? (map normalize (select (path \"payload\" \"records\" each-index) input)))"
+pipe input\n  select (path "payload" "records" each-index)\n  map normalize\n  filter active?	"(filter active? (map normalize (select (path \"payload\" \"records\" each-index) input)))"
+pipe x f g	"(g (f x))"
+pipe x	"x"
+(pipe)	"(pipe)"
+pipe x\n  f\n  (g 1)\n  h	"(h (g 1 (f x)))"
+pipe x (pipe y f)	"(f y x)"
+# def with parameters is a def of a fn.
+def csv-field [value]\n  scalar-text value	"(def csv-field (fn [value] (scalar-text value)))"
+def csv-row [values]\n  concat\n    join ","\n      map csv-field values\n    (newline)	"(def csv-row (fn [values] (concat (join \",\" (map csv-field values)) (newline))))"
+def csv [options rows]\n  concat\n    csv-row (columns options)\n    concat-map csv-row rows	"(def csv (fn [options rows] (concat (csv-row (columns options)) (concat-map csv-row rows))))"
+def table-from-json [binding input]\n  pipe input\n    route (captures binding)\n    scan-emit table-step no-schema	"(def table-from-json (fn [binding input] (scan-emit table-step no-schema (route (captures binding) input))))"
+def export [input]\n  pipe input\n    table-from-json api-binding\n    csv csv-options	"(def export (fn [input] (csv csv-options (table-from-json api-binding input))))"
+def sep ","	"(def sep \",\")"
+def api-binding\n  record\n    entry :columns\n      path "response" "metadata" "fields"\n    entry :rows\n      path "response" "payload" "deep" "records" each-index\n    entry :column column-from-meta	"(def api-binding (record (entry :columns (path \"response\" \"metadata\" \"fields\")) (entry :rows (path \"response\" \"payload\" \"deep\" \"records\" each-index)) (entry :column column-from-meta)))"
+# let, if and match keep their shape; other forms pass through.
+let [x 1] x	"(let [x 1] x)"
+if a b c	"(if a b c)"
+match v\n  case 1 "one"\n  case _ "other"	"(match v (case 1 \"one\") (case _ \"other\"))"
+match v	"(match v)"
+fn [x] (get :label x)	"(fn [x] (get :label x))"
+def f [x]\n  let [y (pipe x g)]\n    if y\n      y\n      x	"(def f (fn [x] (let [y (g x)] (if y y x))))"
+# Errors.
+pipe x ()	ERROR:empty_step
+pipe x 1	ERROR:empty_step
+pipe x "s"	ERROR:empty_step
+pipe x [f]	ERROR:empty_step
+pipe x :k	ERROR:empty_step
+pipe x\n  f\n  []	ERROR:empty_step
+(def)	ERROR:bad_def
+def x	ERROR:bad_def
+def 1 2	ERROR:bad_def
+def x y z	ERROR:bad_def
+let [x] x	ERROR:bad_let
+let [x 1]	ERROR:bad_let
+if a b	ERROR:bad_if
+if a b c d	ERROR:bad_if
+match v (when 1 2)	ERROR:bad_match
+match v (case 1)	ERROR:bad_match
+(pipe x	ERROR:unbalanced
+# A pipe nests one level per step; the bound of 256 holds after desugaring.
+pipe x f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f	"(f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f x))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))"
+pipe x f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f f	ERROR:too_deep@1:1

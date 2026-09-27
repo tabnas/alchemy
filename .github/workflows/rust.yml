@@ -1,0 +1,69 @@
+# The Rust gate: ci/rust/run.sh, with the sibling checkouts it needs.
+#
+# Runs on every branch push and on pull requests. `branches` is set
+# explicitly so a tag push does not run the gate on a ref where the path
+# filters mean nothing.
+name: Rust
+
+on:
+  push:
+    branches: [ '**' ]
+    paths:
+      - 'rs/**'
+      - 'test/spec/**'
+      - 'stdlib/**'
+      - 'docs/language.md'
+      - 'ci/rust/**'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'rs/**'
+      - 'test/spec/**'
+      - 'stdlib/**'
+      - 'docs/language.md'
+      - 'ci/rust/**'
+      - '.github/workflows/rust.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      # Checked out into a NAMED directory: rs/Cargo.toml takes the engine
+      # and the grammars as `path = "../../<sibling>/rs"`, which resolves
+      # relative to rs/, so the siblings sit beside this checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: alchemy
+
+      # A sibling is taken from the branch of the same name when it has one,
+      # else from main: cross-repository work lands on same-named branches
+      # in each repo, and a pull request here can then be gated against the
+      # sibling changes it needs before they merge.
+      - name: Check out the sibling crates
+        run: |
+          set -euo pipefail
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          SIBLINGS=$(sed -n 's/^SIBLINGS="\(.*\)"$/\1/p' alchemy/ci/rust/run.sh)
+          n=0; total=$(echo "$SIBLINGS" | wc -w)
+          for s in $SIBLINGS; do
+            n=$((n+1))
+            if git clone -q --depth 1 --branch "$BRANCH" "https://github.com/tabnas/$s" "$s" 2>/dev/null; then
+              echo "siblings: $n of $total ($((n*100/total))%) $s @ $BRANCH"
+            else
+              git clone -q --depth 1 "https://github.com/tabnas/$s" "$s"
+              echo "siblings: $n of $total ($((n*100/total))%) $s @ main"
+            fi
+          done
+
+      - name: Install the MSRV toolchain
+        run: |
+          MSRV=$(awk -F'"' '/^rust-version = /{print $2; exit}' alchemy/rs/Cargo.toml)
+          rustup toolchain install "$MSRV" --profile minimal --component rustfmt,clippy
+          rustup default "$MSRV"
+
+      - name: Gate
+        run: alchemy/ci/rust/run.sh
