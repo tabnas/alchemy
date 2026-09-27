@@ -1,0 +1,42 @@
+input	expected
+# The checker's codes, one row each: the first word of the message, as the reader's fixtures pin theirs.
+# The resolver's: an unknown name, a top-level form that is not a def, a name defined twice, a special form defined, a malformed fn, a def below the top level, a pattern that is not a constructor's.
+def export [input] (nope input)	ERROR:unknown_name@1:21
+csv 1	ERROR:not_def
+def x 1\ndef x 2\ndef export [input] input	ERROR:duplicate_def@2:1
+def if 1\ndef export [input] input	ERROR:reserved
+def f (fn x x)\ndef export [input] input	ERROR:bad_fn
+def export [input] (def y input)	ERROR:misplaced_def
+def export [input] (match input (case (map a) a))	ERROR:bad_pattern
+# Recursion is refused in strict mode, at the first definition on the cycle.
+def a [x] (b x)\ndef b [x] (a x)\ndef export [input] (a input)	ERROR:recursion@1:1
+# The checker's: argument counts, kinds, and protocols.
+def export [input] (json input 1)	ERROR:arity@1:20
+def f [a b] a\ndef export [input] (json (f input))	ERROR:arity@2:26
+def export [input] (json (text 1))	ERROR:type_mismatch@1:32
+def export [input] (if 1 (json input) (json input))	ERROR:type_mismatch@1:24
+def export [input] (json [input])	ERROR:type_mismatch@1:27
+def export [input] (1 input)	ERROR:type_mismatch@1:21
+def export [input] (csv csv-options input)	ERROR:protocol_mismatch@1:37
+def export [input] (table-from-json csv-options (json input))	ERROR:protocol_mismatch@1:49
+def export [input] (json (select (path each-index) input))	ERROR:protocol_mismatch@1:26
+def export [input] (map (fn [x] x) input)	ERROR:protocol_mismatch@1:36
+def export [input] (records input)	ERROR:protocol_mismatch@1:29
+# Streams are affine: used at most once in a scope, and never captured by a fn from the scope around it.
+def export [input] (concat (json input) (json input))	ERROR:reused@1:47
+def export [input]\n  let [s (select (path each-index) input)]\n    concat (join "," s) (join ";" s)	ERROR:reused@3:35
+def export [input]\n  concat-map (fn [x] (json input)) (select (path each-index) input)	ERROR:captured@2:28
+# Strict mode: the function of a stream operator must be a fn, a definition, a native or a partial of one.
+def go [f input] (concat-map f (select (path each-index) input))\ndef export [input] (go text input)	ERROR:dynamic@1:30
+def export [input] (scan-emit null (get :f csv-options) (fn [s] []) (select (path each-index) input))	ERROR:dynamic@1:36
+# The entry: `def export [input]`, whose result decides the output protocol.
+def x 1	ERROR:no_export
+def export 1	ERROR:type_mismatch
+def export [a b] a	ERROR:arity
+def export [input] (select (path each-index) input)	ERROR:bad_output
+def export [input] 1	ERROR:bad_output
+def export [input] (get :x csv-options)	ERROR:unknown_output
+# A program that checks prints its plan report: the worked example (spec sections 12.1 and 13.4) and the JSON echo.
+def column-from-meta [source]\n  record\n    entry :label (get "title" source)\n    entry :source\n      as-path\n        get "path" source\n\ndef api-binding\n  record\n    entry :columns\n      path "response" "metadata" "fields"\n    entry :rows\n      path "response" "payload" "deep" "records" each-index\n    entry :column column-from-meta\n\ndef api-table [input]\n  table-from-json api-binding input\n\ndef export [input]\n  pipe input\n    api-table\n    csv csv-options	"export: api-table → csv\n\nSource reads:          1\nProtocol:              JsonEvents/1 → TableRows/1 → Text\nSelection:             shared prefix matcher, two capture routes\nRetained metadata:     .response.metadata.fields, capped at max_metadata_bytes\nRow capture:           one .response.payload.deep.records[*], capped at max_record_bytes\nOutput order:          schema first; cells in schema order\nOrdering contract:     metadata completes before first row begins\nContract verification: runtime\nCSV quoting:           always\nExternal storage:      disabled\n\nGuarantee:\n  Memory is independent of the number of rows under the configured\n  depth, metadata, record, scalar/key and output limits.\n\nQualification:\n  Valid JSON that violates the metadata-first contract is rejected.\n  A later error can occur after earlier output has been written.\n"
+def export [input]\n  json input	"export: json\n\nSource reads:          1\nProtocol:              JsonEvents/1 → Text\nSelection:             none; every event passes through\nOutput order:          source order\nOrdering contract:     none\nContract verification: static\nJSON profile:          compact, one document, trailing newline\nExternal storage:      disabled\n\nGuarantee:\n  Memory is independent of the document's size under the configured\n  depth, scalar/key and output limits: nothing is retained beyond the\n  renderer's nesting stack.\n\nQualification:\n  A later error can occur after earlier output has been written.\n"
+def export [input] input	"export: input\n\nSource reads:          1\nProtocol:              JsonEvents/1 → Text\nSelection:             none; every event passes through\nOutput order:          source order\nOrdering contract:     none\nContract verification: static\nJSON profile:          compact, one document, trailing newline (the host's renderer)\nExternal storage:      disabled\n\nGuarantee:\n  Memory is independent of the document's size under the configured\n  depth, scalar/key and output limits: nothing is retained beyond the\n  renderer's nesting stack.\n\nQualification:\n  A later error can occur after earlier output has been written.\n"

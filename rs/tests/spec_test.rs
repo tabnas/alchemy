@@ -10,7 +10,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tabnas_alchemy::{canonical, desugar, format, parse, same_program};
+use tabnas_alchemy::{canonical, compile, desugar, format, parse, same_program};
 use tabnas_support::{
     is_error_expect, load_spec, load_spec_dir, parse_expect, Runner, SpecOptions, Value,
 };
@@ -26,7 +26,7 @@ fn every_fixture_has_a_runner() {
         .into_iter()
         .map(|spec| spec.file)
         .collect();
-    let expected: BTreeSet<String> = ["pipe.tsv", "reader.tsv"]
+    let expected: BTreeSet<String> = ["check.tsv", "pipe.tsv", "reader.tsv"]
         .into_iter()
         .map(str::to_string)
         .collect();
@@ -52,6 +52,18 @@ fn pipe() {
             .map_err(|fail| to_failure(&fail))
     })
     .file(spec_dir().join("pipe.tsv"));
+}
+
+/// A program that checks prints its plan report; one that does not fails
+/// with the resolver's or the checker's code, at the position it names.
+#[test]
+fn check() {
+    Runner::new(|input| {
+        compile(input, "check")
+            .map(|program| text_value(program.explain()))
+            .map_err(|fail| to_failure(&fail))
+    })
+    .file(spec_dir().join("check.tsv"));
 }
 
 /// `format` prints a program the reader reads back to the same forms,
@@ -98,9 +110,10 @@ fn format_round_trips_every_fixture_row() {
 }
 
 /// The fenced examples of `docs/language.md`, each `alchemy` block with
-/// the `canonical` or `core` block after it, are fixture rows: the input
-/// is a row of reader.tsv (canonical) or pipe.tsv (core), and the result
-/// shown is that row's expected value. A stale example fails here.
+/// the `canonical`, `core` or `check` block after it, are fixture rows:
+/// the input is a row of reader.tsv (canonical), pipe.tsv (core) or
+/// check.tsv (check: the plan report, or the error), and the result shown
+/// is that row's expected value. A stale example fails here.
 #[test]
 fn every_language_reference_example_is_a_fixture_row() {
     let doc = std::fs::read_to_string(repo_root().join("docs/language.md"))
@@ -120,6 +133,7 @@ fn every_language_reference_example_is_a_fixture_row() {
     };
     let reader = rows("reader.tsv");
     let pipe = rows("pipe.tsv");
+    let check = rows("check.tsv");
 
     // The fences, in order: (language, text).
     let mut blocks: Vec<(String, String)> = Vec::new();
@@ -148,9 +162,10 @@ fn every_language_reference_example_is_a_fixture_row() {
         let (fixture, expected) = match blocks.get(index + 1) {
             Some((kind, text)) if kind == "canonical" => (&reader, text),
             Some((kind, text)) if kind == "core" => (&pipe, text),
+            Some((kind, text)) if kind == "check" => (&check, text),
             _ => {
                 failures.push(format!(
-                    "{input:?}: an alchemy block is followed by a canonical or core block"
+                    "{input:?}: an alchemy block is followed by a canonical, core or check block"
                 ));
                 continue;
             }
@@ -170,7 +185,8 @@ fn every_language_reference_example_is_a_fixture_row() {
                 }
             }
         };
-        if shown != *expected {
+        // A report ends with a line feed; a fenced block has none.
+        if shown.trim_end_matches('\n') != *expected {
             failures.push(format!(
                 "{input:?}: the page shows {expected:?}, the fixture pins {shown:?}"
             ));

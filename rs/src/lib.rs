@@ -37,6 +37,7 @@ mod readme_examples {}
 pub mod ast;
 pub mod check;
 pub mod desugar;
+pub mod effects;
 pub mod grammar;
 pub mod interp;
 pub mod lex;

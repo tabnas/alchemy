@@ -189,6 +189,18 @@ impl Program {
         }
     }
 
+    /// The plan report of spec section 15.5: the chain of calls, the
+    /// protocols, what is retained and under which limits, the ordering
+    /// contract, the renderer, the guarantee and its qualification.
+    pub fn explain(&self) -> String {
+        crate::effects::explain(self)
+    }
+
+    /// The same report as one JSON object, for a host's `--explain`.
+    pub fn explain_json(&self) -> serde_json::Value {
+        crate::effects::explain_json(self)
+    }
+
     fn plan(&self) -> Option<&Arc<Plan>> {
         match &self.result {
             Val::Stream(p) | Val::Text(p) => Some(p),
