@@ -40,12 +40,14 @@ pub mod grammar;
 pub mod interp;
 pub mod lex;
 pub mod lower;
+pub mod program;
 pub mod resolve;
 pub mod stdlib;
 pub mod value;
 
 pub use ast::{canonical, canonical_form, format, same_program, Expr, SourceSpan, MAX_NESTING};
 pub use grammar::{alchemy, make, parse, parse_file, parse_value, UNNAMED};
+pub use program::{compile, Output, Program, Renderer};
 
 /// This crate's version, as `Cargo.toml` declares it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

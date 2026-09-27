@@ -931,9 +931,17 @@ fn bound_column(column: &Val) -> Result<BoundColumn, Fail> {
     let get = |key: &str| column.field(key).unwrap_or_else(Val::missing);
     let label = match get("label") {
         Val::Str(s) => s,
+        // The library's `csv` meets an absent label as a missing header
+        // cell under `:missing :error`; the same code here.
+        v if v.is_missing() => {
+            return Err(Fail::new(
+                Code::MissingValue,
+                "a column descriptor has no label",
+            ))
+        }
         other => {
             return Err(Fail::input(format!(
-                "a column descriptor has no string label ({})",
+                "a column descriptor's label must be a string, not {}",
                 other.kind()
             )))
         }
