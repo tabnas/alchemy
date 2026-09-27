@@ -8,16 +8,19 @@
 //!   reader's tagged tree and [`parse`] the [`Expr`] forms.
 //! - [`ast`]: [`Expr`] with [`SourceSpan`]s, the [`canonical`] and layout
 //!   [`format`] printers.
+//! - [`desugar`]: the core-form rewrites (`def` with parameters, `pipe`,
+//!   the shapes of `let`, `if` and `match`).
 //!
 //! The checker, planner and interpreter that follow read [`Expr`] from
-//! [`ast`]; they never see the tagged tree.
+//! [`ast`] after [`desugar`] has run; they never see the tagged tree.
 //!
 //! ```
-//! use tabnas_alchemy::{canonical, parse};
-//! let program = parse("def export [input]\n  pipe input\n    table-from-json api-binding\n    csv csv-options")?;
+//! use tabnas_alchemy::{canonical, desugar, parse};
+//! let src = "def export [input]\n  pipe input\n    table-from-json api-binding\n    csv csv-options";
+//! let core = desugar::program(parse(src)?, src)?;
 //! assert_eq!(
-//!     canonical(&program),
-//!     "(def export [input] (pipe input (table-from-json api-binding) (csv csv-options)))"
+//!     canonical(&core),
+//!     "(def export (fn [input] (csv csv-options (table-from-json api-binding input))))"
 //! );
 //! # Ok::<(), tabnas_transduce::Fail>(())
 //! ```
@@ -31,6 +34,7 @@
 mod readme_examples {}
 
 pub mod ast;
+pub mod desugar;
 pub mod grammar;
 pub mod lex;
 

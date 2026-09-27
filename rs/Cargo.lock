@@ -248,6 +248,7 @@ dependencies = [
  "indexmap",
  "serde_json",
  "tabnas",
+ "tabnas-csv",
  "tabnas-json",
 ]
 

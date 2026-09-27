@@ -631,6 +631,25 @@ mod tests {
         assert_eq!(code("\"\\q\""), "unexpected");
     }
 
+    /// The desugaring codes are declared here so a fixture can pin them
+    /// like the reader's, and raised in `desugar` with its own text; the
+    /// two are one message.
+    #[test]
+    fn the_desugaring_messages_match_the_document() {
+        let document = document();
+        for (code, message) in crate::desugar::MESSAGES {
+            assert_eq!(
+                document["options"]["error"][code].as_str(),
+                Some(message),
+                "options.error.{code}"
+            );
+            assert!(
+                document["options"]["hint"][code].is_string(),
+                "options.hint.{code} is declared"
+            );
+        }
+    }
+
     #[test]
     fn the_fail_carries_the_code_and_the_position() {
         let fail = parse("a\n  b\n c").expect_err("a bad dedent");
