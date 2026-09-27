@@ -266,6 +266,9 @@ mod tests {
             ("pipe x [f]", 8),
             ("pipe x :k", 8),
             ("pipe x\n  f\n  []", 3),
+            // A lone carriage return restarts the column, as the engine
+            // counts it.
+            ("pipe x\r ()", 2),
         ] {
             let fail = failure(src);
             assert_eq!(fail.code, Code::DslParseError, "{src:?}");

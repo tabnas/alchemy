@@ -32,6 +32,15 @@
 //! trailing run of blank and comment lines is left to the engine's own
 //! trivia matchers.
 //!
+//! A line ends at a line feed, alone or after a carriage return. A
+//! carriage return anywhere else is whitespace with no layout meaning,
+//! because the engine counts rows by line feeds alone (`line.row_chars`)
+//! and the position a diagnostic names has to agree with the structure the
+//! layout saw: were a lone `\r` a line end here, `a\r  b\r c` would be
+//! three layout lines whose errors all report row 1. The engine does end
+//! a `;` comment at a lone `\r` (its `line.chars`), and the delimiter scan
+//! below follows it there.
+//!
 //! Layout is suspended while the explicit-delimiter depth (`(` and `[`
 //! opened minus `)` and `]` closed, strings and comments excluded) is
 //! above zero: there, line ends and indentation are ordinary whitespace
@@ -284,6 +293,7 @@ impl LayoutState {
                     _ => {}
                 }
             } else if self.in_comment {
+                // The engine ends a line comment at either character.
                 if c == b'\n' || c == b'\r' {
                     self.in_comment = false;
                 }
@@ -347,14 +357,11 @@ pub(crate) fn decide(src: &str, si: usize, state: &mut LayoutState) -> Decision 
     }
 
     match first {
-        '\n' | '\r' => {
-            if state.depth_at(src, si) > 0 {
-                Decision::Pass
-            } else {
-                line_start(src, si, true, state)
-            }
-        }
-        ' ' | '\t' | ';' => Decision::Pass,
+        '\n' => line_end(src, si, state),
+        '\r' if rest.as_bytes().get(1) == Some(&b'\n') => line_end(src, si, state),
+        // A carriage return with no line feed after it is whitespace: the
+        // engine does not count it as a row (see the module docs).
+        ' ' | '\t' | '\r' | ';' => Decision::Pass,
         ')' | ']' => {
             state.seen = true;
             if state.depth_at(src, si) == 0 {
@@ -428,18 +435,28 @@ pub(crate) fn decide(src: &str, si: usize, state: &mut LayoutState) -> Decision 
     }
 }
 
+/// A line end at `si`: a layout decision outside delimiters, whitespace
+/// inside them.
+fn line_end(src: &str, si: usize, state: &mut LayoutState) -> Decision {
+    if state.depth_at(src, si) > 0 {
+        Decision::Pass
+    } else {
+        line_start(src, si, true, state)
+    }
+}
+
 /// The byte length of the symbol-alphabet run at the start of `text`.
 fn symbol_run(text: &str) -> usize {
     text.find(|c: char| !is_symbol_char(c))
         .unwrap_or(text.len())
 }
 
-/// One line terminator at `pos` (`\r\n`, `\n` or `\r`), or `pos` when
-/// there is none.
+/// The byte after the line terminator at `pos` (`\n`, or `\r\n`), or
+/// `pos` when there is none.
 fn after_terminator(bytes: &[u8], pos: usize) -> usize {
-    match bytes.get(pos) {
-        Some(b'\r') if bytes.get(pos + 1) == Some(&b'\n') => pos + 2,
-        Some(b'\r' | b'\n') => pos + 1,
+    match (bytes.get(pos), bytes.get(pos + 1)) {
+        (Some(b'\n'), _) => pos + 1,
+        (Some(b'\r'), Some(b'\n')) => pos + 2,
         _ => pos,
     }
 }
@@ -447,6 +464,11 @@ fn after_terminator(bytes: &[u8], pos: usize) -> usize {
 /// From a line start at `from` (just before its terminator when
 /// `after_newline`), skip blank and comment-only lines to the next content
 /// line and decide the layout token its indentation calls for.
+///
+/// The indentation of a line is its run of leading spaces, up to the first
+/// other character; a lone carriage return there is such a character, and
+/// so is whatever follows a comment on the same row, which the engine
+/// ends at a lone `\r`.
 fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutState) -> Decision {
     let bytes = src.as_bytes();
     let mut pos = if after_newline {
@@ -467,16 +489,18 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
             }
             pos += 1;
         }
+        // A comment runs to the line end and counts for nothing.
+        if bytes.get(pos) == Some(&b';') {
+            while bytes.get(pos).is_some_and(|c| *c != b'\n' && *c != b'\r') {
+                pos += 1;
+            }
+        }
         match bytes.get(pos) {
             // Only trivia to the end: the engine's own matchers eat it,
             // and `#ZZ` closes what is open.
             None => return Decision::Pass,
-            Some(b'\n' | b'\r') => pos = after_terminator(bytes, pos),
-            Some(b';') => {
-                while bytes.get(pos).is_some_and(|c| *c != b'\n' && *c != b'\r') {
-                    pos += 1;
-                }
-            }
+            Some(b'\n') => pos += 1,
+            Some(b'\r') if bytes.get(pos + 1) == Some(&b'\n') => pos += 2,
             Some(_) => {
                 if let Some(at) = tab_at {
                     return Decision::Bad {
@@ -711,6 +735,18 @@ mod tests {
             names("a\n\n  ; note\n   \n  b\n\n"),
             "#TX(a) #IN #TX(b)\n\n"
         );
+    }
+
+    #[test]
+    fn a_line_ends_at_a_line_feed_and_a_lone_carriage_return_is_whitespace() {
+        assert_eq!(names("a\r\n  b\r\nc"), "#TX(a) #IN #TX(b) #DE #TX(c)");
+        // No layout token: one line, as the engine counts it.
+        assert_eq!(names("a\r  b\r c"), "#TX(a)\r  #TX(b)\r #TX(c)");
+        assert_eq!(names("a \r b"), "#TX(a) \r #TX(b)");
+        // In leading whitespace it ends the indentation, which is what
+        // precedes it.
+        assert_eq!(names("a\n\r  b"), "#TX(a) #NL \r  #TX(b)");
+        assert_eq!(names("\r  a"), "\r  #TX(a)");
     }
 
     #[test]

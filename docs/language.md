@@ -50,6 +50,11 @@ for parentheses. The rules (design brief section 4.1, spec section 9.1):
 5. Blank lines and comment-only lines do not count, anywhere.
 6. A dedent returns to the indentation of a line above; every level
    still open at the end of the source closes.
+7. A line ends at a line feed, alone or after a carriage return. A
+   carriage return anywhere else is whitespace, which is how the engine
+   counts rows, so the row a diagnostic names is the line the layout saw.
+   (A lone carriage return does restart the engine's column, and the
+   columns this crate derives from spans restart with it.)
 
 ```alchemy
 a b c

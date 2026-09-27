@@ -35,13 +35,19 @@ impl SourceSpan {
     }
 
     /// The 1-based row and column of `start` in `src`, the column counted
-    /// in characters. A start past the end of `src` answers the position
-    /// just after its last character.
+    /// in characters, as the engine counts them: a row ends at a line
+    /// feed, and a column restarts at a line feed or at a carriage return,
+    /// whether or not a line feed follows it (the engine's line matcher
+    /// resets the column after any run of line characters). Holding to
+    /// that here keeps a position derived from a span in step with one the
+    /// engine reports, on a source with lone carriage returns included. A
+    /// start past the end of `src` answers the position just after its
+    /// last character.
     pub fn position(&self, src: &str) -> (usize, usize) {
         let start = self.start.min(src.len());
         let before = &src[..floor_boundary(src, start)];
         let row = before.matches('\n').count() + 1;
-        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+        let line_start = before.rfind(['\n', '\r']).map_or(0, |index| index + 1);
         let col = before[line_start..].chars().count() + 1;
         (row, col)
     }
@@ -388,6 +394,10 @@ mod tests {
         // `é` is two bytes and one column.
         assert_eq!(SourceSpan::new(&file, 8, 9).position(src), (2, 5));
         assert_eq!(SourceSpan::new(&file, 99, 99).position(src), (3, 1));
+        // A lone carriage return restarts the column and not the row, as
+        // the engine has it; `\r\n` is one line end.
+        assert_eq!(SourceSpan::new(&file, 3, 4).position("a\r b"), (1, 2));
+        assert_eq!(SourceSpan::new(&file, 3, 4).position("a\r\nb"), (2, 1));
     }
 
     #[test]

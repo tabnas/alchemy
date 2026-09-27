@@ -45,6 +45,11 @@ a\n  b\n    c\nd	"(a (b c))\nd"
 a\n  (b)\n  [c]	"(a (b) [c])"
 a\nb	"a\nb"
 a\r\n  b\r\nc	"(a b)\nc"
+# A line ends at a line feed, alone or after a carriage return; a carriage return anywhere else is whitespace, as the engine counts rows (and it restarts the engine's column).
+a\r  b\r c	"(a b c)"
+a \r b	"(a b)"
+a\r  b\r c)	ERROR:unbalanced@1:3
+a\r\n  b\r\n c	ERROR:bad_dedent@3:2
 # Explicit delimiters suspend layout.
 f (a\n      b\n  c) d	"(f (a b c) d)"
 def f [x]\n  concat (a x) (b x)\n    (c x)	"(def f [x] (concat (a x) (b x) (c x)))"
