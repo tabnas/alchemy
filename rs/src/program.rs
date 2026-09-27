@@ -49,6 +49,8 @@ impl Output {
 pub struct Program {
     resolved: Arc<Resolved>,
     src: Arc<str>,
+    /// What the checker decided from `export`'s type.
+    output: Output,
     native: bool,
     duplicates: Duplicates,
     /// `export` applied to the input plan under the flags above.
@@ -69,13 +71,15 @@ impl std::fmt::Debug for Program {
 pub fn compile(src: &str, file: &str) -> Result<Program, Fail> {
     let forms = desugar::program(parse_file(src, file)?, src)?;
     let resolved = Arc::new(resolve(forms, src, file, &stdlib::outer)?);
-    Program::build(resolved, src, true, Duplicates::Reject)
+    let checked = crate::check::program(&resolved, src)?;
+    Program::build(resolved, src, checked.output, true, Duplicates::Reject)
 }
 
 impl Program {
     fn build(
         resolved: Arc<Resolved>,
         src: &str,
+        output: Output,
         native: bool,
         duplicates: Duplicates,
     ) -> Result<Program, Fail> {
@@ -86,6 +90,7 @@ impl Program {
         Ok(Program {
             resolved,
             src: Arc::from(src),
+            output,
             native,
             duplicates,
             result,
@@ -96,13 +101,25 @@ impl Program {
     /// library's own definitions (`false`) or natively (`true`, the
     /// default). The differential test runs both.
     pub fn with_native(&self, native: bool) -> Result<Program, Fail> {
-        Program::build(self.resolved.clone(), &self.src, native, self.duplicates)
+        Program::build(
+            self.resolved.clone(),
+            &self.src,
+            self.output,
+            native,
+            self.duplicates,
+        )
     }
 
     /// The same program with another policy for repeated member names in
     /// captured values; the default rejects them.
     pub fn with_duplicates(&self, duplicates: Duplicates) -> Result<Program, Fail> {
-        Program::build(self.resolved.clone(), &self.src, self.native, duplicates)
+        Program::build(
+            self.resolved.clone(),
+            &self.src,
+            self.output,
+            self.native,
+            duplicates,
+        )
     }
 
     pub fn native(&self) -> bool {
@@ -123,8 +140,15 @@ impl Program {
         &self.result
     }
 
-    /// What the program produces, and so what the host renders.
+    /// What the program produces, and so what the host renders: decided
+    /// by the checker from `export`'s type.
     pub fn output(&self) -> Output {
+        self.output
+    }
+
+    /// The protocol the built plan produces; the checker's `output` agrees
+    /// with it, and a test holds the two together.
+    pub fn plan_output(&self) -> Output {
         match &self.result {
             Val::Stream(plan) => match plan.protocol() {
                 Protocol::JsonEvents => Output::JsonEvents,

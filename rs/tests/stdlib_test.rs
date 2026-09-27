@@ -119,6 +119,9 @@ fn differential(name: &str, program: &Program, events: &[OwnedJsonEvent]) -> Res
     }
 }
 
+/// A document to compare: its name, the grammar that reads it, its text.
+type Document = (String, fn() -> Tabnas, String);
+
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../transduce/rs/tests/fixtures")
 }
@@ -135,7 +138,7 @@ fn the_library_loads() {
 #[test]
 fn interpreted_and_native_agree_on_every_fixture_and_generated_document() {
     let program = compile(PROGRAM, "export.alc").expect("the spec's program compiles");
-    let mut documents: Vec<(String, fn() -> Tabnas, String)> = Vec::new();
+    let mut documents: Vec<Document> = Vec::new();
     let mut entries: Vec<PathBuf> = std::fs::read_dir(fixtures_dir())
         .expect("transduce's fixtures are beside this checkout")
         .map(|e| e.expect("a directory entry").path())

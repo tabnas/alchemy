@@ -67,9 +67,11 @@ pub fn native_kind(name: &str) -> Option<NameKind> {
     })
 }
 
-/// Parse, desugar and resolve the embedded sources. Each file resolves
-/// against the natives and the other files' definitions, so a definition
-/// may use one from another file but no file may redefine another's.
+/// Parse, desugar, resolve and check the embedded sources. Each file
+/// resolves against the natives and the other files' definitions, so a
+/// definition may use one from another file but no file may redefine
+/// another's; each definition is checked against the signature
+/// [`crate::check::stdlib_signature`] declares for it.
 pub fn load() -> Result<Stdlib, Fail> {
     // Every definition's name first, so a reference across files resolves
     // whatever the file order.
@@ -96,6 +98,7 @@ pub fn load() -> Result<Stdlib, Fail> {
             native_kind(name)
         };
         let resolved = resolve(forms, src, file, &outer)?;
+        crate::check::stdlib_file(&resolved, src)?;
         for (name, def) in &resolved.defs {
             if defs.insert(name.clone(), def.clone()).is_some() {
                 return Err(Fail::new(
