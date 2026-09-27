@@ -611,6 +611,24 @@ fn a_scan_emit_state_is_measured_and_capped() {
         "max_metadata_bytes",
         "{fail}"
     );
+    // A state that wraps itself in a partial once per item holds the
+    // one before it inside the function, not the arguments: measured link
+    // by link, it fails as the vector does.
+    let chain = "def step [s x] (transition (partial s x) [])\ndef fin [s] [\"done\"]\ndef export [input]\n  join \",\"\n    scan-emit (fn [a] a) step fin (select (path each-index) input)\n";
+    let program = compile(chain, "chain.alc").unwrap();
+    let (fail, _) = err(&program, &numbers, &Limits::default());
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth", "{fail}");
+    assert_eq!((fail.row, fail.column), (Some(5), Some(5)));
+    let strings = format!(
+        "[{}]",
+        vec![format!("\"{}\"", "a".repeat(100)); 200].join(",")
+    );
+    let (fail, _) = err(&program, &strings, &small);
+    assert_eq!(
+        fail.limit.as_ref().unwrap().name,
+        "max_metadata_bytes",
+        "{fail}"
+    );
     // A state that keeps the last item is measured and reported.
     let last = "def step [s x] (transition x [])\ndef fin [s] [\"done\"]\ndef export [input]\n  join \",\"\n    scan-emit null step fin (select (path each-index) input)\n";
     let program = compile(last, "last.alc").unwrap();

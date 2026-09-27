@@ -749,6 +749,28 @@ enum Node<'v> {
     Val(&'v Val),
     Plan(&'v Plan),
     Env(&'v Env),
+    /// The function a partial applies, when it is itself a partial.
+    Fn(&'v Func),
+}
+
+/// What a function value holds, one level below `depth`: a closure its
+/// frames; a partial its arguments and the function it applies. A partial
+/// of a partial holds the one before it, so a chain of them (a state that
+/// wraps itself once per item) is walked link by link, each one node and
+/// one level, as it is dropped.
+fn push_fn<'v>(f: &'v Func, depth: usize, pending: &mut Vec<(Node<'v>, usize)>) {
+    match f {
+        Func::Native(_) => {}
+        Func::Closure(c) => pending.push((Node::Env(&c.env), depth + 1)),
+        Func::Partial(p) => {
+            pending.extend(p.args.iter().map(|i| (Node::Val(i), depth + 1)));
+            match &p.f {
+                Func::Native(_) => {}
+                Func::Closure(c) => pending.push((Node::Env(&c.env), depth + 1)),
+                inner @ Func::Partial(_) => pending.push((Node::Fn(inner), depth + 1)),
+            }
+        }
+    }
 }
 
 impl Runtime {
@@ -795,16 +817,8 @@ impl Runtime {
                     }
                     Val::Selector(s) => s.to_string().len(),
                     Val::CaptureSpec(c) => c.tag.len() + c.selector.to_string().len(),
-                    Val::Fn(Func::Native(_)) => 0,
-                    Val::Fn(Func::Closure(c)) => {
-                        pending.push((Node::Env(&c.env), depth + 1));
-                        0
-                    }
-                    Val::Fn(Func::Partial(p)) => {
-                        pending.extend(p.args.iter().map(|i| (Node::Val(i), depth + 1)));
-                        if let Func::Closure(c) = &p.f {
-                            pending.push((Node::Env(&c.env), depth + 1));
-                        }
+                    Val::Fn(f) => {
+                        push_fn(f, depth, &mut pending);
                         0
                     }
                     Val::Stream(plan) | Val::Text(plan) => {
@@ -850,6 +864,10 @@ impl Runtime {
                     }
                     None => 0,
                 },
+                Node::Fn(f) => {
+                    push_fn(f, depth, &mut pending);
+                    0
+                }
             };
             found.bytes = found
                 .bytes
@@ -1096,6 +1114,50 @@ mod tests {
             .unwrap_err()
             .message
             .starts_with("type_mismatch: "));
+    }
+
+    /// A partial whose function is itself a partial holds the one before
+    /// it, so a chain of them (a scan-emit state that wraps itself once per
+    /// item) is measured link by link: each link one node and one level,
+    /// as it is dropped, and every link's arguments counted.
+    #[test]
+    fn a_chain_of_partials_is_measured() {
+        let rt = runtime("");
+        let arg = Val::str(&"a".repeat(100));
+        let chain = |links: usize| {
+            let mut f = Func::Native(registry::native("vector").unwrap());
+            for _ in 0..links {
+                let Val::Fn(next) = partial(f, vec![arg.clone()]) else {
+                    unreachable!()
+                };
+                f = next;
+            }
+            Val::Fn(f)
+        };
+        let bounds = |max_bytes: u64, max_depth: usize| Bounds {
+            node_bytes: 16,
+            max_bytes,
+            bytes_limit: "max_metadata_bytes",
+            max_depth,
+            what: "the state",
+        };
+        let three = rt.measure(&chain(3), bounds(u64::MAX, usize::MAX)).unwrap();
+        assert_eq!(
+            three,
+            Measure {
+                bytes: 6 * 16 + 300,
+                depth: 4
+            }
+        );
+        let long = chain(1000);
+        let fail = rt.measure(&long, bounds(1 << 30, 256)).unwrap_err();
+        assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth", "{fail}");
+        let fail = rt.measure(&long, bounds(4096, usize::MAX)).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().unwrap().name,
+            "max_metadata_bytes",
+            "{fail}"
+        );
     }
 
     #[test]
