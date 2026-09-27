@@ -10,11 +10,17 @@ on:
     branches: [ '**' ]
     paths:
       - 'rs/**'
+      - 'test/spec/**'
+      - 'stdlib/**'
+      - 'docs/language.md'
       - 'ci/rust/**'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
       - 'rs/**'
+      - 'test/spec/**'
+      - 'stdlib/**'
+      - 'docs/language.md'
       - 'ci/rust/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
