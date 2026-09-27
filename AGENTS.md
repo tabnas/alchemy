@@ -61,8 +61,7 @@ produce the same bytes.
 `p:`.** An alternate that hands control to another rule either pushes it
 (`p:`), opening a frame that keeps the pusher on the stack for its close
 phase and links parent to child, or replaces with it (`r:`), re-entering
-in the same frame, handing the parent on and linking `prev`; a
-terminal-only or closing alternate does neither. Push is for structure (a
+in the same frame, handing the parent on and linking `prev`; an alternate that only matches its tokens, or pops the frame to end the rule, does neither. Push is for structure (a
 list inside a list, a block under its line), replace for sequence (the
 next line, the next form, the next item). The iterations of a repetition
 then add no depth: rule depth follows a program's nesting, which
