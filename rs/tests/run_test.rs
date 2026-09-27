@@ -636,3 +636,78 @@ fn a_scan_emit_state_is_measured_and_capped() {
     );
     assert!(Metrics::get(&metrics.retained_bytes_high) >= 500);
 }
+
+/// The initial state is retained like any other: measured when the stage
+/// is built, so neither a step that hands the same state back nor a source
+/// with no items carries one past the limits, and the failure comes before
+/// anything is read or written.
+#[test]
+fn a_scan_emit_initial_state_is_measured_and_capped() {
+    let tail = "def fin [s] [\"done\"]\ndef export [input]\n  join \",\"\n    scan-emit init step fin (select (path each-index) input)\n";
+    let keep = "def step [s x] (transition s [])\n";
+    let big = format!("def init [\"{}\"]\n{keep}{tail}", "a".repeat(1000));
+    let program = compile(&big, "big.alc").unwrap();
+    let small = Limits {
+        max_metadata_bytes: 256,
+        ..Limits::default()
+    };
+    for input in ["[1,2,3]", "[]"] {
+        let (fail, out) = err(&program, input, &small);
+        assert_eq!(
+            fail.limit.as_ref().unwrap().name,
+            "max_metadata_bytes",
+            "{input}: {fail}"
+        );
+        assert_eq!((fail.row, fail.column), (Some(6), Some(5)), "{input}");
+        assert_eq!(out, "", "{input}");
+        assert!(!fail.committed_output, "{input}");
+    }
+    let deep = format!(
+        "def init {}1{}\n{keep}{tail}",
+        "[".repeat(10),
+        "]".repeat(10)
+    );
+    let program = compile(&deep, "deep.alc").unwrap();
+    let shallow = Limits {
+        max_depth: 8,
+        ..Limits::default()
+    };
+    for input in ["[1,2,3]", "[]"] {
+        let (fail, out) = err(&program, input, &shallow);
+        assert_eq!(
+            fail.limit.as_ref().unwrap().name,
+            "max_depth",
+            "{input}: {fail}"
+        );
+        assert_eq!(out, "", "{input}");
+    }
+    // Under the defaults it runs, and the state it retains is reported.
+    let program = compile(&big, "big.alc").unwrap();
+    for input in ["[1,2,3]", "[]"] {
+        let metrics = Metrics::new();
+        let buffer = Shared::default();
+        let sink = program
+            .sink(
+                Box::new(buffer.clone()),
+                None,
+                &Limits::default(),
+                metrics.clone(),
+            )
+            .unwrap();
+        let (outcome, _) = ParserSource::new(tabnas_json::make(), input)
+            .grammar("json")
+            .metrics(metrics.clone())
+            .run_owned(sink);
+        outcome.unwrap();
+        assert_eq!(
+            String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap(),
+            "done",
+            "{input}"
+        );
+        assert!(
+            Metrics::get(&metrics.retained_bytes_high) >= 1000,
+            "{input}: {}",
+            Metrics::get(&metrics.retained_bytes_high)
+        );
+    }
+}

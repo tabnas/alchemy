@@ -546,7 +546,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `capture` | `capture :tag selector [:limit] -> CaptureSpec` | materialize each selected scope under `max_capture_bytes`, or under the `Limits` field the keyword names (`:max_metadata_bytes`, `:max_record_bytes`), the host's value for it |
 | `route` | `route captures input -> Stream<Selected>` | one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap |
 | `select` | `select selector input -> Stream<Value>` | route with one capture, delivering the values |
-| `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains the state the step returns, measured as it changes: at most `max_metadata_bytes`, no deeper than `max_depth`, reported in `retained_bytes_high`; ready after each item; finish runs once at the validated end |
+| `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains its initial state and the state the step returns, measured when the stage is built and as the state changes: at most `max_metadata_bytes`, no deeper than `max_depth`, reported in `retained_bytes_high`; ready after each item; finish runs once at the validated end |
 | `transition` | `transition state outputs -> Transition` | one step's result: the next state and a vector of outputs |
 | `partial` | `partial f arg... -> Fn` | `f` with its first arguments supplied |
 | `map`, `filter` | `map f items`, `filter predicate items -> Vector \| Stream` | eager over a vector; per item over a stream, retaining nothing |

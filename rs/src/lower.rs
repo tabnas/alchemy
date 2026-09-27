@@ -468,7 +468,16 @@ impl ScanStage {
         at: SourceSpan,
         metrics: Arc<Metrics>,
         down: Items,
-    ) -> Self {
+    ) -> Result<Self, Fail> {
+        // The initial state is retained like any the step returns, and the
+        // step measures only a state that changed: a step that hands the
+        // same one back, or a source with no items, would never measure
+        // it, so it is measured here, before anything is read.
+        let size = rt
+            .measure(&init, state_bounds(rt.limits()))
+            .map_err(|f| rt.fail_at(f, &at))?;
+        let captured = Metrics::get(&metrics.captured_bytes);
+        Metrics::raise(&metrics.retained_bytes_high, captured + size.bytes);
         let down = Arc::new(Mutex::new(down));
         let step_rt = rt.clone();
         let step_at = at.clone();
@@ -521,10 +530,10 @@ impl ScanStage {
         });
         let out_down = down.clone();
         let out_fn: OutFn = Box::new(move |o: Val| out_down.lock().map_err(locked)?.item(o));
-        ScanStage {
+        Ok(ScanStage {
             scan: ScanEmit::new(init, step_fn, finish_fn, out_fn),
             down,
-        }
+        })
     }
 }
 
@@ -1179,7 +1188,7 @@ impl<'a> Lowering<'a> {
                     at.clone(),
                     self.metrics.clone(),
                     down,
-                )),
+                )?),
             ),
             Plan::Map { f, source, at } => self.items(
                 source,
