@@ -180,11 +180,18 @@ from the resolver, `unknown_name`, `not_def`, `duplicate_def`,
 entries for one key), `no_match` (a `match` no case took) and
 `render_of_text` (a renderer asked of a program that renders its own
 text). `STREAM_REUSED` carries `reused` or `captured`;
-`STREAMABILITY_UNKNOWN` carries `recursion`, `dynamic` or
-`unknown_output`. `test/spec/check.tsv` pins each with the position the
-checker names. Runtime failures carry the transduce and render codes
-unchanged, and a `fail "message"` in a program is `INPUT_INVALID` with
-the message and the form's position.
+`STREAMABILITY_UNKNOWN` carries `recursion` (from the resolver, a
+definition that reaches itself; from the evaluator, nesting past
+`MAX_EVAL_DEPTH`, which a function applied to itself reaches),
+`dynamic` or `unknown_output`. `test/spec/check.tsv` pins each code
+`alchemy check` can reach, with the position it names: `check` builds
+the plan, so `duplicate_key`, `no_match` and the evaluator's
+`recursion` have rows where the plan's own evaluation meets them.
+`render_of_text` needs a renderer, which `check` never takes;
+`rs/tests/run_test.rs` and `rs/src/lower.rs` pin it. Runtime failures
+carry the transduce and render codes unchanged, and a `fail "message"`
+in a program is `INPUT_INVALID` with the message and the form's
+position, from `check` too when the plan's evaluation reaches it.
 
 ## Untrusted input
 
@@ -196,17 +203,37 @@ no I/O from a program. A function a program obtains from data (a record
 field) can be applied to values, but strict mode refuses it where a
 stream operator would run it per item.
 
-What bounds a program today is its nesting: at most `MAX_NESTING` (256)
+What bounds a program's text is its nesting: at most `MAX_NESTING` (256)
 levels, counting a layout line, each indentation level and each open
 delimiter as one, refused by the reader as `too_deep` before anything is
 built, and held after desugaring, where a `pipe` nests a level per step.
 The bound is what lets the printers, the desugarer and `Drop` recurse per
 level; without it a two-kilobyte program of nested parentheses aborted
 the process with a stack overflow. The syntax tree is otherwise bounded
-by the source's size. At run time every transduce limit applies as the
+by the source's size. The checker types definitions in dependency order,
+so a chain of definitions each naming the next does not nest it, and
+follows a stream into the bodies it is passed to at most `MAX_APPLIED`
+(32) definitions deep.
+
+A program is code, and it runs twice: `compile` evaluates everything a
+stream does not defer to build the plan, and the run evaluates the
+per-item functions. Both are bounded: evaluation nests at most
+`MAX_EVAL_DEPTH` (1,000) levels (`recursion` past it: a function applied
+to itself, or definitions, calls and values chained that deep), and
+building the plan takes at most `MAX_PLAN_STEPS` (1,000,000) evaluation
+steps (`RESOURCE_LIMIT_EXCEEDED` naming `max_plan_steps`; a program of
+forty nested doublings asks for 2^40). Those bounds are only reached
+before the stack's end on a thread of `STACK_BYTES` (64 MiB): `compile`
+makes one, the `alchemy` command runs on one, and a host that pushes
+events into a sink must run it on one. The work of one item is bounded
+by the host's abort flag (`Program::with_abort`), read every few
+evaluation steps. At run time every transduce limit applies as the
 stage that holds the data names it (`max_capture_bytes` for a program's
-`capture`, `max_record_bytes` and `max_metadata_bytes` for the native
-table, `max_depth`, `max_scalar_bytes` and `max_key_bytes` at the
-source), and the writer enforces `max_output_bytes`; a pure program can
-still ask for very large output and a `scan-emit` state is the program's
-to bound, so hosts set `max_output_bytes` and a timeout.
+`capture` or the limit its third argument names, `max_record_bytes`,
+`max_metadata_bytes` and `max_columns` for both tables,
+`max_metadata_bytes` and `max_depth` for a `scan-emit` state,
+`max_scalar_bytes` for a cell's JSON text, `max_depth`,
+`max_scalar_bytes` and `max_key_bytes` at the source), and the writer
+enforces `max_output_bytes`, which also bounds a finite text and one
+item's text as they are built. Hosts that run programs they did not
+write set `max_output_bytes` and a timeout.

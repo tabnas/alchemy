@@ -28,7 +28,12 @@ output is written through a coalescing writer and flushed at `End`.
 `Program::output` says what the program produces (its own text, table
 rows the host renders as CSV or JSON, or JSON events), `row_selector`
 under which selector the source may be read one row at a time, and
-`explain` prints the plan report.
+`explain` prints the plan report. `compile` builds the plan as well as
+checking the program, under `MAX_PLAN_STEPS` and `MAX_EVAL_DEPTH`, on a
+thread of `STACK_BYTES`; a host running programs it did not write gives
+the sink a thread of that size, passes its abort flag to
+`Program::with_abort`, and sets `max_output_bytes` (see Embedding in
+[`docs/language.md`](../docs/language.md)).
 
 The engine, the two crates the language lowers to, the fixture runner and
 the test grammars are sibling checkouts named by path in `Cargo.toml`. From
