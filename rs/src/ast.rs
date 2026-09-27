@@ -9,12 +9,38 @@
 //! the 1-based row and column a diagnostic prints are derived from the
 //! source when needed rather than stored, so a span costs two words and a
 //! shared name.
+//!
+//! Every `Expr` this crate builds nests at most [`MAX_NESTING`] levels:
+//! the reader refuses a deeper program before building anything,
+//! [`Expr::from_value`] refuses a deeper tagged tree without recursing
+//! over it, and the desugarer refuses a rewrite that would nest deeper.
+//! That bound is what lets the printers, the desugarer and `Drop` recurse
+//! per level, and this module's recursive functions rely on it.
 
 use std::fmt;
 use std::sync::Arc;
 
 use tabnas::Value;
 use tabnas_transduce::{Code, Fail};
+
+/// The most levels a form may nest: a list or vector inside a list or
+/// vector, this many times over.
+///
+/// The reader counts a layout line, each indentation level and each open
+/// `(` or `[` as one and refuses the opener or the line that would pass
+/// the bound with `too_deep`; the desugarer counts what its rewrites add
+/// (a `pipe` nests one level per step) and refuses the same way. Without
+/// a bound, a two-kilobyte program of nested parentheses took the process
+/// down with a stack overflow in the recursive stages after the parse,
+/// instead of failing as a `DSL_PARSE_ERROR`. 256 is the depth
+/// `tabnas_transduce::Limits` gives documents, and far past any program
+/// written by hand.
+pub const MAX_NESTING: usize = 256;
+
+/// The message of a `too_deep` failure, one text for the grammar document,
+/// this module and the desugarer; a test in [`crate::grammar`] holds it to
+/// [`MAX_NESTING`].
+pub(crate) const TOO_DEEP: &str = "nesting deeper than 256 levels";
 
 /// Where a form came from: `file`, and the byte range `start..end` of its
 /// source text.
@@ -114,64 +140,151 @@ fn offset(value: &Value) -> Result<usize, Fail> {
     }
 }
 
+/// One node of the tagged tree, read before its items are: an atom is a
+/// finished form, a container still has its items to build.
+enum Node<'v> {
+    Atom(Expr),
+    Container {
+        list: bool,
+        span: SourceSpan,
+        items: &'v [Value],
+    },
+}
+
+/// A container whose items are being built, on [`Expr::from_value`]'s own
+/// stack rather than the call stack.
+struct Frame<'v> {
+    list: bool,
+    span: SourceSpan,
+    items: std::slice::Iter<'v, Value>,
+    built: Vec<Expr>,
+}
+
+impl Frame<'_> {
+    fn finish(self) -> Expr {
+        if self.list {
+            Expr::List {
+                items: self.built,
+                span: self.span,
+            }
+        } else {
+            Expr::Vector {
+                items: self.built,
+                span: self.span,
+            }
+        }
+    }
+}
+
+fn read_node<'v>(value: &'v Value, file: &Arc<str>) -> Result<Node<'v>, Fail> {
+    let Value::Object(fields) = value else {
+        return Err(malformed(format!("a node that is not an object: {value}")));
+    };
+    let span = match field(fields, "span")? {
+        Value::Array(pair) if pair.len() == 2 => {
+            SourceSpan::new(file, offset(&pair[0])?, offset(&pair[1])?)
+        }
+        other => return Err(malformed(format!("a span that is not a pair: {other}"))),
+    };
+    let tag = text(fields, "$")?;
+    Ok(match tag.as_str() {
+        "sym" => Node::Atom(Expr::Symbol {
+            name: text(fields, "name")?,
+            span,
+        }),
+        "kw" => Node::Atom(Expr::Keyword {
+            name: text(fields, "name")?,
+            span,
+        }),
+        "str" => Node::Atom(Expr::Str {
+            value: text(fields, "value")?,
+            span,
+        }),
+        "num" => Node::Atom(Expr::Num {
+            lexeme: text(fields, "lexeme")?,
+            span,
+        }),
+        "bool" => match field(fields, "value")? {
+            Value::Bool(value) => Node::Atom(Expr::Bool {
+                value: *value,
+                span,
+            }),
+            other => return Err(malformed(format!("a bool that is not a bool: {other}"))),
+        },
+        "null" => Node::Atom(Expr::Null { span }),
+        "list" | "vector" => match field(fields, "items")? {
+            Value::Array(items) => Node::Container {
+                list: tag == "list",
+                span,
+                items: items.as_slice(),
+            },
+            other => return Err(malformed(format!("items that are not an array: {other}"))),
+        },
+        other => return Err(malformed(format!("an unknown tag {other:?}"))),
+    })
+}
+
+fn too_deep(span: &SourceSpan) -> Fail {
+    Fail::new(
+        Code::DslParseError,
+        format!("too_deep: {TOO_DEEP} (at {span})"),
+    )
+}
+
 impl Expr {
     /// Build a form from one node of the reader's tagged tree (see
     /// [`crate::grammar`] for the shape). A tree the reader did not build
     /// may be malformed; that is a `DSL_PARSE_ERROR`, never a panic.
+    ///
+    /// Iterative, over an explicit stack of open containers: the reader
+    /// bounds the depth of its own tree, but a grammar layered on it could
+    /// hand over a deeper one, and the conversion must refuse it as
+    /// `too_deep` (past [`MAX_NESTING`] open containers) rather than
+    /// recurse into it.
     pub fn from_value(value: &Value, file: &Arc<str>) -> Result<Expr, Fail> {
-        let Value::Object(fields) = value else {
-            return Err(malformed(format!("a node that is not an object: {value}")));
-        };
-        let span = match field(fields, "span")? {
-            Value::Array(pair) if pair.len() == 2 => {
-                SourceSpan::new(file, offset(&pair[0])?, offset(&pair[1])?)
-            }
-            other => return Err(malformed(format!("a span that is not a pair: {other}"))),
-        };
-        let tag = text(fields, "$")?;
-        Ok(match tag.as_str() {
-            "sym" => Expr::Symbol {
-                name: text(fields, "name")?,
-                span,
-            },
-            "kw" => Expr::Keyword {
-                name: text(fields, "name")?,
-                span,
-            },
-            "str" => Expr::Str {
-                value: text(fields, "value")?,
-                span,
-            },
-            "num" => Expr::Num {
-                lexeme: text(fields, "lexeme")?,
-                span,
-            },
-            "bool" => match field(fields, "value")? {
-                Value::Bool(value) => Expr::Bool {
-                    value: *value,
-                    span,
-                },
-                other => return Err(malformed(format!("a bool that is not a bool: {other}"))),
-            },
-            "null" => Expr::Null { span },
-            "list" | "vector" => {
-                let items = match field(fields, "items")? {
-                    Value::Array(items) => items
-                        .iter()
-                        .map(|item| Expr::from_value(item, file))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    other => {
-                        return Err(malformed(format!("items that are not an array: {other}")))
+        let mut stack: Vec<Frame<'_>> = Vec::new();
+        let mut pending = value;
+        loop {
+            let mut built = match read_node(pending, file)? {
+                Node::Atom(expr) => expr,
+                Node::Container { list, span, items } => {
+                    if stack.len() >= MAX_NESTING {
+                        return Err(too_deep(&span));
                     }
+                    let mut frame = Frame {
+                        list,
+                        span,
+                        items: items.iter(),
+                        built: Vec::with_capacity(items.len()),
+                    };
+                    match frame.items.next() {
+                        Some(first) => {
+                            stack.push(frame);
+                            pending = first;
+                            continue;
+                        }
+                        None => frame.finish(),
+                    }
+                }
+            };
+            // A finished form belongs to the innermost open container,
+            // whose next item is built next; a container out of items is
+            // finished in turn, up to the root.
+            loop {
+                let Some(mut frame) = stack.pop() else {
+                    return Ok(built);
                 };
-                if tag == "list" {
-                    Expr::List { items, span }
-                } else {
-                    Expr::Vector { items, span }
+                frame.built.push(built);
+                match frame.items.next() {
+                    Some(item) => {
+                        pending = item;
+                        stack.push(frame);
+                        break;
+                    }
+                    None => built = frame.finish(),
                 }
             }
-            other => return Err(malformed(format!("an unknown tag {other:?}"))),
-        })
+        }
     }
 
     /// Build a whole program from the reader's array of top-level nodes.
@@ -241,6 +354,9 @@ pub fn same_program(a: &[Expr], b: &[Expr]) -> bool {
 
 /// One form, fully parenthesized on one line: strings as JSON literals,
 /// numbers by lexeme, vectors in brackets, keywords with their colon.
+///
+/// Recursive per level, which [`MAX_NESTING`] bounds for every form this
+/// crate builds.
 pub fn canonical_form(expr: &Expr) -> String {
     let mut out = String::new();
     write_canonical(expr, &mut out);
@@ -317,6 +433,12 @@ pub fn canonical(program: &[Expr]) -> String {
 /// on one line and each remaining item on its own line two spaces deeper,
 /// so `(join "," (map f xs))` is `join ","` over a child `map f xs`.
 /// Top-level forms are separated by a blank line.
+///
+/// The reader counts a layout line as a level whether or not it makes a
+/// list, so its count of a printed form can exceed the form's depth by
+/// one: a program that reads exactly at [`MAX_NESTING`] may print, in this
+/// form or the canonical one, to a text the reader refuses as `too_deep`.
+/// Below the bound both forms read back exactly.
 ///
 /// ```
 /// use tabnas_alchemy::{format, parse};
@@ -428,6 +550,53 @@ mod tests {
             format(&program),
             "concat prefix\n  (newline)\n  suffix\n\n((f x) y)\n\na\n  b c\n  d\n"
         );
+    }
+
+    /// The tagged tree for `x` nested in `depth` lists, as a layered
+    /// grammar could hand over without the reader's own bound.
+    fn nested_tree(depth: usize) -> Value {
+        fn node(tag: &str, fields: Vec<(&str, Value)>) -> Value {
+            let mut object = indexmap::IndexMap::new();
+            object.insert("$".to_string(), Value::String(tag.into()));
+            for (name, value) in fields {
+                object.insert(name.to_string(), value);
+            }
+            object.insert(
+                "span".to_string(),
+                Value::array(vec![Value::Number(0.0), Value::Number(1.0)]),
+            );
+            Value::object(object)
+        }
+        let mut tree = node("sym", vec![("name", Value::String("x".into()))]);
+        for _ in 0..depth {
+            tree = node("list", vec![("items", Value::array(vec![tree]))]);
+        }
+        tree
+    }
+
+    #[test]
+    fn a_tagged_tree_at_the_bound_converts_and_one_past_it_is_too_deep() {
+        let file = Arc::from("t");
+        let at_limit = Expr::from_value(&nested_tree(MAX_NESTING), &file).expect("converts");
+        assert_eq!(
+            canonical_form(&at_limit),
+            format!("{}x{}", "(".repeat(MAX_NESTING), ")".repeat(MAX_NESTING))
+        );
+        let fail = Expr::from_value(&nested_tree(MAX_NESTING + 1), &file).expect_err("too deep");
+        assert_eq!(fail.code, Code::DslParseError);
+        assert!(fail.message.starts_with("too_deep: "), "{}", fail.message);
+    }
+
+    #[test]
+    fn a_far_deeper_tagged_tree_is_refused_without_recursing_into_it() {
+        // Converting recursively overflowed a test thread's stack from a
+        // few hundred levels; the explicit stack stops at the bound
+        // instead. (Deeper still and the engine's own `Value` drop, which
+        // is recursive, would be what overflows: a tree this deep never
+        // comes from the reader.)
+        let file = Arc::from("t");
+        let fail = Expr::from_value(&nested_tree(1_000), &file).expect_err("too deep");
+        assert!(fail.message.starts_with("too_deep: "), "{}", fail.message);
     }
 
     #[test]

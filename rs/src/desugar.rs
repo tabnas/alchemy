@@ -19,18 +19,26 @@
 //! from, so a diagnostic about a `fn` the user never wrote points at the
 //! `def` they did. Failures are `DSL_PARSE_ERROR`s whose message begins
 //! with the code the grammar document declares (`empty_step`, `bad_def`,
-//! `bad_let`, `bad_if`, `bad_match`), the same convention the reader's own
-//! failures follow, and they carry the row and column of the offending
-//! form. The source is passed in for that: a span holds byte offsets, and
-//! [`tabnas_transduce::Fail`] names positions.
+//! `bad_let`, `bad_if`, `bad_match`, `too_deep`), the same convention the
+//! reader's own failures follow, and they carry the row and column of the
+//! offending form. The source is passed in for that: a span holds byte
+//! offsets, and [`tabnas_transduce::Fail`] names positions.
+//!
+//! A rewrite can nest deeper than what it read: `def` wraps a body in a
+//! `fn`, and `pipe` nests the threaded value one level per step, so a flat
+//! line of a hundred thousand steps would become a tree that deep. The
+//! depth of every result is therefore carried alongside it and checked
+//! against [`MAX_NESTING`] as each container is built, so the bound the
+//! reader holds still holds after desugaring, and a `pipe` fails at the
+//! step that passes it rather than after building the whole chain.
 
 use tabnas_transduce::{Code, Fail};
 
-use crate::ast::{Expr, SourceSpan};
+use crate::ast::{Expr, SourceSpan, MAX_NESTING, TOO_DEEP};
 
 /// The messages, by code, as the grammar document also declares them; a
 /// test in [`crate::grammar`] holds the two in step.
-pub(crate) const MESSAGES: [(&str, &str); 5] = [
+pub(crate) const MESSAGES: [(&str, &str); 6] = [
     (
         "empty_step",
         "a pipe step must be a symbol or a non-empty list",
@@ -45,6 +53,7 @@ pub(crate) const MESSAGES: [(&str, &str); 5] = [
         "bad_match",
         "match takes a value and (case pattern body) clauses",
     ),
+    ("too_deep", TOO_DEEP),
 ];
 
 fn message(code: &str) -> &'static str {
@@ -67,125 +76,185 @@ pub fn program(forms: Vec<Expr>, src: &str) -> Result<Vec<Expr>, Fail> {
 
 /// Desugar one form, innermost first, so a rewrite sees core items.
 pub fn expr(form: Expr, src: &str) -> Result<Expr, Fail> {
+    deep(form, src).map(|form| form.expr)
+}
+
+/// A desugared form with its nesting: 0 for an atom, one more than its
+/// deepest item for a list or vector. Carried so a rewrite that nests
+/// deeper than what it read can refuse at the moment it would pass
+/// [`MAX_NESTING`], before a tree the printers and `Drop` would recurse
+/// over exists.
+struct Deep {
+    expr: Expr,
+    depth: usize,
+}
+
+fn deep(form: Expr, src: &str) -> Result<Deep, Fail> {
     match form {
-        Expr::List { items, span } => {
-            let items = items
-                .into_iter()
-                .map(|item| expr(item, src))
-                .collect::<Result<Vec<_>, _>>()?;
-            rewrite(items, span, src)
-        }
-        Expr::Vector { items, span } => Ok(Expr::Vector {
-            items: items
-                .into_iter()
-                .map(|item| expr(item, src))
-                .collect::<Result<Vec<_>, _>>()?,
-            span,
+        Expr::List { items, span } => rewrite(each(items, src)?, span, src),
+        Expr::Vector { items, span } => container(each(items, src)?, span, src, |items, span| {
+            Expr::Vector { items, span }
         }),
-        atom => Ok(atom),
+        atom => Ok(Deep {
+            expr: atom,
+            depth: 0,
+        }),
     }
 }
 
-fn rewrite(items: Vec<Expr>, span: SourceSpan, src: &str) -> Result<Expr, Fail> {
-    match items.first().and_then(Expr::symbol) {
+fn each(items: Vec<Expr>, src: &str) -> Result<Vec<Deep>, Fail> {
+    items.into_iter().map(|item| deep(item, src)).collect()
+}
+
+/// `deep` when it is within the bound, `too_deep` at `span` otherwise.
+fn bounded(deep: Deep, span: &SourceSpan, src: &str) -> Result<Deep, Fail> {
+    if deep.depth > MAX_NESTING {
+        Err(fail("too_deep", span, src))
+    } else {
+        Ok(deep)
+    }
+}
+
+/// A list or vector over `items`, one level deeper than its deepest item.
+fn container(
+    items: Vec<Deep>,
+    span: SourceSpan,
+    src: &str,
+    make: impl FnOnce(Vec<Expr>, SourceSpan) -> Expr,
+) -> Result<Deep, Fail> {
+    let depth = 1 + items.iter().map(|item| item.depth).max().unwrap_or(0);
+    let items = items.into_iter().map(|item| item.expr).collect();
+    bounded(
+        Deep {
+            expr: make(items, span.clone()),
+            depth,
+        },
+        &span,
+        src,
+    )
+}
+
+fn list(items: Vec<Deep>, span: SourceSpan, src: &str) -> Result<Deep, Fail> {
+    container(items, span, src, |items, span| Expr::List { items, span })
+}
+
+fn rewrite(items: Vec<Deep>, span: SourceSpan, src: &str) -> Result<Deep, Fail> {
+    match items.first().and_then(|head| head.expr.symbol()) {
         Some("def") => def(items, span, src),
         Some("pipe") => pipe(items, span, src),
         Some("let") => shape(items, span, src, "bad_let", is_let),
         Some("if") => shape(items, span, src, "bad_if", |items| items.len() == 4),
         Some("match") => shape(items, span, src, "bad_match", is_match),
-        _ => Ok(Expr::List { items, span }),
+        _ => list(items, span, src),
     }
 }
 
 /// `(def name value)` stays; `(def name [params] body)` wraps the body in
 /// a `fn` carrying the `def`'s span.
-fn def(mut items: Vec<Expr>, span: SourceSpan, src: &str) -> Result<Expr, Fail> {
-    let named = items.get(1).is_some_and(|name| name.symbol().is_some());
+fn def(mut items: Vec<Deep>, span: SourceSpan, src: &str) -> Result<Deep, Fail> {
+    let named = items
+        .get(1)
+        .is_some_and(|name| name.expr.symbol().is_some());
     match items.len() {
-        3 if named => Ok(Expr::List { items, span }),
-        4 if named && matches!(items[2], Expr::Vector { .. }) => {
+        3 if named => list(items, span, src),
+        4 if named && matches!(items[2].expr, Expr::Vector { .. }) => {
             let body = items.pop().expect("four items were counted");
             let params = items.pop().expect("four items were counted");
-            let function = Expr::List {
-                items: vec![
-                    Expr::Symbol {
-                        name: "fn".into(),
-                        span: span.clone(),
-                    },
-                    params,
-                    body,
-                ],
-                span: span.clone(),
+            let function = Deep {
+                depth: 1 + params.depth.max(body.depth),
+                expr: Expr::List {
+                    items: vec![
+                        Expr::Symbol {
+                            name: "fn".into(),
+                            span: span.clone(),
+                        },
+                        params.expr,
+                        body.expr,
+                    ],
+                    span: span.clone(),
+                },
             };
             items.push(function);
-            Ok(Expr::List { items, span })
+            list(items, span, src)
         }
         _ => Err(fail("bad_def", &span, src)),
     }
 }
 
 /// `(pipe init step ...)` threaded data-last; `(pipe)` passes through.
-fn pipe(items: Vec<Expr>, span: SourceSpan, src: &str) -> Result<Expr, Fail> {
+fn pipe(items: Vec<Deep>, span: SourceSpan, src: &str) -> Result<Deep, Fail> {
     let mut steps = items.into_iter();
     let head = steps.next().expect("a rewrite has a head");
     let Some(mut acc) = steps.next() else {
-        return Ok(Expr::List {
-            items: vec![head],
-            span,
-        });
+        return list(vec![head], span, src);
     };
     for step in steps {
-        acc = match step {
-            Expr::Symbol { name, span } => Expr::List {
-                items: vec![
-                    Expr::Symbol {
-                        name,
-                        span: span.clone(),
-                    },
-                    acc,
-                ],
-                span,
+        acc = match step.expr {
+            Expr::Symbol { name, span: at } => Deep {
+                depth: acc.depth + 1,
+                expr: Expr::List {
+                    items: vec![
+                        Expr::Symbol {
+                            name,
+                            span: at.clone(),
+                        },
+                        acc.expr,
+                    ],
+                    span: at,
+                },
             },
-            Expr::List { mut items, span } if !items.is_empty() => {
-                items.push(acc);
-                Expr::List { items, span }
+            Expr::List {
+                mut items,
+                span: at,
+            } if !items.is_empty() => {
+                // The step's own items are one level below it; the
+                // threaded value joins them.
+                let depth = step.depth.max(acc.depth + 1);
+                items.push(acc.expr);
+                Deep {
+                    depth,
+                    expr: Expr::List { items, span: at },
+                }
             }
             other => return Err(fail("empty_step", other.span(), src)),
         };
+        // Checked per step: a long pipe fails at the step that passes the
+        // bound, not after the whole chain is built.
+        acc = bounded(acc, &span, src)?;
     }
     Ok(acc)
 }
 
 fn shape(
-    items: Vec<Expr>,
+    items: Vec<Deep>,
     span: SourceSpan,
     src: &str,
     code: &str,
-    ok: impl Fn(&[Expr]) -> bool,
-) -> Result<Expr, Fail> {
+    ok: impl Fn(&[Deep]) -> bool,
+) -> Result<Deep, Fail> {
     if ok(&items) {
-        Ok(Expr::List { items, span })
+        list(items, span, src)
     } else {
         Err(fail(code, &span, src))
     }
 }
 
 /// `(let [name value] body)`.
-fn is_let(items: &[Expr]) -> bool {
+fn is_let(items: &[Deep]) -> bool {
     items.len() == 3
         && matches!(
-            &items[1],
+            &items[1].expr,
             Expr::Vector { items: binding, .. }
                 if binding.len() == 2 && binding[0].symbol().is_some()
         )
 }
 
 /// `(match value (case pattern body) ...)`.
-fn is_match(items: &[Expr]) -> bool {
+fn is_match(items: &[Deep]) -> bool {
     items.len() >= 2
         && items[2..].iter().all(|clause| {
             matches!(
-                clause,
+                &clause.expr,
                 Expr::List { items: parts, .. }
                     if parts.len() == 3 && parts[0].symbol() == Some("case")
             )
@@ -316,6 +385,34 @@ mod tests {
             );
             assert_eq!((fail.row, fail.column), (Some(1), Some(1)), "{src:?}");
         }
+    }
+
+    #[test]
+    fn a_rewrite_that_nests_past_the_bound_is_too_deep_at_the_form() {
+        // A pipe nests one level per step: 256 steps reach the bound.
+        let at_limit = format!("pipe x{}", " f".repeat(MAX_NESTING));
+        assert_eq!(
+            core(&at_limit),
+            format!("{}x{}", "(f ".repeat(MAX_NESTING), ")".repeat(MAX_NESTING))
+        );
+        let fail = failure(&format!("pipe x{}", " f".repeat(MAX_NESTING + 1)));
+        assert!(fail.message.starts_with("too_deep: "), "{}", fail.message);
+        assert_eq!((fail.row, fail.column), (Some(1), Some(1)));
+        // A pipe of a hundred thousand steps reads flat and fails at the
+        // 257th step, without building the chain a printer or `Drop` would
+        // then recurse over.
+        assert!(failure(&format!("pipe x{}", " f".repeat(100_000)))
+            .message
+            .starts_with("too_deep: "));
+
+        // `def` adds the `fn` level: a body two below the bound still
+        // fits under the `def`, a body one below it does not, though the
+        // reader accepted both.
+        let body = |depth: usize| format!("{}x{}", "(".repeat(depth), ")".repeat(depth));
+        let fits = format!("def f [x] {}", body(MAX_NESTING - 2));
+        assert!(core(&fits).starts_with("(def f (fn [x] "));
+        let fail = failure(&format!("def f [x] {}", body(MAX_NESTING - 1)));
+        assert!(fail.message.starts_with("too_deep: "), "{}", fail.message);
     }
 
     #[test]

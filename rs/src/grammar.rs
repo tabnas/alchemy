@@ -137,15 +137,18 @@ fn document() -> serde_json::Value {
                     "semi": { "line": true, "start": ";", "lex": true, "eatline": false },
                 },
             },
-            // This grammar's own codes. The first four are raised by the
+            // This grammar's own codes. The first five are raised by the
             // layout matcher; the rest are reserved for `desugar`, which
             // reports them through `Fail` with the code leading the
             // message, so a fixture pins `ERROR:<code>` for either kind.
+            // `too_deep` is both: the reader's bound on nesting, and the
+            // desugarer's on what its rewrites add.
             "error": {
                 "tab_indent": "tab in indentation",
                 "bad_indent": "unexpected indentation before: {src}",
                 "bad_dedent": "dedent to a level no block opened, before: {src}",
                 "unbalanced": "unbalanced delimiter: {src}",
+                "too_deep": crate::ast::TOO_DEEP,
                 "empty_step": "a pipe step must be a symbol or a non-empty list",
                 "bad_def": "def takes a name and a value, or a name, [params] and a body",
                 "bad_let": "let takes one binding [name value] and one body",
@@ -157,6 +160,7 @@ fn document() -> serde_json::Value {
                 "bad_indent": "A child line is exactly two spaces deeper than its parent, and the\nfirst line of a program is not indented.",
                 "bad_dedent": "A line may only return to the indentation of a line above it.",
                 "unbalanced": "Every ( and [ needs its ) or ], and nothing closes what was not\nopened. Inside delimiters, line breaks and indentation do not count.",
+                "too_deep": format!("A program nests at most {} levels, counting a layout line, each\nindentation level and each open ( or [ as one; a pipe adds a level per\nstep. Split the form into definitions.", crate::ast::MAX_NESTING),
                 "empty_step": "In pipe VALUE STEP..., each step is a symbol (called with the value)\nor a list (the value is appended as its last argument).",
                 "bad_def": "Write def NAME VALUE, or def NAME [PARAMS] BODY.",
                 "bad_let": "Write let [NAME VALUE] BODY.",
@@ -629,6 +633,19 @@ mod tests {
         assert_eq!(code("\"abc"), "unterminated_string");
         assert_eq!(code("a { b"), "unexpected");
         assert_eq!(code("\"\\q\""), "unexpected");
+        assert_eq!(code(&"(".repeat(crate::ast::MAX_NESTING)), "too_deep");
+    }
+
+    /// The bound is named in the message and the hint the document
+    /// declares, so a change to one without the other fails here.
+    #[test]
+    fn the_too_deep_texts_name_the_bound() {
+        let document = document();
+        let bound = crate::ast::MAX_NESTING.to_string();
+        assert!(crate::ast::TOO_DEEP.contains(&bound));
+        assert!(document["options"]["hint"]["too_deep"]
+            .as_str()
+            .is_some_and(|hint| hint.contains(&bound)));
     }
 
     /// The desugaring codes are declared here so a fixture can pin them

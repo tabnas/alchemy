@@ -7,7 +7,8 @@
 //!   with [`alchemy`], or built with [`make`]; [`parse_value`] answers the
 //!   reader's tagged tree and [`parse`] the [`Expr`] forms.
 //! - [`ast`]: [`Expr`] with [`SourceSpan`]s, the [`canonical`] and layout
-//!   [`format`] printers.
+//!   [`format`] printers, and [`MAX_NESTING`], the bound every form this
+//!   crate builds respects.
 //! - [`desugar`]: the core-form rewrites (`def` with parameters, `pipe`,
 //!   the shapes of `let`, `if` and `match`).
 //!
@@ -38,7 +39,7 @@ pub mod desugar;
 pub mod grammar;
 pub mod lex;
 
-pub use ast::{canonical, canonical_form, format, same_program, Expr, SourceSpan};
+pub use ast::{canonical, canonical_form, format, same_program, Expr, SourceSpan, MAX_NESTING};
 pub use grammar::{alchemy, make, parse, parse_file, parse_value, UNNAMED};
 
 /// This crate's version, as `Cargo.toml` declares it.

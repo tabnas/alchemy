@@ -108,8 +108,8 @@ the message is informative.
 
 A `DSL_PARSE_ERROR` carries a finer code as the first word of its
 message, before `: ` -- the grammar's own (`tab_indent`, `bad_indent`,
-`bad_dedent`, `unbalanced`, and for desugaring `empty_step`, `bad_def`,
-`bad_let`, `bad_if`, `bad_match`), declared in the grammar document's
+`bad_dedent`, `unbalanced`, `too_deep`, and for desugaring `empty_step`,
+`bad_def`, `bad_let`, `bad_if`, `bad_match`), declared in the grammar document's
 `options.error` and `options.hint`, or the engine's (`unterminated_string`,
 `unprintable`, `unexpected`). That word is what a fixture pins as
 `ERROR:<code>`, so it is part of the contract too: never rename or

@@ -118,6 +118,54 @@ fn a_reader_error_carries_the_engine_code_and_position() {
     );
 }
 
+/// The reader bounds nesting, so a program nested far past the bound is a
+/// `too_deep` failure with status 2 from every command, where it used to
+/// take the process down with a stack overflow (status -6, nothing on
+/// standard error but the runtime's abort).
+#[test]
+fn a_program_nested_beyond_the_bound_is_a_failure_not_an_abort() {
+    let depth = 100_000;
+    let parens = format!("{}x{}", "(".repeat(depth), ")".repeat(depth));
+    let mut indented = String::new();
+    for level in 0..600 {
+        indented.push_str(&"  ".repeat(level));
+        indented.push_str("x\n");
+    }
+    // Flat to the reader, one level per step to the desugarer.
+    let pipe = format!("pipe x{}\n", " f".repeat(depth));
+    // The failure names the opener, the line or the form that passed the
+    // bound: the 256th paren, the line that would open the 256th level,
+    // the pipe.
+    for (command, program, row) in [
+        ("canon", &parens, 1),
+        ("format", &parens, 1),
+        ("check", &parens, 1),
+        ("canon", &indented, 257),
+        ("check", &pipe, 1),
+    ] {
+        let output = run(&[command, "-"], Some(program));
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{command}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stdout(&output), "", "{command}");
+        let fail: serde_json::Value =
+            serde_json::from_str(stderr(&output).trim()).unwrap_or_else(|_| {
+                panic!("{command}: one JSON object on stderr: {}", stderr(&output))
+            });
+        assert_eq!(fail["code"], "DSL_PARSE_ERROR", "{command}");
+        assert!(
+            fail["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("too_deep: ")),
+            "{command}: {fail}"
+        );
+        assert_eq!(fail["row"], row, "{command}: {fail}");
+    }
+}
+
 #[test]
 fn usage_errors_and_unreadable_files_exit_2() {
     let output = run(&[], None);

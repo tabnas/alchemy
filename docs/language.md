@@ -55,6 +55,9 @@ for parentheses. The rules (design brief section 4.1, spec section 9.1):
    counts rows, so the row a diagnostic names is the line the layout saw.
    (A lone carriage return does restart the engine's column, and the
    columns this crate derives from spans restart with it.)
+8. A program nests at most 256 levels, counting a layout line, each
+   indentation level and each open `(` or `[` as one. The bound holds
+   after desugaring too, where a `pipe` adds a level per step.
 
 ```alchemy
 a b c
@@ -238,6 +241,7 @@ Each is a `DSL_PARSE_ERROR` whose message begins with the code (see
 | `bad_indent` | an indented first line, or a line deeper than its parent by anything but two spaces | `a` over a line indented three spaces |
 | `bad_dedent` | a dedent to a column no open block has | `a` / `  b` / ` c` |
 | `unbalanced` | an unclosed `(` or `[`, or a `)` or `]` with nothing open | `(a b` |
+| `too_deep` | the opener, the indented line or the desugared form that would nest past 256 levels | 256 nested `(`; `pipe x` with 257 steps |
 | `unterminated_string`, `unprintable`, `unexpected` | the engine's own: a string without its closing quote, a control character (a line break) inside one, and a character no rule accepts (`{`, `,`, a bare `:`, an unknown escape) | |
 
 ## Canonical and layout form
@@ -253,7 +257,11 @@ item is a list, in explicit parens (`(newline)`, `((f x) y)`); any other
 list with its leading atoms and vectors on one line and every remaining
 item on its own line two spaces deeper. Top-level forms are separated by
 a blank line. Reading the layout form back gives the same program, spans
-aside, for every program in the fixtures.
+aside, for every program in the fixtures. The one caveat is the nesting
+bound: the reader counts a layout line as a level whether or not it makes
+a list, so a program that reads exactly at the bound may print, in either
+form, one level too deep to read back; below the bound both forms read
+back exactly.
 
 ## Core forms and desugaring
 
@@ -457,8 +465,8 @@ opened, before: c`, so a script can branch on the word before the first
 `: `, and `row` and `col` name the offending form. The finer codes this
 crate declares, in the grammar document's `options.error` and
 `options.hint`, are `tab_indent`, `bad_indent`, `bad_dedent`,
-`unbalanced`, `empty_step`, `bad_def`, `bad_let`, `bad_if` and
-`bad_match`; the engine's own codes (`unterminated_string`,
+`unbalanced`, `too_deep`, `empty_step`, `bad_def`, `bad_let`, `bad_if`
+and `bad_match`; the engine's own codes (`unterminated_string`,
 `unprintable`, `unexpected`) pass through in the same position. A code is
 never renamed or repurposed; one may be added.
 

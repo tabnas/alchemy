@@ -49,6 +49,15 @@
 //! the bag, rather than by counting the delimiter tokens this matcher is
 //! asked about, so it cannot drift should a position ever be lexed twice.
 //!
+//! Nesting is bounded here, where the depth is known before anything is
+//! built: a program nests at most [`MAX_NESTING`] levels, counting a
+//! layout line, each indentation level and each open delimiter as one, and
+//! the opener or the indented line that would pass the bound is
+//! `too_deep`. Every tree the reader builds therefore stays within the
+//! bound the `ast` module documents, and a two-kilobyte program of nested
+//! parentheses fails as a `DSL_PARSE_ERROR` rather than overflowing the
+//! stack in the recursive stages that follow the parse.
+//!
 //! The same matcher owns the word tokens, because their boundaries are
 //! the symbol alphabet and not the engine's delimiter set: a maximal run
 //! of `[A-Za-z0-9_\-?!*+/<>=.$%&|^~@]` is a JSON number (`#NR`, the
@@ -60,13 +69,15 @@
 //! Errors this matcher raises, by code: `tab_indent` (a tab in the
 //! indentation of a content line), `bad_indent` (an indented first line,
 //! or a line deeper than its parent by anything but two spaces),
-//! `bad_dedent` (a dedent to a column no open block has) and `unbalanced`
-//! (a closing delimiter with nothing open). The grammar document declares
-//! their messages and hints.
+//! `bad_dedent` (a dedent to a column no open block has), `unbalanced` (a
+//! closing delimiter with nothing open) and `too_deep`. The grammar
+//! document declares their messages and hints.
 
 use std::sync::Arc;
 
 use tabnas::{Context, Lexer, Rule, Tabnas, Token, Value, TIN_NR, TIN_TX, TIN_VL};
+
+use crate::ast::MAX_NESTING;
 
 /// The reference name the grammar document's `options.lex.match` uses.
 pub(crate) const MATCHER: &str = "@alchemy-layout";
@@ -362,6 +373,20 @@ pub(crate) fn decide(src: &str, si: usize, state: &mut LayoutState) -> Decision 
         // A carriage return with no line feed after it is whitespace: the
         // engine does not count it as a row (see the module docs).
         ' ' | '\t' | '\r' | ';' => Decision::Pass,
+        '(' | '[' => {
+            state.seen = true;
+            // The depth just after this opener, with the layout line and
+            // the indentation levels around it, is the nesting it opens.
+            let nesting = 1 + state.levels + state.depth_at(src, si + 1);
+            if nesting > MAX_NESTING {
+                Decision::Bad {
+                    code: "too_deep",
+                    at: si,
+                }
+            } else {
+                Decision::Pass
+            }
+        }
         ')' | ']' => {
             state.seen = true;
             if state.depth_at(src, si) == 0 {
@@ -427,8 +452,8 @@ pub(crate) fn decide(src: &str, si: usize, state: &mut LayoutState) -> Decision 
             }
         }
         _ => {
-            // A delimiter, a quote, or something no band will claim: the
-            // engine's matchers decide, but a line has begun either way.
+            // A quote, or something no band will claim: the engine's
+            // matchers decide, but a line has begun either way.
             state.seen = true;
             Decision::Pass
         }
@@ -537,6 +562,13 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
         };
     }
     if indent == top + 2 {
+        // The new level, with the layout line it opens, is the nesting.
+        if 1 + state.levels + 1 > MAX_NESTING {
+            return Decision::Bad {
+                code: "too_deep",
+                at: content,
+            };
+        }
         state.levels += 1;
         return Decision::Layout {
             name: IN,
@@ -667,6 +699,14 @@ mod tests {
             .join("")
     }
 
+    /// `levels + 1` lines, each two spaces deeper than the one before.
+    fn staircase(levels: usize) -> String {
+        (0..=levels)
+            .map(|level| format!("{}x", "  ".repeat(level)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn json_numbers_are_recognised_exactly() {
         for ok in ["0", "-0", "12", "1.5", "-1.5e10", "2E-3", "0.0"] {
@@ -772,6 +812,26 @@ mod tests {
         assert_eq!(names("  a"), " BAD:bad_indent ");
         // Decided at the first line end, before any of the trivia is lexed.
         assert_eq!(names("\n\n  a"), " BAD:bad_indent ");
+    }
+
+    #[test]
+    fn nesting_past_the_bound_is_too_deep_at_the_opener_or_the_line() {
+        // A layout line and 255 open parens are 256 levels; the 256th
+        // paren is one more.
+        let at_limit = "(".repeat(MAX_NESTING - 1);
+        assert_eq!(names(&at_limit), at_limit);
+        assert_eq!(
+            names(&"(".repeat(MAX_NESTING)),
+            format!("{at_limit} BAD:too_deep ")
+        );
+        // Indentation levels count the same way, together with delimiters.
+        assert!(!names(&staircase(MAX_NESTING - 1)).contains("BAD"));
+        assert!(names(&staircase(MAX_NESTING)).ends_with(" BAD:too_deep "));
+        let mixed = format!("{}\n{}[", staircase(2), "  ".repeat(3));
+        assert!(names(&format!("{mixed}{}", "(".repeat(MAX_NESTING - 5))).ends_with('('));
+        assert!(
+            names(&format!("{mixed}{}", "(".repeat(MAX_NESTING - 4))).ends_with(" BAD:too_deep ")
+        );
     }
 
     #[test]
