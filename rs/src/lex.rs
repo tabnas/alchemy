@@ -55,6 +55,8 @@
 //! (a closing delimiter with nothing open). The grammar document declares
 //! their messages and hints.
 
+use std::sync::Arc;
+
 use tabnas::{Context, Lexer, Rule, Tabnas, Token, Value, TIN_NR, TIN_TX, TIN_VL};
 
 /// The reference name the grammar document's `options.lex.match` uses.
@@ -68,15 +70,23 @@ pub(crate) const NL: &str = "#NL";
 /// A keyword token; its value is the name without the colon.
 pub(crate) const KW: &str = "#KW";
 
-/// The keys this matcher owns in the context bag, prefixed so a grammar
-/// layered on this one cannot collide with them by accident.
-const K_SEEN: &str = "alchemySeen";
-const K_STACK: &str = "alchemyStack";
-const K_PENDING: &str = "alchemyPending";
-const K_DEPTH: &str = "alchemyDepth";
-const K_DEPTH_POS: &str = "alchemyDepthPos";
-const K_IN_STRING: &str = "alchemyInString";
-const K_IN_COMMENT: &str = "alchemyInComment";
+/// The one key this matcher owns in the context bag, prefixed so a grammar
+/// layered on this one cannot collide with it by accident.
+///
+/// Its value is an array of the state's fields, at the `S_*` indexes, and
+/// not an object with a key per field: this matcher is called for every
+/// token and every run of whitespace, so its state is loaded with one
+/// lookup and stored with one in-place write, and a call allocates
+/// nothing once the array exists.
+const K_STATE: &str = "alchemyLayout";
+const S_SEEN: usize = 0;
+const S_LEVELS: usize = 1;
+const S_PENDING: usize = 2;
+const S_DEPTH: usize = 3;
+const S_DEPTH_POS: usize = 4;
+const S_IN_STRING: usize = 5;
+const S_IN_COMMENT: usize = 6;
+const S_LEN: usize = 7;
 
 /// Register the tokens and the matcher on `parser`, ahead of the grammar
 /// document that names them.
@@ -163,15 +173,20 @@ pub fn is_json_number(text: &str) -> bool {
 /// It lives in `Context::u` because [`Tabnas::parse`] takes `&self` and
 /// the instance is shared between parses, so nothing written during a
 /// parse may live on the instance. The bag holds engine [`Value`]s, so the
-/// state is loaded and stored around each call.
-#[derive(Debug, Clone, PartialEq)]
+/// state is loaded before each call and stored after the calls that
+/// changed it. Seven scalars, `Copy`, so that comparison costs nothing;
+/// the initial state, before any token, is every field at zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct LayoutState {
     /// Whether any content token has been lexed yet. Before the first one
     /// there is no line for a layout token to end, so indentation may only
     /// be zero and no `#NL`/`#IN`/`#DE` is issued.
     pub(crate) seen: bool,
-    /// The open indentation levels, innermost last; never empty.
-    pub(crate) stack: Vec<usize>,
+    /// The open indentation levels below the top one. A block opens
+    /// exactly two spaces deeper than its parent and a dedent returns to a
+    /// level that is open, so the open levels are always `0, 2, ...,
+    /// 2 * levels`, and the count is the whole stack.
+    pub(crate) levels: usize,
     /// `#DE` tokens still owed for the dedent in progress.
     pub(crate) pending: usize,
     /// The delimiter-depth scan: the depth at `depth_pos`, and whether
@@ -182,26 +197,12 @@ pub(crate) struct LayoutState {
     pub(crate) in_comment: bool,
 }
 
-impl Default for LayoutState {
-    fn default() -> Self {
-        LayoutState {
-            seen: false,
-            stack: vec![0],
-            pending: 0,
-            depth: 0,
-            depth_pos: 0,
-            in_string: false,
-            in_comment: false,
-        }
-    }
+fn flag(fields: &[Value], index: usize) -> bool {
+    matches!(fields.get(index), Some(Value::Bool(true)))
 }
 
-fn flag(context: &Context, key: &str) -> bool {
-    matches!(context.u.get(key), Some(Value::Bool(true)))
-}
-
-fn number(context: &Context, key: &str) -> usize {
-    match context.u.get(key) {
+fn count(fields: &[Value], index: usize) -> usize {
+    match fields.get(index) {
         // Every value stored here is a small count written by `store`, so
         // the conversion is exact; the guard only keeps a foreign write
         // from turning into a huge count.
@@ -211,59 +212,52 @@ fn number(context: &Context, key: &str) -> usize {
 }
 
 impl LayoutState {
+    /// The indentation, in spaces, of the innermost open level.
+    pub(crate) fn top(&self) -> usize {
+        2 * self.levels
+    }
+
     /// The state stored in `context`, or the initial state on the first
     /// call of a parse (the bag starts empty).
     pub(crate) fn load(context: &Context) -> Self {
-        let Some(Value::Array(levels)) = context.u.get(K_STACK) else {
+        let Some(Value::Array(fields)) = context.u.get(K_STATE) else {
             return LayoutState::default();
         };
-        let mut stack: Vec<usize> = levels
-            .iter()
-            .filter_map(|level| match level {
-                Value::Number(n) if n.is_finite() && *n >= 0.0 => Some(*n as usize),
-                _ => None,
-            })
-            .collect();
-        if stack.is_empty() {
-            stack.push(0);
-        }
         LayoutState {
-            seen: flag(context, K_SEEN),
-            stack,
-            pending: number(context, K_PENDING),
-            depth: number(context, K_DEPTH),
-            depth_pos: number(context, K_DEPTH_POS),
-            in_string: flag(context, K_IN_STRING),
-            in_comment: flag(context, K_IN_COMMENT),
+            seen: flag(fields, S_SEEN),
+            levels: count(fields, S_LEVELS),
+            pending: count(fields, S_PENDING),
+            depth: count(fields, S_DEPTH),
+            depth_pos: count(fields, S_DEPTH_POS),
+            in_string: flag(fields, S_IN_STRING),
+            in_comment: flag(fields, S_IN_COMMENT),
         }
     }
 
+    /// Write the state into `context`, over the array a previous call
+    /// left when there is one.
     pub(crate) fn store(&self, context: &mut Context) {
-        context.u.insert(K_SEEN.into(), Value::Bool(self.seen));
-        context.u.insert(
-            K_STACK.into(),
-            Value::array(
-                self.stack
-                    .iter()
-                    .map(|level| Value::Number(*level as f64))
-                    .collect(),
-            ),
-        );
+        let fields = [
+            Value::Bool(self.seen),
+            Value::Number(self.levels as f64),
+            Value::Number(self.pending as f64),
+            Value::Number(self.depth as f64),
+            Value::Number(self.depth_pos as f64),
+            Value::Bool(self.in_string),
+            Value::Bool(self.in_comment),
+        ];
+        if let Some(Value::Array(current)) = context.u.get_mut(K_STATE) {
+            if current.len() == S_LEN {
+                // The bag is the array's only holder, so this is in place.
+                for (slot, field) in Arc::make_mut(current).iter_mut().zip(fields) {
+                    *slot = field;
+                }
+                return;
+            }
+        }
         context
             .u
-            .insert(K_PENDING.into(), Value::Number(self.pending as f64));
-        context
-            .u
-            .insert(K_DEPTH.into(), Value::Number(self.depth as f64));
-        context
-            .u
-            .insert(K_DEPTH_POS.into(), Value::Number(self.depth_pos as f64));
-        context
-            .u
-            .insert(K_IN_STRING.into(), Value::Bool(self.in_string));
-        context
-            .u
-            .insert(K_IN_COMMENT.into(), Value::Bool(self.in_comment));
+            .insert(K_STATE.to_string(), Value::array(fields.into()));
     }
 
     /// The explicit-delimiter depth just before byte `target` of `src`:
@@ -510,7 +504,7 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
         };
     }
     let len = content - from;
-    let top = state.stack.last().copied().unwrap_or(0);
+    let top = state.top();
     if indent == top {
         return Decision::Layout {
             name: NL,
@@ -519,7 +513,7 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
         };
     }
     if indent == top + 2 {
-        state.stack.push(indent);
+        state.levels += 1;
         return Decision::Layout {
             name: IN,
             len,
@@ -532,17 +526,17 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
             at: content,
         };
     }
-    let mut pops = 0;
-    while state.stack.last().is_some_and(|level| *level > indent) {
-        state.stack.pop();
-        pops += 1;
-    }
-    if state.stack.last().copied() != Some(indent) {
+    // A dedent returns to an open level: an even indentation below the
+    // top, since the open levels are exactly the even indentations up to
+    // it.
+    if indent % 2 != 0 {
         return Decision::Bad {
             code: "bad_dedent",
             at: content,
         };
     }
+    let pops = (top - indent) / 2;
+    state.levels -= pops;
     // The first `#DE` goes out now with the consumed trivia; the rest are
     // owed and issued on the following calls, which stand at `content`.
     state.pending = pops - 1;
@@ -556,15 +550,18 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
 /// The matcher itself, in the shape [`Tabnas::imperative_lex_match_ref`]
 /// takes: decide against the immutable source, then move the cursor and
 /// build the token at the point captured before the move.
+///
+/// The state is stored only when the call changed it, so the common calls
+/// (a word, a run of spaces) load it and write nothing.
 fn layout_matcher(lexer: &mut Lexer<'_>, _rule: &mut Rule, context: &mut Context) -> Option<Token> {
     let point = lexer.point();
     let si = point.site.si;
-    let mut state = LayoutState::load(context);
-    let decision = {
-        let src = lexer.source();
-        decide(src, si, &mut state)
-    };
-    state.store(context);
+    let loaded = LayoutState::load(context);
+    let mut state = loaded;
+    let decision = decide(lexer.source(), si, &mut state);
+    if state != loaded {
+        state.store(context);
+    }
 
     let advance = |lexer: &mut Lexer<'_>, len: usize| -> String {
         let text = lexer.source()[si..si + len].to_string();
@@ -681,7 +678,8 @@ mod tests {
         for (si, _) in src.char_indices().take_while(|(si, _)| *si < at) {
             let _ = decide(src, si, &mut state);
         }
-        state.stack = vec![0, 2, 4];
+        // What the calls so far built: the two levels `b` and `c` opened.
+        assert_eq!(state.levels, 2);
         let first = decide(src, at, &mut state);
         assert_eq!(
             first,
@@ -700,6 +698,7 @@ mod tests {
                 pending: 0
             }
         );
+        assert_eq!(state.levels, 0);
         assert!(matches!(
             decide(src, at + 1, &mut state),
             Decision::Word { name: "#TX", .. }
@@ -759,7 +758,7 @@ mod tests {
         // The bag belongs to a live parse, so the state is observed from a
         // lexer subscriber over the real grammar: after every token, what
         // `store` left is what `load` reads back.
-        use std::sync::{Arc, Mutex};
+        use std::sync::Mutex;
         let seen: Arc<Mutex<Vec<LayoutState>>> = Arc::new(Mutex::new(Vec::new()));
         let mut parser = crate::make();
         let record = Arc::clone(&seen);
@@ -771,15 +770,37 @@ mod tests {
         parser.parse("a\n  b\n    c\nd").expect("parses");
         let states = seen.lock().expect("no panic held the lock");
         assert!(
-            states
-                .iter()
-                .any(|state| state.stack == [0, 2, 4] && state.seen),
+            states.iter().any(|state| state.levels == 2 && state.seen),
             "some token was lexed three levels deep: {states:?}"
         );
         let last = states.last().expect("tokens were lexed");
         assert_eq!(
-            (last.seen, last.stack.as_slice(), last.pending, last.depth),
-            (true, &[0][..], 0, 0)
+            (last.seen, last.levels, last.pending, last.depth),
+            (true, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn the_store_writes_in_place_and_only_what_changed() {
+        // A stored state is one array under one key, overwritten rather
+        // than replaced: the same allocation before and after.
+        use std::sync::Mutex;
+        let identities: Arc<Mutex<Vec<(usize, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut parser = crate::make();
+        let record = Arc::clone(&identities);
+        parser.subscribe_lex(move |_token, _rule, context| {
+            if let (Ok(mut seen), Some(Value::Array(fields))) =
+                (record.lock(), context.u.get(K_STATE))
+            {
+                seen.push((Arc::as_ptr(fields) as usize, context.u.len()));
+            }
+        });
+        parser.parse("a b\n  c d\n(e\n f)\nx").expect("parses");
+        let seen = identities.lock().expect("no panic held the lock");
+        assert!(seen.len() > 4, "several tokens were lexed: {seen:?}");
+        assert!(
+            seen.windows(2).all(|pair| pair[0] == pair[1]),
+            "one array, one key, throughout: {seen:?}"
         );
     }
 }
