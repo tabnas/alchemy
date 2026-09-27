@@ -55,6 +55,52 @@ sinks; the standard compositions run natively, and a differential test
 proves the interpreted standard-library definitions in `stdlib/*.alc`
 produce the same bytes.
 
+## The reader repeats by replacement, never by a push chain
+
+**Every repetition is a replace loop: the loop is `r:`, the item may be
+`p:`.** An alternate that hands control to another rule either pushes it
+(`p:`), opening a frame that keeps the pusher on the stack for its close
+phase and links parent to child, or replaces with it (`r:`), re-entering
+in the same frame, handing the parent on and linking `prev`; a
+terminal-only or closing alternate does neither. Push is for structure (a
+list inside a list, a block under its line), replace for sequence (the
+next line, the next form, the next item). The iterations of a repetition
+then add no depth: rule depth follows a program's nesting, which
+`MAX_NESTING` bounds, and never its length. A repetition spelled as a
+push chain, each item pushing the rule that reads the rest, parses and is
+still wrong: depth grows with the item count until a guard refuses a flat
+input (aless refuses a parse past 3,000 open rules, its `MAX_RULE_DEPTH`;
+tabnas-json refuses nesting past 128 levels), the rule stack and memory
+grow with it (the rewind history does not: it records consumed tokens
+either way and is capped), and the tree comes out nested where the source
+is flat.
+
+**The reader is not in that shape yet.** The grammar document in
+`rs/src/grammar.rs` has no `r:` at all. Each repetition is a close
+alternate that pushes the next item and lets the container re-enter its
+close state when the item pops: `program` and `block` push each further
+`line` (lines 182 and 212), `line` each further inline `form` (line 200),
+`paren` and `bracket` each further item `form` (lines 242 and 253), and
+`@alchemy-collect` and `@alchemy-item` read the finished item back
+through the push link (`child_value`). That is a push per item but not a
+push chain: each item pops before the next is pushed, so depth stays put.
+Measured with a rule subscriber on `make()` (2026-09-27), one line and
+10,000 lines both reach a maximum `d` of 2; one child line and 10,000
+child lines under one line, 4; a line of one form and a line of 10,001
+forms, 2; one item and 10,000 items in `( )` or `[ ]`, 4; while 100
+nested parens reach 201, as real recursion should.
+
+Converting those five repetitions to `r:` loops is its own change, and it
+lands with the test that pins the depth; until it does, do not copy their
+shape into a new rule. The pushes that are structure stay pushes:
+`line`'s `#IN` into `block` (line 195) and `form`'s openers into `paren`
+and `bracket` (lines 220 and 221). The resolver, the checker and the
+interpreter generate no grammar rules (they work on `Expr`); the one
+other grammar this crate runs is tabnas-json, on a program's `json`
+input, and its repetitions are that repository's to keep. Rule depth over
+a repetition is constant; a test that repeats an item ten thousand times
+and asserts the maximum `d` stays what a single item needs is the proof.
+
 ## Repository map
 
 The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
