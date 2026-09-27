@@ -1,17 +1,18 @@
 # The alchemy language
 
-This is the reference for the **reader**: how a program's text becomes
-forms, how the forms print, and how the conveniences desugar into the
-core forms. The checker, the planner and the interpreter that give the
-forms meaning are not written yet; where a later section is needed it is
-named as missing rather than sketched. The design this implements is
-section 4 of transduce's `docs/architecture.md`.
+This is the reference: how a program's text becomes forms (the reader),
+how the forms are checked (types, ownership, protocols), what the
+standard library provides, what a program means when it runs, what
+`explain` reports, and how a host embeds the crate. The design this
+implements is section 4 of transduce's `docs/architecture.md`.
 
-Every `alchemy` example below, together with the `canonical` or `core`
-result that follows it, is a row in [`test/spec/reader.tsv`](../test/spec/reader.tsv)
-or [`test/spec/pipe.tsv`](../test/spec/pipe.tsv), and
+Every `alchemy` example below, together with the `canonical`, `core` or
+`check` result that follows it, is a row in
+[`test/spec/reader.tsv`](../test/spec/reader.tsv),
+[`test/spec/pipe.tsv`](../test/spec/pipe.tsv) or
+[`test/spec/check.tsv`](../test/spec/check.tsv), and
 `rs/tests/spec_test.rs` fails when one is not, so what this page shows is
-what the reader does.
+what the crate does.
 
 ## Forms
 
@@ -341,7 +342,8 @@ ERROR:empty_step
 one body (`bad_let` otherwise); `(if condition then else)` has exactly
 two branches (`bad_if`); `(match value (case pattern body) ...)` has
 `case` clauses of a pattern and a body (`bad_match`). The forms are left
-as they are; patterns stay expressions for the checker to read.
+as they are; patterns stay expressions for the checker and the
+interpreter to read.
 
 ```alchemy
 match v
@@ -375,17 +377,402 @@ never wrote names the line they did.
 Every operator takes its data **last**: `(map f xs)`, `(get :label
 record)`, `(csv options rows)`, `(table-from-json binding input)`. That
 is what lets `pipe` append the threaded value and read as a left-to-right
-pipeline, and it is the convention the standard library will keep. The
+pipeline, and it is the convention the standard library keeps. The
 entry point of a program is `def export [input] ...`, applied by the host
 to the source stream.
 
-## Programs
+## Meaning
 
-A transducer and its renderer, as the design brief and the README write
-them. The reader reads these today; running them waits for the checker
-and the interpreter.
+A program is a sequence of `def`s, in any order: every definition sees
+every other, so there is no forward-reference problem, and a name bound
+nowhere is `unknown_name`. A definition that reaches itself, directly or
+through others, is refused (`recursion`): strict mode allows known
+combinators, not unrestricted recursion. Locals come from `fn`
+parameters, `let` bindings and the bindings a `match` pattern makes;
+each shadows what is outside it. A program's definition of a library
+name (`csv`, say) shadows the library's for that program and for nothing
+the library itself does: the library's definitions resolve in their own
+scope.
+
+Values are evaluated eagerly: a `record`, a `path`, a `map` over a
+vector. Streams and texts are **plans** (spec section 10.3): evaluating
+`route`, `scan-emit`, `map` over a stream, `concat`, `join` or `csv`
+builds a description of how to produce the result and consumes nothing.
+The runtime lowers the plan `export` answers to a chain of transduce and
+render sinks once, and the host pushes the source's events through it.
+
+**Patterns.** In `(match value (case pattern body) ...)`, `_` matches
+anything; a symbol naming a native constant (`table-end`, `no-schema`,
+`missing`) or a definition of the program compares equal to it; any
+other symbol binds; a keyword, string, number, boolean or `null`
+compares; a vector matches a vector of the same length, item by item;
+`(constructor pattern ...)` matches the tagged value that constructor
+makes (`selected`, `schema`, `row`, `ready`, `transition`, `entry`),
+field by field. A `match` no case takes is `no_match`. `if` decides by a
+boolean and nothing else: no value is implicitly true or false.
+
+## Types and ownership
+
+The checker (`rs/src/check.rs`) infers a type for every definition,
+conservatively: what it cannot decide is `Unknown` and passes; what it
+can see is wrong is reported before anything runs. The types (spec
+section 10.2):
+
+| Type | What it is | Affine |
+|---|---|---|
+| `Value` | any data a document holds: `Null`, `Bool`, `Number`, `String`, `Vector<T>`, `Record`, `missing` | |
+| `Keyword`, `Selector`, `CaptureSpec`, `Fn(params -> result)` | a program's own values | |
+| `Vector<T>` | a finite retained collection; it cannot hold a stream | |
+| `Stream<T>` | an ordered single-use sequence of items | yes |
+| `TableEvents` | `Stream<TableEvent>`: `schema`, `row`s, `table-end`, the `TableRows/1` protocol as tagged values | yes |
+| `JsonEvents` | the single-use source, `JsonEvents/1` | yes |
+| `Text` | single-use incremental text | yes |
+| `String` | a finite retained string; where a text is wanted, a string lifts to one | |
+
+A binding of an affine type is **consumed at most once** in its scope
+(`STREAM_REUSED`, finer code `reused`); the two arms of an `if` and the
+cases of a `match` are alternatives, not two uses. A `fn` body may not
+use an affine binding of the scope around it (`captured`): a function
+may run more than once, and a stream is consumed once. A vector, a
+record or a transition's state cannot hold a stream (`type_mismatch`).
 
 ```alchemy
+def export [input] (concat (json input) (json input))
+```
+```check
+ERROR:reused@1:47
+```
+
+```alchemy
+def export [input]
+  concat-map (fn [x] (json input)) (select (path each-index) input)
+```
+```check
+ERROR:captured@2:28
+```
+
+Arguments are checked against a native's signature, a library
+definition's declared signature, or what a program definition's body
+inferred: a wrong count is `arity`, a wrong kind `type_mismatch`, and one
+protocol where another was wanted `protocol_mismatch` (`csv` given
+`JsonEvents`, `table-from-json` given `Text`, `json` given a stream of
+items):
+
+```alchemy
+def export [input] (csv csv-options input)
+```
+```check
+ERROR:protocol_mismatch@1:37
+```
+
+**Strict mode**, the only mode: the function given to `map`, `filter`
+or `concat-map` over a stream, and the step and finish of `scan-emit`,
+must resolve statically to a `fn`, a definition, a native, or a
+`partial` of one, so the plan can be analyzed; a function obtained at
+run time is `STREAMABILITY_UNKNOWN` (`dynamic`). Over a finite vector
+anything goes.
+
+```alchemy
+def go [f input] (concat-map f (select (path each-index) input))
+def export [input] (go text input)
+```
+```check
+ERROR:dynamic@1:30
+```
+
+**The entry.** `def export [input]` takes one parameter, the source's
+`JsonEvents`, and its result decides the output: a `Text` (or a string)
+is written as it is; `TableEvents` are rendered by the host (CSV by
+default, or JSON records with `--render json`); `JsonEvents` are
+rendered as JSON. A program without one is `no_export`; a result of
+another type is `bad_output`; one that cannot be typed is
+`STREAMABILITY_UNKNOWN` (`unknown_output`).
+
+## The standard library
+
+Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`):
+
+| Operator | Signature | Effect |
+|---|---|---|
+| `get` | `get key data -> Value` | reads a retained record or object; `missing` for an absent member |
+| `get-path` | `get-path path data -> Value` | walks a retained value by one concrete path; `missing` where the path leaves it |
+| `as-path` | `as-path data -> Selector` | validates a data-supplied array of segments; never reads data as source |
+| `as-vector` | `as-vector data -> Vector` | a captured array as a vector; `INPUT_INVALID` otherwise |
+| `record`, `entry` | `record entry... -> Record`, `entry :key value -> Entry` | a retained record; duplicate keys are `duplicate_key` |
+| `vector` | `vector item... -> Vector` | a retained vector; it cannot hold a stream |
+| `path` | `path segment... -> Selector` | a selector from strings, indexes and selectors |
+| `root`, `each-index`, `each-member` | `-> Selector` | the document; every element of an array; every member value of an object |
+| `property`, `index`, `compose` | `property name`, `index n`, `compose outer inner -> Selector` | one member; one element; inner below every location outer names |
+| `capture` | `capture :tag selector -> CaptureSpec` | materialize each selected scope under `max_capture_bytes` |
+| `route` | `route captures input -> Stream<Selected>` | one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap |
+| `select` | `select selector input -> Stream<Value>` | route with one capture, delivering the values |
+| `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains the state the step returns; ready after each item; finish runs once at the validated end |
+| `transition` | `transition state outputs -> Transition` | one step's result: the next state and a vector of outputs |
+| `partial` | `partial f arg... -> Fn` | `f` with its first arguments supplied |
+| `map`, `filter` | `map f items`, `filter predicate items -> Vector \| Stream` | eager over a vector; per item over a stream, retaining nothing |
+| `concat-map` | `concat-map f items -> Text` | `f` answers a string or a text per item; written as items arrive |
+| `join` | `join separator items -> Text` | the separator between items, never between the fragments of one |
+| `concat` | `concat item... -> Text` | in order, without assembling the result |
+| `text` | `text string -> Text` | a string as a text |
+| `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries; retains at most the literal's length |
+| `scalar-text` | `scalar-text options cell -> String` | a scalar's text under the options' null and missing policies; numbers by lexeme |
+| `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
+| `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
+| `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema; one row, as wide as the schema; the end, after the source validated |
+| `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |
+| `missing` | `missing -> Value` | an absent member, distinct from `null` |
+| `json` | `json events -> Text` | `JsonEvents` as compact JSON text, event by event, with a final newline |
+| `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
+
+Selecting, capturing and scanning:
+
+```alchemy
+select (path "items" each-index) input
+```
+```canonical
+(select (path "items" each-index) input)
+```
+
+```alchemy
+route [(capture :meta (path "meta")) (capture :row (path "rows" each-index))] input
+```
+```canonical
+(route [(capture :meta (path "meta")) (capture :row (path "rows" each-index))] input)
+```
+
+```alchemy
+scan-emit no-schema (partial table-step binding) table-finish selected
+```
+```canonical
+(scan-emit no-schema (partial table-step binding) table-finish selected)
+```
+
+Values and the table protocol:
+
+```alchemy
+get-path (as-path ["account" "balance"]) row
+```
+```canonical
+(get-path (as-path ["account" "balance"]) row)
+```
+
+```alchemy
+transition (ready columns) [(schema (map public-column columns))]
+```
+```canonical
+(transition (ready columns) [(schema (map public-column columns))])
+```
+
+The text algebra, and the renderers:
+
+```alchemy
+concat "[" (join "," (map csv-field cells)) "]"
+```
+```canonical
+(concat "[" (join "," (map csv-field cells)) "]")
+```
+
+```alchemy
+replace-text "a" "b" text
+```
+```canonical
+(replace-text "a" "b" text)
+```
+
+```alchemy
+scalar-text csv-options cell
+```
+```canonical
+(scalar-text csv-options cell)
+```
+
+```alchemy
+records (table-from-json api-binding input)
+```
+```canonical
+(records (table-from-json api-binding input))
+```
+
+```alchemy
+fail "Required metadata was not found"
+```
+```canonical
+(fail "Required metadata was not found")
+```
+
+### The library's own definitions
+
+The rest of the library is written in alchemy, embedded from
+[`stdlib/table.alc`](../stdlib/table.alc) and
+[`stdlib/csv.alc`](../stdlib/csv.alc), and checked against its declared
+signatures as it loads. These are the spec's definitions (sections 12.2,
+13.1 and 13.2), and they are the reference: the runtime runs
+`table-from-json` and `csv` natively when their arguments have the
+standard shapes, and `rs/tests/stdlib_test.rs` proves the native path
+and this text produce the same bytes.
+
+The metadata-first table transducer, `JsonEvents` in, `TableEvents` out:
+
+```alchemy
+def public-column [column]
+  record
+    entry :label (get :label column)
+```
+```core
+(def public-column (fn [column] (record (entry :label (get :label column)))))
+```
+
+```alchemy
+def table-step [binding state event]
+  match event
+    case (selected :columns raw)
+      if (is-ready state)
+        fail "Metadata selected more than once"
+        let [columns (map (get :column binding) (as-vector raw))]
+          transition (ready columns)
+            vector
+              schema
+                map public-column columns
+    case (selected :row raw)
+      let [columns (require-columns state)]
+        transition state
+          vector
+            row
+              map
+                fn [column]
+                  get-path (get :source column) raw
+                columns
+```
+```core
+(def table-step (fn [binding state event] (match event (case (selected :columns raw) (if (is-ready state) (fail "Metadata selected more than once") (let [columns (map (get :column binding) (as-vector raw))] (transition (ready columns) (vector (schema (map public-column columns))))))) (case (selected :row raw) (let [columns (require-columns state)] (transition state (vector (row (map (fn [column] (get-path (get :source column) raw)) columns)))))))))
+```
+
+```alchemy
+def table-finish [state]
+  if (is-ready state)
+    vector
+      table-end
+    fail "Required metadata was not found"
+```
+```core
+(def table-finish (fn [state] (if (is-ready state) (vector table-end) (fail "Required metadata was not found"))))
+```
+
+```alchemy
+def table-from-json [binding input]
+  pipe input
+    route
+      vector
+        capture :columns (get :columns binding)
+        capture :row (get :rows binding)
+    scan-emit no-schema (partial table-step binding) table-finish
+```
+```core
+(def table-from-json (fn [binding input] (scan-emit no-schema (partial table-step binding) table-finish (route (vector (capture :columns (get :columns binding)) (capture :row (get :rows binding))) input))))
+```
+
+The binding is a record of `:columns` (the selector of the metadata
+array), `:rows` (the selector of each row) and `:column` (a function from
+one descriptor to a column record with `:label` and `:source`). Rows
+that begin before the metadata has completed are `INPUT_ORDER_VIOLATION`;
+a document with no rows is a valid empty table.
+
+The always-quoted CSV renderer, `TableEvents` in, `Text` out:
+
+```alchemy
+def csv-options
+  record
+    entry :delimiter ","
+    entry :newline "\r\n"
+    entry :header true
+    entry :null-text ""
+    entry :missing :error
+```
+```core
+(def csv-options (record (entry :delimiter ",") (entry :newline "\r\n") (entry :header true) (entry :null-text "") (entry :missing :error)))
+```
+
+```alchemy
+def csv-field [options cell]
+  concat
+    "\""
+    replace-text "\"" "\"\""
+      scalar-text options cell
+    "\""
+```
+```core
+(def csv-field (fn [options cell] (concat "\"" (replace-text "\"" "\"\"" (scalar-text options cell)) "\"")))
+```
+
+```alchemy
+def csv-row [options cells]
+  concat
+    join (get :delimiter options)
+      map
+        fn [cell]
+          csv-field options cell
+        cells
+    get :newline options
+```
+```core
+(def csv-row (fn [options cells] (concat (join (get :delimiter options) (map (fn [cell] (csv-field options cell)) cells)) (get :newline options))))
+```
+
+```alchemy
+def csv [options events]
+  concat-map
+    fn [event]
+      match event
+        case (schema columns)
+          if (get :header options)
+            csv-row options
+              map
+                fn [column]
+                  get :label column
+                columns
+            ""
+        case (row cells)
+          csv-row options cells
+        case table-end
+          ""
+    events
+```
+```core
+(def csv (fn [options events] (concat-map (fn [event] (match event (case (schema columns) (if (get :header options) (csv-row options (map (fn [column] (get :label column)) columns)) "")) (case (row cells) (csv-row options cells)) (case table-end ""))) events)))
+```
+
+The native path substitutes transduce's `TableFromJson` for
+`table-from-json` when the binding has the standard shape, and render's
+`CsvRenderer` for `csv` when every option maps onto the renderer's
+dialect (`:delimiter` one character, `:newline` CRLF or LF, `:header` a
+boolean, `:null-text` a string, `:missing` `:error` or a string); any
+other options run the text above. Two differences the standard shapes
+never reach are known and pinned by the differential test: metadata
+selected twice is `INPUT_ORDER_VIOLATION` natively and `INPUT_INVALID`
+(the text's `fail`) interpreted, and a title that is not a string is
+`INPUT_INVALID` natively (the binding requires a string label, as
+transduce's own column mapper does) where the text renders the scalar.
+The generic `capture` is bounded by `max_capture_bytes`; the native
+table's rows by `max_record_bytes` and its metadata by
+`max_metadata_bytes`, which is what a limit failure names on each path.
+
+## Programs
+
+The spec's worked example (sections 5, 12.1 and 13.4): an application
+binding, the standard table, the standard renderer. `check` accepts it,
+`explain` prints the report shown, and `run` over the spec's document
+prints `"Identifier","Full name","Balance"`, `"123","Alice","50.25"` and
+`"456","Bob","72"`, each record ending in CRLF, with Bob's cells in the
+schema's order although his members are in another.
+
+```alchemy
+def column-from-meta [source]
+  record
+    entry :label (get "title" source)
+    entry :source
+      as-path
+        get "path" source
+
 def api-binding
   record
     entry :columns
@@ -393,94 +780,200 @@ def api-binding
     entry :rows
       path "response" "payload" "deep" "records" each-index
     entry :column column-from-meta
+
+def api-table [input]
+  table-from-json api-binding input
+
+def export [input]
+  pipe input
+    api-table
+    csv csv-options
 ```
-```canonical
-(def api-binding (record (entry :columns (path "response" "metadata" "fields")) (entry :rows (path "response" "payload" "deep" "records" each-index)) (entry :column column-from-meta)))
+```check
+export: api-table → csv
+
+Source reads:          1
+Protocol:              JsonEvents/1 → TableRows/1 → Text
+Selection:             shared prefix matcher, two capture routes
+Retained metadata:     .response.metadata.fields, capped at max_metadata_bytes
+Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes
+Output order:          schema first; cells in schema order
+Ordering contract:     metadata completes before first row begins
+Contract verification: runtime
+CSV quoting:           always
+External storage:      disabled
+
+Guarantee:
+  Memory is independent of the number of rows under the configured
+  depth, metadata, record, scalar/key and output limits.
+
+Qualification:
+  Valid JSON that violates the metadata-first contract is rejected.
+  A later error can occur after earlier output has been written.
 ```
+
+A program that leaves the table to the host (`def export [input]
+(api-table input)`) is rendered as CSV by default, or as JSON records
+with `--render json`. The echo, whose result is the source's own events:
 
 ```alchemy
 def export [input]
-  pipe input
-    table-from-json api-binding
-    csv csv-options
+  json input
 ```
-```core
-(def export (fn [input] (csv csv-options (table-from-json api-binding input))))
+```check
+export: json
+
+Source reads:          1
+Protocol:              JsonEvents/1 → Text
+Selection:             none; every event passes through
+Output order:          source order
+Ordering contract:     none
+Contract verification: static
+JSON profile:          compact, one document, trailing newline
+External storage:      disabled
+
+Guarantee:
+  Memory is independent of the document's size under the configured
+  depth, scalar/key and output limits: nothing is retained beyond the
+  renderer's nesting stack.
+
+Qualification:
+  A later error can occur after earlier output has been written.
 ```
 
-```alchemy
-def table-step [state selected]
-  match (get :tag selected)
-    case :columns
-      transition (ready state selected) []
-    case :rows
-      transition state [(row state selected)]
-```
-```canonical
-(def table-step [state selected] (match (get :tag selected) (case :columns (transition (ready state selected) [])) (case :rows (transition state [(row state selected)]))))
+## explain
+
+`alchemy explain FILE` prints the plan report in the layout of spec
+section 15.5, computed from the plan the program built rather than from
+its text: the chain of calls on `export`'s data-last spine; the source
+reads (one pass); the protocol chain; the selection (how many capture
+routes share the one matcher); each live retention requirement with the
+selector it holds and the `Limits` field that caps it, summed rather
+than maxed, since the standard table holds its metadata and one row at
+the same time; the output order; the ordering contract and whether the
+run checks it (`runtime`) or the plan cannot break it (`static`); the
+renderer's profile; external storage (always disabled); then the
+guarantee and its qualification. A `scan-emit` whose state is the
+program's makes the guarantee conditional and says so. `Program::
+explain_json` is the same information as one object (`chain`,
+`protocol`, `selection`, `retention`, `readiness`, `order_constraints`,
+`renderer`, `confidence`, `guarantee`, `qualification`, ...), for a
+host's `--explain`.
+
+## run
+
+```text
+alchemy run [--render csv|json] [--no-native] PROGRAM INPUT
 ```
 
-```alchemy
-def table-from-json [binding input]
-  pipe input
-    route (captures binding)
-    scan-emit table-step no-schema
-```
-```core
-(def table-from-json (fn [binding input] (scan-emit table-step no-schema (route (captures binding) input))))
+Parses `INPUT`, a JSON document, with the tabnas JSON grammar through
+transduce's `ParserSource`, incrementally, pruning the parsed tree under
+the program's row selector when the plan knows one, and pushes the
+events through the program's sink to standard output, coalesced and
+flushed at the end. `--render` chooses how a table or JSON-events result
+is rendered (a program that renders its own text takes none:
+`render_of_text`); `--no-native` runs the standard compositions through
+the library's text. Other input formats are aless's business: it runs
+alchemy programs against every format its parsers read.
+
+A failure is one `Fail` JSON object on standard error, with `output:
+"partial"` when bytes had already reached standard output, and the exit
+status follows the code: 2 for a program that does not read, resolve or
+check (`DSL_PARSE_ERROR`, `DSL_TYPE_ERROR`, `STREAM_REUSED`,
+`STREAMABILITY_UNKNOWN`), for a usage error and for an unreadable file;
+1 for an input or protocol failure (`INPUT_INVALID`,
+`INPUT_ORDER_VIOLATION`, `MISSING_VALUE`, `PROTOCOL_ORDER_ERROR`, the
+rest); 5 for `RESOURCE_LIMIT_EXCEEDED`; 3 for `OUTPUT_FAILED`; 6 for
+`ABORTED`.
+
+## Embedding
+
+The crate's API is small and every part of it is `Send`, because a host
+runs a pipeline on the thread that parses:
+
+```rust
+use std::sync::Arc;
+use tabnas_alchemy::{compile, Output, Renderer};
+use tabnas_transduce::{JsonEvent, Limits, Metrics, Sink};
+
+let program = compile("def export [input] (json input)", "echo.alc")?;
+assert_eq!(program.output(), Output::Text);
+assert!(program.row_selector().is_none());
+let metrics = Metrics::new();
+let mut sink = program.sink(Box::new(Vec::new()), None, &Limits::default(), metrics)?;
+sink.event(JsonEvent::ArrayStart)?;
+sink.event(JsonEvent::ArrayEnd)?;
+sink.event(JsonEvent::End)?;
+let _ = Renderer::Json;
+# Ok::<(), tabnas_transduce::Fail>(())
 ```
 
-```alchemy
-def csv-row [values]
-  concat
-    join ","
-      map csv-field values
-    (newline)
-```
-```core
-(def csv-row (fn [values] (concat (join "," (map csv-field values)) (newline))))
-```
-
-```alchemy
-def csv [options rows]
-  concat
-    csv-row (columns options)
-    concat-map csv-row rows
-```
-```core
-(def csv (fn [options rows] (concat (csv-row (columns options)) (concat-map csv-row rows))))
-```
+- `compile(src, file)` parses, desugars, resolves and checks; a failure
+  is a `Fail` with the code and the finer code, at the position it names
+  in `file`.
+- `Program::output()` is what the program produces (`Text`,
+  `TableRows`, `JsonEvents`), so the host knows whether `--render`
+  applies; `row_selector()` is the selector under which the source is
+  read one row at a time, when the plan knows one (the table binding's
+  `:rows`, a `select`'s selector, the one multi-location capture of a
+  `route`), for the host's pruning choice.
+- `explain()` and `explain_json()` are the report.
+- `sink(out, render, limits, metrics)` returns the `Sink + Send` the
+  host pushes `JsonEvent`s into, then one `End`; the output reaches
+  `out` through a coalescing writer that enforces `limits.
+  max_output_bytes` and counts `output_bytes` in `metrics`, and is
+  flushed at `End`. `sink_out` takes any `TextOut` instead. `render` is
+  `Some(Renderer::Csv | Renderer::Json)` for a table or JSON-events
+  result; for a `Text` result it must be `None` (`render_of_text`).
+- A failure comes back from the event call that found it, with
+  `committed_output` set when text this crate wrote had reached the
+  writer. A failure the source found (invalid JSON after the rows) never
+  passes through the sink, so the host reads `metrics.output_bytes`
+  after the run and marks the failure as partial when it is not zero;
+  the `run` command does exactly that.
+- `with_native(false)` runs the standard compositions through the
+  library's text; `with_duplicates` sets the policy for repeated member
+  names in captured values (rejected by default, spec section 18.2).
 
 ## Spans and errors
 
 Every form carries a `SourceSpan`: the file name and the byte range of
 its text. Rows and columns (1-based, columns in characters) are derived
 from the source when a diagnostic needs them, and a generated node
-carries the span of the form it came from.
+carries the span of the form it came from. A failure inside the standard
+library names the library file and its line.
 
-Failures are `tabnas_transduce::Fail` values with code `DSL_PARSE_ERROR`,
-whether the reader or the desugarer found them. The message begins with
-the finer code and a colon, `bad_dedent: dedent to a level no block
-opened, before: c`, so a script can branch on the word before the first
-`: `, and `row` and `col` name the offending form. The finer codes this
-crate declares, in the grammar document's `options.error` and
-`options.hint`, are `tab_indent`, `bad_indent`, `bad_dedent`,
-`unbalanced`, `too_deep`, `empty_step`, `bad_def`, `bad_let`, `bad_if`
-and `bad_match`; the engine's own codes (`unterminated_string`,
-`unprintable`, `unexpected`) pass through in the same position. A code is
-never renamed or repurposed; one may be added.
+Failures are `tabnas_transduce::Fail` values. The message begins with the
+finer code and a colon, `bad_dedent: dedent to a level no block opened,
+before: c`, so a script can branch on the word before the first `: `,
+and `row` and `col` name the offending form. A code is never renamed or
+repurposed; one may be added.
+
+| Code | Finer codes |
+|---|---|
+| `DSL_PARSE_ERROR` | the reader's `tab_indent`, `bad_indent`, `bad_dedent`, `unbalanced`, `too_deep`; the desugarer's `empty_step`, `bad_def`, `bad_let`, `bad_if`, `bad_match`; the engine's `unterminated_string`, `unprintable`, `unexpected` |
+| `DSL_TYPE_ERROR` | the resolver's `unknown_name`, `not_def`, `duplicate_def`, `reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; the checker's `arity`, `type_mismatch`, `protocol_mismatch`, `no_export`, `bad_output`; the runtime's `duplicate_key`, `no_match`, `render_of_text` |
+| `STREAM_REUSED` | `reused`, `captured` |
+| `STREAMABILITY_UNKNOWN` | `recursion`, `dynamic`, `unknown_output` |
+
+Runtime failures carry the transduce and render codes unchanged
+(`INPUT_ORDER_VIOLATION`, `MISSING_VALUE`, `RESOURCE_LIMIT_EXCEEDED` with
+the limit's name, `PROTOCOL_ORDER_ERROR`, ...); a `fail "message"` in a
+program is `INPUT_INVALID` with the message and the form's position.
 
 ## The command
 
 ```text
-alchemy canon FILE     print the program in canonical form
-alchemy format FILE    print the program in layout form
-alchemy check FILE     parse and desugar; print nothing and exit 0
+alchemy canon FILE       print the program in canonical form
+alchemy format FILE      print the program in layout form
+alchemy check FILE       parse, desugar, resolve and check; print nothing and exit 0
+alchemy explain FILE     print the plan report
+alchemy run [--render csv|json] [--no-native] PROGRAM INPUT
+                         run the program over the JSON document INPUT
 ```
 
-`FILE` may be `-` for standard input. A failure is the `Fail` as one JSON
-object on standard error (`code`, `message`, `row`, `col`, `output`) with
-exit status 2, as is a usage error or an unreadable file; standard output
-carries nothing but the answer. `check` will grow the checker's
-`DSL_TYPE_ERROR`s when the checker exists; `explain` and `run` join the
-command with the planner and the interpreter.
+`FILE`, `PROGRAM` and `INPUT` may be `-` for standard input (one of them
+per run). A failure is the `Fail` as one JSON object on standard error
+(`code`, `message`, `row`, `col`, `output`, and `path` and `limit` when
+they apply) with the exit status [run](#run) lists; standard output
+carries nothing but the answer.

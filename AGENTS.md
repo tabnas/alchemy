@@ -57,9 +57,9 @@ produce the same bytes.
 
 ## Repository map
 
-The reader half exists; the rows marked *later* name the modules the
-checker, planner and interpreter will add, and where they will read from
-(`ast.rs` after `desugar.rs`).
+The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
+`resolve` → `check` → `interp` (builds the plan) → `lower` (the sinks);
+`effects` reads the plan for `explain`; `program` is the API around it.
 
 | Path | What it is |
 |---|---|
@@ -67,15 +67,26 @@ checker, planner and interpreter will add, and where they will read from
 | `rs/src/grammar.rs` | the grammar plugin: the document, `alchemy()`, `make()`, `parse_value()`, `parse()`, `parse_file()` |
 | `rs/src/ast.rs` | `Expr`, `SourceSpan`, `same_shape`, `canonical()` and layout `format()` |
 | `rs/src/desugar.rs` | `def` with parameters, `pipe`, the shapes of `let`, `if` and `match` |
-| `rs/src/bin/alchemy.rs` | `alchemy canon | format | check`; `explain` and `run` come with the planner and interpreter |
+| `rs/src/resolve.rs` | scopes and linking: top-level `def`s in any order, locals, the library's names; `unknown_name`; recursion refused |
+| `rs/src/types.rs`, `rs/src/check.rs` | the types and the checker: inference, affine streams (`STREAM_REUSED`), protocols, strict mode (`STREAMABILITY_UNKNOWN`), the `export` contract |
+| `rs/src/effects.rs` | the effect summary and the `explain` report, as text and as JSON |
+| `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
+| `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
+| `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra |
+| `rs/src/program.rs` | the API a host embeds: `compile`, `Program::{output, row_selector, explain, explain_json, sink}` |
+| `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
+| `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded, resolved and checked on first use |
+| `rs/src/bin/alchemy.rs` | `alchemy canon | format | check | explain | run` |
 | `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner`, the layout round trip, the reference's examples |
 | `rs/tests/debug_model_test.rs` | the grammar composed with `tabnas-debug`, as every grammar carries |
 | `rs/tests/cli_test.rs` | the built binary, run as a script runs it |
+| `rs/tests/run_test.rs` | the API end to end: the worked example both ways, the spec's streaming rows, the `json` echo, `records` |
+| `rs/tests/stdlib_test.rs` | the differential test: the interpreted library against the native path on every fixture and generated document |
 | `test/spec/reader.tsv` | shared fixtures: layout → canonical, and the reader's errors by code |
 | `test/spec/pipe.tsv` | shared fixtures: layout → canonical of the desugared program, and the desugaring errors |
+| `test/spec/check.tsv` | shared fixtures: program → `ERROR:<finer code>` for every resolver and checker code, and program → plan report |
 | `docs/language.md` | the language reference; every example in it is a fixture row |
 | `ci/rust/run.sh` | the gate `.github/workflows/rust.yml` runs |
-| `rs/src/resolve.rs`, `check.rs`, `effects.rs`, `interp.rs`, `rs/src/stdlib/`, `stdlib/*.alc` | *later*: scopes and linking, types and affine streams, the `explain` report, the evaluator and its lowering, the native operators and the embedded standard library |
 
 ## Verify your work
 
@@ -116,13 +127,29 @@ message, before `: ` -- the grammar's own (`tab_indent`, `bad_indent`,
 repurpose one; add one when a new failure needs it, with its message and
 hint.
 
+The later stages follow the same convention. `DSL_TYPE_ERROR` carries,
+from the resolver, `unknown_name`, `not_def`, `duplicate_def`,
+`reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; from the checker,
+`arity`, `type_mismatch`, `protocol_mismatch`, `no_export`,
+`bad_output`; from the runtime, `duplicate_key` (a record with two
+entries for one key), `no_match` (a `match` no case took) and
+`render_of_text` (a renderer asked of a program that renders its own
+text). `STREAM_REUSED` carries `reused` or `captured`;
+`STREAMABILITY_UNKNOWN` carries `recursion`, `dynamic` or
+`unknown_output`. `test/spec/check.tsv` pins each with the position the
+checker names. Runtime failures carry the transduce and render codes
+unchanged, and a `fail "message"` in a program is `INPUT_INVALID` with
+the message and the form's position.
+
 ## Untrusted input
 
 **A program is code; a document is data; the two never mix.** Data-supplied
 paths are validated segment vectors (`as-path`) and are never read as
-source. The interpreter, when it exists, resolves only registered
-operators: there is no `eval`, no host function access, no I/O from a
-program.
+source. The interpreter resolves only registered operators and the
+definitions in front of it: there is no `eval`, no host function access,
+no I/O from a program. A function a program obtains from data (a record
+field) can be applied to values, but strict mode refuses it where a
+stream operator would run it per item.
 
 What bounds a program today is its nesting: at most `MAX_NESTING` (256)
 levels, counting a layout line, each indentation level and each open
@@ -131,7 +158,10 @@ built, and held after desugaring, where a `pipe` nests a level per step.
 The bound is what lets the printers, the desugarer and `Drop` recurse per
 level; without it a two-kilobyte program of nested parentheses aborted
 the process with a stack overflow. The syntax tree is otherwise bounded
-by the source's size. Selector length, route count and every transduce
-limit will apply when the interpreter exists, and a pure program can
-still ask for very large output, so hosts set `max_output_bytes` and a
-timeout.
+by the source's size. At run time every transduce limit applies as the
+stage that holds the data names it (`max_capture_bytes` for a program's
+`capture`, `max_record_bytes` and `max_metadata_bytes` for the native
+table, `max_depth`, `max_scalar_bytes` and `max_key_bytes` at the
+source), and the writer enforces `max_output_bytes`; a pure program can
+still ask for very large output and a `scan-emit` state is the program's
+to bound, so hosts set `max_output_bytes` and a timeout.

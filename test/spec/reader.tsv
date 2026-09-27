@@ -103,3 +103,14 @@ a : b	ERROR:unexpected
 # Nesting is bounded at 256 levels, counting a layout line, each indentation level and each open delimiter as one; this row is one below the bound, so its layout form reads back too.
 a ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((x))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))	"(a ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((x)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))"
 ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((x))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))	ERROR:too_deep@1:256
+# The standard library's examples in docs/language.md: one-line calls, whose canonical form is the parenthesized line.
+select (path "items" each-index) input	"(select (path \"items\" each-index) input)"
+route [(capture :meta (path "meta")) (capture :row (path "rows" each-index))] input	"(route [(capture :meta (path \"meta\")) (capture :row (path \"rows\" each-index))] input)"
+scan-emit no-schema (partial table-step binding) table-finish selected	"(scan-emit no-schema (partial table-step binding) table-finish selected)"
+get-path (as-path ["account" "balance"]) row	"(get-path (as-path [\"account\" \"balance\"]) row)"
+transition (ready columns) [(schema (map public-column columns))]	"(transition (ready columns) [(schema (map public-column columns))])"
+concat "[" (join "," (map csv-field cells)) "]"	"(concat \"[\" (join \",\" (map csv-field cells)) \"]\")"
+replace-text "a" "b" text	"(replace-text \"a\" \"b\" text)"
+scalar-text csv-options cell	"(scalar-text csv-options cell)"
+records (table-from-json api-binding input)	"(records (table-from-json api-binding input))"
+fail "Required metadata was not found"	"(fail \"Required metadata was not found\")"

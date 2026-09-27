@@ -1,7 +1,7 @@
 //! The alchemy language: declarative streaming transducers and renderers
 //! for the tabnas engine, parsed by a tabnas grammar plugin.
 //!
-//! This crate is the reader half of the language today:
+//! The reader:
 //!
 //! - [`lex`] and [`grammar`]: the grammar plugin, installed on an engine
 //!   with [`alchemy`], or built with [`make`]; [`parse_value`] answers the
@@ -12,8 +12,15 @@
 //! - [`desugar`]: the core-form rewrites (`def` with parameters, `pipe`,
 //!   the shapes of `let`, `if` and `match`).
 //!
-//! The checker, planner and interpreter that follow read [`Expr`] from
-//! [`ast`] after [`desugar`] has run; they never see the tagged tree.
+//! The language, reading [`Expr`] after [`desugar`] has run:
+//!
+//! - [`resolve`]: scopes and linking; [`types`] and [`check`]: inference,
+//!   affine streams, protocols, strict mode; [`effects`]: the effect
+//!   summary and the `explain` report.
+//! - [`value`]: runtime values, every one `Send`, with streams and texts
+//!   as plans; [`interp`]: the evaluator; [`lower`]: plans to transduce
+//!   and render sinks; [`stdlib`]: the natives and the embedded library.
+//! - [`program`]: [`compile`] and [`Program`], the API a host embeds.
 //!
 //! ```
 //! use tabnas_alchemy::{canonical, desugar, parse};

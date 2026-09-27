@@ -26,6 +26,9 @@ path = "src/bin/alchemy.rs"
 tabnas = { path = "../../parser/rs" }
 tabnas-transduce = { path = "../../transduce/rs" }
 tabnas-render = { path = "../../render/rs" }
+# The JSON grammar the binary's `run` parses its input with (already in the
+# graph through transduce, which parses JSON Lines with it).
+tabnas-json = { path = "../../json/rs" }
 indexmap = "2"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 
@@ -35,7 +38,6 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 tabnas-support = { path = "../../support/rs", features = ["serde_json"] }
 # The introspection plugin, for the debug-model test every grammar carries.
 tabnas-debug = { path = "../../debug/rs" }
-tabnas-json = { path = "../../json/rs" }
 tabnas-jsonl = { path = "../../jsonl/rs" }
 tabnas-yaml = { path = "../../yaml/rs" }
 tabnas-csv = { path = "../../csv/rs" }

@@ -1,4 +1,4 @@
-// The `alchemy` binary, run the way a script runs it: the three commands,
+// The `alchemy` binary, run the way a script runs it: the five commands,
 // standard input as `-`, the statuses, and that nothing but the answer
 // reaches standard output.
 
@@ -46,18 +46,54 @@ fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).expect("utf-8 output")
 }
 
-fn program_file(name: &str, text: &str) -> PathBuf {
+fn fail_json(output: &Output) -> serde_json::Value {
+    serde_json::from_str(stderr(output).trim())
+        .unwrap_or_else(|_| panic!("one JSON object on stderr, not {:?}", stderr(output)))
+}
+
+fn temp_file(name: &str, text: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("alchemy-cli-{}-{name}", std::process::id()));
-    std::fs::write(&path, text).expect("the program file is written");
+    std::fs::write(&path, text).expect("the file is written");
     path
 }
+
+/// The spec's worked example: aless's `tests/fixtures/records.json`.
+const RECORDS: &str = r#"{"response":{"metadata":{"fields":[{"title":"Identifier","path":["id"]},{"title":"Full name","path":["person","name"]},{"title":"Balance","path":["account","balance"]}]},"payload":{"deep":{"records":[{"id":123,"person":{"name":"Alice"},"account":{"balance":50.25}},{"account":{"balance":72},"person":{"name":"Bob"},"id":456}]}}}}"#;
+
+const EXPECTED_CSV: &str =
+    "\"Identifier\",\"Full name\",\"Balance\"\r\n\"123\",\"Alice\",\"50.25\"\r\n\"456\",\"Bob\",\"72\"\r\n";
+
+/// The spec's program (sections 12.1 and 13.4).
+const PROGRAM: &str = "def column-from-meta [source]
+  record
+    entry :label (get \"title\" source)
+    entry :source
+      as-path
+        get \"path\" source
+
+def api-binding
+  record
+    entry :columns
+      path \"response\" \"metadata\" \"fields\"
+    entry :rows
+      path \"response\" \"payload\" \"deep\" \"records\" each-index
+    entry :column column-from-meta
+
+def api-table [input]
+  table-from-json api-binding input
+
+def export [input]
+  pipe input
+    api-table
+    csv csv-options
+";
 
 const EXPORT: &str =
     "def export [input]\n  pipe input\n    table-from-json api-binding\n    csv csv-options\n";
 
 #[test]
 fn canon_prints_the_canonical_form() {
-    let file = program_file("canon.alc", EXPORT);
+    let file = temp_file("canon.alc", EXPORT);
     let output = run(&["canon", file.to_str().expect("a utf-8 path")], None);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
@@ -78,20 +114,19 @@ fn format_prints_the_layout_form_and_reads_standard_input() {
 }
 
 #[test]
-fn check_is_silent_on_success() {
-    let output = run(&["check", "-"], Some(EXPORT));
+fn check_is_silent_on_a_program_that_checks() {
+    let output = run(&["check", "-"], Some(PROGRAM));
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "");
     assert_eq!(stderr(&output), "");
 }
 
 #[test]
-fn check_reports_a_failure_as_json_on_stderr_with_status_2() {
+fn check_reports_a_reader_failure_as_json_on_stderr_with_status_2() {
     let output = run(&["check", "-"], Some("pipe x\n  f\n  []\n"));
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(stdout(&output), "");
-    let fail: serde_json::Value =
-        serde_json::from_str(stderr(&output).trim()).expect("one JSON object on stderr");
+    let fail = fail_json(&output);
     assert_eq!(fail["code"], "DSL_PARSE_ERROR");
     assert!(
         fail["message"]
@@ -104,12 +139,206 @@ fn check_reports_a_failure_as_json_on_stderr_with_status_2() {
     assert_eq!(fail["output"], "none");
 }
 
+/// `check` now reaches the resolver and the checker: an unknown name, a
+/// reused stream and a dynamic function each fail with their code, at
+/// the position they name, with status 2.
+#[test]
+fn check_reports_the_resolver_and_checker_codes() {
+    // The composed program of the README names a binding it does not
+    // define.
+    let output = run(&["check", "-"], Some(EXPORT));
+    assert_eq!(output.status.code(), Some(2));
+    let fail = fail_json(&output);
+    assert_eq!(fail["code"], "DSL_TYPE_ERROR");
+    assert!(
+        fail["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("unknown_name: api-binding")),
+        "{fail}"
+    );
+    assert_eq!(
+        (fail["row"].as_u64(), fail["col"].as_u64()),
+        (Some(3), Some(21))
+    );
+
+    let output = run(
+        &["check", "-"],
+        Some("def export [input] (concat (json input) (json input))"),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let fail = fail_json(&output);
+    assert_eq!(fail["code"], "STREAM_REUSED");
+    assert!(
+        fail["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("reused: ")),
+        "{fail}"
+    );
+
+    let output = run(
+        &["check", "-"],
+        Some("def a [x] (b x)\ndef b [x] (a x)\ndef export [input] (a input)"),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fail_json(&output)["code"], "STREAMABILITY_UNKNOWN");
+}
+
+#[test]
+fn explain_prints_the_plan_report() {
+    let output = run(&["explain", "-"], Some(PROGRAM));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.starts_with("export: api-table → csv\n\nSource reads:          1\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Protocol:              JsonEvents/1 → TableRows/1 → Text\n"),
+        "{text}"
+    );
+    assert!(text.contains("Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes\n"), "{text}");
+    assert!(
+        text.ends_with("A later error can occur after earlier output has been written.\n"),
+        "{text}"
+    );
+    assert_eq!(stderr(&output), "");
+
+    let output = run(&["explain", "-"], Some("def x 1"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        fail_json(&output)["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("no_export: ")),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn run_prints_the_worked_example_csv_both_ways() {
+    let program = temp_file("export.alc", PROGRAM);
+    let program = program.to_str().expect("a utf-8 path");
+    let input = temp_file("records.json", RECORDS);
+    let input = input.to_str().expect("a utf-8 path");
+    for args in [
+        vec!["run", program, input],
+        vec!["run", "--no-native", program, input],
+        vec!["run", program, "-"],
+        vec!["run", "--no-native", "-", input],
+    ] {
+        let stdin = match args.as_slice() {
+            [.., "-"] => Some(RECORDS),
+            [_, _, "-", _] => Some(PROGRAM),
+            _ => None,
+        };
+        let output = run(&args, stdin);
+        assert!(output.status.success(), "{args:?}: {}", stderr(&output));
+        assert_eq!(stdout(&output), EXPECTED_CSV, "{args:?}");
+        assert_eq!(stderr(&output), "", "{args:?}");
+    }
+}
+
+#[test]
+fn run_renders_a_table_result_as_csv_or_json() {
+    let table = PROGRAM.replace("    csv csv-options\n", "");
+    let program = temp_file("table.alc", &table);
+    let program = program.to_str().expect("a utf-8 path");
+    let output = run(&["run", program, "-"], Some(RECORDS));
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), EXPECTED_CSV);
+    let output = run(&["run", "--render", "json", program, "-"], Some(RECORDS));
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "[{\"Identifier\":123,\"Full name\":\"Alice\",\"Balance\":50.25},{\"Identifier\":456,\"Full name\":\"Bob\",\"Balance\":72}]\n"
+    );
+    // The echo, and a renderer refused for a program that renders itself.
+    let echo = temp_file("echo.alc", "def export [input] input\n");
+    let echo = echo.to_str().expect("a utf-8 path");
+    let output = run(&["run", echo, "-"], Some("[1.50, {\"a\": null}]"));
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "[1.50,{\"a\":null}]\n");
+    let output = run(&["run", "--render", "csv", echo, "-"], Some("[1]"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        fail_json(&output)["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("protocol_mismatch: ")),
+        "{}",
+        stderr(&output)
+    );
+    let output = run(&["run", "--render", "json", program, "-"], Some(RECORDS));
+    assert!(output.status.success());
+    let text = temp_file("text.alc", PROGRAM);
+    let output = run(
+        &[
+            "run",
+            "--render",
+            "json",
+            text.to_str().expect("a utf-8 path"),
+            "-",
+        ],
+        Some(RECORDS),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        fail_json(&output)["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("render_of_text: ")),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// The statuses follow the code: 1 for an input or protocol failure, 5
+/// for a limit, 2 for the program; the failure is one JSON object on
+/// standard error and standard output carries nothing but the answer.
+#[test]
+fn run_statuses_follow_the_failure_code() {
+    let program = temp_file("export2.alc", PROGRAM);
+    let program = program.to_str().expect("a utf-8 path");
+    // Metadata after the rows: INPUT_ORDER_VIOLATION, status 1, no output.
+    let reordered = r#"{"response":{"payload":{"deep":{"records":[{"id":1,"person":{"name":"a"},"account":{"balance":2}}]}},"metadata":{"fields":[{"title":"Identifier","path":["id"]}]}}}"#;
+    let output = run(&["run", program, "-"], Some(reordered));
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+    let fail = fail_json(&output);
+    assert_eq!(fail["code"], "INPUT_ORDER_VIOLATION");
+    assert_eq!(fail["output"], "none");
+    assert!(
+        fail["path"]
+            .as_str()
+            .is_some_and(|p| p.starts_with(".response.payload")),
+        "{fail}"
+    );
+    // Invalid JSON after the rows: INPUT_INVALID, status 1; the rows were
+    // buffered, not committed, so nothing reached standard output.
+    let output = run(&["run", program, "-"], Some(&format!("{RECORDS} x")));
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+    let fail = fail_json(&output);
+    assert_eq!(fail["code"], "INPUT_INVALID");
+    assert_eq!(fail["output"], "none");
+    // A missing cell under the standard options: MISSING_VALUE, status 1.
+    let missing = r#"{"response":{"metadata":{"fields":[{"title":"Identifier","path":["id"]},{"title":"Full name","path":["person","name"]}]},"payload":{"deep":{"records":[{"id":1}]}}}}"#;
+    let output = run(&["run", program, "-"], Some(missing));
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(fail_json(&output)["code"], "MISSING_VALUE");
+    // A program that does not check: status 2, nothing read from the input.
+    let bad = temp_file("bad.alc", "def export [input] (nope input)\n");
+    let output = run(
+        &["run", bad.to_str().expect("a utf-8 path"), "-"],
+        Some("not json"),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fail_json(&output)["code"], "DSL_TYPE_ERROR");
+}
+
 #[test]
 fn a_reader_error_carries_the_engine_code_and_position() {
     let output = run(&["canon", "-"], Some("a\n  b\n c\n"));
     assert_eq!(output.status.code(), Some(2));
-    let fail: serde_json::Value =
-        serde_json::from_str(stderr(&output).trim()).expect("one JSON object on stderr");
+    let fail = fail_json(&output);
     assert_eq!(fail["code"], "DSL_PARSE_ERROR");
     assert!(
         fail["message"]
@@ -145,6 +374,7 @@ fn a_program_nested_beyond_the_bound_is_a_failure_not_an_abort() {
         ("canon", &parens, 1),
         ("format", &parens, 1),
         ("check", &parens, 1),
+        ("explain", &parens, 1),
         ("canon", &indented, 257),
         ("check", &pipe, 1),
     ] {
@@ -156,10 +386,7 @@ fn a_program_nested_beyond_the_bound_is_a_failure_not_an_abort() {
             stderr(&output)
         );
         assert_eq!(stdout(&output), "", "{command}");
-        let fail: serde_json::Value =
-            serde_json::from_str(stderr(&output).trim()).unwrap_or_else(|_| {
-                panic!("{command}: one JSON object on stderr: {}", stderr(&output))
-            });
+        let fail = fail_json(&output);
         assert_eq!(fail["code"], "DSL_PARSE_ERROR", "{command}");
         assert!(
             fail["message"]
@@ -175,31 +402,35 @@ fn a_program_nested_beyond_the_bound_is_a_failure_not_an_abort() {
 fn usage_errors_and_unreadable_files_exit_2() {
     let output = run(&[], None);
     assert_eq!(output.status.code(), Some(2));
-    assert!(stderr(&output).starts_with("usage:"));
+    assert!(stderr(&output).contains("usage:"), "{}", stderr(&output));
     assert_eq!(stdout(&output), "");
-
-    let output = run(&["explain", "-"], Some("x"));
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
-        stderr(&output).contains("INPUT_INVALID"),
-        "{}",
-        stderr(&output)
-    );
 
     // An unknown command is refused before standard input is read, so
     // what it holds does not matter: unparsable input is not a parse
     // error here.
     let output = run(&["bogus", "-"], Some("("));
     assert_eq!(output.status.code(), Some(2));
-    let fail: serde_json::Value =
-        serde_json::from_str(stderr(&output).trim()).expect("one JSON object on stderr");
+    let fail = fail_json(&output);
     assert_eq!(fail["code"], "INPUT_INVALID");
     assert_eq!(stdout(&output), "");
 
+    // A wrong argument count, a bad renderer, two standard inputs.
+    for args in [
+        vec!["run", "-"],
+        vec!["run", "--render", "xml", "a.alc", "b.json"],
+        vec!["run", "--bogus", "a.alc", "b.json"],
+        vec!["run", "-", "-"],
+        vec!["explain"],
+    ] {
+        let output = run(&args, None);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert_eq!(fail_json(&output)["code"], "INPUT_INVALID", "{args:?}");
+        assert_eq!(stdout(&output), "", "{args:?}");
+    }
+
     let output = run(&["canon", "/nonexistent/program.alc"], None);
     assert_eq!(output.status.code(), Some(2));
-    let fail: serde_json::Value =
-        serde_json::from_str(stderr(&output).trim()).expect("one JSON object on stderr");
+    let fail = fail_json(&output);
     assert_eq!(fail["code"], "INPUT_INVALID");
     assert_eq!(stdout(&output), "");
 }
