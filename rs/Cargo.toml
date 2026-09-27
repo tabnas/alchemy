@@ -1,0 +1,41 @@
+[package]
+name = "tabnas-alchemy"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["Richard Rodger <http://richardrodger.com>"]
+description = "The alchemy grammar plugin and language for the tabnas parsing engine: declarative streaming transducers and renderers."
+license = "MIT"
+repository = "https://github.com/tabnas/alchemy"
+readme = "README.md"
+keywords = ["parser", "grammar", "dsl", "streaming", "transducer"]
+categories = ["parsing", "compilers"]
+
+[lib]
+name = "tabnas_alchemy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "alchemy"
+path = "src/bin/alchemy.rs"
+
+[dependencies]
+# Sibling checkouts, the standard tabnas development model: the engine
+# the grammar plugin installs into, and the two crates the language's
+# streams and texts lower to.
+tabnas = { path = "../../parser/rs" }
+tabnas-transduce = { path = "../../transduce/rs" }
+tabnas-render = { path = "../../render/rs" }
+indexmap = "2"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+[dev-dependencies]
+# The shared fixture loader and runner, so test/spec/*.tsv means the same
+# thing here as in every other grammar repo.
+tabnas-support = { path = "../../support/rs", features = ["serde_json"] }
+# The introspection plugin, for the debug-model test every grammar carries.
+tabnas-debug = { path = "../../debug/rs" }
+tabnas-json = { path = "../../json/rs" }
+tabnas-jsonl = { path = "../../jsonl/rs" }
+tabnas-yaml = { path = "../../yaml/rs" }
+tabnas-csv = { path = "../../csv/rs" }
