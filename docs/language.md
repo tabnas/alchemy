@@ -505,6 +505,20 @@ def export [input] (csv csv-options input)
 ERROR:protocol_mismatch@1:37
 ```
 
+A function given to `map`, `filter` or `concat-map` by name (a
+definition, or a `partial` of one) is checked as the `fn` that calls it
+would be, its parameter against the items of the data, and the failure
+names the data. `public-column` takes a record, so this is
+`type_mismatch` as `(map (fn [x] (public-column x)) [1])` is:
+
+```alchemy
+def bad (map public-column [1])
+def export [input] (json input)
+```
+```check
+ERROR:type_mismatch@1:28
+```
+
 **Strict mode**, the only mode: the function given to `map`, `filter`
 or `concat-map` over a stream, and the step and finish of `scan-emit`,
 must resolve statically to a `fn`, a definition, a native, or a

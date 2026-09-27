@@ -774,6 +774,26 @@ impl Checker<'_> {
         }
     }
 
+    /// A function argument's parameters against the types a higher-order
+    /// native gives it, as a direct call checks its arguments, so a named
+    /// function is checked as its eta expansion is (a `fn` literal's
+    /// parameters are bound to exactly these types, and pass). The arity is
+    /// [`Self::expect_fn`]'s; `span` is the data the items come from.
+    fn expect_params(
+        &self,
+        what: &str,
+        f: &Type,
+        given: &[Type],
+        span: &SourceSpan,
+    ) -> Result<(), Fail> {
+        if let Type::Fn(params, _) = f {
+            for (param, actual) in params.iter().zip(given) {
+                self.expect(&format!("an item given to {what}"), param, actual, span)?;
+            }
+        }
+        Ok(())
+    }
+
     /// A sequence argument: a vector or a stream of items; the items'
     /// type and whether it is a stream.
     fn expect_seq(&self, what: &str, t: &Type, span: &SourceSpan) -> Result<(Type, bool), Fail> {
@@ -824,8 +844,14 @@ impl Checker<'_> {
                         env,
                     )?;
                 }
-                let f = self.fn_arg(&args[0], &[item], env)?;
+                let f = self.fn_arg(&args[0], std::slice::from_ref(&item), env)?;
                 self.expect_fn(&format!("the function of {name}"), 1, &f, args[0].span())?;
+                self.expect_params(
+                    &format!("the function of {name}"),
+                    &f,
+                    &[item],
+                    args[1].span(),
+                )?;
                 // A text per item is a finite text of a value (the
                 // library's `csv-row` maps cells to fields); a live one
                 // could only come from a captured stream, which the
@@ -878,8 +904,14 @@ impl Checker<'_> {
                 }
                 self.require_static("the step of scan-emit", &args[1], env)?;
                 self.require_static("the finish of scan-emit", &args[2], env)?;
-                let step = self.fn_arg(&args[1], &[Unknown, item], env)?;
+                let step = self.fn_arg(&args[1], &[Unknown, item.clone()], env)?;
                 self.expect_fn("the step of scan-emit", 2, &step, args[1].span())?;
+                self.expect_params(
+                    "the step of scan-emit",
+                    &step,
+                    &[Unknown, item],
+                    args[3].span(),
+                )?;
                 self.expect(
                     "the result of the step of scan-emit",
                     &Type::tagged("transition"),
@@ -1619,6 +1651,43 @@ mod tests {
         // A step that answers something other than a transition.
         assert_eq!(code("def step [s x] [x]\ndef fin [s] []\ndef export [input] (join \",\" (scan-emit null step fin (select (path each-index) input)))").1, "type_mismatch");
         assert_eq!(code("def step [s] s\ndef fin [s] []\ndef export [input] (join \",\" (scan-emit null step fin (select (path each-index) input)))").1, "arity");
+    }
+
+    /// A named function given to `map`, `filter` or `concat-map` is
+    /// checked as its eta expansion is: its parameter against the items
+    /// the data holds, as a direct call checks its arguments.
+    #[test]
+    fn a_named_function_over_items_is_checked_as_its_eta_expansion() {
+        let (c, finer, row, col) =
+            code("def bad (map public-column [1])\ndef export [input] (json input)");
+        assert_eq!((c, finer.as_str()), (Code::DslTypeError, "type_mismatch"));
+        assert_eq!((row, col), (Some(1), Some(28)));
+        assert_eq!(
+            code("def bad (filter public-column [1])\ndef export [input] (json input)").1,
+            "type_mismatch"
+        );
+        // A partial of a library definition, over a stream.
+        assert_eq!(code("def export [input]\n  concat-map (partial csv-row csv-options) (map (fn [v] 1) (select (path each-index) input))").1, "type_mismatch");
+        assert_eq!(code("def export [input]\n  concat-map (fn [r] (scalar-text csv-options (get :label r))) (map public-column (map (fn [v] \"s\") (select (path each-index) input)))").1, "type_mismatch");
+        // The named form and its eta expansion agree, both ways.
+        for f in ["public-column", "(fn [x] (public-column x))"] {
+            assert_eq!(
+                code(&format!(
+                    "def bad (map {f} [1])\ndef export [input] (json input)"
+                ))
+                .1,
+                "type_mismatch",
+                "{f}"
+            );
+            check(&format!(
+                "def ok (map {f} [(record (entry :label \"x\"))])\ndef export [input] (json input)"
+            ))
+            .unwrap();
+            check(&format!(
+                "def ok [xs] (map {f} xs)\ndef export [input] (json input)"
+            ))
+            .unwrap();
+        }
     }
 
     #[test]

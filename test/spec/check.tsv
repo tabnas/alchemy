@@ -20,6 +20,7 @@ def export [input] (if 1 (json input) (json input))	ERROR:type_mismatch@1:24
 def export [input] (json [input])	ERROR:type_mismatch@1:27
 def export [input] (1 input)	ERROR:type_mismatch@1:21
 def export [input] (join "," [(json input)])	ERROR:type_mismatch@1:30
+def bad (map public-column [1])\ndef export [input] (json input)	ERROR:type_mismatch@1:28
 # The runtime's, where building the plan reaches them: a record with a key twice, a match no case takes.
 def export [input] (concat (get :a (record (entry :a "1") (entry :a "2"))) (json input))	ERROR:duplicate_key@1:36
 def export [input] (concat (match 5 (case 1 "one")) (json input))	ERROR:no_match@1:28
