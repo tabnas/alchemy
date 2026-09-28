@@ -1135,6 +1135,20 @@ mod tests {
         let f = eval("", "repeat 1.5 \"a\"").unwrap_err();
         assert_eq!(f.code, Code::DslTypeError, "{f}");
         assert!(f.message.contains("not 1.5"), "{f}");
+        // `kind` passed as a function meets what the checker refuses where
+        // it is named: a finite text is refused as a live one is, and no
+        // `:text` or `:stream` is ever answered.
+        assert_eq!(
+            eval("", "map kind [1 \"s\"]").unwrap(),
+            Val::vector(vec![Val::keyword("number"), Val::keyword("string")])
+        );
+        let f = eval("", "map kind [(text \"x\")]").unwrap_err();
+        assert_eq!(f.code, Code::DslTypeError, "{f}");
+        assert!(
+            f.message
+                .starts_with("type_mismatch: kind: a text cannot be asked"),
+            "{f}"
+        );
         // The quoted form of a string can be six times the string: it is
         // held to the same limit, refused before it is built.
         let f = eval("", "quoted (repeat 3000000 \"\\u0001\")").unwrap_err();

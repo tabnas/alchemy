@@ -462,18 +462,22 @@ fn count(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// from a number, which no `match` pattern does: the words `Val::kind`
 /// uses in messages, without their article.
 fn kind(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    if a[0].is_live() {
-        return Err(type_error(format!(
-            "kind: {} cannot be asked; a stream is used once, where it is",
-            a[0].live_kind()
-        )));
+    // The checker refuses a stream or a text where `kind` is named; this
+    // is where `kind` passed as a function meets one (`map kind [(text
+    // "x")]`), and a finite text is refused as a live one is.
+    match kind_word(&a[0]) {
+        Some(word) => Ok(Val::keyword(word)),
+        None => Err(type_error(format!(
+            "kind: {} cannot be asked; a stream or a text is used where it is, not inspected",
+            a[0].kind()
+        ))),
     }
-    Ok(Val::keyword(kind_word(&a[0])))
 }
 
-/// The word `kind` answers for a value.
-fn kind_word(v: &Val) -> &'static str {
-    match v {
+/// The word `kind` answers for a retained value; none for a stream or a
+/// text, live or finite, which `kind` refuses.
+fn kind_word(v: &Val) -> Option<&'static str> {
+    Some(match v {
         Val::Null => "null",
         Val::Bool(_) => "boolean",
         Val::Num { .. } => "number",
@@ -486,9 +490,8 @@ fn kind_word(v: &Val) -> &'static str {
         Val::CaptureSpec(_) => "capture",
         v @ Val::Tagged { .. } if v.is_missing() => "missing",
         Val::Tagged { .. } => "tagged",
-        Val::Stream(_) => "stream",
-        Val::Text(_) => "text",
-    }
+        Val::Stream(_) | Val::Text(_) => return None,
+    })
 }
 
 fn path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -1208,7 +1211,7 @@ mod tests {
     /// the messages use.
     #[test]
     fn kind_names_a_value_by_one_keyword() {
-        let kind_of = |v: Val| kind_word(&v).to_string();
+        let kind_of = |v: Val| kind_word(&v).unwrap().to_string();
         assert_eq!(kind_of(Val::Null), "null");
         assert_eq!(kind_of(Val::Bool(true)), "boolean");
         assert_eq!(kind_of(Val::num(1.5)), "number");
