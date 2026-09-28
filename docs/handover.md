@@ -1,6 +1,6 @@
 # Handover: streaming transducers, alchemy, and the work around them
 
-Status as of 2026-09-28 14:50 UTC. This records the state of one working
+Status as of 2026-09-28 18:05 UTC. This records the state of one working
 session across the tabnas fleet and rjrodger/aless, so that whoever picks
 it up can continue without the session's scratch files, which do not
 survive it. Everything a later step needs is written here or linked from
@@ -54,7 +54,8 @@ Requests that came later, in order:
   - Consider ratatui, and highlight with tabnas/lsp where possible.
   - Not started; see 5.9.
 - **A full Rust port of tabnas/lsp,** used directly as a Rust dependency
-  of aless. Nearly done; see 4.2.
+  of aless. Done, lsp#21; see 4.2 for what its reviews found and 5.9
+  for what aless meets when it takes the crate.
 - **The repetition rule:** "Star repetitions must always be alt.r not
   alt.p. This is fundamental. Make sure you have noted it in the agent
   guides." Noted in every affected guide. The compiler fix is bnf#80,
@@ -141,15 +142,15 @@ original branch. Merges use merge commits titled
 |---|---|---|
 | tabnas/transduce | #1 the crate, #2 and #3 repetition-rule guide notes | none |
 | tabnas/render | #1 the crate | none |
-| tabnas/alchemy | #1 the reader, #2 phase 3 (`4c9c2a2`), #3 the reader's repetitions as `r:` loops (`f67942d`), #5 a lone carriage return at a line start is whitespace (09-28 12:08, `e9e4daf`) | this handover (#6); next, the debug test accepting both renderings of the optional block (4.1) |
+| tabnas/alchemy | #1 the reader, #2 phase 3 (`4c9c2a2`), #3 the reader's repetitions as `r:` loops (`f67942d`), #5 a lone carriage return at a line start is whitespace (09-28 12:08, `e9e4daf`), #6 the handover refreshed (15:04, `ae93555`), #7 the debug test accepts both renderings of the optional block (15:09, `c5f966d`) | this handover (#8) |
 | rjrodger/aless | #10 `--render`, #11 custom ABNF grammars (`0cc8a94`), #12 a grammar from the command line runs under the shared depth cap (09-28 12:53, `5e2b7bf`), #13 `--alchemy`, `--alchemy-expr` and `--explain` (09-28 14:45, `2eec30f`) | none; the branch is at main |
 | tabnas/parser | #245, #246 guide notes; #248 Go builtins append `src` in amortized constant time (`8e60c46`); #249 TypeScript `@capture$` and `@fold$` append a child's kids one at a time, over the count the child had (09-28 12:36, `d8d00c3`) | none |
 | tabnas/bnf | **#80** every repetition compiles to a same-depth replace loop (09-28 12:40, `d0a9227`) | none; the release is deferred (5.1) |
 | tabnas/abnf | #97 guide note | none |
 | tabnas/ebnf | #45, #46 guide notes | none |
 | tabnas/gbnf | #47, #48 guide notes; #49 the DIVERGENCE.md 3 pin follows the compiler (`5ee4ff3`); #50 close DIVERGENCE.md 3 and hold the linear side as a standing check (09-28 12:51, `5c24c4d`) | none |
-| tabnas/debug | none | **#63** the Rust emitter renders the repeat loop (head `cdfd35b`); Rust, Go and prose gates green, the three `ci / ts` jobs red on every PR in the repository since bnf#80 merged, and alchemy's debug test must accept the new rendering before it merges (see 4.1 and 5.6) |
-| tabnas/lsp | #20 the semantic-token crate (`b6339f9`) | none yet: the full port is 16 commits on the first session's branch at `6688f76`, untouched since (see 4.2) |
+| tabnas/debug | none | **#63** the Rust emitter renders the repeat loop (head `cdfd35b`); Rust, Go and prose gates green, Codex threads resolved, the alchemy prerequisite merged (alchemy#7); the three `ci / ts` jobs red on every PR in the repository since bnf#80 merged, which is the maintainer's decision (see 4.1 and 5.6) |
+| tabnas/lsp | #20 the semantic-token crate (`b6339f9`); **#21** the full Rust port, eighteen commits (09-28 17:56, `2562bfa`) | none |
 
 Another session, not these, drove the parser 0.12.5 release and the
 yaml, ini and csv releases after it. Leave those alone.
@@ -203,50 +204,82 @@ yaml, ini and csv releases after it. Leave those alone.
   at `cdfd35b`. alchemy's CI clones debug at `main`, so merging #63
   first would turn alchemy red: the repositories-test-each-other trap of
   section 6, and the way out is the gbnf#49 one, an alchemy change that
-  accepts both renderings, merged before #63. That change is the next
-  PR from the designated alchemy branch. Of the other Rust crates that
+  accepts both renderings, merged before #63: alchemy#7 (`c5f966d`),
+  verified against debug at `main` and at `cdfd35b`, and noted on #63.
+  Of the other Rust crates that
   take debug by path, feed's and zon's debug tests pass against the
   same checkout (they pin the graph and a round trip, not rendered
   text); the crates not checked out in the second session (5.6 counts
   six in all) still need the same run.
 
-### 4.2 tabnas/lsp: the full Rust port
+### 4.2 tabnas/lsp: the full Rust port, merged
 
-Untouched in the second session. The state below is the first session's.
+lsp#21 (`2562bfa`, 09-28 17:56): the first session had opened it from
+the branch at `6688f76` minutes after writing this document (so the
+"open one PR" step was already done, which the second session found
+only when a second create was refused), and the second session ran the
+two reviews it called for, fixed what they found, answered Codex, and
+merged. The PR body is the full record. In short:
 
-- **Done:** the modules and a parity stage on the branch at `6688f76`,
-  16 commits above main.
-  - Every section of `test/fixtures/lsp-conformance.json` passes in all
-    three runtimes, including a new outlines section.
-  - A random differential sweep against the TypeScript core
-    (`a330a6a`), and one registered divergence in the block-comment case
-    of completion (`78ab481`).
-  - Two cargo features, both off by default. `dialects` links abnf, ebnf
-    and gbnf. `fleet` links csv, feed, ini, json, json5, jsonc, jsonic,
-    jsonl, toml, xml, yaml and zon.
-  - `ci-rust` clones 18 siblings.
-- **Still to do:**
-  - Two reviews. One drives the binary through real LSP sessions
-    (malformed and out-of-order messages, huge documents, didChange
-    bursts, both position encodings, a hot reload, a quarantined
-    grammar) and compares with the TypeScript server. The other attacks
-    the loaders and the firewall with hostile specs and grammars.
-  - Fix what they find.
-  - Open ONE pull request from the branch, ready for review, describing
-    the modules, the features, the generator target, parity per runtime
-    and what is left. Then drive it green and merge it.
-- **Flagged by the port's foundation:**
-  - admin's `rollout/workflows/lsp__ci.yml` predates the `ci-rust` job
-    and needs a sync by the maintainer.
-  - The Rust engine keeps `is_builtin_action` crate-private, so the
-    loader's firewall relies on the engine's own rejection of an unknown
-    `@` action.
-  - `Makefile` and `AGENTS.md` should say that `rs/` is the whole
-    pipeline, if the port's last commit did not already.
+- **The reviews** ran as a workflow: two reviewers (real LSP sessions
+  against both binaries and the TypeScript server; hostile specs and
+  grammars against the loaders and the firewall) and one refuter per
+  finding, reproducing it alone from its description. Seven findings,
+  six confirmed, one refuted (the binary's unset size cap and parse
+  deadline mirror the TypeScript server). The fixes are `af6da3a`, each
+  with its test: request ids that are not a string or a number refused
+  as `InvalidRequest` under a null id; counted repetitions in L3 text
+  capped before the compile (`MAX_REPETITION_BOUND` 512,
+  `MAX_REPETITION_TOTAL` 2048; the dialect compilers unroll a count at a
+  cost that grows with its square, measured: 256 costs 0.4 s, 512 costs
+  1.4 to 3.2 s in a debug build) and the compile on its own thread under
+  `Loader::with_compile_budget` (10 s); the firewall's builtin probe
+  memoized for the process and the alt scan stopped at a hundred
+  findings; `load` read in the canonical order (spec, grammar, module);
+  a spec file past serde_json's 128 levels given the firewall's
+  refusal; a schema version above 2^53 printed as JavaScript's double.
+- **The verification of the fixes** was meant to be a second workflow;
+  it failed at once on the account's session limit (subagents refused
+  until 17:10 UTC), so the fixes were verified by hand with the
+  reviewers' own drivers, which the workflow had left in the session's
+  scratch: the ids driver, the loaders' workspace driver on the two-key,
+  deep and counted-repetition workspaces, the 35 malformed-input cases
+  diffed against their record (one change, the fixed ids), and the
+  parity sweep at 300 documents. All held.
+- **Codex's four threads** on the opening head, fixed in `f54384c`: a
+  git consumer of the crate (a generated server included) could resolve
+  none of the optional sibling path dependencies, so the generator's
+  Rust target now writes a `[patch]` table per repository for the
+  engine, every optional sibling and what each names by path (the map
+  is in `ts/src/generate.js`, held to `rs/Cargo.toml` and to the
+  sibling checkouts by a test); binary names cargo refuses (`.`, `+`)
+  refused at generation, verified with a scratch crate; `serve` returns
+  whether the client asked for shutdown and a generated server exits 1
+  otherwise; a manifest change that takes a language from an open
+  document withdraws its diagnostics once. These touched
+  `ts/src/generate.js`, the generator's Rust target: TypeScript code
+  that emits Rust, taken as this PR's scope rather than deferred.
+- **Filed from the reviews:** tabnas/parser#251 (the Rust engine's
+  `parse_recover` is quadratic in document length on the fixture
+  grammar: 25 KB in 5.7 s, 50 KB in 20 s, the time in
+  `best_partial_value` and `Value::unwrap_undefined`) and lsp#22 (a
+  lone-CR document gets an end-before-start symbol range in every
+  runtime). The other engine strictness differences the loaders review
+  met are in the PR body, unfiled.
+- **Left for later, in the PR body:** the optional dialect and fleet
+  crates are path dependencies of the library's manifest, so a git
+  consumer needs a `[patch]` table per repository whether or not a
+  feature is on; moving those lanes and the binary into a crate of
+  their own would leave the library with the engine as its only
+  sibling, which is what aless wants (5.9). The engine's
+  `is_builtin_action` is crate-private; admin's `lsp__ci.yml` needs a
+  sync; the TypeScript defects the port reported (`.ebnf`/`.gbnf`
+  refused by the firewall; `load.module` ignored).
 
 ## 5. Next work, in order
 
-Items 5.1 to 5.4 and 5.7 are done; what remains of each is listed.
+Items 5.1 to 5.4 and 5.7 are done, and 4.2 (the lsp port) with them;
+what remains of each is listed.
 The Rust-only instruction (section 1) orders the rest: 5.6's TypeScript
 port waits on the maintainer, 5.5's next step is a Rust profile and a
 design, 5.8's is the audit of the Rust grammars, 5.9 is aless. Where a
@@ -553,6 +586,15 @@ Three pull requests, in this order.
 
 **3. Highlighting through tabnas/lsp's Rust crate.**
 
+The crate is on lsp's `main` since #21. Taking it by git needs, beside
+the `tabnas` patch aless already keeps per repository, a
+`[patch."https://github.com/tabnas/lsp"]` table naming every optional
+sibling the manifest carries (`tabnas-abnf` … `tabnas-zon`) and a table
+per sibling for what it names by path (lsp's `rs/README.md` "Install"
+lists them; aless already patches most of those repositories). The
+crate split recorded in 4.2 would remove that tax; do it first if it is
+cheap, or carry the tables.
+
 - **How:** `tabnas_lsp::highlight` takes the engine's lex trace, keeps
   the newest token at each position, and maps each token to a fixed
   nine-type legend. The mapping comes from the canonical table, the
@@ -563,7 +605,16 @@ Three pull requests, in this order.
 - **Fallback:** grammars whose registry entry says their lex stream is
   speculative keep aless's value-kind colouring.
 
-### 5.10 Upstream defects and candidates, not yet filed
+### 5.10 Upstream defects and candidates: filed
+
+Every item below is now an issue (filed 09-28 15:00 to 15:20 UTC, one
+per item, with its reproduction): 1 to 4 and 6 in tabnas/bnf (#81 to
+#85), 5 and 7 in tabnas/abnf (#98, #99), the `options.rule.finish`
+observation in tabnas/parser (#250), 8 to 11 and 15 in tabnas/bnf (#86
+to #90), 12 in tabnas/debug (#64), 13 in tabnas/abnf (#100), 14 as six
+issues in rjrodger/aless (#14 to #19). Item 10 (`Value::to_json`) lives
+in the engine crate (`parser/rs/src/value.rs`), which bnf#88 names.
+The lsp reviews added tabnas/parser#251 and lsp#22 (4.2).
 
 Found while writing aless's Unix-format grammars against bnf 0.1.22 and
 abnf 0.4.16. Reproductions are in rjrodger/aless
@@ -586,7 +637,7 @@ abnf 0.4.16. Reproductions are in rjrodger/aless
 Engine observation: `options.rule.finish` is parsed but never read by the
 Rust parser.
 
-Found in the second session, also not yet filed:
+Found in the second session:
 
 8. tabnas/bnf: the compiler (new and old) exhausts memory (13.8 GB,
    killed) compiling one random grammar with nested bounded
@@ -689,3 +740,17 @@ Found in the second session, also not yet filed:
   it again before treating it as a defect.
 - **Quoting in `bash -c '…'`** breaks a heredoc holding an apostrophe;
   write commit messages to a file first.
+- **The account's session limit stops every subagent at once** (a
+  workflow's agents all fail with "session limit", the main session
+  goes on): keep the reviewers' drivers in the scratch and verify by
+  hand when it hits, as 4.2 did; the limit resets on the hour it names.
+- **A PR another session opened cannot be subscribed to** from this one
+  (the call fails); a scheduled check-in stands in. Before opening a PR
+  for a branch, list the branch's open PRs: the first session's
+  handover said "open one" of a PR it had already opened.
+- **Cargo refuses `.` and `+` in a binary target name**, tested with a
+  scratch crate; a generator that derives a binary name from a language
+  id must refuse them first.
+- **The loaders review's workspace driver** (`lsp.py` in its scratch)
+  takes server keys, not paths, and the workspace as an absolute path:
+  a relative one finds no manifest and reports nothing served.
