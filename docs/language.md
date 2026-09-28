@@ -624,10 +624,10 @@ route [(capture :meta (path "meta")) (capture :row (path "rows" each-index))] in
 ```
 
 ```alchemy
-scan-emit no-schema (partial table-step binding) (partial table-finish binding) selected
+scan-emit no-schema (partial table-step binding) table-finish selected
 ```
 ```canonical
-(scan-emit no-schema (partial table-step binding) (partial table-finish binding) selected)
+(scan-emit no-schema (partial table-step binding) table-finish selected)
 ```
 
 The source's events as items, for a program that reads the document one
@@ -752,8 +752,9 @@ native renderer fails it rather than being printed. And the binding may
 take its columns from the first row rather than from metadata
 (`:columns :infer`), which the spec leaves to the host: `table-captures`
 routes only the rows then, `table-first-row` binds the columns from the
-first row's keys (`keys`), and `table-finish` writes the schema of no
-columns for a document with no rows.
+first row's keys (`keys`), and `table-finish-for` writes the schema of
+no columns for a document with no rows, leaving `table-finish` as the
+spec has it.
 
 The table transducer, metadata first or inferred from the first row,
 `JsonEvents` in, `TableEvents` out:
@@ -835,20 +836,31 @@ def table-step [binding state event]
 ```
 
 ```alchemy
-def table-finish [binding state]
+def table-finish [state]
   if (is-ready state)
     vector
       table-end
-    match (get :columns binding)
-      case :infer
+    fail "Required metadata was not found"
+```
+```core
+(def table-finish (fn [state] (if (is-ready state) (vector table-end) (fail "Required metadata was not found"))))
+```
+
+```alchemy
+def table-finish-for [binding state]
+  match (get :columns binding)
+    case :infer
+      if (is-ready state)
+        vector
+          table-end
         vector
           schema []
           table-end
-      case _
-        fail "Required metadata was not found"
+    case _
+      table-finish state
 ```
 ```core
-(def table-finish (fn [binding state] (if (is-ready state) (vector table-end) (match (get :columns binding) (case :infer (vector (schema []) table-end)) (case _ (fail "Required metadata was not found"))))))
+(def table-finish-for (fn [binding state] (match (get :columns binding) (case :infer (if (is-ready state) (vector table-end) (vector (schema []) table-end))) (case _ (table-finish state)))))
 ```
 
 ```alchemy
@@ -870,10 +882,10 @@ def table-captures [binding]
 def table-from-json [binding input]
   pipe input
     route (table-captures binding)
-    scan-emit no-schema (partial table-step binding) (partial table-finish binding)
+    scan-emit no-schema (partial table-step binding) (partial table-finish-for binding)
 ```
 ```core
-(def table-from-json (fn [binding input] (scan-emit no-schema (partial table-step binding) (partial table-finish binding) (route (table-captures binding) input))))
+(def table-from-json (fn [binding input] (scan-emit no-schema (partial table-step binding) (partial table-finish-for binding) (route (table-captures binding) input))))
 ```
 
 The binding is a record of `:columns` (the selector of the metadata
@@ -1323,7 +1335,7 @@ carries the span of the form it came from. A failure raised inside the
 standard library carries no row or column of its own, since a row there
 would name a line of the user's file that says something else; its
 message ends with the library file, row and column instead,
-`Required metadata was not found (at stdlib/table.alc:74:9)`, and when
+`Required metadata was not found (at stdlib/table.alc:68:5)`, and when
 it passes a form of the program on its way out (a native the program
 called applied the library's function), that form's row and column are
 the failure's. Library spans are told apart from the program's by the

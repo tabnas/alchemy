@@ -697,6 +697,18 @@ fn an_inferred_binding_agrees_both_ways() {
         },
         Err(Code::ResourceLimitExceeded),
     );
+    // Three one-byte names take 16 + 3 * (16 + 1) = 67 bytes natively; the
+    // library's state holding them is larger still.
+    agree(
+        "max_metadata_bytes holds the inferred columns",
+        &program,
+        &three,
+        &Limits {
+            max_metadata_bytes: 40,
+            ..Limits::default()
+        },
+        Err(Code::ResourceLimitExceeded),
+    );
     agree(
         "max_record_bytes holds each row",
         &program,

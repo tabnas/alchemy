@@ -178,6 +178,7 @@ mod tests {
                 "table-first-row",
                 "table-step",
                 "table-finish",
+                "table-finish-for",
                 "table-captures",
                 "table-from-json",
                 "csv-options",

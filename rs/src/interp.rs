@@ -251,7 +251,7 @@ impl Runtime {
     /// was compiled from several sources. A form of the standard
     /// library gives none, since a row there would name a line of the
     /// user's file that says something else; the message ends with the
-    /// library file, row and column instead, `(at stdlib/table.alc:74:9)`,
+    /// library file, row and column instead, `(at stdlib/table.alc:68:5)`,
     /// once, and a form of the program around the library's call, when
     /// the failure passes one on its way out, gives the row and column.
     pub fn fail_at(&self, mut fail: Fail, at: &SourceSpan) -> Fail {
@@ -1233,8 +1233,7 @@ mod tests {
         assert_eq!((f.row, f.column), (Some(2), Some(3)));
         // A failure inside the library names the library's file and line
         // in its message, and no row of the program's.
-        let binding = "(record (entry :columns (path \"m\")))";
-        let f = eval("", &format!("table-finish {binding} no-schema")).unwrap_err();
+        let f = eval("", "table-finish no-schema").unwrap_err();
         assert_eq!(f.code, Code::InputInvalid);
         let lib = stdlib::source("stdlib/table.alc").unwrap();
         let (row, line) = lib
@@ -1262,11 +1261,7 @@ mod tests {
         );
         // A library failure under a native the program called takes the
         // program's position too.
-        let f = eval(
-            "",
-            &format!("map (fn [s] (table-finish {binding} s)) [no-schema]"),
-        )
-        .unwrap_err();
+        let f = eval("", "map (fn [s] (table-finish s)) [no-schema]").unwrap_err();
         assert!(
             f.message
                 .ends_with(&format!("(at stdlib/table.alc:{row}:{col})")),

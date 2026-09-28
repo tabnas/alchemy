@@ -371,10 +371,10 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     retention.push(Retention {
                         scope: RetentionScope::Metadata,
                         label: "Inferred columns:",
-                        reason: "the first row's keys, taken as the columns once it completes"
+                        reason: "the first row's keys, taken as the columns once it completes, at most max_columns of them"
                             .to_string(),
                         selector: None,
-                        limit: Some("max_columns"),
+                        limit: Some("max_metadata_bytes"),
                     });
                 } else {
                     selection = "shared prefix matcher, two capture routes".to_string();
@@ -758,7 +758,7 @@ mod tests {
                 (
                     RetentionScope::Metadata,
                     "Inferred columns:",
-                    Some("max_columns")
+                    Some("max_metadata_bytes")
                 ),
                 (
                     RetentionScope::Record,

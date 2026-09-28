@@ -61,17 +61,23 @@ def table-step [binding state event]
             table-row (require-columns state) raw
         table-first-row binding state raw
 
-def table-finish [binding state]
+def table-finish [state]
   if (is-ready state)
     vector
       table-end
-    match (get :columns binding)
-      case :infer
+    fail "Required metadata was not found"
+
+def table-finish-for [binding state]
+  match (get :columns binding)
+    case :infer
+      if (is-ready state)
+        vector
+          table-end
         vector
           schema []
           table-end
-      case _
-        fail "Required metadata was not found"
+    case _
+      table-finish state
 
 def table-captures [binding]
   match (get :columns binding)
@@ -86,4 +92,4 @@ def table-captures [binding]
 def table-from-json [binding input]
   pipe input
     route (table-captures binding)
-    scan-emit no-schema (partial table-step binding) (partial table-finish binding)
+    scan-emit no-schema (partial table-step binding) (partial table-finish-for binding)

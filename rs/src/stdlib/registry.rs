@@ -462,11 +462,18 @@ fn count(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// a captured object is the document's. A bounded operation over one
 /// record, not a fold: the library's inferred table binding reads its
 /// columns from the first row with it.
-fn keys(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+fn keys(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     match &a[0] {
-        Val::Record(fields) => Ok(Val::vector(
-            fields.keys().map(|k| Val::Str(k.clone())).collect(),
-        )),
+        Val::Record(fields) => {
+            // A step per key, so the host's abort flag stops a wide
+            // record's copy as it stops any other long evaluation.
+            let mut out = Vec::with_capacity(fields.len());
+            for k in fields.keys() {
+                rt.tick()?;
+                out.push(Val::Str(k.clone()));
+            }
+            Ok(Val::vector(out))
+        }
         other => Err(type_error(format!(
             "keys: the record must be a record, not {}",
             other.kind()
