@@ -21,8 +21,8 @@ use tabnas_transduce::{Code, Fail, Limits, Metrics, ParserSource, Prune, SourceM
 /// lines two spaces in; a sequence item is `- `; a mapping in a sequence
 /// has its first key on the dash's line; a sequence in a sequence starts
 /// on the next line, two spaces in; a root scalar stands alone. Strings
-/// and keys go through `quoted`; numbers are not told from strings by a
-/// `match`, so the documents below hold none.
+/// and keys go through `quoted`; a number is told from a string by
+/// `kind` and written by its lexeme.
 const RENDER: &str = r#"def indent [ctx]
   repeat (count ctx) "  "
 
@@ -76,10 +76,13 @@ def opening [s]
         case _ ""
 
 def yaml-scalar [value]
-  match value
-    case null "null"
-    case true "true"
-    case false "false"
+  match (kind value)
+    case :null "null"
+    case :boolean
+      match value
+        case true "true"
+        case false "false"
+    case :number (scalar-text csv-options value)
     case _ (quoted value)
 
 def step [s event]
@@ -176,7 +179,8 @@ fn events_render_a_nested_document_as_a_yaml_like_block() {
     assert_eq!(program.output(), Output::Text);
     // Every event is needed, so nothing is pruned.
     assert!(program.row_selector().is_none());
-    let nested = r#"{"a":"x","b":["y",null,{"c":"q\"x\n","d":{}}],"e":[],"f":{"g":[[]]}}"#;
+    let nested =
+        r#"{"a":"x","b":["y",null,{"c":"q\"x\n","d":{}}],"e":[],"f":{"g":[[]]},"n":1.5e3,"z":-0}"#;
     assert_eq!(
         render(&program, nested),
         "\"a\": \"x\"\n\
@@ -188,8 +192,14 @@ fn events_render_a_nested_document_as_a_yaml_like_block() {
          \"e\": []\n\
          \"f\":\n\
          \x20 \"g\":\n\
-         \x20   - []\n"
+         \x20   - []\n\
+         \"n\": 1.5e3\n\
+         \"z\": -0\n"
     );
+    // A number is told from a string by `kind` and written by its lexeme;
+    // a string that spells a number stays quoted.
+    assert_eq!(render(&program, "42"), "42\n");
+    assert_eq!(render(&program, r#"["42",42]"#), "- \"42\"\n- 42\n");
     // A scalar root stands alone; its escapes are JSON's, with DEL and
     // the C1 controls escaped too, and everything else as itself.
     assert_eq!(

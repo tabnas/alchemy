@@ -458,6 +458,33 @@ fn count(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::num(as_items("count", &a[0])?.len() as f64))
 }
 
+/// The kind of a value as a keyword, so that a program can tell a string
+/// from a number, which no `match` pattern does: the words `Val::kind`
+/// uses in messages, without their article.
+fn kind(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    Ok(Val::keyword(kind_word(&a[0])))
+}
+
+/// The word `kind` answers for a value.
+fn kind_word(v: &Val) -> &'static str {
+    match v {
+        Val::Null => "null",
+        Val::Bool(_) => "boolean",
+        Val::Num { .. } => "number",
+        Val::Str(_) => "string",
+        Val::Keyword(_) => "keyword",
+        Val::Vector(_) => "vector",
+        Val::Record(_) => "record",
+        Val::Fn(_) => "function",
+        Val::Selector(_) => "selector",
+        Val::CaptureSpec(_) => "capture",
+        v @ Val::Tagged { .. } if v.is_missing() => "missing",
+        Val::Tagged { .. } => "tagged",
+        Val::Stream(_) => "stream",
+        Val::Text(_) => "text",
+    }
+}
+
 fn path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let mut selector = Selector::root();
     for item in a {
@@ -990,6 +1017,7 @@ static NATIVES: &[Native] = &[
     f("pop", Exact(1), pop, "pop vector -> Vector", "the vector without its last item; an empty vector is a type error"),
     f("top", Exact(1), top, "top vector -> Value", "the last item; an empty vector is a type error"),
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
+    f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
     // Selectors.
     f("path", AtLeast(0), path, "path segment... -> Selector", "a selector from strings, indexes and selectors"),
     c("root", root, "root -> Selector", "the document"),
@@ -1096,7 +1124,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 32);
+        assert_eq!(compared, 33);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
@@ -1117,6 +1145,21 @@ mod tests {
         // escape: the two agree on JSON's own escapes.
         let json = tabnas_transduce::Datum::String("q\" \\ \n \u{1f} é".into()).to_string();
         assert_eq!(quote("q\" \\ \n \u{1f} é"), json);
+    }
+
+    /// `kind` names every retained value's kind by one keyword, the word
+    /// the messages use.
+    #[test]
+    fn kind_names_a_value_by_one_keyword() {
+        let kind_of = |v: Val| kind_word(&v).to_string();
+        assert_eq!(kind_of(Val::Null), "null");
+        assert_eq!(kind_of(Val::Bool(true)), "boolean");
+        assert_eq!(kind_of(Val::num(1.5)), "number");
+        assert_eq!(kind_of(Val::str("s")), "string");
+        assert_eq!(kind_of(Val::keyword("k")), "keyword");
+        assert_eq!(kind_of(Val::vector(vec![])), "vector");
+        assert_eq!(kind_of(Val::missing()), "missing");
+        assert_eq!(kind_of(Val::tagged("key", vec![Val::str("a")])), "tagged");
     }
 
     #[test]

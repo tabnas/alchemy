@@ -571,6 +571,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `pop` | `pop vector -> Vector` | the vector without its last item; an empty vector is a type error |
 | `top` | `top vector -> Value` | the last item; an empty vector is a type error |
 | `count` | `count vector -> Number` | how many items the vector holds |
+| `kind` | `kind value -> Keyword` | the kind of a value as a keyword: `:null`, `:boolean`, `:number`, `:string`, `:keyword`, `:vector`, `:record`, `:missing`, `:tagged`, `:function`, `:selector` or `:capture`; a stream or a text cannot be asked |
 | `path` | `path segment... -> Selector` | a selector from strings, indexes and selectors |
 | `root`, `each-index`, `each-member` | `-> Selector` | the document; every element of an array; every member value of an object |
 | `property`, `index`, `compose` | `property name`, `index n`, `compose outer inner -> Selector` | one member; one element; inner below every location outer names |

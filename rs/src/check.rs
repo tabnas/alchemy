@@ -1045,6 +1045,12 @@ impl Checker<'_> {
                 self.expect("the vector of count", &Type::vector(Unknown), t(0), at(0))?;
                 Number
             }
+            "kind" => {
+                if t(0).is_affine() {
+                    return Err(self.mismatch("the value of kind", &Value, t(0), at(0)));
+                }
+                Keyword
+            }
             "path" => {
                 for i in 0..args.len() {
                     match t(i) {
