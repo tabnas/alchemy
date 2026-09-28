@@ -1172,6 +1172,20 @@ let _ = Renderer::Json;
   most `MAX_EVAL_DEPTH` (1,000) levels of nesting, `recursion` past them.
   It runs on a thread of `STACK_BYTES` (64 MiB) whatever thread calls it,
   so those bounds hold in a debug build as in a release one.
+- `compile_sources(&[Source { file, text }, …])` compiles one program
+  from several sources linked into one namespace, as a host links a
+  format's parts (libraries of definitions prefixed by the format's
+  name, with no `export`) with the program that calls them. A
+  definition in any source is in scope in all, whatever their order;
+  `export` is defined in one of them; a name defined twice, in one
+  source or across two, is `duplicate_def`, and the message says where
+  the first is. Each source is named by its file, and the names are
+  distinct (`duplicate_file`). A failure carries the file its position
+  is in beside the row and column, `Fail::file`, which the failure's
+  display writes as `(lines/render.alc:3:18)` and `to_json` as `file`,
+  from every stage: the reader, the desugarer, the resolver, the checker
+  (a render handed the wrong shape fails at the render's own line) and
+  the run. One source is `compile`, whose failures name no file.
 - `Program::output()` is what the program produces (`Text`,
   `TableRows`, `JsonEvents`), so the host knows whether `--render`
   applies; `row_selector()` is the selector under which the source is
@@ -1234,7 +1248,11 @@ it passes a form of the program on its way out (a native the program
 called applied the library's function), that form's row and column are
 the failure's. Library spans are told apart from the program's by the
 file they were read from, not by its name, so a program that happens to
-be named `stdlib/table.alc` is still read as its own text.
+be named `stdlib/table.alc` is still read as its own text. A program
+compiled from several sources (`compile_sources`) positions a form in
+its own file's text and names that file beside the row and column
+(`Fail::file`, displayed `(lines/render.alc:3:18)`); a program of one
+source names none.
 
 Failures are `tabnas_transduce::Fail` values. The message begins with the
 finer code and a colon, `bad_dedent: dedent to a level no block opened,
@@ -1245,7 +1263,7 @@ repurposed; one may be added.
 | Code | Finer codes |
 |---|---|
 | `DSL_PARSE_ERROR` | the reader's `tab_indent`, `bad_indent`, `bad_dedent`, `unbalanced`, `too_deep`; the desugarer's `empty_step`, `bad_def`, `bad_let`, `bad_if`, `bad_match`; the engine's `unterminated_string`, `unprintable`, `unexpected` |
-| `DSL_TYPE_ERROR` | the resolver's `unknown_name`, `not_def`, `duplicate_def`, `reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; the checker's `arity`, `type_mismatch`, `protocol_mismatch`, `no_export`, `bad_output`; the runtime's `duplicate_key`, `no_match`, `render_of_text` |
+| `DSL_TYPE_ERROR` | the resolver's `unknown_name`, `not_def`, `duplicate_def`, `reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; the linker's `duplicate_file`; the checker's `arity`, `type_mismatch`, `protocol_mismatch`, `no_export`, `bad_output`; the runtime's `duplicate_key`, `no_match`, `render_of_text` |
 | `STREAM_REUSED` | `reused`, `captured` |
 | `STREAMABILITY_UNKNOWN` | `recursion`, `dynamic`, `unknown_output` |
 

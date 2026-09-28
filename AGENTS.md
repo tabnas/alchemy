@@ -115,7 +115,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 |---|---|
 | `rs/src/lex.rs` | the layout lex matcher: `#IN`, `#DE`, `#NL`, `#KW`, words and the delimiter-depth scan |
 | `rs/src/grammar.rs` | the grammar plugin: the document, `alchemy()`, `make()`, `parse_value()`, `parse()`, `parse_file()` |
-| `rs/src/ast.rs` | `Expr`, `SourceSpan`, `same_shape`, `canonical()` and layout `format()` |
+| `rs/src/ast.rs` | `Expr`, `SourceSpan`, `Sources` (the texts a program is compiled from, each span positioned in its own file's), `same_shape`, `canonical()` and layout `format()` |
 | `rs/src/desugar.rs` | `def` with parameters, `pipe`, the shapes of `let`, `if` and `match` |
 | `rs/src/resolve.rs` | scopes and linking: top-level `def`s in any order, locals, the library's names; `unknown_name`; recursion refused |
 | `rs/src/types.rs`, `rs/src/check.rs` | the types and the checker: inference, affine streams (`STREAM_REUSED`), protocols, strict mode (`STREAMABILITY_UNKNOWN`), the `export` contract |
@@ -123,7 +123,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
 | `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
 | `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra |
-| `rs/src/program.rs` | the API a host embeds: `compile`, `Program::{output, row_selector, explain, explain_json, sink}` |
+| `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (several sources linked into one namespace), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
 | `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded, resolved and checked on first use |
 | `rs/src/bin/alchemy.rs` | `alchemy canon | format | check | explain | run` |
@@ -132,6 +132,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/tests/repeat_test.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
 | `rs/tests/cli_test.rs` | the built binary, run as a script runs it |
 | `rs/tests/run_test.rs` | the API end to end: the worked example both ways, the spec's streaming rows, the `json` echo, `records` |
+| `rs/tests/sources_test.rs` | `compile_sources`: a format's part linked with a program and run as one, every stage's failure naming the file it is in, and the linking's refusals |
 | `rs/tests/stdlib_test.rs` | the differential test: the interpreted library against the native path on every fixture and generated document |
 | `test/spec/reader.tsv` | shared fixtures: layout → canonical, and the reader's errors by code |
 | `test/spec/pipe.tsv` | shared fixtures: layout → canonical of the desugared program, and the desugaring errors |
@@ -180,7 +181,9 @@ hint.
 
 The later stages follow the same convention. `DSL_TYPE_ERROR` carries,
 from the resolver, `unknown_name`, `not_def`, `duplicate_def`,
-`reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; from the checker,
+`reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; from the linker,
+`duplicate_file` (two sources given one name to `compile_sources`);
+from the checker,
 `arity`, `type_mismatch`, `protocol_mismatch`, `no_export`,
 `bad_output`; from the runtime, `duplicate_key` (a record with two
 entries for one key), `no_match` (a `match` no case took) and
@@ -194,7 +197,9 @@ definition that reaches itself; from the evaluator, nesting past
 the plan, so `duplicate_key`, `no_match` and the evaluator's
 `recursion` have rows where the plan's own evaluation meets them.
 `render_of_text` needs a renderer, which `check` never takes;
-`rs/tests/run_test.rs` and `rs/src/lower.rs` pin it. Runtime failures
+`rs/tests/run_test.rs` and `rs/src/lower.rs` pin it. `duplicate_file`
+needs several sources, which `check` never takes;
+`rs/tests/sources_test.rs` pins it. Runtime failures
 carry the transduce and render codes unchanged, and a `fail "message"`
 in a program is `INPUT_INVALID` with the message and the form's
 position, from `check` too when the plan's evaluation reaches it.

@@ -27,7 +27,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use tabnas_transduce::{Code, Fail};
 
-use crate::ast::{Expr, SourceSpan};
+use crate::ast::{Expr, SourceSpan, Sources};
 
 /// What kind of thing a name outside the program denotes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +86,7 @@ pub fn fn_form(items: &[Expr]) -> Option<(Vec<&str>, &Expr)> {
 /// A resolved program: its definitions and the references between them.
 #[derive(Clone, Debug)]
 pub struct Resolved {
+    /// The file the program is named by: its first source's.
     pub file: Arc<str>,
     pub defs: IndexMap<Arc<str>, Def>,
     /// For each definition, the definitions of this program its value
@@ -126,22 +127,27 @@ fn fail(
     finer: &str,
     message: impl std::fmt::Display,
     span: &SourceSpan,
-    src: &str,
+    sources: &Sources,
 ) -> Fail {
-    let (row, col) = span.position(src);
-    Fail::new(code, format!("{finer}: {message}")).at(row as u64, col as u64)
+    sources.fail_at(Fail::new(code, format!("{finer}: {message}")), span)
 }
 
-fn type_fail(finer: &str, message: impl std::fmt::Display, span: &SourceSpan, src: &str) -> Fail {
-    fail(Code::DslTypeError, finer, message, span, src)
+fn type_fail(
+    finer: &str,
+    message: impl std::fmt::Display,
+    span: &SourceSpan,
+    sources: &Sources,
+) -> Fail {
+    fail(Code::DslTypeError, finer, message, span, sources)
 }
 
-/// Link a desugared program. `outer` answers the kind of a name bound
-/// outside the program (the standard library and the natives), or `None`.
+/// Link a desugared program, whose forms may come from several sources:
+/// `sources` are their texts, which position a failure in the file its
+/// form was read from. `outer` answers the kind of a name bound outside
+/// the program (the standard library and the natives), or `None`.
 pub fn resolve(
     forms: Vec<Expr>,
-    src: &str,
-    file: &str,
+    sources: &Sources,
     outer: &dyn Fn(&str) -> Option<NameKind>,
 ) -> Result<Resolved, Fail> {
     let mut defs: IndexMap<Arc<str>, Def> = IndexMap::new();
@@ -152,7 +158,7 @@ pub fn resolve(
                 "not_def",
                 "a top-level form must be a def",
                 &span,
-                src,
+                sources,
             ));
         };
         if items.len() != 3 || items[0].symbol() != Some("def") {
@@ -160,7 +166,7 @@ pub fn resolve(
                 "not_def",
                 "a top-level form must be a def",
                 &span,
-                src,
+                sources,
             ));
         }
         let value = items
@@ -173,7 +179,7 @@ pub fn resolve(
                     "not_def",
                     "a def names a symbol",
                     other.span(),
-                    src,
+                    sources,
                 ))
             }
         };
@@ -182,17 +188,23 @@ pub fn resolve(
                 "reserved",
                 format!("{name} is a special form and cannot be defined"),
                 &span,
-                src,
+                sources,
             ));
         }
         let name: Arc<str> = Arc::from(name);
-        if defs.contains_key(&name) {
-            return Err(type_fail(
-                "duplicate_def",
-                format!("{name} is defined twice"),
-                &span,
-                src,
-            ));
+        if let Some(first) = defs.get(&name) {
+            // Across several sources the first definition may be in
+            // another file, so the message says where it is.
+            let message = if sources.names_files() {
+                let (row, col) = sources.position(&first.span);
+                format!(
+                    "{name} is defined twice; first at {}:{row}:{col}",
+                    first.span.file
+                )
+            } else {
+                format!("{name} is defined twice")
+            };
+            return Err(type_fail("duplicate_def", message, &span, sources));
         }
         defs.insert(
             name.clone(),
@@ -207,7 +219,7 @@ pub fn resolve(
     let mut references: IndexMap<Arc<str>, Vec<Arc<str>>> = IndexMap::new();
     for def in defs.values() {
         let mut walker = Walker {
-            src,
+            sources,
             outer,
             defs: &defs,
             locals: Vec::new(),
@@ -219,11 +231,11 @@ pub fn resolve(
     }
 
     let resolved = Resolved {
-        file: Arc::from(file),
+        file: sources.first().clone(),
         defs,
         references,
     };
-    resolved.refuse_recursion(src)?;
+    resolved.refuse_recursion(sources)?;
     Ok(resolved)
 }
 
@@ -267,7 +279,7 @@ impl Resolved {
     }
 
     /// `recursion` at the first definition on a cycle, naming the cycle.
-    fn refuse_recursion(&self, src: &str) -> Result<(), Fail> {
+    fn refuse_recursion(&self, sources: &Sources) -> Result<(), Fail> {
         #[derive(Clone, Copy, PartialEq)]
         enum Mark {
             Open,
@@ -309,7 +321,7 @@ impl Resolved {
                                 "{child} reaches itself through {through}; strict mode refuses recursion"
                             ),
                             &def.span,
-                            src,
+                            sources,
                         ));
                     }
                     None => {
@@ -324,7 +336,7 @@ impl Resolved {
 }
 
 struct Walker<'a> {
-    src: &'a str,
+    sources: &'a Sources,
     outer: &'a dyn Fn(&str) -> Option<NameKind>,
     defs: &'a IndexMap<Arc<str>, Def>,
     locals: Vec<Arc<str>>,
@@ -359,7 +371,7 @@ impl Walker<'_> {
             "unknown_name",
             format!("{name} is not defined"),
             span,
-            self.src,
+            self.sources,
         ))
     }
 
@@ -384,7 +396,7 @@ impl Walker<'_> {
                         "bad_fn",
                         "fn takes [params] of symbols and one body",
                         span,
-                        self.src,
+                        self.sources,
                     ));
                 };
                 let depth = self.locals.len();
@@ -400,7 +412,7 @@ impl Walker<'_> {
                         "bad_let",
                         "let takes one binding [name value] and one body",
                         span,
-                        self.src,
+                        self.sources,
                     ));
                 };
                 let (Some(name), Some(value), Some(body)) = (
@@ -412,7 +424,7 @@ impl Walker<'_> {
                         "bad_let",
                         "let takes one binding [name value] and one body",
                         span,
-                        self.src,
+                        self.sources,
                     ));
                 };
                 self.expr(value)?;
@@ -428,7 +440,7 @@ impl Walker<'_> {
                         "bad_match",
                         "match takes a value and (case pattern body) clauses",
                         span,
-                        self.src,
+                        self.sources,
                     ));
                 };
                 self.expr(value)?;
@@ -442,7 +454,7 @@ impl Walker<'_> {
                             "bad_match",
                             "match takes (case pattern body) clauses",
                             clause.span(),
-                            self.src,
+                            self.sources,
                         ));
                     };
                     if parts.len() != 3 || parts[0].symbol() != Some("case") {
@@ -450,7 +462,7 @@ impl Walker<'_> {
                             "bad_match",
                             "match takes (case pattern body) clauses",
                             at,
-                            self.src,
+                            self.sources,
                         ));
                     }
                     let depth = self.locals.len();
@@ -467,7 +479,7 @@ impl Walker<'_> {
                 "misplaced_def",
                 "def is only allowed at the top level",
                 span,
-                self.src,
+                self.sources,
             )),
             _ => items.iter().try_for_each(|item| self.expr(item)),
         }
@@ -513,13 +525,13 @@ impl Walker<'_> {
                         "bad_pattern",
                         format!("{name} is not a constructor; a list pattern is (constructor pattern...)"),
                         span,
-                        self.src,
+                        self.sources,
                     )),
                     None => Err(type_fail(
                         "bad_pattern",
                         "a list pattern is (constructor pattern...)",
                         span,
-                        self.src,
+                        self.sources,
                     )),
                 }
             }
@@ -544,7 +556,7 @@ mod tests {
 
     fn resolved(src: &str) -> Result<Resolved, Fail> {
         let forms = desugar::program(parse(src).unwrap(), src).unwrap();
-        resolve(forms, src, "t", &outer)
+        resolve(forms, &Sources::one("t", src), &outer)
     }
 
     fn code(src: &str) -> (Code, String, Option<u64>, Option<u64>) {

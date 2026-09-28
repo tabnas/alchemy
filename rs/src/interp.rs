@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use tabnas_transduce::{AbortFlag, Code, Datum, Duplicates, Fail, Limits};
 
-use crate::ast::{Expr, SourceSpan};
+use crate::ast::{Expr, SourceSpan, Sources};
 use crate::resolve::{fn_form, fn_params, Resolved};
 use crate::stdlib::registry::{self, native, truth, Kind, Native};
 use crate::stdlib::{self, Stdlib};
@@ -72,7 +72,7 @@ const LIBRARY_AT: &str = " (at stdlib/";
 /// The evaluator for one program.
 pub struct Runtime {
     program: Arc<Resolved>,
-    src: Arc<str>,
+    sources: Sources,
     stdlib: &'static Stdlib,
     native: bool,
     duplicates: Duplicates,
@@ -119,13 +119,13 @@ pub fn arity_error(what: &str, wanted: impl std::fmt::Display, got: usize) -> Fa
 }
 
 impl Runtime {
-    /// A runtime over a resolved program and its source text (read only
+    /// A runtime over a resolved program and its source texts (read only
     /// for positions in diagnostics), with the fast paths on and duplicate
     /// members rejected.
-    pub fn new(program: Arc<Resolved>, src: &str) -> Runtime {
+    pub fn new(program: Arc<Resolved>, sources: Sources) -> Runtime {
         Runtime {
             program,
-            src: Arc::from(src),
+            sources,
             stdlib: stdlib::stdlib(),
             native: true,
             duplicates: Duplicates::Reject,
@@ -233,19 +233,22 @@ impl Runtime {
         &self.program
     }
 
-    /// The 1-based row and column of a span of the program's own text;
-    /// `None` for a span of the standard library's, whose rows are not
-    /// the program's.
+    /// The 1-based row and column of a span of the program's own text,
+    /// in its own file's text when the program has several sources (the
+    /// file is not returned: [`Runtime::fail_at`] positions a failure
+    /// with it); `None` for a span of the standard library's, whose rows
+    /// are not the program's.
     pub fn position(&self, span: &SourceSpan) -> Option<(u64, u64)> {
         if stdlib::file_of(span).is_some() {
             return None;
         }
-        let (row, col) = span.position(&self.src);
+        let (row, col) = self.sources.position(span);
         Some((row as u64, col as u64))
     }
 
     /// `fail` with the position of `at`, when it has none yet. A form of
-    /// the program gives its row and column. A form of the standard
+    /// the program gives its row and column, and its file when the program
+    /// was compiled from several sources. A form of the standard
     /// library gives none, since a row there would name a line of the
     /// user's file that says something else; the message ends with the
     /// library file, row and column instead, `(at stdlib/table.alc:38:5)`,
@@ -263,10 +266,7 @@ impl Runtime {
                 }
                 fail
             }
-            None => {
-                let (row, col) = at.position(&self.src);
-                fail.at(row as u64, col as u64)
-            }
+            None => self.sources.fail_at(fail, at),
         }
     }
 
@@ -1004,8 +1004,9 @@ mod tests {
 
     fn runtime(src: &str) -> Runtime {
         let forms = desugar::program(parse_file(src, "t.alc").unwrap(), src).unwrap();
-        let resolved = crate::resolve::resolve(forms, src, "t.alc", &stdlib::outer).unwrap();
-        Runtime::new(Arc::new(resolved), src)
+        let sources = Sources::one("t.alc", src);
+        let resolved = crate::resolve::resolve(forms, &sources, &stdlib::outer).unwrap();
+        Runtime::new(Arc::new(resolved), sources)
     }
 
     fn eval(src: &str, expr: &str) -> Result<Val, Fail> {
@@ -1235,9 +1236,9 @@ mod tests {
         // A program named like a library file is still its own text.
         let src = "def boom [x]\n  fail \"no\"";
         let forms = desugar::program(parse_file(src, "stdlib/table.alc").unwrap(), src).unwrap();
-        let resolved =
-            crate::resolve::resolve(forms, src, "stdlib/table.alc", &stdlib::outer).unwrap();
-        let rt = Runtime::new(Arc::new(resolved), src);
+        let sources = Sources::one("stdlib/table.alc", src);
+        let resolved = crate::resolve::resolve(forms, &sources, &stdlib::outer).unwrap();
+        let rt = Runtime::new(Arc::new(resolved), sources);
         let call = desugar::program(parse_file("boom 1", "e.alc").unwrap(), "boom 1").unwrap();
         let f = rt.eval_program_expr(&call[0]).unwrap_err();
         assert_eq!(
