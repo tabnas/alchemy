@@ -74,26 +74,31 @@ grow with it (the rewind history does not: it records consumed tokens
 either way and is capped), and the tree comes out nested where the source
 is flat.
 
-**The reader is not in that shape yet.** The grammar document in
-`rs/src/grammar.rs` has no `r:` at all. Each repetition is a close
-alternate that pushes the next item and lets the container re-enter its
-close state when the item pops: `program` and `block` push each further
-`line` (lines 182 and 212), `line` each further inline `form` (line 200),
-`paren` and `bracket` each further item `form` (lines 242 and 253), and
-`@alchemy-collect` and `@alchemy-item` read the finished item back
-through the push link (`child_value`). That is a push per item but not a
-push chain: each item pops before the next is pushed, so depth stays put.
-Measured with a rule subscriber on `make()` (2026-09-27), one line and
-10,000 lines both reach a maximum `d` of 2; one child line and 10,000
-child lines under one line, 4; a line of one form and a line of 10,001
-forms, 2; one item and 10,000 items in `( )` or `[ ]`, 4; while 100
-nested parens reach 201, as real recursion should.
+**The reader is in that shape.** In the grammar document in
+`rs/src/grammar.rs`, a container pushes its first item and the item's
+close replaces it with the next, in the same frame, so the container's
+close runs once, after the last item. `program` and `block` push the
+first `line`, and `line`'s close replaces it with the next line
+(`r: line`) on `#NL`, or after its block on the next line's first token.
+`line`, `paren` and `bracket` push their first `form`, and `form`'s close
+replaces it with the next form (`r: form`) until the token that ends its
+parent's sequence: the closer for `paren` and `bracket`, a layout token
+or the end of the source for a line, left (`b: 1`) for the parent to
+take. Each item appends its finished value to its container's node,
+which a replace hands on as `parent_node` (`@alchemy-item` for a form,
+`@alchemy-line-end` for a line); nothing reads an item back through the
+push link (`child_value`), which names only the first item of a loop.
+The pushes that remain are structure: `line`'s `#IN` into `block` and
+`form`'s openers into `paren` and `bracket`.
 
-Converting those five repetitions to `r:` loops is its own change, and it
-lands with the test that pins the depth; until it does, do not copy their
-shape into a new rule. The pushes that are structure stay pushes:
-`line`'s `#IN` into `block` (line 195) and `form`'s openers into `paren`
-and `bracket` (lines 220 and 221). The resolver, the checker and the
+`rs/tests/repeat_test.rs` pins it, reading `d` with a rule subscriber on
+`make()`: over 10,000 items each repetition reaches the maximum depth one
+item needs (top-level lines 2, child lines under one line 4, a line's
+inline forms 2, the items of `( )` and of `[ ]` 4), while 100 nested
+parens reach 201, as real recursion should; the installed grammar's only
+close-phase push is the block and its only replaces are those two loops;
+and ten times the lines parse in about ten times the time. Write any new
+repetition the same way. The resolver, the checker and the
 interpreter generate no grammar rules (they work on `Expr`); the one
 other grammar this crate runs is tabnas-json, on a program's `json`
 input, and its repetitions are that repository's to keep. Rule depth over
@@ -124,6 +129,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/bin/alchemy.rs` | `alchemy canon | format | check | explain | run` |
 | `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner`, the layout round trip, the reference's examples |
 | `rs/tests/debug_model_test.rs` | the grammar composed with `tabnas-debug`, as every grammar carries |
+| `rs/tests/repeat_test.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
 | `rs/tests/cli_test.rs` | the built binary, run as a script runs it |
 | `rs/tests/run_test.rs` | the API end to end: the worked example both ways, the spec's streaming rows, the `json` echo, `records` |
 | `rs/tests/stdlib_test.rs` | the differential test: the interpreted library against the native path on every fixture and generated document |
