@@ -934,7 +934,25 @@ fn constructor(name: &'static str) -> impl Fn(&Runtime, &[Val], &SourceSpan) -> 
     move |_, a, _| Ok(Val::tagged(name, a.to_vec()))
 }
 
+/// `schema columns`: the table's one schema. A table has at most
+/// `max_columns` columns, so a schema past it is refused where it is
+/// built, whatever consumes it: the native table binds no more, and the
+/// library's twin of it, whose events may reach no renderer that would
+/// check them, is held to the same count.
 fn schema(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    if let Val::Vector(columns) = &a[0] {
+        let max = rt.limits().max_columns;
+        if columns.len() > max {
+            return Err(Fail::limit(
+                "max_columns",
+                max as u64,
+                format!(
+                    "the schema declares {} columns, more than {max}",
+                    columns.len()
+                ),
+            ));
+        }
+    }
     constructor("schema")(rt, a, at)
 }
 
@@ -1120,7 +1138,7 @@ static NATIVES: &[Native] = &[
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
-    k("schema", Exact(1), schema, "schema columns -> TableEvent", "the table's one schema"),
+    k("schema", Exact(1), schema, "schema columns -> TableEvent", "the table's one schema, of at most max_columns columns, refused where it is built past them"),
     k("row", Exact(1), row, "row cells -> TableEvent", "one row, as wide as the schema"),
     k("ready", Exact(1), ready, "ready columns -> State", "the state once the metadata is bound"),
     k("selected", Exact(2), selected, "selected :tag value -> Selected", "what route delivers: the capture's tag and its value"),

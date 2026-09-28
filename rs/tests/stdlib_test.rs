@@ -719,6 +719,34 @@ fn an_inferred_binding_agrees_both_ways() {
         },
         Err(Code::ResourceLimitExceeded),
     );
+    // The column count holds where the schema is built, so it holds when
+    // the table events reach no renderer that would check them.
+    for (name, binding) in [
+        ("an inferred table's events as items", "(record (entry :columns :infer) (entry :rows (path each-index)))"),
+        ("a described table's events as items", "(record (entry :columns (path \"m\")) (entry :rows (path \"r\" each-index)) (entry :column (fn [d] (record (entry :label d) (entry :source (path d))))))"),
+    ] {
+        let items = compile(
+            &format!("def b {binding}\ndef export [input] (join \"\" (map (fn [e] \"x\") (table-from-json b input)))"),
+            "items.alc",
+        )
+        .unwrap();
+        let events = if name.starts_with("an inferred") {
+            three.clone()
+        } else {
+            json(r#"{"m":["a","b","c"],"r":[{"a":1,"b":2,"c":3}]}"#)
+        };
+        agree(
+            name,
+            &items,
+            &events,
+            &Limits {
+                max_columns: 2,
+                ..Limits::default()
+            },
+            Err(Code::ResourceLimitExceeded),
+        );
+        agree(name, &items, &events, &Limits::default(), Ok("xxx"));
+    }
     // The worked example's documents, bound by inference from their rows.
     let api = INFERRED.replace(
         "(path each-index)",

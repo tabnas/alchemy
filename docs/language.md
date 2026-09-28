@@ -594,7 +594,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
-| `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema; one row, as wide as the schema; the end, after the source validated |
+| `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema, of at most `max_columns` columns, refused where it is built past them; one row, as wide as the schema; the end, after the source validated |
 | `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |
 | `missing` | `missing -> Value` | an absent member, distinct from `null` |
 | `object-start` | `object-start -> Event` | an object begins |
