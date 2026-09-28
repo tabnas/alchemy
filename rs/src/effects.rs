@@ -267,6 +267,9 @@ fn duplicates_of(stages: &[&Plan], policy: Duplicates, finite: bool) -> String {
 }
 
 /// The summary of a compiled program.
+/// The selection summary of a plan that selects nothing.
+const PASS_THROUGH: &str = "none; every event passes through";
+
 pub fn summarize(program: &Program) -> EffectSummary {
     let output = program.output();
     let plan: Option<&Plan> = match program.result() {
@@ -345,7 +348,7 @@ pub fn summarize(program: &Program) -> EffectSummary {
         _ => RendererProfile::Text,
     };
 
-    let mut selection = "none; every event passes through".to_string();
+    let mut selection = PASS_THROUGH.to_string();
     let mut retention = Vec::new();
     let mut order_constraints = Vec::new();
     let mut readiness = Readiness::Event;
@@ -423,9 +426,14 @@ pub fn summarize(program: &Program) -> EffectSummary {
                 });
             }
             // Every event becomes one item as it arrives: no matcher, no
-            // capture, nothing retained, ready after each event.
+            // capture, nothing retained, ready after each event. A stage
+            // before it that selected (the events of a table's records)
+            // keeps its own summary: the stages are read from the input
+            // outward, and this one adds no selection to it.
             Plan::Events { .. } => {
-                selection = "none; every event is delivered as an item".to_string();
+                if selection == PASS_THROUGH {
+                    selection = "none; every event is delivered as an item".to_string();
+                }
             }
             Plan::ScanEmit { .. } => {
                 confidence = Confidence::Conditional;
@@ -712,6 +720,40 @@ mod tests {
         assert_eq!(j["renderer"]["name"], "csv");
         assert_eq!(j["output"], "Text");
         assert_eq!(j["order_constraints"][0]["enforcement"], "runtime");
+    }
+
+    /// `events` after a stage that selected keeps that stage's selection
+    /// in the report: the stages are read from the input outward, and
+    /// the events of a table's records are still the table's captures.
+    #[test]
+    fn events_after_a_selecting_stage_keep_its_selection() {
+        let src = PROGRAM.replace(
+            "    csv csv-options\n",
+            "    records\n    events\n    map (fn [e] \"x\")\n    join \"\"\n",
+        );
+        let program = compile(&src, "events.alc").unwrap();
+        let s = summarize(&program);
+        assert_eq!(s.selection, "shared prefix matcher, two capture routes");
+        assert!(
+            s.protocol.iter().any(|p| p == "Stream<Event>"),
+            "{:?}",
+            s.protocol
+        );
+        assert_eq!(
+            s.retention.iter().map(|r| r.scope).collect::<Vec<_>>(),
+            [RetentionScope::Metadata, RetentionScope::Record]
+        );
+        // Over the input itself there is nothing selected, and the report
+        // says what the stage does instead.
+        let plain = compile(
+            "def export [input] (join \"\" (map (fn [e] \"x\") (events input)))",
+            "plain.alc",
+        )
+        .unwrap();
+        assert_eq!(
+            summarize(&plain).selection,
+            "none; every event is delivered as an item"
+        );
     }
 
     #[test]
