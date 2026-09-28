@@ -246,13 +246,20 @@ merged. The PR body is the full record. In short:
   deep and counted-repetition workspaces, the 35 malformed-input cases
   diffed against their record (one change, the fixed ids), and the
   parity sweep at 300 documents. All held.
-- **Codex's four threads** on the opening head, fixed in `f54384c`: a
-  git consumer of the crate (a generated server included) could resolve
-  none of the optional sibling path dependencies, so the generator's
-  Rust target now writes a `[patch]` table per repository for the
-  engine, every optional sibling and what each names by path (the map
-  is in `ts/src/generate.js`, held to `rs/Cargo.toml` and to the
-  sibling checkouts by a test); binary names cargo refuses (`.`, `+`)
+- **Codex's four threads** on the opening head, fixed in `f54384c`: the
+  generator's Rust target now writes a `[patch]` table per repository
+  for the engine, every optional sibling and what each names by path
+  (the map is in `ts/src/generate.js`, held to `rs/Cargo.toml` and to
+  the sibling checkouts by a test). That went too far, as the review of
+  this handover (alchemy#8) showed and a two-crate experiment with cargo
+  1.85 confirmed: a crate built from its own checkout needs every
+  optional path dependency present, feature on or off, but a git
+  consumer with the feature off resolves without them, and only a
+  consumer that turns `dialects` or `fleet` on needs those tables; the
+  generated crate turns neither on. The follow-up (lsp, after #21)
+  emits the sibling tables only for a feature the generated crate
+  enables, and corrects `rs/README.md` "Install" the same way; binary
+  names cargo refuses (`.`, `+`)
   refused at generation, verified with a scratch crate; `serve` returns
   whether the client asked for shutdown and a generated server exits 1
   otherwise; a manifest change that takes a language from an open
@@ -268,10 +275,10 @@ merged. The PR body is the full record. In short:
   met are in the PR body, unfiled.
 - **Left for later, in the PR body:** the optional dialect and fleet
   crates are path dependencies of the library's manifest, so a git
-  consumer needs a `[patch]` table per repository whether or not a
-  feature is on; moving those lanes and the binary into a crate of
-  their own would leave the library with the engine as its only
-  sibling, which is what aless wants (5.9). The engine's
+  consumer that turns a feature on needs a `[patch]` table per
+  repository for what the feature links (a consumer that turns none on
+  needs only the engine's); moving those lanes and the binary into a
+  crate of their own would spare even that. The engine's
   `is_builtin_action` is crate-private; admin's `lsp__ci.yml` needs a
   sync; the TypeScript defects the port reported (`.ebnf`/`.gbnf`
   refused by the firewall; `load.module` ignored).
@@ -586,14 +593,14 @@ Three pull requests, in this order.
 
 **3. Highlighting through tabnas/lsp's Rust crate.**
 
-The crate is on lsp's `main` since #21. Taking it by git needs, beside
-the `tabnas` patch aless already keeps per repository, a
-`[patch."https://github.com/tabnas/lsp"]` table naming every optional
-sibling the manifest carries (`tabnas-abnf` … `tabnas-zon`) and a table
-per sibling for what it names by path (lsp's `rs/README.md` "Install"
-lists them; aless already patches most of those repositories). The
-crate split recorded in 4.2 would remove that tax; do it first if it is
-cheap, or carry the tables.
+The crate is on lsp's `main` since #21. Taking it by git with no
+feature on needs only the `tabnas` patch aless already keeps per
+repository: cargo resolves a git dependency's optional path
+dependencies only for the features a consumer enables (measured with
+two toy crates under cargo 1.85; see 4.2). aless needs neither
+`dialects` (it compiles grammars itself) nor `fleet` (it links the
+grammars itself), so the crate split recorded in 4.2 is not on its
+path.
 
 - **How:** `tabnas_lsp::highlight` takes the engine's lex trace, keeps
   the newest token at each position, and maps each token to a fixed
