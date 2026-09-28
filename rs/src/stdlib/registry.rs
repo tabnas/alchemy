@@ -481,11 +481,23 @@ fn keys(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     }
 }
 
+/// How many bytes of a string `length` counts per evaluation step.
+const LENGTH_CHUNK: usize = 64 * 1024;
+
 /// `length string`: how many characters the string holds, as a column
-/// counts them (Unicode scalar values).
-fn length(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+/// counts them (Unicode scalar values). A long string is counted a chunk
+/// at a time, an evaluation step each, so the host's abort flag stops the
+/// count as it stops any long evaluation.
+fn length(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let s = as_str("length", "the string", &a[0])?;
-    Ok(Val::num(s.chars().count() as f64))
+    let mut count = 0usize;
+    for chunk in s.as_bytes().chunks(LENGTH_CHUNK) {
+        rt.tick()?;
+        // A character begins at every byte that is not a UTF-8
+        // continuation byte (`10xxxxxx`), wherever the chunk is cut.
+        count += chunk.iter().filter(|&&b| b & 0xC0 != 0x80).count();
+    }
+    Ok(Val::num(count as f64))
 }
 
 /// `compare a b`: how two numbers are ordered, `:less`, `:equal` or
@@ -1334,6 +1346,26 @@ mod tests {
         assert_eq!(order(-0.0, 0.0), "equal");
         assert_eq!(order(f64::NEG_INFINITY, -1e308), "less");
         assert_eq!(order(f64::INFINITY, f64::INFINITY), "equal");
+    }
+
+    /// `length` counts characters a chunk at a time, however a chunk cuts
+    /// a character, and takes an evaluation step per chunk, so the host's
+    /// abort flag stops the count of a long string.
+    #[test]
+    fn length_counts_characters_in_steps_the_abort_flag_reads() {
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let long = Val::str(&"héllo 日本".repeat(LENGTH_CHUNK / 3));
+        let rt = crate::lower::tests::runtime("", true);
+        assert_eq!(
+            length(&rt, std::slice::from_ref(&long), &at).unwrap(),
+            Val::num((8 * (LENGTH_CHUNK / 3)) as f64)
+        );
+        let flag = tabnas_transduce::AbortFlag::new();
+        let rt = crate::lower::tests::runtime_with_abort("", flag.clone());
+        flag.abort();
+        let huge = Val::str(&"k".repeat(LENGTH_CHUNK * 64));
+        let fail = length(&rt, &[huge], &at).unwrap_err();
+        assert_eq!(fail.code, Code::Aborted, "{fail}");
     }
 
     #[test]
