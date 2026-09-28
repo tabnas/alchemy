@@ -266,14 +266,23 @@ fn duplicates_of(stages: &[&Plan], policy: Duplicates, finite: bool) -> String {
     }
 }
 
-/// Whether a step is the standard library's `table-step`, partially
-/// applied or not: the step of the library's twin of `table-from-json`.
-fn is_library_table_step(f: &Func) -> bool {
-    match f {
-        Func::Partial(p) => is_library_table_step(&p.f),
-        Func::Closure(c) => c.scope == Scope::Stdlib && c.name.as_deref() == Some("table-step"),
-        Func::Native(_) => false,
+/// Whether a scan is the standard library's table, the twin of
+/// `table-from-json`: the library's `table-step`, bare or partially
+/// applied, from the state before the metadata (`no-schema`). Every path
+/// through it that binds columns builds their `schema` in the same step,
+/// which holds them to `max_columns`; a scan seeded with columns already
+/// bound builds none, so the cap is not claimed for it.
+fn is_library_table(init: &Val, step: &Func) -> bool {
+    fn is_table_step(f: &Func) -> bool {
+        match f {
+            Func::Partial(p) => is_table_step(&p.f),
+            Func::Closure(c) => c.scope == Scope::Stdlib && c.name.as_deref() == Some("table-step"),
+            Func::Native(_) => false,
+        }
     }
+    let unbound =
+        matches!(init, Val::Tagged { tag, fields } if &**tag == "no-schema" && fields.is_empty());
+    unbound && is_table_step(step)
 }
 
 /// The selection summary of a plan that selects nothing.
@@ -462,12 +471,12 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     selection = "none; every event is delivered as an item".to_string();
                 }
             }
-            Plan::ScanEmit { step, .. } => {
+            Plan::ScanEmit { init, step, .. } => {
                 confidence = Confidence::Conditional;
                 // The library's twin of `table-from-json` keeps the table's
                 // columns as its state, and the `schema` it builds holds
                 // them to `max_columns`, as the native table does.
-                let reason = if is_library_table_step(step) {
+                let reason = if is_library_table(init, step) {
                     "the table's columns once bound, at most max_columns of them, no deeper than max_depth"
                 } else {
                     "what the step returns, no deeper than max_depth"
@@ -809,6 +818,42 @@ mod tests {
             state.reason
         );
         assert_eq!(state.limit, Some("max_metadata_bytes"));
+    }
+
+    /// A program may run the library's `table-step` itself. Seeded with
+    /// columns already bound, the scan builds no `schema`, so nothing holds
+    /// the columns to `max_columns` and the report does not claim it; seeded
+    /// with `no-schema`, it is the library's table and does.
+    #[test]
+    fn a_table_step_seeded_with_columns_claims_no_column_cap() {
+        let src = |init: &str| {
+            format!(
+                "def b (record (entry :columns :infer) (entry :rows (path each-index)))\n\
+                 def export [input]\n  join \"\"\n    map (fn [e] \"x\")\n      \
+                 scan-emit {init} (partial table-step b) (fn [s] [])\n        \
+                 route (table-captures b) input"
+            )
+        };
+        let state = |init: &str| {
+            let program = compile(&src(init), "step.alc").unwrap();
+            summarize(&program)
+                .retention
+                .into_iter()
+                .find(|r| r.scope == RetentionScope::State)
+                .unwrap()
+        };
+        let seeded = state("(ready [])");
+        assert_eq!(
+            seeded.reason,
+            "what the step returns, no deeper than max_depth"
+        );
+        assert_eq!(seeded.limit, Some("max_metadata_bytes"));
+        let unbound = state("no-schema");
+        assert!(
+            unbound.reason.contains("at most max_columns"),
+            "{}",
+            unbound.reason
+        );
     }
 
     /// `events` after a stage that selected keeps that stage's selection
