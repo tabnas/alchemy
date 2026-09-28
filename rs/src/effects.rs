@@ -361,16 +361,31 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     Some(Val::Selector(s)) => Some((*s).clone()),
                     _ => None,
                 };
-                selection = "shared prefix matcher, two capture routes".to_string();
+                let inferred = crate::lower::is_inferred(binding);
                 readiness = Readiness::Record;
                 output_order = "schema first; cells in schema order".to_string();
-                retention.push(Retention {
-                    scope: RetentionScope::Metadata,
-                    label: "Retained metadata:",
-                    reason: "the column descriptors, bound once they complete".to_string(),
-                    selector: selector("columns"),
-                    limit: Some("max_metadata_bytes"),
-                });
+                if inferred {
+                    selection = "shared prefix matcher, one capture route".to_string();
+                    // No selector: the report prints the reason, since
+                    // what is kept is the first row's keys, not a match.
+                    retention.push(Retention {
+                        scope: RetentionScope::Metadata,
+                        label: "Inferred columns:",
+                        reason: "the first row's keys, taken as the columns once it completes"
+                            .to_string(),
+                        selector: None,
+                        limit: Some("max_columns"),
+                    });
+                } else {
+                    selection = "shared prefix matcher, two capture routes".to_string();
+                    retention.push(Retention {
+                        scope: RetentionScope::Metadata,
+                        label: "Retained metadata:",
+                        reason: "the column descriptors, bound once they complete".to_string(),
+                        selector: selector("columns"),
+                        limit: Some("max_metadata_bytes"),
+                    });
+                }
                 retention.push(Retention {
                     scope: RetentionScope::Record,
                     label: "Row capture:",
@@ -379,11 +394,13 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     selector: selector("rows"),
                     limit: Some("max_record_bytes"),
                 });
-                order_constraints.push(OrderConstraint {
-                    before: "metadata completes".to_string(),
-                    after: "first row begins".to_string(),
-                    enforcement: "runtime",
-                });
+                if !inferred {
+                    order_constraints.push(OrderConstraint {
+                        before: "metadata completes".to_string(),
+                        after: "first row begins".to_string(),
+                        enforcement: "runtime",
+                    });
+                }
             }
             Plan::Route { specs, .. } => {
                 selection = format!(
@@ -720,6 +737,47 @@ mod tests {
         assert_eq!(j["renderer"]["name"], "csv");
         assert_eq!(j["output"], "Text");
         assert_eq!(j["order_constraints"][0]["enforcement"], "runtime");
+    }
+
+    /// An inferred binding reads one capture route, retains the columns it
+    /// took from the first row under `max_columns`, and orders nothing
+    /// before the rows, since there is no metadata; the library's twin
+    /// routes one capture too.
+    #[test]
+    fn an_inferred_binding_reports_one_route() {
+        let src = "def b (record (entry :columns :infer) (entry :rows (path each-index)))\ndef export [input] (csv csv-options (table-from-json b input))";
+        let program = compile(src, "inferred.alc").unwrap();
+        let s = summarize(&program);
+        assert_eq!(s.selection, "shared prefix matcher, one capture route");
+        assert_eq!(
+            s.retention
+                .iter()
+                .map(|r| (r.scope, r.label, r.limit))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    RetentionScope::Metadata,
+                    "Inferred columns:",
+                    Some("max_columns")
+                ),
+                (
+                    RetentionScope::Record,
+                    "Row capture:",
+                    Some("max_record_bytes")
+                ),
+            ]
+        );
+        // The renderer's own order stays; none puts metadata before rows.
+        assert!(
+            s.order_constraints
+                .iter()
+                .all(|o| o.before != "metadata completes"),
+            "{:?}",
+            s.order_constraints
+        );
+        assert!(program.explain().contains("Inferred columns:"));
+        let twin = summarize(&program.with_native(false).unwrap());
+        assert_eq!(twin.selection, "shared prefix matcher, one capture route");
     }
 
     /// `events` after a stage that selected keeps that stage's selection

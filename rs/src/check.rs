@@ -67,8 +67,12 @@ pub fn stdlib_signature(name: &str) -> Option<Type> {
     use Type::*;
     Some(match name {
         "public-column" => Type::func(vec![Record], Record),
+        "table-inferred-column" => Type::func(vec![Type::String], Record),
+        "table-row" => Type::func(vec![Unknown, Value], Type::tagged("row")),
+        "table-first-row" => Type::func(vec![Record, Unknown, Value], Type::tagged("transition")),
         "table-step" => Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition")),
-        "table-finish" => Type::func(vec![Unknown], Type::vector(TableEvent)),
+        "table-finish" => Type::func(vec![Record, Unknown], Type::vector(TableEvent)),
+        "table-captures" => Type::func(vec![Record], Type::vector(CaptureSpec)),
         "table-from-json" => Type::func(vec![Record, JsonEvents], Type::table_events()),
         "csv-options" => Record,
         "csv-field" => Type::func(vec![Record, Value], Text),
@@ -1044,6 +1048,10 @@ impl Checker<'_> {
             "count" => {
                 self.expect("the vector of count", &Type::vector(Unknown), t(0), at(0))?;
                 Number
+            }
+            "keys" => {
+                self.expect("the record of keys", &Record, t(0), at(0))?;
+                Type::vector(Type::String)
             }
             "kind" => {
                 if t(0).is_affine() {

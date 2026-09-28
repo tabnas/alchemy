@@ -544,11 +544,12 @@ fn check_reports_a_fail_the_plan_reaches() {
 #[test]
 fn a_library_failure_names_the_library_file() {
     let lib = tabnas_alchemy::stdlib::source("stdlib/table.alc").unwrap();
-    let row = lib
+    let (row, line) = lib
         .lines()
-        .position(|l| l.contains("fail \"Required metadata was not found\""))
-        .unwrap()
-        + 1;
+        .enumerate()
+        .find(|(_, l)| l.contains("fail \"Required metadata was not found\""))
+        .unwrap();
+    let (row, col) = (row + 1, line.find("fail").unwrap() + 1);
     let dir = std::env::temp_dir().join(format!("alchemy-cli-{}-lib", std::process::id()));
     std::fs::create_dir_all(dir.join("stdlib")).unwrap();
     for name in ["export.alc", "stdlib/table.alc"] {
@@ -571,7 +572,7 @@ fn a_library_failure_names_the_library_file() {
         assert_eq!(fail["code"], "INPUT_INVALID", "{name}");
         assert_eq!(
             fail["message"],
-            format!("Required metadata was not found (at stdlib/table.alc:{row}:5)"),
+            format!("Required metadata was not found (at stdlib/table.alc:{row}:{col})"),
             "{name}"
         );
         assert!(fail.get("row").is_none(), "{name}: {fail}");

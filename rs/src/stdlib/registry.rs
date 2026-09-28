@@ -458,6 +458,22 @@ fn count(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::num(as_items("count", &a[0])?.len() as f64))
 }
 
+/// `keys record`: the record's keys as strings, in its order, which for
+/// a captured object is the document's. A bounded operation over one
+/// record, not a fold: the library's inferred table binding reads its
+/// columns from the first row with it.
+fn keys(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Record(fields) => Ok(Val::vector(
+            fields.keys().map(|k| Val::Str(k.clone())).collect(),
+        )),
+        other => Err(type_error(format!(
+            "keys: the record must be a record, not {}",
+            other.kind()
+        ))),
+    }
+}
+
 /// The kind of a value as a keyword, so that a program can tell a string
 /// from a number, which no `match` pattern does: the words `Val::kind`
 /// uses in messages, without their article.
@@ -1064,6 +1080,7 @@ static NATIVES: &[Native] = &[
     f("pop", Exact(1), pop, "pop vector -> Vector", "the vector without its last item; an empty vector is a type error"),
     f("top", Exact(1), top, "top vector -> Value", "the last item; an empty vector is a type error"),
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
+    f("keys", Exact(1), keys, "keys record -> Vector", "the record's keys as strings, in its order, which for a captured object is the document's"),
     f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
     // Selectors.
     f("path", AtLeast(0), path, "path segment... -> Selector", "a selector from strings, indexes and selectors"),
@@ -1171,7 +1188,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 37);
+        assert_eq!(compared, 38);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
