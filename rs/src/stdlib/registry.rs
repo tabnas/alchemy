@@ -840,7 +840,7 @@ static NATIVES: &[Native] = &[
     f("as-vector", Exact(1), as_vector, "as-vector data -> Vector", "a captured array as a vector; INPUT_INVALID otherwise"),
     f("record", AtLeast(0), record, "record entry... -> Record", "a retained record; duplicate keys are an error"),
     k("entry", Exact(2), entry, "entry :key value -> Entry", "one record field"),
-    f("vector", AtLeast(0), vector, "vector item... -> Vector", "a retained vector; it cannot hold a stream"),
+    f("vector", AtLeast(0), vector, "vector item... -> Vector", "a retained vector; it cannot hold a stream or a live text"),
     // Selectors.
     f("path", AtLeast(0), path, "path segment... -> Selector", "a selector from strings, indexes and selectors"),
     c("root", root, "root -> Selector", "the document"),
@@ -850,22 +850,22 @@ static NATIVES: &[Native] = &[
     f("index", Exact(1), index, "index n -> Selector", "one element"),
     f("compose", Exact(2), compose, "compose outer inner -> Selector", "inner below every location outer names"),
     // Streams.
-    f("capture", Between(2, 3), capture, "capture :tag selector [:limit] -> CaptureSpec", "materialize each selected scope under max_capture_bytes, or under the Limits field the keyword names (:max_metadata_bytes, :max_record_bytes)"),
+    f("capture", Between(2, 3), capture, "capture :tag selector [:limit] -> CaptureSpec", "materialize each selected scope under max_capture_bytes, or under the Limits field the keyword names (:max_metadata_bytes, :max_record_bytes), the host's value for it"),
     f("route", Exact(2), route, "route captures input -> Stream<Selected>", "one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap"),
     f("select", Exact(2), select, "select selector input -> Stream<Value>", "route with one capture, delivering the values"),
-    f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains the state the step returns; ready after each item; finish runs once at the validated end"),
+    f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its concat-map applies included): at most max_metadata_bytes, no deeper than max_depth, reported in retained_bytes_high; ready after each item; finish runs once at the validated end"),
     k("transition", Exact(2), transition, "transition state outputs -> Transition", "one step's result: the next state and a vector of outputs"),
     f("partial", AtLeast(1), partial, "partial f arg... -> Fn", "f with its first arguments supplied"),
     f("map", Exact(2), map, "map f items -> Vector | Stream", "eager over a vector; per item over a stream, retaining nothing"),
     f("filter", Exact(2), filter, "filter predicate items -> Vector | Stream", "eager over a vector; per item over a stream"),
     // Text.
-    f("concat-map", Exact(2), concat_map, "concat-map f items -> Text", "f answers a string or a text per item; written as items arrive"),
-    f("join", Exact(2), join, "join separator items -> Text", "the separator between items, never between the fragments of one"),
+    f("concat-map", Exact(2), concat_map, "concat-map f items -> Text", "f answers a string or a text per item; each item's text is assembled whole, under max_output_bytes, and written as items arrive, so a failure leaves no half item"),
+    f("join", Exact(2), join, "join separator items -> Text", "the separator between items, never between the fragments of one; each item assembled as concat-map's is"),
     f("concat", AtLeast(0), concat, "concat item... -> Text", "in order, without assembling the result"),
     f("text", Exact(1), text, "text string -> Text", "a string as a text"),
-    f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries; retains at most the literal's length"),
-    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a scalar's text under the options' null and missing policies; numbers by lexeme"),
-    f("fail", Exact(1), fail, "fail message -> never", "INPUT_INVALID with the message and the form's position"),
+    f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),
+    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
+    f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
@@ -879,7 +879,7 @@ static NATIVES: &[Native] = &[
     // Renderers and protocol adapters.
     f("json", Exact(1), json, "json events -> Text", "JsonEvents as compact JSON text, event by event, with a final newline"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
-    f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "validates what the CSV renderer takes as it passes: one schema first, of at least one column and max_columns at most, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that is the quote, a line break or NUL is refused before anything runs"),
+    f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most max_columns, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that holds the quote, a line break or NUL is refused before anything runs"),
 ];
 
 #[cfg(test)]
@@ -900,6 +900,44 @@ mod tests {
             );
         }
         assert!(native("nope").is_none());
+    }
+
+    /// `signature` and `effect` are what the reference prints: every
+    /// native with a row of its own in `docs/language.md`'s table reads
+    /// there as it does here (the row's code spans unquoted), so neither
+    /// can change without the other.
+    #[test]
+    fn a_native_reads_as_its_reference_row() {
+        let doc =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/language.md"))
+                .expect("the reference");
+        let spans = |cell: &str| -> Option<String> {
+            let inner = cell.strip_prefix('`')?.strip_suffix('`')?;
+            (!inner.contains('`')).then(|| inner.to_string())
+        };
+        let mut rows = std::collections::HashMap::new();
+        for line in doc.lines() {
+            let Some(inner) = line.strip_prefix("| ").and_then(|l| l.strip_suffix(" |")) else {
+                continue;
+            };
+            let cells: Vec<&str> = inner.split(" | ").collect();
+            if let [name, signature, effect] = cells[..] {
+                if let (Some(name), Some(signature)) = (spans(name), spans(signature)) {
+                    rows.insert(name, (signature, effect.replace('`', "")));
+                }
+            }
+        }
+        let mut compared = 0;
+        for n in natives() {
+            if let Some((signature, effect)) = rows.get(n.name) {
+                assert_eq!(n.signature, signature, "the signature of {}", n.name);
+                assert_eq!(n.effect, effect, "the effect of {}", n.name);
+                compared += 1;
+            }
+        }
+        // The natives the reference lists one to a row, so a table the
+        // reader stops recognizing fails rather than comparing nothing.
+        assert_eq!(compared, 23);
     }
 
     #[test]
