@@ -53,7 +53,9 @@ pub enum Val {
     Selector(Arc<Selector>),
     CaptureSpec(Arc<CaptureSpec>),
     /// A constructor's value: `schema`, `row`, `table-end`, `no-schema`,
-    /// `ready`, `selected`, `transition`, `entry`, `missing`.
+    /// `ready`, `selected`, `transition`, `entry`, `missing`, and the
+    /// events `events` delivers (`object-start`, `object-end`,
+    /// `array-start`, `array-end`, `key`, `scalar`).
     Tagged {
         tag: Arc<str>,
         fields: Arc<[Val]>,
@@ -210,6 +212,10 @@ pub enum Plan {
         selector: Selector,
         source: Arc<Plan>,
     },
+    /// `events input`: every event of `JsonEvents/1` as one tagged item,
+    /// the container events as constants and `key` and `scalar` with
+    /// their one field; `End` is the stream's end, not an item.
+    Events { source: Arc<Plan> },
     /// `scan-emit init step finish stream`.
     ScanEmit {
         init: Val,
@@ -282,6 +288,7 @@ impl Plan {
             Plan::Input => true,
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
+            | Plan::Events { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
@@ -322,6 +329,7 @@ impl Plan {
             Plan::TableFromJson { .. } => Protocol::TableRows,
             Plan::Route { .. }
             | Plan::Select { .. }
+            | Plan::Events { .. }
             | Plan::ScanEmit { .. }
             | Plan::Map { .. }
             | Plan::Filter { .. }
@@ -620,6 +628,7 @@ pub fn plan_name(plan: &Plan) -> &'static str {
         Plan::Input => "input",
         Plan::Route { .. } => "route",
         Plan::Select { .. } => "select",
+        Plan::Events { .. } => "events",
         Plan::ScanEmit { .. } => "scan-emit",
         Plan::Map { .. } => "map",
         Plan::Filter { .. } => "filter",

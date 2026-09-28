@@ -4,8 +4,10 @@
 //! reusable value, a single-use resource, and a protocol. `Value` is any
 //! data a document can hold; `Vector<T>` a finite retained collection;
 //! `Stream<T>` an ordered single-use sequence, of which `TableEvents`
-//! (`Stream<TableEvent>`, the `TableRows/1` protocol as tagged values) is
-//! one; `JsonEvents` the single-use source; `Text` single-use incremental
+//! (`Stream<TableEvent>`, the `TableRows/1` protocol as tagged values) and
+//! `Stream<Event>` (the source's own events as tagged values, what
+//! `events` yields) are two; `JsonEvents` the single-use source; `Text`
+//! single-use incremental
 //! text; `String` a finite retained string. `Unknown` is what inference
 //! could not decide, and it is accepted everywhere: the checker is
 //! conservative, reporting only what it can see is wrong. `Never` is the
@@ -38,10 +40,15 @@ pub enum Type {
     Selector,
     CaptureSpec,
     /// A constructor's value, by the constructor's name (`transition`,
-    /// `selected`, `schema`, `row`, `ready`, `no-schema`, `entry`).
+    /// `selected`, `schema`, `row`, `ready`, `no-schema`, `entry`, `key`,
+    /// `scalar`, the container events).
     Tagged(Arc<str>),
     /// A `schema`, `row` or `table-end` value.
     TableEvent,
+    /// One event of the source as `events` delivers it: `object-start`,
+    /// `object-end`, `array-start`, `array-end`, `(key name)` or
+    /// `(scalar value)`.
+    Event,
     /// A function: its parameters and its result.
     Fn(Vec<Type>, Box<Type>),
     /// A single-use stream of items.
@@ -64,6 +71,11 @@ impl Type {
     /// `Stream<TableEvent>`: the `TableRows/1` protocol.
     pub fn table_events() -> Type {
         Type::stream(Type::TableEvent)
+    }
+
+    /// `Stream<Event>`: the source's events as items, what `events` yields.
+    pub fn events() -> Type {
+        Type::stream(Type::Event)
     }
 
     pub fn tagged(name: &str) -> Type {
@@ -147,6 +159,10 @@ impl Type {
             (Type::TableEvent, Type::Tagged(tag)) => {
                 matches!(&**tag, "schema" | "row" | "table-end")
             }
+            (Type::Event, Type::Tagged(tag)) => matches!(
+                &**tag,
+                "object-start" | "object-end" | "array-start" | "array-end" | "key" | "scalar"
+            ),
             (Type::Fn(ps, r), Type::Fn(qs, s)) => ps.len() == qs.len() && r.accepts(s),
             (a, b) => a == b,
         }
@@ -192,6 +208,7 @@ impl fmt::Display for Type {
             Type::CaptureSpec => f.write_str("CaptureSpec"),
             Type::Tagged(tag) => f.write_str(tag),
             Type::TableEvent => f.write_str("TableEvent"),
+            Type::Event => f.write_str("Event"),
             Type::Fn(params, result) => {
                 f.write_str("Fn(")?;
                 for (i, p) in params.iter().enumerate() {
@@ -280,6 +297,15 @@ mod tests {
         assert!(!table.accepts(&Type::stream(Type::tagged("selected"))));
         assert!(!table.accepts(&Type::JsonEvents));
         assert!(!Type::JsonEvents.accepts(&table));
+        let events = Type::events();
+        assert!(events.accepts(&Type::stream(Type::tagged("key"))));
+        assert!(events.accepts(&Type::stream(Type::tagged("object-end"))));
+        assert!(!events.accepts(&Type::stream(Type::tagged("row"))));
+        assert!(!table.accepts(&events));
+        assert!(!events.accepts(&table));
+        assert!(!events.accepts(&Type::JsonEvents));
+        assert!(events.is_affine() && events.is_protocol());
+        assert_eq!(events.to_string(), "Stream<Event>");
         assert!(table.is_affine() && Type::Text.is_affine() && !Type::String.is_affine());
         assert_eq!(table.to_string(), "TableEvents");
         assert_eq!(Type::stream(Type::Value).to_string(), "Stream<Value>");

@@ -478,6 +478,8 @@ impl Checker<'_> {
                     "ready" => vec![Type::vector(Type::Record)],
                     "transition" => vec![Type::Unknown, Type::vector(Type::Unknown)],
                     "entry" => vec![Type::Keyword, Type::Unknown],
+                    "key" => vec![Type::String],
+                    "scalar" => vec![Type::Value],
                     _ => vec![Type::Unknown; items.len().saturating_sub(1)],
                 };
                 if let Some(n) = native(head) {
@@ -808,7 +810,7 @@ impl Checker<'_> {
             Type::Unknown | Type::Never => Ok((Type::Unknown, false)),
             Type::JsonEvents => Err(self.type_error(
                 "protocol_mismatch",
-                format!("{what} must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield"),
+                format!("{what} must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events"),
                 span,
             )),
             other => Err(self.mismatch(what, &Type::vector(Type::Unknown), other, span)),
@@ -1018,6 +1020,31 @@ impl Checker<'_> {
                 }
                 Type::vector(if item == Never { Unknown } else { item })
             }
+            "push" => {
+                if t(0).is_stream_or_source() {
+                    no_stream(self, 0, "a vector")?;
+                }
+                self.expect("the vector of push", &Type::vector(Unknown), t(1), at(1))?;
+                Type::vector(match t(1) {
+                    Vector(item) => Type::join(item, t(0)),
+                    _ => Unknown,
+                })
+            }
+            "pop" => {
+                self.expect("the vector of pop", &Type::vector(Unknown), t(0), at(0))?;
+                match t(0) {
+                    Vector(_) => t(0).clone(),
+                    _ => Type::vector(Unknown),
+                }
+            }
+            "top" => {
+                self.expect("the vector of top", &Type::vector(Unknown), t(0), at(0))?;
+                t(0).item().cloned().unwrap_or(Unknown)
+            }
+            "count" => {
+                self.expect("the vector of count", &Type::vector(Unknown), t(0), at(0))?;
+                Number
+            }
             "path" => {
                 for i in 0..args.len() {
                     match t(i) {
@@ -1064,6 +1091,10 @@ impl Checker<'_> {
                 self.expect("the selector of select", &Selector, t(0), at(0))?;
                 self.expect("the input of select", &JsonEvents, t(1), at(1))?;
                 Type::stream(Value)
+            }
+            "events" => {
+                self.expect("the input of events", &JsonEvents, t(0), at(0))?;
+                Type::events()
             }
             "transition" => {
                 no_stream(self, 0, "a state")?;
@@ -1133,6 +1164,15 @@ impl Checker<'_> {
                 data(self, 1, "the cell of scalar-text")?;
                 String
             }
+            "quoted" => {
+                self.expect("the string of quoted", &String, t(0), at(0))?;
+                String
+            }
+            "repeat" => {
+                self.expect("the count of repeat", &Number, t(0), at(0))?;
+                self.expect("the string of repeat", &String, t(1), at(1))?;
+                String
+            }
             "fail" => {
                 self.expect("the message of fail", &String, t(0), at(0))?;
                 Never
@@ -1154,6 +1194,25 @@ impl Checker<'_> {
             "selected" => {
                 self.expect("the tag of selected", &Keyword, t(0), at(0))?;
                 Type::tagged("selected")
+            }
+            "key" => {
+                self.expect("the name of key", &String, t(0), at(0))?;
+                Type::tagged("key")
+            }
+            "scalar" => {
+                match t(0) {
+                    Null | Bool | Number | String | Value | Unknown | Never => {}
+                    other => {
+                        return Err(self.type_error(
+                            "type_mismatch",
+                            format!(
+                                "the value of scalar must be null, a boolean, a number or a string, not {other}"
+                            ),
+                            at(0),
+                        ))
+                    }
+                }
+                Type::tagged("scalar")
             }
             "json" => {
                 self.expect("the events of json", &JsonEvents, t(0), at(0))?;
@@ -1724,6 +1783,80 @@ mod tests {
         assert_eq!(
             code("def bad (map (fn [x] (get :a x)) [1])\ndef export [input] (json input)").1,
             "type_mismatch"
+        );
+    }
+
+    /// `events` takes the input and yields a stream of items: affine like
+    /// the input, not JSON events, not table events, not an output; the
+    /// stack operators take a vector and answer what it held.
+    #[test]
+    fn events_and_the_stack_operators() {
+        let render = "def export [input]\n  join \"\"\n    map\n      fn [e]\n        match e\n          case (key n) (quoted n)\n          case (scalar v) (scalar-text csv-options v)\n          case object-start \"{\"\n          case _ \"\"\n      events input";
+        assert_eq!(check(render).unwrap().export, Type::Text);
+        let keep = "def keep [s e] (transition (push e s) [])\ndef fin [s] [(repeat (count s) \"  \") (quoted (top s))]\ndef export [input] (join \"\" (scan-emit [] keep fin (events input)))";
+        let checked = check(keep).unwrap();
+        assert_eq!(checked.output, Output::Text);
+        assert_eq!(
+            checked.defs["fin"],
+            Type::func(vec![Type::Unknown], Type::vector(Type::String))
+        );
+        assert_eq!(
+            check("def s (push :b [:a])\ndef n (count s)\ndef t (top s)\ndef p (pop s)\ndef export [input] (json input)")
+                .unwrap()
+                .defs,
+            IndexMap::from([
+                (Arc::from("s"), Type::vector(Type::Keyword)),
+                (Arc::from("n"), Type::Number),
+                (Arc::from("t"), Type::Keyword),
+                (Arc::from("p"), Type::vector(Type::Keyword)),
+            ])
+        );
+        assert_eq!(code("def export [input] (events input)").1, "bad_output");
+        assert_eq!(
+            code("def export [input] (json (events input))").1,
+            "protocol_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (csv csv-options (events input))").1,
+            "protocol_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (events (select (path each-index) input))").1,
+            "protocol_mismatch"
+        );
+        let (c, finer, _, _) = code("def export [input] (concat (json input) (join \"\" (map (fn [e] \"\") (events input))))");
+        assert_eq!((c, finer.as_str()), (Code::StreamReused, "reused"));
+        assert_eq!(
+            code("def export [input] (let [x (push (events input) [])] \"done\")").1,
+            "type_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (let [x (count 1)] (json input))").1,
+            "type_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (let [x (top csv-options)] (json input))").1,
+            "type_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (let [x (quoted 1)] (json input))").1,
+            "type_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (let [x (repeat \"a\" 1)] (json input))").1,
+            "type_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (let [x (key :a)] (json input))").1,
+            "type_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (let [x (scalar csv-options)] (json input))").1,
+            "type_mismatch"
+        );
+        assert_eq!(
+            code("def export [input] (join \"\" (map (fn [e] (match e (case (key a b) a) (case _ \"\"))) (events input)))").1,
+            "arity"
         );
     }
 

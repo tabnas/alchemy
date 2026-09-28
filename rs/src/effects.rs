@@ -163,6 +163,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
             Plan::Input | Plan::Lit(_) => break,
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
+            | Plan::Events { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
@@ -202,6 +203,7 @@ fn protocol_of(stage: &Plan) -> &'static str {
         Plan::TableFromJson { .. } | Plan::CsvTable { .. } => "TableRows/1",
         Plan::Route { .. } => "Stream<Selected>",
         Plan::Select { .. } => "Stream<Value>",
+        Plan::Events { .. } => "Stream<Event>",
         Plan::ScanEmit { .. } | Plan::Map { .. } | Plan::Filter { .. } => "Stream<Value>",
         _ => "Text",
     }
@@ -419,6 +421,11 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     selector: Some(selector.clone()),
                     limit: Some("max_capture_bytes"),
                 });
+            }
+            // Every event becomes one item as it arrives: no matcher, no
+            // capture, nothing retained, ready after each event.
+            Plan::Events { .. } => {
+                selection = "none; every event is delivered as an item".to_string();
             }
             Plan::ScanEmit { .. } => {
                 confidence = Confidence::Conditional;

@@ -887,7 +887,10 @@ impl Runtime {
                         sep,
                         items: Seq::Stream(_),
                     } => sep.len(),
-                    Plan::Input | Plan::Records { .. } | Plan::Json { .. } => 0,
+                    Plan::Input
+                    | Plan::Events { .. }
+                    | Plan::Records { .. }
+                    | Plan::Json { .. } => 0,
                 },
                 // A frame's value, and the frames outside it one level
                 // further: a chain of frames is dropped one inside another.
@@ -1064,6 +1067,92 @@ mod tests {
             "{no}"
         );
         assert!(no.message.len() < 200, "{}", no.message.len());
+    }
+
+    /// The stack operators: data last, a new vector each time, bounded by
+    /// the vector's length; an empty vector refuses `pop` and `top` with a
+    /// type error naming the operator.
+    #[test]
+    fn the_stack_operators_and_the_string_forms() {
+        assert_eq!(
+            eval("", "push :b [:a]").unwrap(),
+            Val::vector(vec![Val::keyword("a"), Val::keyword("b")])
+        );
+        assert_eq!(
+            eval("", "pop [1 2 3]").unwrap(),
+            Val::vector(vec![Val::num(1.0), Val::num(2.0)])
+        );
+        assert_eq!(eval("", "top [1 2 3]").unwrap(), Val::num(3.0));
+        assert_eq!(eval("", "count [1 2 3]").unwrap(), Val::num(3.0));
+        assert_eq!(eval("", "count []").unwrap(), Val::num(0.0));
+        assert_eq!(
+            eval("", "top (push \"x\" (pop [1 2]))").unwrap(),
+            Val::str("x")
+        );
+        assert_eq!(eval("", "pop [1]").unwrap(), Val::vector(vec![]));
+        for (expr, message) in [
+            ("pop []", "pop: the vector is empty"),
+            ("top []", "top: the vector is empty"),
+            ("count 1", "count: the data must be a vector"),
+            ("push 1 :k", "push: the data must be a vector"),
+            ("pop (record)", "pop: the data must be a vector"),
+            ("quoted 1", "quoted: the string must be a string"),
+            (
+                "repeat 2.5 \"a\"",
+                "repeat: the count must be a non-negative integer",
+            ),
+            ("repeat 2 1", "repeat: the string must be a string"),
+        ] {
+            let f = eval("", expr).unwrap_err();
+            assert_eq!(f.code, Code::DslTypeError, "{expr}");
+            assert!(
+                f.message.starts_with(&format!("type_mismatch: {message}")),
+                "{expr}: {f}"
+            );
+        }
+        assert_eq!(
+            eval("", "quoted \"a\\\"b\\\\c\\n\"").unwrap(),
+            Val::str("\"a\\\"b\\\\c\\n\"")
+        );
+        assert_eq!(eval("", "repeat 3 \"ab\"").unwrap(), Val::str("ababab"));
+        assert_eq!(eval("", "repeat 0 \"ab\"").unwrap(), Val::str(""));
+        assert_eq!(eval("", "repeat 2 \"\"").unwrap(), Val::str(""));
+        // The result is one scalar of the output: past max_scalar_bytes it
+        // is refused before it is built, naming the limit.
+        let f = eval("", "repeat 1000000000 \"abcdefghij\"").unwrap_err();
+        assert_eq!(f.code, Code::ResourceLimitExceeded, "{f}");
+        assert_eq!(f.limit.as_ref().unwrap().name, "max_scalar_bytes");
+        let f = eval("", "repeat 100000000000000000000 \"a\"").unwrap_err();
+        assert_eq!(f.code, Code::DslTypeError, "{f}");
+        // The event values a program builds are the ones `events` delivers.
+        assert_eq!(
+            eval("", "key \"k\"").unwrap(),
+            Val::tagged("key", vec![Val::str("k")])
+        );
+        assert_eq!(
+            eval("", "scalar null").unwrap(),
+            Val::tagged("scalar", vec![Val::Null])
+        );
+        assert_eq!(
+            eval("", "object-start").unwrap(),
+            Val::tagged("object-start", vec![])
+        );
+        assert!(eval("", "key :k")
+            .unwrap_err()
+            .message
+            .starts_with("type_mismatch: key: "));
+        assert!(eval("", "scalar [1]")
+            .unwrap_err()
+            .message
+            .starts_with("type_mismatch: scalar: "));
+        // Matched as the table events are: the constants compare, the
+        // constructors bind their one field.
+        let src = "def tag [e]\n  match e\n    case object-start \"{\"\n    case array-end \"]\"\n    case (key name) name\n    case (scalar v) v\n    case _ \"?\"";
+        assert_eq!(eval(src, "tag object-start").unwrap(), Val::str("{"));
+        assert_eq!(eval(src, "tag array-end").unwrap(), Val::str("]"));
+        assert_eq!(eval(src, "tag object-end").unwrap(), Val::str("?"));
+        assert_eq!(eval(src, "tag (key \"k\")").unwrap(), Val::str("k"));
+        assert_eq!(eval(src, "tag (scalar 5)").unwrap(), Val::num(5.0));
     }
 
     #[test]
