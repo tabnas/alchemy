@@ -122,11 +122,10 @@ fn the_grammar_portion_serialises_and_reads_back_with_its_content() {
         ["block", "bracket", "form", "line", "paren", "program"]
     );
 
-    // A line opens on a form; it closes on `#IN` (pushing its block), on a
-    // `#NL` right before `#DE` or `#ZZ` (taking the `#NL` alone), on `#NL`
-    // (replacing itself with the next line), on `#DE` or `#ZZ` left for the
-    // rule above, or, on the condition that it took a block, on the next
-    // line's first token (replacing itself again).
+    // A line opens on a form; it closes on `#IN` (pushing its block), on
+    // `#NL` (replacing itself with the next line), on `#DE` or `#ZZ` left
+    // for the rule above, or, on the condition that it took a block, on
+    // the next line's first token (replacing itself again).
     let line = back["rules"]
         .as_array()
         .expect("rules")
@@ -157,7 +156,6 @@ fn the_grammar_portion_serialises_and_reads_back_with_its_content() {
         alts("close"),
         [
             serde_json::json!([["#IN"], "block", null, null, false]),
-            serde_json::json!([["#NL", ["#DE", "#ZZ"]], null, null, 1, false]),
             serde_json::json!([["#NL"], null, "line", null, false]),
             serde_json::json!([["#DE"], null, null, 1, false]),
             serde_json::json!([["#ZZ"], null, null, 1, false]),

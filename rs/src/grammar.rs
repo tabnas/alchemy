@@ -218,18 +218,17 @@ fn document() -> serde_json::Value {
             // block that did not also close this level: either way the
             // line appends itself to the level's node and replaces itself
             // with the next line (`r`). `#DE` and `#ZZ` end the level and
-            // are left (`b: 1`) for the block or program above, and so
-            // does a `#NL` right before them, which a layout line with no
-            // form on it leaves (its first character a lone `\r`, a line
-            // to the layout and a space to the engine): the `#NL` is taken
-            // and the level closes on what follows.
+            // are left (`b: 1`) for the block or program above. A layout
+            // token is always followed by a form (the layout matcher reads
+            // a line's indentation up to its first form, and a row with
+            // nothing else on it is blank), so `#NL` never stands right
+            // before `#DE` or `#ZZ`.
             "line": {
                 "open": [
                     { "p": "form", "a": A_ARRAY, "g": "alchemy" },
                 ],
                 "close": [
                     { "s": "#IN", "p": "block", "a": A_CHILDREN, "g": "alchemy" },
-                    { "s": ["#NL", "#DE #ZZ"], "b": 1, "a": A_LINE_END, "g": "alchemy" },
                     { "s": "#NL", "r": "line", "a": A_LINE_END, "g": "alchemy" },
                     { "s": "#DE", "b": 1, "a": A_LINE_END, "g": "alchemy" },
                     { "s": "#ZZ", "b": 1, "a": A_LINE_END, "g": "alchemy" },
@@ -708,14 +707,13 @@ mod tests {
         );
     }
 
-    /// A layout line whose first character is a lone `\r` has no form on
-    /// it: the layout counts it as a line, the engine as a space. The
-    /// `#NL` it leaves right before the end of a level ends the line above
-    /// it, and a block indented under it stays apart from the block before
-    /// it, one array item of the line both follow, as the reader has
-    /// always built it (`Expr` refuses that node as malformed).
+    /// A lone `\r` at the start of a line is whitespace there too (layout
+    /// rule 7): it restarts the indentation as it restarts the engine's
+    /// column, a row holding nothing else after it is blank, and a block
+    /// indented under such a row belongs to the line before it. No input
+    /// reaches the reader as a layout line with no form on it.
     #[test]
-    fn a_layout_line_with_no_form_on_it() {
+    fn a_lone_carriage_return_at_a_line_start_is_whitespace() {
         assert_eq!(
             json("f x\n\r"),
             r#"[{"$":"list","items":[{"$":"sym","name":"f","span":[0,1]},{"$":"sym","name":"x","span":[2,3]}],"span":[0,3]}]"#
@@ -726,14 +724,34 @@ mod tests {
         );
         assert_eq!(
             json("a\n  b\n\r;x\n  c"),
-            r#"[{"$":"list","items":[{"$":"sym","name":"a","span":[0,1]},[{"$":"sym","name":"b","span":[4,5]}],{"$":"sym","name":"c","span":[12,13]}],"span":[0,13]}]"#
+            r#"[{"$":"list","items":[{"$":"sym","name":"a","span":[0,1]},{"$":"sym","name":"b","span":[4,5]},{"$":"sym","name":"c","span":[12,13]}],"span":[0,13]}]"#
         );
-        let fail = parse("a\n  b\n\r;x\n  c").expect_err("a node that is not an object");
-        assert!(
-            fail.message.starts_with("malformed reader output"),
-            "{}",
-            fail.message
+        assert_eq!(
+            json("a\n\r  b"),
+            r#"[{"$":"list","items":[{"$":"sym","name":"a","span":[0,1]},{"$":"sym","name":"b","span":[5,6]}],"span":[0,6]}]"#
         );
+        assert_eq!(
+            json("a\n  \r  \rb"),
+            r#"[{"$":"sym","name":"a","span":[0,1]},{"$":"sym","name":"b","span":[8,9]}]"#
+        );
+        // A comment ends at a lone `\r` too: what follows one on the same
+        // row is a form of the line the row opens, at the indentation
+        // after the `\r`; a lone `\r` between forms is whitespace.
+        assert_eq!(
+            json("a\n;x\r  c\r;y\r  d"),
+            r#"[{"$":"list","items":[{"$":"sym","name":"a","span":[0,1]},{"$":"list","items":[{"$":"sym","name":"c","span":[7,8]},{"$":"sym","name":"d","span":[14,15]}],"span":[7,15]}],"span":[0,15]}]"#
+        );
+        // The column a diagnostic names counts from the carriage return,
+        // as the engine counts it: the indentation plus one.
+        let fail = parse("\r  a").expect_err("an indented first line");
+        assert_eq!(fail.message.split(": ").next(), Some("bad_indent"));
+        assert_eq!((fail.row, fail.column), (Some(1), Some(3)));
+        let fail = parse("a\n  b\n  \r   c").expect_err("a bad indent");
+        assert_eq!(fail.message.split(": ").next(), Some("bad_indent"));
+        assert_eq!((fail.row, fail.column), (Some(3), Some(4)));
+        let fail = parse("a\n\r \tb").expect_err("a tab in the indentation");
+        assert_eq!(fail.message.split(": ").next(), Some("tab_indent"));
+        assert_eq!((fail.row, fail.column), (Some(2), Some(2)));
     }
 
     #[test]

@@ -37,9 +37,21 @@
 //! because the engine counts rows by line feeds alone (`line.row_chars`)
 //! and the position a diagnostic names has to agree with the structure the
 //! layout saw: were a lone `\r` a line end here, `a\r  b\r c` would be
-//! three layout lines whose errors all report row 1. The engine does end
-//! a `;` comment at a lone `\r` (its `line.chars`), and the delimiter scan
-//! below follows it there.
+//! three layout lines whose errors all report row 1. In a line's leading
+//! whitespace a lone `\r` restarts the indentation, as it restarts the
+//! engine's column: the indentation of a line is its run of spaces after
+//! the last lone `\r` before its first form, so the column a diagnostic
+//! names for that form is the indentation the layout read plus one, and a
+//! line holding only whitespace and comments after a lone `\r` is a blank
+//! line. (Before this was so, such a line was a layout line with no form
+//! on it, and a block indented under it reached the reader as a malformed
+//! node.) The engine restarts the column in its own line matcher, which
+//! a layout token that swallowed the `\r` would bypass (a matcher moving
+//! the cursor restarts it at a line feed alone), so a layout token ends
+//! at the first lone `\r` on its form's row and the engine consumes the
+//! rest as the whitespace it is. The engine does end a `;` comment at a
+//! lone `\r` (its `line.chars`), and the delimiter scan below follows it
+//! there.
 //!
 //! Layout is suspended while the explicit-delimiter depth (`(` and `[`
 //! opened minus `)` and `]` closed, strings and comments excluded) is
@@ -343,8 +355,15 @@ pub(crate) enum Decision {
         len: usize,
         pending: usize,
     },
-    /// An error with this matcher's code, reported at byte `at`.
-    Bad { code: &'static str, at: usize },
+    /// An error with this matcher's code, reported at byte `at`. When a
+    /// lone `\r` at `row_cr` precedes `at` on its row, the column the
+    /// error names counts from the character after it, as the engine's
+    /// own line matcher would have had it.
+    Bad {
+        code: &'static str,
+        at: usize,
+        row_cr: Option<usize>,
+    },
 }
 
 /// Decide what `src` holds at byte `si`, updating `state`.
@@ -371,7 +390,10 @@ pub(crate) fn decide(src: &str, si: usize, state: &mut LayoutState) -> Decision 
         '\n' => line_end(src, si, state),
         '\r' if rest.as_bytes().get(1) == Some(&b'\n') => line_end(src, si, state),
         // A carriage return with no line feed after it is whitespace: the
-        // engine does not count it as a row (see the module docs).
+        // engine does not count it as a row (see the module docs). Before
+        // the first line it restarts the indentation the first line must
+        // not have, so it is read as a line start there.
+        '\r' if !state.seen => line_start(src, si, false, state),
         ' ' | '\t' | '\r' | ';' => Decision::Pass,
         '(' | '[' => {
             state.seen = true;
@@ -382,6 +404,7 @@ pub(crate) fn decide(src: &str, si: usize, state: &mut LayoutState) -> Decision 
                 Decision::Bad {
                     code: "too_deep",
                     at: si,
+                    row_cr: None,
                 }
             } else {
                 Decision::Pass
@@ -393,6 +416,7 @@ pub(crate) fn decide(src: &str, si: usize, state: &mut LayoutState) -> Decision 
                 Decision::Bad {
                     code: "unbalanced",
                     at: si,
+                    row_cr: None,
                 }
             } else {
                 Decision::Pass
@@ -490,10 +514,14 @@ fn after_terminator(bytes: &[u8], pos: usize) -> usize {
 /// `after_newline`), skip blank and comment-only lines to the next content
 /// line and decide the layout token its indentation calls for.
 ///
-/// The indentation of a line is its run of leading spaces, up to the first
-/// other character; a lone carriage return there is such a character, and
-/// so is whatever follows a comment on the same row, which the engine
-/// ends at a lone `\r`.
+/// The indentation of a line is its run of leading spaces after the last
+/// lone carriage return before its first other character. A lone `\r` is
+/// whitespace that restarts the engine's column, so it restarts the count
+/// too, and what follows it on the same row is read as the row's leading
+/// whitespace was: a comment there, which the engine ends at the next
+/// lone `\r` or at the line end, counts for nothing. The first lone `\r`
+/// on the content line's own row is where the layout token ends (see the
+/// module docs), and where an error's column counts from.
 fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutState) -> Decision {
     let bytes = src.as_bytes();
     let mut pos = if after_newline {
@@ -504,21 +532,33 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
     loop {
         let mut spaces = 0;
         let mut tab_at = None;
-        while let Some(c) = bytes.get(pos) {
-            match c {
-                b' ' => spaces += 1,
-                b'\t' => {
-                    tab_at.get_or_insert(pos);
+        let mut row_cr = None;
+        loop {
+            while let Some(c) = bytes.get(pos) {
+                match c {
+                    b' ' => spaces += 1,
+                    b'\t' => {
+                        tab_at.get_or_insert(pos);
+                    }
+                    _ => break,
                 }
-                _ => break,
-            }
-            pos += 1;
-        }
-        // A comment runs to the line end and counts for nothing.
-        if bytes.get(pos) == Some(&b';') {
-            while bytes.get(pos).is_some_and(|c| *c != b'\n' && *c != b'\r') {
                 pos += 1;
             }
+            // A comment runs to the line end and counts for nothing.
+            if bytes.get(pos) == Some(&b';') {
+                while bytes.get(pos).is_some_and(|c| *c != b'\n' && *c != b'\r') {
+                    pos += 1;
+                }
+            }
+            // A lone carriage return restarts the indentation.
+            if bytes.get(pos) == Some(&b'\r') && bytes.get(pos + 1) != Some(&b'\n') {
+                row_cr.get_or_insert(pos);
+                pos += 1;
+                spaces = 0;
+                tab_at = None;
+                continue;
+            }
+            break;
         }
         match bytes.get(pos) {
             // Only trivia to the end: the engine's own matchers eat it,
@@ -531,9 +571,10 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
                     return Decision::Bad {
                         code: "tab_indent",
                         at,
+                        row_cr,
                     };
                 }
-                return layout_token(spaces, pos, from, state);
+                return layout_token(spaces, pos, from, row_cr, state);
             }
         }
     }
@@ -541,7 +582,15 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
 
 /// The layout token for a content line indented by `indent` spaces whose
 /// first character is at `content`, when the matcher was called at `from`.
-fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutState) -> Decision {
+/// The token runs to `content`, or to the first lone `\r` on its row
+/// (`row_cr`), which the engine consumes with what follows it.
+fn layout_token(
+    indent: usize,
+    content: usize,
+    from: usize,
+    row_cr: Option<usize>,
+    state: &mut LayoutState,
+) -> Decision {
     if !state.seen {
         return if indent == 0 {
             Decision::Pass
@@ -549,10 +598,11 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
             Decision::Bad {
                 code: "bad_indent",
                 at: content,
+                row_cr,
             }
         };
     }
-    let len = content - from;
+    let len = row_cr.unwrap_or(content) - from;
     let top = state.top();
     if indent == top {
         return Decision::Layout {
@@ -567,6 +617,7 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
             return Decision::Bad {
                 code: "too_deep",
                 at: content,
+                row_cr,
             };
         }
         state.levels += 1;
@@ -580,6 +631,7 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
         return Decision::Bad {
             code: "bad_indent",
             at: content,
+            row_cr,
         };
     }
     // A dedent returns to an open level: an even indentation below the
@@ -589,6 +641,7 @@ fn layout_token(indent: usize, content: usize, from: usize, state: &mut LayoutSt
         return Decision::Bad {
             code: "bad_dedent",
             at: content,
+            row_cr,
         };
     }
     let pops = (top - indent) / 2;
@@ -645,9 +698,15 @@ fn layout_matcher(lexer: &mut Lexer<'_>, _rule: &mut Rule, context: &mut Context
             // name; the names are registered before the grammar installs.
             Some(Token::new(name, -1, Value::Undefined, text, point))
         }
-        Decision::Bad { code, at } => {
+        Decision::Bad { code, at, row_cr } => {
             advance(lexer, at - si);
-            Some(lexer.bad(code))
+            let mut token = lexer.bad(code);
+            // The cursor's column counts the lone `\r` it moved over as a
+            // character; the engine's line matcher restarts it there.
+            if let Some(cr) = row_cr {
+                token.site.ci = lexer.source()[cr + 1..at].chars().count() + 1;
+            }
+            Some(token)
         }
     }
 }
@@ -783,10 +842,70 @@ mod tests {
         // No layout token: one line, as the engine counts it.
         assert_eq!(names("a\r  b\r c"), "#TX(a)\r  #TX(b)\r #TX(c)");
         assert_eq!(names("a \r b"), "#TX(a) \r #TX(b)");
-        // In leading whitespace it ends the indentation, which is what
-        // precedes it.
-        assert_eq!(names("a\n\r  b"), "#TX(a) #NL \r  #TX(b)");
-        assert_eq!(names("\r  a"), "\r  #TX(a)");
+        // In leading whitespace it restarts the indentation, as it restarts
+        // the engine's column: the indentation is what follows it. The
+        // layout token ends at the first lone `\r` on the row, left to the
+        // engine (here, passed byte by byte).
+        assert_eq!(names("a\n\r  b"), "#TX(a) #IN \r  #TX(b)");
+        assert_eq!(names("a\n  \r  b"), "#TX(a) #IN \r  #TX(b)");
+        assert_eq!(names("a\n  b\n  \rc"), "#TX(a) #IN #TX(b) #DE \r#TX(c)");
+        assert_eq!(
+            names("a\n  b\n  \r  \r  c"),
+            "#TX(a) #IN #TX(b) #NL \r  \r  #TX(c)"
+        );
+        assert_eq!(names("a\n\t\r  b"), "#TX(a) #IN \r  #TX(b)");
+        assert_eq!(names("\r  a"), " BAD:bad_indent ");
+        assert_eq!(names("\ra"), "\r#TX(a)");
+        assert_eq!(names("a\r\n\r  b"), "#TX(a) #IN \r  #TX(b)");
+    }
+
+    #[test]
+    fn a_line_holding_only_trivia_after_a_lone_carriage_return_is_blank() {
+        // No layout token for a row with nothing on it but whitespace and
+        // comments after a lone `\r`: the next content line decides.
+        assert_eq!(names("f x\n\r"), "#TX(f) #TX(x)\n\r");
+        assert_eq!(names("f x\n  \r  "), "#TX(f) #TX(x)\n  \r  ");
+        assert_eq!(names("a\n  b\n  \r;c\nd"), "#TX(a) #IN #TX(b) #DE #TX(d)");
+        assert_eq!(names("a\n  b\n\r;x\n  c"), "#TX(a) #IN #TX(b) #NL #TX(c)");
+        assert_eq!(names("a\n;x\r  c"), "#TX(a) #IN \r  #TX(c)");
+        assert_eq!(names("\r;x\n  a"), " BAD:bad_indent ");
+    }
+
+    #[test]
+    fn an_error_after_a_lone_carriage_return_counts_its_column_from_it() {
+        let mut state = LayoutState::default();
+        assert!(matches!(
+            decide("  \r  a", 0, &mut state),
+            Decision::Bad {
+                code: "bad_indent",
+                at: 5,
+                row_cr: Some(2)
+            }
+        ));
+        let mut state = LayoutState {
+            seen: true,
+            ..LayoutState::default()
+        };
+        assert!(matches!(
+            decide("a\n\r \tb", 1, &mut state),
+            Decision::Bad {
+                code: "tab_indent",
+                at: 4,
+                row_cr: Some(2)
+            }
+        ));
+        let mut state = LayoutState {
+            seen: true,
+            ..LayoutState::default()
+        };
+        assert!(matches!(
+            decide("a\n  \r   b", 1, &mut state),
+            Decision::Bad {
+                code: "bad_indent",
+                at: 8,
+                row_cr: Some(4)
+            }
+        ));
     }
 
     #[test]
