@@ -1,6 +1,6 @@
 # Handover: streaming transducers, alchemy, and the work around them
 
-Status as of 2026-09-28 18:05 UTC. This records the state of one working
+Status as of 2026-09-28 23:55 UTC. This records the state of one working
 session across the tabnas fleet and rjrodger/aless, so that whoever picks
 it up can continue without the session's scratch files, which do not
 survive it. Everything a later step needs is written here or linked from
@@ -79,7 +79,7 @@ Requests that came in the second session (2026-09-28, from 12:50 UTC):
   the Go engine release that bnf's `go.mod` would take. The Rust chain
   needs none of them: aless, gbnf and debug's Rust crate take bnf by git
   revision or sibling path.
-- **A design question, discussed and not started:** how aless will
+- **A design question, then a pilot:** how aless will
   translate any format to any other without an N-squared set of
   translators. The answer given: every tabnas grammar already lifts to
   the one JSON-shaped event stream, so reading is done; each format
@@ -93,16 +93,21 @@ Requests that came in the second session (2026-09-28, from 12:50 UTC):
   `tabnas.plugin.json` and embedded with `include_str!`, so the code is
   compiled in and only chosen by name at run time. A pilot with CSV
   (lift) and YAML (render) and an ADR section in transduce's
-  architecture document were proposed. The maintainer has not decided.
+  architecture document were proposed. The maintainer's word (18:20):
+  "Let's do this: The any-to-any translation design discussion,
+  unchanged." The design became transduce's `docs/translation.md`
+  (transduce#4), and the pilot has landed, CSV to YAML with no lift,
+  since CSV's events carry its records already; see 5.12.
 
 ## 2. What was built
 
 | Repository | What it is | Read first |
 |---|---|---|
-| tabnas/transduce | `tabnas-transduce`: protocols, the event source (whole walk, incremental from rule events, line-chunked JSON Lines and CSV), router and matcher, captures, `ScanEmit`, `TableFromJson`, limits, stable error codes | `docs/architecture.md` (the canonical design), `docs/reference.md`, `docs/BENCH.md` |
+| tabnas/transduce | `tabnas-transduce`: protocols, the event source (whole walk, incremental from rule events, line-chunked JSON Lines and CSV), router and matcher, captures, `ScanEmit`, `TableFromJson`, limits, stable error codes | `docs/architecture.md` (the canonical design), `docs/reference.md`, `docs/BENCH.md`, `docs/translation.md` (any format to any other) |
 | tabnas/render | `tabnas-render`: text algebra (`TextOut`, `WriteOut`, `StringOut`, `Join`, `ReplaceText`, `Concat`), the always-quoted CSV renderer, the JSON renderer, `RecordsToJson`, protocol validators | `docs/reference.md` |
-| tabnas/alchemy | `tabnas-alchemy`: the language reader as a tabnas grammar plugin; desugar, resolve, check, effects and `explain`; the evaluator that builds plans; lowering onto transduce and render; the standard library; the `alchemy` binary (`canon`, `format`, `check`, `explain`, `run`) | `docs/language.md`, `AGENTS.md`, `rs/README.md` |
-| rjrodger/aless | `--render csv\|json` streams a document's records through the transducer (aless#10); `--grammar NAME=FILE` and `--grammar-expr` read any text format through a custom ABNF grammar (aless#11); `--alchemy FILE`, `--alchemy-expr TEXT` and `--explain` run a program over the input (aless#13); a custom grammar runs under the shared depth cap (aless#12) | README "Scripts and agents", `skills/aless/SKILL.md` |
+| tabnas/alchemy | `tabnas-alchemy`: the language reader as a tabnas grammar plugin; desugar, resolve, check, effects and `explain`; the evaluator that builds plans; lowering onto transduce and render; the standard library; `events` and `compile_sources`, which a format's own render needs; the `alchemy` binary (`canon`, `format`, `check`, `explain`, `run`) | `docs/language.md`, `AGENTS.md`, `rs/README.md` |
+| rjrodger/aless | `--render csv\|json` streams a document's records through the transducer (aless#10); `--grammar NAME=FILE` and `--grammar-expr` read any text format through a custom ABNF grammar (aless#11); `--alchemy FILE`, `--alchemy-expr TEXT` and `--explain` run a program over the input (aless#13); a custom grammar runs under the shared depth cap (aless#12); `--render yaml` writes any format as YAML through tabnas-yaml's own render (aless#21) | README "Scripts and agents", `skills/aless/SKILL.md` |
+| tabnas/yaml | `alchemy/render.alc`: YAML's render as an alchemy part, named by the manifest's `translate` object and handed over as `render_text()` and `manifest_text()` (yaml#87) | `AGENTS.md`, "The translation parts" |
 | tabnas/debug | `rs/src/abnf.rs`: the ABNF emitter reads the bnf#80 repeat loop by shape and renders it as `*A` / `*( a b )` / `1*A` (debug#63, open) | `docs/reference.md`, "The repeat loop: the Rust port leads" |
 | tabnas/lsp | `rs/`: the full Rust port (semantic tokens, documents, instances, analyze, outline, hover, completion, registry, loaders, the JSON-RPC server and the `tabnas-lsp` binary, the generator's Rust target) | `rs/README.md` |
 
@@ -134,23 +139,25 @@ Design decisions that are not obvious from the code:
 
 The first session used the branch `claude/streaming-transducer-render-kzyqua`
 in every repository; the second used `claude/alchemy-handover-continuation-bil4x7`
-in aless, alchemy, parser, gbnf and debug, and finished bnf#80 on its
-original branch. Merges use merge commits titled
+in aless, alchemy, parser, gbnf, debug, lsp, transduce, yaml and admin,
+and finished bnf#80 on its original branch. Merges use merge commits titled
 `Merge pull request #N: <title>`.
 
 | Repository | Merged | Open |
 |---|---|---|
-| tabnas/transduce | #1 the crate, #2 and #3 repetition-rule guide notes | none |
+| tabnas/transduce | #1 the crate, #2 and #3 repetition-rule guide notes; #4 the translation design, `docs/translation.md` (09-28 19:10, `d5da8bc`); #5 `Fail` carries its file (21:00, `35ffda6`); #6 `Schema::Infer` binds the first row's names under `max_metadata_bytes` (21:41, `17da362`); #8 what the translation pilot found (23:53, `b81a495`) | none |
 | tabnas/render | #1 the crate | none |
-| tabnas/alchemy | #1 the reader, #2 phase 3 (`4c9c2a2`), #3 the reader's repetitions as `r:` loops (`f67942d`), #5 a lone carriage return at a line start is whitespace (09-28 12:08, `e9e4daf`), #6 the handover refreshed (15:04, `ae93555`), #7 the debug test accepts both renderings of the optional block (15:09, `c5f966d`) | this handover (#8) |
-| rjrodger/aless | #10 `--render`, #11 custom ABNF grammars (`0cc8a94`), #12 a grammar from the command line runs under the shared depth cap (09-28 12:53, `5e2b7bf`), #13 `--alchemy`, `--alchemy-expr` and `--explain` (09-28 14:45, `2eec30f`) | none; the branch is at main |
-| tabnas/parser | #245, #246 guide notes; #248 Go builtins append `src` in amortized constant time (`8e60c46`); #249 TypeScript `@capture$` and `@fold$` append a child's kids one at a time, over the count the child had (09-28 12:36, `d8d00c3`) | none |
+| tabnas/alchemy | #1 the reader, #2 phase 3 (`4c9c2a2`), #3 the reader's repetitions as `r:` loops (`f67942d`), #5 a lone carriage return at a line start is whitespace (09-28 12:08, `e9e4daf`), #6 the handover refreshed (15:04, `ae93555`), #7 the debug test accepts both renderings of the optional block (15:09, `c5f966d`), #8 the handover refreshed (18:08, `1b91383`), #9 `events` (20:47, `60850cb`), #10 `compile_sources` (21:02, `32427c4`), #11 `table-from-json` infers its columns under `:columns :infer` (22:03, `5909c43`), #12 `length`, `compare` and `number-class` (23:04, `5b31951`) | this handover (#13) |
+| rjrodger/aless | #10 `--render`, #11 custom ABNF grammars (`0cc8a94`), #12 a grammar from the command line runs under the shared depth cap (09-28 12:53, `5e2b7bf`), #13 `--alchemy`, `--alchemy-expr` and `--explain` (09-28 14:45, `2eec30f`), #21 `--render yaml` (23:39, `36897d7`) | none; the branch is at main |
+| tabnas/parser | #245, #246 guide notes; #248 Go builtins append `src` in amortized constant time (`8e60c46`); #249 TypeScript `@capture$` and `@fold$` append a child's kids one at a time, over the count the child had (09-28 12:36, `d8d00c3`) | **#252** a bound on the rule history: the design and a Rust prototype (head `a5b604a`), for the maintainer to decide and merge, TypeScript first (4.3) |
 | tabnas/bnf | **#80** every repetition compiles to a same-depth replace loop (09-28 12:40, `d0a9227`) | none; the release is deferred (5.1) |
 | tabnas/abnf | #97 guide note | none |
 | tabnas/ebnf | #45, #46 guide notes | none |
 | tabnas/gbnf | #47, #48 guide notes; #49 the DIVERGENCE.md 3 pin follows the compiler (`5ee4ff3`); #50 close DIVERGENCE.md 3 and hold the linear side as a standing check (09-28 12:51, `5c24c4d`) | none |
 | tabnas/debug | none | **#63** the Rust emitter renders the repeat loop (head `cdfd35b`); Rust, Go and prose gates green, Codex threads resolved, the alchemy prerequisite merged (alchemy#7); the three `ci / ts` jobs red on every PR in the repository since bnf#80 merged, which is the maintainer's decision (see 4.1 and 5.6) |
-| tabnas/lsp | #20 the semantic-token crate (`b6339f9`); **#21** the full Rust port, eighteen commits (09-28 17:56, `2562bfa`) | none |
+| tabnas/lsp | #20 the semantic-token crate (`b6339f9`); **#21** the full Rust port, eighteen commits (09-28 17:56, `2562bfa`); #23 the generator's patch tables name the engine only (18:34, `ab2646d`) | none |
+| tabnas/yaml | #87 YAML's render as an alchemy part, the manifest's `translate` object, `render_text()` and `manifest_text()` (09-28 23:25, `b7c28c4`) | none |
+| tabnas/admin | #93 the descriptor task keeps a descriptor's `translate` object and checks its shape (09-28 21:56, `2dc8003`) | none |
 
 Another session, not these, drove the parser 0.12.5 release and the
 yaml, ini and csv releases after it. Leave those alone.
@@ -256,9 +263,10 @@ merged. The PR body is the full record. In short:
   optional path dependency present, feature on or off, but a git
   consumer with the feature off resolves without them, and only a
   consumer that turns `dialects` or `fleet` on needs those tables; the
-  generated crate turns neither on. The follow-up (lsp, after #21)
-  emits the sibling tables only for a feature the generated crate
-  enables, and corrects `rs/README.md` "Install" the same way; binary
+  generated crate turns neither on. The follow-up, lsp#23 (18:34,
+  `ab2646d`), has the generator's patch tables name the engine only,
+  since the generated crate turns no feature on, and corrects
+  `rs/README.md` "Install" the same way; binary
   names cargo refuses (`.`, `+`)
   refused at generation, verified with a scratch crate; `serve` returns
   whether the client asked for shutdown and a generated server exits 1
@@ -283,13 +291,43 @@ merged. The PR body is the full record. In short:
   sync; the TypeScript defects the port reported (`.ebnf`/`.gbnf`
   refused by the firewall; `load.module` ignored).
 
+### 4.3 tabnas/parser#252: a bound on the rule history
+
+The design 5.5 asked for, with a Rust prototype, opened 09-28 18:19 at
+head `a5b604a`: `doc/rule-history-bound.md` and `options.rule.history`,
+the number of predecessor snapshots a rule can reach through `prev` (at
+least 1; `null` or `false` for today's unbounded behaviour, the
+default). A replace or a push links a bounded copy of the rule it
+replaces, which keeps its parent and drops its child and next links:
+the child links carried a ladder of copies back through the whole
+sequence, so cutting the predecessors alone raised the peak. No grammar
+in the fleet reads `prev.child` or `prev.next`, and `history: 3` serves
+every path the fleet reads. Measured on a release build, the strict-JSON
+fixture grammar, the same value under every setting:
+
+| Document | `rule.history` | Time | Peak RSS |
+|---|---|---|---|
+| 300,000 numbers in one array, 1.9 MB | unbounded | 3.3 s | 554 MB |
+| the same | 3 | 1.1 s | 57 MB |
+| 312,194 API records in one array, 25 MB | unbounded | 223 s (29 s on a quiet box) | 2,724 MB |
+| the same | 3 | 16 s | 795 MB |
+
+The prototype changes nothing unless a grammar sets the option. The
+TypeScript canonical and the Go port, the `test/spec` rows that pin
+what a cut chain answers, and a `DIVERGENCE.md` entry should Rust carry
+the option first all wait on the maintainer's word: TypeScript is
+canonical, and the landing order is the maintainer's. The document's
+last section is the proposed entry for admin's `DECISIONS.md`.
+
 ## 5. Next work, in order
 
 Items 5.1 to 5.4 and 5.7 are done, and 4.2 (the lsp port) with them;
-what remains of each is listed.
+so is the translation pilot (5.12), which came between; what remains of
+each is listed.
 The Rust-only instruction (section 1) orders the rest: 5.6's TypeScript
-port waits on the maintainer, 5.5's next step is a Rust profile and a
-design, 5.8's is the audit of the Rust grammars, 5.9 is aless. Where a
+port waits on the maintainer, 5.5's design and prototype are parser#252
+(4.3) and wait on the maintainer too, 5.8's next step is the audit of
+the Rust grammars, 5.9 is aless. Where a
 subsection below keeps the fleet's TypeScript-first rule for landing a
 change, that landing waits on the maintainer's word; the step before it
 does not.
@@ -414,10 +452,9 @@ the review forced. Read its PR body for the full record; in short:
   too; a program's output size is unbounded by default;
   `app::tests::explorer_parent_and_refresh` failed once on Windows (the
   explorer did not list a file written a moment before) and passed on
-  re-run, a robustness gap in that test. aless's lock pins alchemy at
-  `2bc4beb`, before alchemy#5; `cargo update -p tabnas-alchemy` alone
-  conflicts on the engine and csv pins, so a coordinated move is a small
-  PR of its own when wanted.
+  re-run, a robustness gap in that test. aless#21 moved the alchemy
+  pin to its main, with transduce and csv, which the move needs, so
+  alchemy#5 onwards are in aless.
 
 ### 5.5 Throughput and memory: the key criterion
 
@@ -461,8 +498,14 @@ source already bounds in memory.
 Measured again on 09-28 in aless#13 (above): the program path is linear
 in the document and costs about half again the plain renderer's time on
 JSON; peak memory is the engine's rule history on every path, 2.8 GB
-for 25 MB. The plan here stands, and it is Rust engine work, within the
-Rust-only instruction.
+for 25 MB. aless#21 measured the same on 33 MB of JSON: 2.09 GB under
+`--render json`, `csv` and `yaml` alike.
+
+The first change is designed and prototyped in Rust: parser#252 (4.3),
+which bounds the rule history and takes the 25 MB records file from
+2,724 MB to 795 MB and from 223 s to 16 s. The second, the per-rule
+cost, has no design yet. What lands, and in what order, is the
+maintainer's.
 
 ### 5.6 tabnas/debug: render replace loops correctly
 
@@ -621,7 +664,14 @@ observation in tabnas/parser (#250), 8 to 11 and 15 in tabnas/bnf (#86
 to #90), 12 in tabnas/debug (#64), 13 in tabnas/abnf (#100), 14 as six
 issues in rjrodger/aless (#14 to #19). Item 10 (`Value::to_json`) lives
 in the engine crate (`parser/rs/src/value.rs`), which bnf#88 names.
-The lsp reviews added tabnas/parser#251 and lsp#22 (4.2).
+The lsp reviews added tabnas/parser#251 and lsp#22 (4.2). The
+translation pilot (5.12) filed four: tabnas/admin#94 (the plugin
+schema every manifest's `$schema` names is not published),
+tabnas/yaml#86 (a quoted key at column 0 after a block sequence is read
+into the sequence), tabnas/yaml#88 (a flow sequence first in an
+indented block sequence replaces it, or fails the parse) and
+tabnas/transduce#7 (the incremental YAML source streams a member's
+value before its key when the key is a mapping).
 
 Found while writing aless's Unix-format grammars against bnf 0.1.22 and
 abnf 0.4.16. Reproductions are in rjrodger/aless
@@ -680,6 +730,63 @@ Found in the second session:
 - **The checker is lenient on items it cannot type.** A `Value` item
   passes where particular data is wanted and is checked at run time
   (alchemy#2's Codex round).
+
+### 5.12 Any format to any other: the pilot, done
+
+The design is transduce's `docs/translation.md`: each format declares
+its shapes and loss in its manifest's `translate` object and ships its
+render (and a lift, where its events do not carry its shape) as alchemy
+text its crate embeds; the host composes lift, a shape adapter and
+render per translation, so nothing is written per pair of formats.
+The pilot writes any format aless reads as YAML (`aless --render yaml
+FILE`). It landed as:
+
+| Step | Pull requests |
+|---|---|
+| The design | transduce#4 |
+| 0, the descriptor task keeps and checks the object | admin#93 |
+| 1, `events` | alchemy#9 |
+| 2, `Fail::file` and `compile_sources` | transduce#5, alchemy#10 |
+| 3, YAML's render, the manifest's object, the accessors | alchemy#12 (the natives), yaml#87 |
+| 4, the inferred binding | alchemy#11, transduce#6 |
+| 5, the wiring in aless | aless#21 |
+| What the pilot found | transduce#8 |
+
+transduce's "What the pilot found" is the record. In short: no manifest
+schema is published, so the descriptor task is the one check; the
+render keeps one marker per open container, because keeping each
+mapping's keys made its time quadratic in a mapping's width, and every
+host holds a stream to a tree's events in front of it instead (aless's
+`export::UniqueMembers`), falling back to the parsed value; a packaged
+crate holds nothing outside `rs/`, so yaml embeds copies under
+`rs/translate/`, held to the files by a test; the round trip runs in
+aless, where 673 of the 694 inputs the reader reads come back the same
+and 21 meet yaml#86 and #88, in a checked ledger that fails when the
+reader is fixed; and YAML costs twice the native JSON export's time at
+the same peak memory, the parse's.
+
+Follow-ups, none started:
+
+- **The reader defects** yaml#86 and #88. A fix fails aless's
+  `tests/yaml_render.rs` until the ledger's lines for it go.
+- **transduce#7**, the value before its key. The adapter could refuse
+  it with `STREAMABILITY_UNKNOWN`, as it refuses a rewritten map, so
+  `--render json` and programs fall back as `--render yaml` does.
+- **admin#94**, a plugin schema for the whole descriptor.
+- **The tree-contract check** moves into transduce as a shared sink
+  when a second host translates.
+- **A code for `fail`**, so a render can refuse a broken stream with
+  `PROTOCOL_ORDER_ERROR` rather than `INPUT_INVALID`; a language change.
+- **`--alchemy` with `--render yaml`** is refused until alchemy can feed
+  one program's events into another program's sink.
+- **A render that writes from records** is read and not run: aless
+  composes the inferred table in front of one when a format ships one.
+- **The lift side** waits for the first format whose events do not
+  carry its shape, a Markdown table.
+- **A native YAML renderer**, if twice the JSON export's time is too
+  much: the maintainer's call.
+- **TypeScript and Go** read the same parts, named by the manifest, once
+  they run alchemy; deferred with the rest of those ports.
 
 ## 6. Conventions and traps
 
@@ -758,6 +865,20 @@ Found in the second session:
 - **Cargo refuses `.` and `+` in a binary target name**, tested with a
   scratch crate; a generator that derives a binary name from a language
   id must refuse them first.
+- **A crate packaged for crates.io holds nothing outside its own
+  directory.** `include_str!` of a file at the repository's root
+  compiles in a checkout and fails the verification build `cargo
+  publish` runs: embed a copy under `rs/` and hold it to the file with
+  a test, as yaml's `rs/translate/` is held.
+- **A `scan-emit` state that grows per item is quadratic.** The state
+  is measured again in full on every change, and `put` copies the
+  record: a render that kept each mapping's keys took 10.9 s for 16,000
+  keys. Keep per-item growth out of the state.
+- **Several test filters go after `--`:** `cargo test --test agent a b
+  c` ran nothing; `cargo test --test agent -- a b c` runs the three.
+- **`cargo update -p X --precise <sha>`** fails when another pin
+  conflicts with the one it asks for (tabnas-alchemy against csv): move
+  the conflicting crate first, then pin.
 - **The loaders review's workspace driver** (`lsp.py` in its scratch)
   takes server keys, not paths, and the workspace as an absolute path:
   a relative one finds no manifest and reports nothing served.
