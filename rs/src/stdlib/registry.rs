@@ -200,6 +200,19 @@ fn textlike(op: &str, v: &Val) -> Result<(), Fail> {
     }
 }
 
+/// The items of a vector the program built (its stack, its outputs), or
+/// the type error that names the operator: what is not a vector here is
+/// the program's mistake, not the data's (`as-vector` takes data).
+fn as_items<'a>(op: &str, v: &'a Val) -> Result<&'a Arc<[Val]>, Fail> {
+    match v {
+        Val::Vector(items) => Ok(items),
+        other => Err(type_error(format!(
+            "{op}: the data must be a vector, not {}",
+            other.kind()
+        ))),
+    }
+}
+
 /// A non-negative whole number that fits an index.
 fn as_index(v: &Val) -> Option<usize> {
     match v {
@@ -404,6 +417,81 @@ fn vector(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         )));
     }
     Ok(Val::vector(a.to_vec()))
+}
+
+/// `push item vector`: a new vector, the item last. Bounded by the vector's
+/// length, as the three below are: a stack of markers is as long as the
+/// document's nesting, never its length.
+fn push(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    if a[0].is_live() {
+        return Err(type_error(format!(
+            "push: a vector cannot hold {}; a stream is used once, where it is",
+            a[0].live_kind()
+        )));
+    }
+    let items = as_items("push", &a[1])?;
+    let mut out = Vec::with_capacity(items.len() + 1);
+    out.extend_from_slice(items);
+    out.push(a[0].clone());
+    Ok(Val::vector(out))
+}
+
+fn pop(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let items = as_items("pop", &a[0])?;
+    let Some(last) = items.len().checked_sub(1) else {
+        return Err(type_error(
+            "pop: the vector is empty; there is no last item to remove",
+        ));
+    };
+    Ok(Val::vector(items[..last].to_vec()))
+}
+
+fn top(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let items = as_items("top", &a[0])?;
+    items
+        .last()
+        .cloned()
+        .ok_or_else(|| type_error("top: the vector is empty; there is no last item"))
+}
+
+fn count(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    Ok(Val::num(as_items("count", &a[0])?.len() as f64))
+}
+
+/// The kind of a value as a keyword, so that a program can tell a string
+/// from a number, which no `match` pattern does: the words `Val::kind`
+/// uses in messages, without their article.
+fn kind(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    // The checker refuses a stream or a text where `kind` is named; this
+    // is where `kind` passed as a function meets one (`map kind [(text
+    // "x")]`), and a finite text is refused as a live one is.
+    match kind_word(&a[0]) {
+        Some(word) => Ok(Val::keyword(word)),
+        None => Err(type_error(format!(
+            "kind: {} cannot be asked; a stream or a text is used where it is, not inspected",
+            a[0].kind()
+        ))),
+    }
+}
+
+/// The word `kind` answers for a retained value; none for a stream or a
+/// text, live or finite, which `kind` refuses.
+fn kind_word(v: &Val) -> Option<&'static str> {
+    Some(match v {
+        Val::Null => "null",
+        Val::Bool(_) => "boolean",
+        Val::Num { .. } => "number",
+        Val::Str(_) => "string",
+        Val::Keyword(_) => "keyword",
+        Val::Vector(_) => "vector",
+        Val::Record(_) => "record",
+        Val::Fn(_) => "function",
+        Val::Selector(_) => "selector",
+        Val::CaptureSpec(_) => "capture",
+        v @ Val::Tagged { .. } if v.is_missing() => "missing",
+        Val::Tagged { .. } => "tagged",
+        Val::Stream(_) | Val::Text(_) => return None,
+    })
 }
 
 fn path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -697,6 +785,103 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Str(text))
 }
 
+/// The double-quoted form of `s`: the JSON string form (RFC 8259's
+/// escapes for the quote, the backslash and U+0000 to U+001F, the short
+/// ones where they exist, `\u00xx` otherwise, in the render crate's
+/// lowercase) with U+007F to U+009F escaped the same way, since YAML's
+/// double-quoted style reads JSON's escapes but its printable set excludes
+/// the C1 controls. Every other character is written as itself.
+pub fn quote(s: &str) -> String {
+    let mut out = String::with_capacity(quoted_len(s));
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The length of [`quote`]'s result, counted before it is built: two
+/// quotes, and each character as itself, as a two-byte escape, or as the
+/// six bytes of `\u00XX`.
+pub fn quoted_len(s: &str) -> usize {
+    2 + s
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\t' | '\r' | '\u{8}' | '\u{c}' => 2,
+            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => 6,
+            c => c.len_utf8(),
+        })
+        .sum::<usize>()
+}
+
+/// `quoted string`: the double-quoted form. The result is one scalar of
+/// the output, up to six bytes per byte of the string, so it is held to
+/// `max_scalar_bytes`, refused before it is built.
+fn quoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("quoted", "the string", &a[0])?;
+    let max = rt.limits().max_scalar_bytes;
+    let len = quoted_len(s);
+    if len > max {
+        return Err(Fail::limit(
+            "max_scalar_bytes",
+            max as u64,
+            format!("quoted: the quoted form is {len} bytes, more than {max}"),
+        ));
+    }
+    Ok(Val::Str(Arc::from(quote(s))))
+}
+
+/// `repeat count string`: the string `count` times over. The result is one
+/// scalar of the output (a line's indentation), so it is held to
+/// `max_scalar_bytes`, refused before it is built.
+fn repeat(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    // The count is judged before it is narrowed, so that any whole
+    // non-negative count past the limit is the limit's refusal, and only
+    // a negative or a fractional one is a type error.
+    let count = match &a[0] {
+        Val::Num { value, .. } if *value >= 0.0 && value.fract() == 0.0 => *value,
+        Val::Num { value, lexeme } => {
+            let spelled = lexeme
+                .as_deref()
+                .map_or_else(|| value.to_string(), str::to_string);
+            return Err(type_error(format!(
+                "repeat: the count must be a whole number of at least 0, not {spelled}"
+            )));
+        }
+        other => {
+            return Err(type_error(format!(
+                "repeat: the count must be a number, not {}",
+                other.kind()
+            )))
+        }
+    };
+    let s = as_str("repeat", "the string", &a[1])?;
+    let max = rt.limits().max_scalar_bytes;
+    if count * s.len() as f64 > max as f64 {
+        return Err(Fail::limit(
+            "max_scalar_bytes",
+            max as u64,
+            format!("repeat: {count} times {} bytes is more than {max}", s.len()),
+        ));
+    }
+    // Within the limit, the count fits a usize, or the string is empty.
+    let n = if s.is_empty() { 0 } else { count as usize };
+    Ok(Val::Str(Arc::from(s.repeat(n))))
+}
+
 fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     let message = as_str("fail", "the message", &a[0])?;
     let mut f = Fail::new(Code::InputInvalid, message.to_string());
@@ -756,6 +941,44 @@ fn no_schema(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
 
 fn missing(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     constructor(MISSING)(rt, a, at)
+}
+
+fn object_start(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("object-start")(rt, a, at)
+}
+
+fn object_end(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("object-end")(rt, a, at)
+}
+
+fn array_start(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("array-start")(rt, a, at)
+}
+
+fn array_end(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("array-end")(rt, a, at)
+}
+
+fn key(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    as_str("key", "the name", &a[0])?;
+    Ok(Val::tagged("key", a.to_vec()))
+}
+
+fn scalar(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Null | Val::Bool(_) | Val::Num { .. } | Val::Str(_) => {
+            Ok(Val::tagged("scalar", a.to_vec()))
+        }
+        other => Err(type_error(format!(
+            "scalar: the value must be null, a boolean, a number or a string, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("events", &a[0])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::Events { source })))
 }
 
 fn csv_table(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -841,6 +1064,11 @@ static NATIVES: &[Native] = &[
     f("record", AtLeast(0), record, "record entry... -> Record", "a retained record; duplicate keys are an error"),
     k("entry", Exact(2), entry, "entry :key value -> Entry", "one record field"),
     f("vector", AtLeast(0), vector, "vector item... -> Vector", "a retained vector; it cannot hold a stream or a live text"),
+    f("push", Exact(2), push, "push item vector -> Vector", "a new vector with the item appended; it cannot hold a stream or a live text"),
+    f("pop", Exact(1), pop, "pop vector -> Vector", "the vector without its last item; an empty vector is a type error"),
+    f("top", Exact(1), top, "top vector -> Value", "the last item; an empty vector is a type error"),
+    f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
+    f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
     // Selectors.
     f("path", AtLeast(0), path, "path segment... -> Selector", "a selector from strings, indexes and selectors"),
     c("root", root, "root -> Selector", "the document"),
@@ -853,6 +1081,7 @@ static NATIVES: &[Native] = &[
     f("capture", Between(2, 3), capture, "capture :tag selector [:limit] -> CaptureSpec", "materialize each selected scope under max_capture_bytes, or under the Limits field the keyword names (:max_metadata_bytes, :max_record_bytes), the host's value for it"),
     f("route", Exact(2), route, "route captures input -> Stream<Selected>", "one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap"),
     f("select", Exact(2), select, "select selector input -> Stream<Value>", "route with one capture, delivering the values"),
+    f("events", Exact(1), events, "events input -> Stream<Event>", "every event of JsonEvents as one item, as it arrives: the container events as constants, key and scalar with their one field; End ends the stream and is no item; nothing is retained between events"),
     f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its concat-map applies included): at most max_metadata_bytes, no deeper than max_depth, reported in retained_bytes_high; ready after each item; finish runs once at the validated end"),
     k("transition", Exact(2), transition, "transition state outputs -> Transition", "one step's result: the next state and a vector of outputs"),
     f("partial", AtLeast(1), partial, "partial f arg... -> Fn", "f with its first arguments supplied"),
@@ -865,6 +1094,8 @@ static NATIVES: &[Native] = &[
     f("text", Exact(1), text, "text string -> Text", "a string as a text"),
     f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),
     f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
+    f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
+    f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
@@ -876,6 +1107,13 @@ static NATIVES: &[Native] = &[
     c("table-end", table_end, "table-end -> TableEvent", "the table's end, after the source validated"),
     c("no-schema", no_schema, "no-schema -> State", "the state before the metadata"),
     c("missing", missing, "missing -> Value", "an absent member, distinct from null"),
+    // The source's events, as `events` delivers them.
+    c("object-start", object_start, "object-start -> Event", "an object begins"),
+    c("object-end", object_end, "object-end -> Event", "an object ends"),
+    c("array-start", array_start, "array-start -> Event", "an array begins"),
+    c("array-end", array_end, "array-end -> Event", "an array ends"),
+    k("key", Exact(1), key, "key name -> Event", "the name of the member whose value follows, inside an object"),
+    k("scalar", Exact(1), scalar, "scalar value -> Event", "one scalar of the source: null, a boolean, a number with its lexeme, or a string"),
     // Renderers and protocol adapters.
     f("json", Exact(1), json, "json events -> Text", "JsonEvents as compact JSON text, event by event, with a final newline"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
@@ -937,7 +1175,51 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 23);
+        assert_eq!(compared, 37);
+    }
+
+    /// The JSON string form, with the C1 controls escaped as well, in the
+    /// render crate's lowercase hex; everything else as itself.
+    #[test]
+    fn quoted_is_the_json_string_form_with_the_c1_controls_escaped() {
+        assert_eq!(quote(""), "\"\"");
+        assert_eq!(quote("plain"), "\"plain\"");
+        assert_eq!(
+            quote("q\" b\\ n\n r\r t\t bs\u{8} ff\u{c} nul\0 c1\u{1} us\u{1f}"),
+            "\"q\\\" b\\\\ n\\n r\\r t\\t bs\\b ff\\f nul\\u0000 c1\\u0001 us\\u001f\""
+        );
+        assert_eq!(
+            quote("del\u{7f} pad\u{80} apc\u{9f} nbsp\u{a0} é 日本 🚀 /"),
+            "\"del\\u007f pad\\u0080 apc\\u009f nbsp\u{a0} é 日本 🚀 /\""
+        );
+        // What the render crate writes for the same string, where both
+        // escape: the two agree on JSON's own escapes.
+        let json = tabnas_transduce::Datum::String("q\" \\ \n \u{1f} é".into()).to_string();
+        assert_eq!(quote("q\" \\ \n \u{1f} é"), json);
+        // The length counted before building is the length built.
+        for s in [
+            "",
+            "plain",
+            "q\" \\ \n \u{1f} é",
+            "del\u{7f} pad\u{80} 日本 🚀",
+        ] {
+            assert_eq!(quoted_len(s), quote(s).len(), "{s:?}");
+        }
+    }
+
+    /// `kind` names every retained value's kind by one keyword, the word
+    /// the messages use.
+    #[test]
+    fn kind_names_a_value_by_one_keyword() {
+        let kind_of = |v: Val| kind_word(&v).unwrap().to_string();
+        assert_eq!(kind_of(Val::Null), "null");
+        assert_eq!(kind_of(Val::Bool(true)), "boolean");
+        assert_eq!(kind_of(Val::num(1.5)), "number");
+        assert_eq!(kind_of(Val::str("s")), "string");
+        assert_eq!(kind_of(Val::keyword("k")), "keyword");
+        assert_eq!(kind_of(Val::vector(vec![])), "vector");
+        assert_eq!(kind_of(Val::missing()), "missing");
+        assert_eq!(kind_of(Val::tagged("key", vec![Val::str("a")])), "tagged");
     }
 
     #[test]

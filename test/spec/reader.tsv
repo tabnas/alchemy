@@ -121,3 +121,8 @@ replace-text "a" "b" text	"(replace-text \"a\" \"b\" text)"
 scalar-text csv-options cell	"(scalar-text csv-options cell)"
 records (table-from-json api-binding input)	"(records (table-from-json api-binding input))"
 fail "Required metadata was not found"	"(fail \"Required metadata was not found\")"
+# The source's events as items, and the stack a renderer over them keeps.
+scan-emit [] step finish (events input)	"(scan-emit [] step finish (events input))"
+push :object (pop stack)	"(push :object (pop stack))"
+repeat (count stack) "  "	"(repeat (count stack) \"  \")"
+quoted (top stack)	"(quoted (top stack))"

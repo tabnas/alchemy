@@ -14,9 +14,10 @@
 //!   ([`TableFromJson`]) over events, or an adapter reading the tagged
 //!   `schema`, `row` and `table-end` values an interpreted stream yields;
 //! - **items** (a stream of values): [`Router`] over events for `route` and
-//!   `select`, [`ScanEmit`] for `scan-emit`, per-item stages for `map` and
-//!   `filter`, and an adapter turning native table events into the tagged
-//!   values a program pattern-matches;
+//!   `select`, [`EventsToItems`] for `events`, [`ScanEmit`] for
+//!   `scan-emit`, per-item stages for `map` and `filter`, and an adapter
+//!   turning native table events into the tagged values a program
+//!   pattern-matches;
 //! - **text**: [`CsvRenderer`] and [`JsonRenderer`] over their protocols,
 //!   `concat-map` and `join` over a stream of items, `replace-text` as
 //!   [`ReplaceText`], and `concat` around one live text as a frame that
@@ -426,6 +427,38 @@ impl RouteSink for RouteToItems {
 
     fn end(&mut self) -> Result<Flow, Fail> {
         self.down.end()
+    }
+}
+
+/// `events`: every event of `JsonEvents/1` as the tagged value a program
+/// matches on, pushed down as it arrives, and `End` as the stream's end.
+/// Nothing is kept between events: a key is delivered as it is read,
+/// twice when the source repeats it, and a scalar with its lexeme.
+struct EventsToItems {
+    down: Items,
+}
+
+impl Sink for EventsToItems {
+    fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
+        let item = match ev {
+            JsonEvent::ObjectStart => Val::tagged("object-start", Vec::new()),
+            JsonEvent::ObjectEnd => Val::tagged("object-end", Vec::new()),
+            JsonEvent::ArrayStart => Val::tagged("array-start", Vec::new()),
+            JsonEvent::ArrayEnd => Val::tagged("array-end", Vec::new()),
+            JsonEvent::Key(name) => Val::tagged("key", vec![Val::str(name)]),
+            JsonEvent::Null => Val::tagged("scalar", vec![Val::Null]),
+            JsonEvent::Bool(b) => Val::tagged("scalar", vec![Val::Bool(b)]),
+            JsonEvent::Number(n) => Val::tagged(
+                "scalar",
+                vec![Val::Num {
+                    value: n.value,
+                    lexeme: n.lexeme.map(Arc::from),
+                }],
+            ),
+            JsonEvent::String(s) => Val::tagged("scalar", vec![Val::str(s)]),
+            JsonEvent::End => return self.down.end(),
+        };
+        self.down.item(item)
     }
 }
 
@@ -1227,6 +1260,7 @@ impl<'a> Lowering<'a> {
                 )?;
                 self.events(source, Box::new(router))
             }
+            Plan::Events { source } => self.events(source, Box::new(EventsToItems { down })),
             Plan::ScanEmit {
                 init,
                 step,
@@ -1287,7 +1321,7 @@ impl<'a> Lowering<'a> {
                 )
             }
             Plan::Input | Plan::Records { .. } => Err(protocol_mismatch(
-                "JSON events cannot be read item by item; select or route what the stream should yield",
+                "JSON events cannot be read item by item; select or route what the stream should yield, or read its events",
             )),
             other => Err(type_error(format!(
                 "{} is a text, not a stream",

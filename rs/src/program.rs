@@ -328,6 +328,7 @@ fn root_stage(plan: &Plan) -> &Plan {
             Plan::Input => return here,
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
+            | Plan::Events { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }

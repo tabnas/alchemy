@@ -425,13 +425,15 @@ render sinks once, and the host pushes the source's events through it.
 
 **Patterns.** In `(match value (case pattern body) ...)`, `_` matches
 anything; a symbol naming a native constant (`table-end`, `no-schema`,
-`missing`) or a definition of the program compares equal to it; any
-other symbol binds; a keyword, string, number, boolean or `null`
-compares; a vector matches a vector of the same length, item by item;
-`(constructor pattern ...)` matches the tagged value that constructor
-makes (`selected`, `schema`, `row`, `ready`, `transition`, `entry`),
-field by field. A `match` no case takes is `no_match`. `if` decides by a
-boolean and nothing else: no value is implicitly true or false.
+`missing`, the container events `object-start`, `object-end`,
+`array-start` and `array-end`) or a definition of the program compares
+equal to it; any other symbol binds; a keyword, string, number, boolean
+or `null` compares; a vector matches a vector of the same length, item
+by item; `(constructor pattern ...)` matches the tagged value that
+constructor makes (`selected`, `schema`, `row`, `ready`, `transition`,
+`entry`, `key`, `scalar`), field by field. A `match` no case takes is
+`no_match`. `if` decides by a boolean and nothing else: no value is
+implicitly true or false.
 
 ## Types and ownership
 
@@ -450,6 +452,7 @@ wanted) is reported. The types (spec section 10.2):
 | `Vector<T>` | a finite retained collection; it cannot hold a stream | |
 | `Stream<T>` | an ordered single-use sequence of items | yes |
 | `TableEvents` | `Stream<TableEvent>`: `schema`, `row`s, `table-end`, the `TableRows/1` protocol as tagged values | yes |
+| `Stream<Event>` | the source's own events as items, what `events` yields: `object-start`, `object-end`, `array-start`, `array-end`, `(key name)`, `(scalar value)` | yes |
 | `JsonEvents` | the single-use source, `JsonEvents/1` | yes |
 | `Text` | single-use incremental text | yes |
 | `String` | a finite retained string; where a text is wanted, a string lifts to one | |
@@ -564,12 +567,18 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `as-vector` | `as-vector data -> Vector` | a captured array as a vector; `INPUT_INVALID` otherwise |
 | `record`, `entry` | `record entry... -> Record`, `entry :key value -> Entry` | a retained record; duplicate keys are `duplicate_key` |
 | `vector` | `vector item... -> Vector` | a retained vector; it cannot hold a stream or a live text |
+| `push` | `push item vector -> Vector` | a new vector with the item appended; it cannot hold a stream or a live text |
+| `pop` | `pop vector -> Vector` | the vector without its last item; an empty vector is a type error |
+| `top` | `top vector -> Value` | the last item; an empty vector is a type error |
+| `count` | `count vector -> Number` | how many items the vector holds |
+| `kind` | `kind value -> Keyword` | the kind of a value as a keyword: `:null`, `:boolean`, `:number`, `:string`, `:keyword`, `:vector`, `:record`, `:missing`, `:tagged`, `:function`, `:selector` or `:capture`; a stream or a text cannot be asked |
 | `path` | `path segment... -> Selector` | a selector from strings, indexes and selectors |
 | `root`, `each-index`, `each-member` | `-> Selector` | the document; every element of an array; every member value of an object |
 | `property`, `index`, `compose` | `property name`, `index n`, `compose outer inner -> Selector` | one member; one element; inner below every location outer names |
 | `capture` | `capture :tag selector [:limit] -> CaptureSpec` | materialize each selected scope under `max_capture_bytes`, or under the `Limits` field the keyword names (`:max_metadata_bytes`, `:max_record_bytes`), the host's value for it |
 | `route` | `route captures input -> Stream<Selected>` | one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap |
 | `select` | `select selector input -> Stream<Value>` | route with one capture, delivering the values |
+| `events` | `events input -> Stream<Event>` | every event of `JsonEvents` as one item, as it arrives: the container events as constants, `key` and `scalar` with their one field; `End` ends the stream and is no item; nothing is retained between events |
 | `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its `concat-map` applies included): at most `max_metadata_bytes`, no deeper than `max_depth`, reported in `retained_bytes_high`; ready after each item; finish runs once at the validated end |
 | `transition` | `transition state outputs -> Transition` | one step's result: the next state and a vector of outputs |
 | `partial` | `partial f arg... -> Fn` | `f` with its first arguments supplied |
@@ -580,11 +589,19 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `text` | `text string -> Text` | a string as a text |
 | `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length |
 | `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
+| `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F as `\u00XX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past `max_scalar_bytes`, before it is built |
+| `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema; one row, as wide as the schema; the end, after the source validated |
 | `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |
 | `missing` | `missing -> Value` | an absent member, distinct from `null` |
+| `object-start` | `object-start -> Event` | an object begins |
+| `object-end` | `object-end -> Event` | an object ends |
+| `array-start` | `array-start -> Event` | an array begins |
+| `array-end` | `array-end -> Event` | an array ends |
+| `key` | `key name -> Event` | the name of the member whose value follows, inside an object |
+| `scalar` | `scalar value -> Event` | one scalar of the source: `null`, a boolean, a number with its lexeme, or a string |
 | `json` | `json events -> Text` | `JsonEvents` as compact JSON text, event by event, with a final newline |
 | `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
 | `csv-table` | `csv-table options events -> TableEvents` | the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most `max_columns`, labels strings, numbers or booleans; rows as wide as the schema; one `table-end`; a delimiter that holds the quote, a line break or NUL is refused before anything runs |
@@ -612,6 +629,16 @@ scan-emit no-schema (partial table-step binding) table-finish selected
 (scan-emit no-schema (partial table-step binding) table-finish selected)
 ```
 
+The source's events as items, for a program that reads the document one
+event at a time rather than by selection:
+
+```alchemy
+scan-emit [] step finish (events input)
+```
+```canonical
+(scan-emit [] step finish (events input))
+```
+
 Values and the table protocol:
 
 ```alchemy
@@ -626,6 +653,40 @@ transition (ready columns) [(schema (map public-column columns))]
 ```
 ```canonical
 (transition (ready columns) [(schema (map public-column columns))])
+```
+
+The stack a renderer over the events keeps, one keyword marker per open
+container, and the string forms a line of its output is made of:
+
+```alchemy
+push :object (pop stack)
+```
+```canonical
+(push :object (pop stack))
+```
+
+```alchemy
+repeat (count stack) "  "
+```
+```canonical
+(repeat (count stack) "  ")
+```
+
+```alchemy
+quoted (top stack)
+```
+```canonical
+(quoted (top stack))
+```
+
+`pop` and `top` of an empty vector are type errors naming the operator,
+where the plan's evaluation reaches them as at run time:
+
+```alchemy
+def export [input] (let [x (pop [])] (json input))
+```
+```check
+ERROR:type_mismatch@1:28
 ```
 
 The text algebra, and the renderers:
@@ -911,6 +972,49 @@ Qualification:
   A later error can occur after earlier output has been written.
 ```
 
+A program that reads the source's events one by one, `events` in place
+of a selection. A renderer of a document of any nesting, a YAML-like
+block form say, is a `scan-emit` over them whose state is the stack of
+open containers, one keyword marker each, kept with `push`, `pop`, `top`
+and `count`, its indentation `repeat`ed from the stack's height and its
+strings `quoted`; a step answers several items for one event, and
+`join ""` writes them (`rs/tests/events_test.rs` holds one). The
+smallest such program, the keys of every object one per line, and its
+report: `events` retains nothing, and the state is the stage's own:
+
+```alchemy
+def key-lines [s event]
+  match event
+    case (key name) (transition s [(quoted name) "\n"])
+    case _ (transition s [])
+
+def export [input]
+  join ""
+    scan-emit [] key-lines (fn [s] []) (events input)
+```
+```check
+export: events → scan-emit → join
+
+Source reads:          1
+Protocol:              JsonEvents/1 → Stream<Event> → Stream<Value> → Text
+Selection:             none; every event is delivered as an item
+Duplicate members:     preserved; the events are copied as they arrive, not mapped by key
+Retained state:        what the step returns, no deeper than max_depth, capped at max_metadata_bytes
+Output order:          source order
+Ordering contract:     each item before its outputs
+Contract verification: static
+External storage:      disabled
+
+Guarantee:
+  Memory is independent of the number of rows under the configured
+  depth, capture, metadata, scalar/key and output limits: the state the
+  step returns is capped at max_metadata_bytes. What one step computes
+  is the program's, bounded by the host's abort flag.
+
+Qualification:
+  A later error can occur after earlier output has been written.
+```
+
 A program that leaves the table to the host (`def export [input]
 (api-table input)`) is rendered as CSV by default, or as JSON records
 with `--render json`. The echo, whose result is the source's own events:
@@ -960,7 +1064,9 @@ break it (`static`); the renderer's profile; external storage (always
 disabled); then the guarantee and its qualification. A `scan-emit`
 state is capped at `max_metadata_bytes` and `max_depth`; what one step
 computes is the program's, so it makes the guarantee conditional, and
-the report says so. A result that never reaches the input, a text of
+the report says so. `events` retains nothing and selects nothing: every
+event is delivered as an item, and the report says that too. A result
+that never reaches the input, a text of
 the program's own, is reported as such: the input is read and validated
 and nothing of it is used, and nothing is written before it has
 validated.
@@ -1071,7 +1177,8 @@ let _ = Renderer::Json;
   applies; `row_selector()` is the selector under which the source is
   read one row at a time, when the plan knows one (the table binding's
   `:rows`, a `select`'s selector, the one multi-location capture of a
-  `route`), for the host's pruning choice.
+  `route`; none for `events`, which needs every event), for the host's
+  pruning choice.
 - `explain()` and `explain_json()` are the report.
 - `sink(out, render, limits, metrics)` returns the `Sink + Send` the
   host pushes `JsonEvent`s into, then one `End`; the output reaches
@@ -1103,11 +1210,15 @@ let _ = Renderer::Json;
   `max_scalar_bytes`; the tables' `max_metadata_bytes`,
   `max_record_bytes` and `max_columns`; a program's `capture` under
   `max_capture_bytes` or the limit it names; a `scan-emit` state under
-  `max_metadata_bytes` and `max_depth`; a cell's JSON text under
-  `max_scalar_bytes`; and the writer's `max_output_bytes`, which also
-  bounds a finite text and one item's text as they are built. A host
-  that runs programs it did not write sets `max_output_bytes` and a
-  timeout through the abort flag.
+  `max_metadata_bytes` and `max_depth`; a cell's JSON text, a `quoted`
+  form and a `repeat` under `max_scalar_bytes`; and the writer's
+  `max_output_bytes`, which also bounds a finite text and one item's
+  text as they are built. A value the plan folds while the program is
+  compiled (a `repeat` of constants, a `scan-emit`'s initial state) is
+  held to the default limits, since the host's are given to the run; the
+  work per item, where a document's size reaches, runs under the host's.
+  A host that runs programs it did not write sets `max_output_bytes`
+  and a timeout through the abort flag.
 
 ## Spans and errors
 
