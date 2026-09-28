@@ -118,7 +118,8 @@ const S_DEPTH: usize = 3;
 const S_DEPTH_POS: usize = 4;
 const S_IN_STRING: usize = 5;
 const S_IN_COMMENT: usize = 6;
-const S_LEN: usize = 7;
+const S_CHECKED: usize = 7;
+const S_LEN: usize = 8;
 
 /// Register the tokens and the matcher on `parser`, ahead of the grammar
 /// document that names them.
@@ -227,6 +228,12 @@ pub(crate) struct LayoutState {
     pub(crate) depth_pos: usize,
     pub(crate) in_string: bool,
     pub(crate) in_comment: bool,
+    /// Before the first form: the byte up to which the source has been
+    /// scanned and found to hold trivia only, or the first form at
+    /// indentation zero. A line end or a lone `\r` before it needs no
+    /// scan, so a run of comment fragments ahead of the first form is
+    /// read once, not once per fragment.
+    pub(crate) checked: usize,
 }
 
 fn flag(fields: &[Value], index: usize) -> bool {
@@ -263,6 +270,7 @@ impl LayoutState {
             depth_pos: count(fields, S_DEPTH_POS),
             in_string: flag(fields, S_IN_STRING),
             in_comment: flag(fields, S_IN_COMMENT),
+            checked: count(fields, S_CHECKED),
         }
     }
 
@@ -277,6 +285,7 @@ impl LayoutState {
             Value::Number(self.depth_pos as f64),
             Value::Bool(self.in_string),
             Value::Bool(self.in_comment),
+            Value::Number(self.checked as f64),
         ];
         if let Some(Value::Array(current)) = context.u.get_mut(K_STATE) {
             if current.len() == S_LEN {
@@ -356,9 +365,9 @@ pub(crate) enum Decision {
         pending: usize,
     },
     /// An error with this matcher's code, reported at byte `at`. When a
-    /// lone `\r` at `row_cr` precedes `at` on its row, the column the
-    /// error names counts from the character after it, as the engine's
-    /// own line matcher would have had it.
+    /// lone `\r` precedes `at` on its row, `row_cr` is the last one, and
+    /// the column the error names counts from the character after it, as
+    /// the engine's own line matcher would have had it.
     Bad {
         code: &'static str,
         at: usize,
@@ -384,6 +393,12 @@ pub(crate) fn decide(src: &str, si: usize, state: &mut LayoutState) -> Decision 
     // The start of the source is a line start with no line end before it.
     if si == 0 && !state.seen && (first == ' ' || first == '\t') {
         return line_start(src, 0, false, state);
+    }
+    // Before the first form, a line end or a lone `\r` within the stretch
+    // a scan has covered is trivia the engine eats: the scan found the
+    // first form at indentation zero past it, or no form at all.
+    if !state.seen && si < state.checked && matches!(first, '\n' | '\r') {
+        return Decision::Pass;
     }
 
     match first {
@@ -521,8 +536,10 @@ fn after_terminator(bytes: &[u8], pos: usize) -> usize {
 /// whitespace was: a comment there, which the engine ends at the next
 /// lone `\r` or at the line end, counts for nothing. The first lone `\r`
 /// on the content line's own row is where the layout token ends (see the
-/// module docs), and where an error's column counts from.
+/// module docs), and the last is where an error's column counts from.
 fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutState) -> Decision {
+    #[cfg(test)]
+    tests::SCANS.with(|scans| scans.set(scans.get() + 1));
     let bytes = src.as_bytes();
     let mut pos = if after_newline {
         after_terminator(bytes, from)
@@ -532,7 +549,8 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
     loop {
         let mut spaces = 0;
         let mut tab_at = None;
-        let mut row_cr = None;
+        let mut first_cr = None;
+        let mut last_cr = None;
         loop {
             while let Some(c) = bytes.get(pos) {
                 match c {
@@ -552,7 +570,8 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
             }
             // A lone carriage return restarts the indentation.
             if bytes.get(pos) == Some(&b'\r') && bytes.get(pos + 1) != Some(&b'\n') {
-                row_cr.get_or_insert(pos);
+                first_cr.get_or_insert(pos);
+                last_cr = Some(pos);
                 pos += 1;
                 spaces = 0;
                 tab_at = None;
@@ -563,7 +582,10 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
         match bytes.get(pos) {
             // Only trivia to the end: the engine's own matchers eat it,
             // and `#ZZ` closes what is open.
-            None => return Decision::Pass,
+            None => {
+                state.checked = state.checked.max(src.len());
+                return Decision::Pass;
+            }
             Some(b'\n') => pos += 1,
             Some(b'\r') if bytes.get(pos + 1) == Some(&b'\n') => pos += 2,
             Some(_) => {
@@ -571,10 +593,10 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
                     return Decision::Bad {
                         code: "tab_indent",
                         at,
-                        row_cr,
+                        row_cr: last_cr,
                     };
                 }
-                return layout_token(spaces, pos, from, row_cr, state);
+                return layout_token(spaces, pos, from, first_cr, last_cr, state);
             }
         }
     }
@@ -583,16 +605,21 @@ fn line_start(src: &str, from: usize, after_newline: bool, state: &mut LayoutSta
 /// The layout token for a content line indented by `indent` spaces whose
 /// first character is at `content`, when the matcher was called at `from`.
 /// The token runs to `content`, or to the first lone `\r` on its row
-/// (`row_cr`), which the engine consumes with what follows it.
+/// (`first_cr`), which the engine consumes with what follows it; an
+/// error's column counts from the last (`last_cr`).
 fn layout_token(
     indent: usize,
     content: usize,
     from: usize,
-    row_cr: Option<usize>,
+    first_cr: Option<usize>,
+    last_cr: Option<usize>,
     state: &mut LayoutState,
 ) -> Decision {
+    let row_cr = last_cr;
     if !state.seen {
         return if indent == 0 {
+            // The first form, found: nothing before it needs a scan again.
+            state.checked = state.checked.max(content);
             Decision::Pass
         } else {
             Decision::Bad {
@@ -602,7 +629,7 @@ fn layout_token(
             }
         };
     }
-    let len = row_cr.unwrap_or(content) - from;
+    let len = first_cr.unwrap_or(content) - from;
     let top = state.top();
     if indent == top {
         return Decision::Layout {
@@ -714,6 +741,12 @@ fn layout_matcher(lexer: &mut Lexer<'_>, _rule: &mut Rule, context: &mut Context
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// How many times `line_start` scanned ahead, for the test that
+        /// holds the leading trivia to one scan.
+        pub(super) static SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     fn words(src: &str) -> Vec<(String, String)> {
         // Drive `decide` the way the lexer would over a source with no
@@ -860,6 +893,41 @@ mod tests {
     }
 
     #[test]
+    fn the_trivia_before_the_first_form_is_scanned_once() {
+        // Comment fragments ahead of the first form, each ended by a lone
+        // `\r` or by a line feed: the first scan reaches the form and
+        // records how far it looked, and the line ends before it pass
+        // without a scan of their own, so a hostile run of fragments costs
+        // one scan and not one per fragment.
+        // Through the real parser, whose comment matcher `words` lacks.
+        for sep in ["\r", "\n", "\r\n"] {
+            let src = format!("{}\na b", format!("{sep};comment").repeat(10_000));
+            SCANS.with(|scans| scans.set(0));
+            let value = crate::parse_value(&src).expect("parses");
+            assert_eq!(value.to_json().to_string().matches("\"a\"").count(), 1);
+            assert_eq!(SCANS.with(std::cell::Cell::get), 1, "{sep:?}");
+        }
+        // What the scan recorded: the first form's position, and nothing
+        // less on a later call.
+        let mut state = LayoutState::default();
+        let src = "\r;x\r;y\n  \nab";
+        assert!(matches!(decide(src, 0, &mut state), Decision::Pass));
+        assert_eq!(state.checked, src.len() - 2);
+        assert!(matches!(decide(src, 3, &mut state), Decision::Pass));
+        assert!(matches!(decide(src, 6, &mut state), Decision::Pass));
+        assert_eq!(state.checked, src.len() - 2);
+        // Trivia to the end: the whole source is covered.
+        let mut state = LayoutState::default();
+        assert!(matches!(decide("\r;x\n;y", 0, &mut state), Decision::Pass));
+        assert_eq!(state.checked, 6);
+        // Past the first form the count is the layout's own: one scan per
+        // line end outside delimiters, none inside them.
+        SCANS.with(|scans| scans.set(0));
+        words("a\n  b\n  c (d\n e)\nf");
+        assert_eq!(SCANS.with(std::cell::Cell::get), 3);
+    }
+
+    #[test]
     fn a_line_holding_only_trivia_after_a_lone_carriage_return_is_blank() {
         // No layout token for a row with nothing on it but whitespace and
         // comments after a lone `\r`: the next content line decides.
@@ -872,13 +940,25 @@ mod tests {
     }
 
     #[test]
-    fn an_error_after_a_lone_carriage_return_counts_its_column_from_it() {
+    fn an_error_after_a_lone_carriage_return_counts_its_column_from_the_last() {
         let mut state = LayoutState::default();
         assert!(matches!(
             decide("  \r  a", 0, &mut state),
             Decision::Bad {
                 code: "bad_indent",
                 at: 5,
+                row_cr: Some(2)
+            }
+        ));
+        // Several on the row: the column restarts at each, so it counts
+        // from the last; the layout token, when there is one, ends at the
+        // first.
+        let mut state = LayoutState::default();
+        assert!(matches!(
+            decide("\r \r   a", 0, &mut state),
+            Decision::Bad {
+                code: "bad_indent",
+                at: 6,
                 row_cr: Some(2)
             }
         ));

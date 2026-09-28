@@ -752,6 +752,14 @@ mod tests {
         let fail = parse("a\n\r \tb").expect_err("a tab in the indentation");
         assert_eq!(fail.message.split(": ").next(), Some("tab_indent"));
         assert_eq!((fail.row, fail.column), (Some(2), Some(2)));
+        // Several lone carriage returns on the row: the column counts from
+        // the last, where the engine's restarts.
+        let fail = parse("\r \r   a").expect_err("an indented first line");
+        assert_eq!(fail.message.split(": ").next(), Some("bad_indent"));
+        assert_eq!((fail.row, fail.column), (Some(1), Some(4)));
+        let fail = parse("a\n  \r \r   b").expect_err("a bad indent");
+        assert_eq!(fail.message.split(": ").next(), Some("bad_indent"));
+        assert_eq!((fail.row, fail.column), (Some(2), Some(4)));
     }
 
     #[test]
