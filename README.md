@@ -40,15 +40,19 @@ language and [`AGENTS.md`](AGENTS.md) for how the repository is worked on.
 | Path | What it is |
 |---|---|
 | [`rs/`](rs/) | the `tabnas-alchemy` crate (library `tabnas_alchemy`, binary `alchemy`) |
-| [`test/spec/`](test/spec/) | shared fixtures, run by the fleet's fixture runner: `reader.tsv` (layout to canonical) and `pipe.tsv` (desugared) |
+| [`test/spec/`](test/spec/) | shared fixtures, run by the fleet's fixture runner: `reader.tsv` (layout to canonical), `pipe.tsv` (desugared) and `check.tsv` (the checker's codes and the plan reports) |
 | [`docs/language.md`](docs/language.md) | the language reference; every example in it is a fixture row |
-| `stdlib/` | *later*: the standard library's own definitions in alchemy, which arrive with the interpreter; nothing is tracked there yet |
+| [`stdlib/`](stdlib/) | the standard library's own definitions in alchemy (`table.alc`, `csv.alc`), embedded in the crate and the reference the native paths are checked against |
 | [`ci/rust/run.sh`](ci/rust/run.sh) | the gate CI runs |
 
-What exists today is the reader: the grammar plugin, the syntax tree with
-spans, the canonical and layout printers, desugaring, and the `alchemy`
-command's `canon`, `format` and `check`. The checker, the planner
-(`explain`) and the interpreter (`run`) follow.
+The crate is the whole language: the reader (the grammar plugin, the
+syntax tree with spans, the canonical and layout printers, desugaring),
+the resolver and the checker (types, affine streams, protocols, strict
+mode), the planner (`explain`), the interpreter over `tabnas-transduce`
+and `tabnas-render` with the standard compositions run natively, the
+embedded standard library, and the `alchemy` command's `canon`,
+`format`, `check`, `explain` and `run`. The differential test proves the
+native paths and the library's own text produce the same bytes.
 
 ## Build and test
 
@@ -61,10 +65,16 @@ make test
 ```
 
 ```bash
-rs/target/debug/alchemy canon export.alc    # fully parenthesized, one form per line
-rs/target/debug/alchemy format export.alc   # layout form
-rs/target/debug/alchemy check export.alc    # parses and desugars; silent when it does
+rs/target/debug/alchemy canon export.alc            # fully parenthesized, one form per line
+rs/target/debug/alchemy format export.alc           # layout form
+rs/target/debug/alchemy check export.alc            # parses, desugars, resolves and checks; silent when it does
+rs/target/debug/alchemy explain export.alc          # the plan report
+rs/target/debug/alchemy run export.alc response.json   # the CSV, streamed to standard output
 ```
+
+The program above names `column-from-meta` as the spec writes it
+(`docs/language.md`, "Programs"); with that definition added it checks,
+and `run` over the spec's document prints the spec's CSV bytes.
 
 ## License
 

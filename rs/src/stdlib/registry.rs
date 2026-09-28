@@ -1,0 +1,978 @@
+//! The native operators: every name a program may use that is not a
+//! standard-library definition in `stdlib/*.alc`, each with its arity, its
+//! kind (a function, a constant, a constructor), its implementation, and
+//! the signature and effect the reference and the planner report.
+//!
+//! Every operator takes its data **last** (spec section 9.3). The
+//! implementations are eager for values and build [`Plan`]s for streams
+//! and texts (spec section 10.3): `map` over a vector maps now, `map` over
+//! a stream answers a plan the runtime lowers once.
+//!
+//! Failures on data (a descriptor that is not an object, a path segment
+//! that is not a string) are `INPUT_INVALID`, the code the native table
+//! transducer raises for the same shapes, so the interpreted and the
+//! native standard library fail alike; a value of the wrong kind where
+//! the program, not the data, chose it is `DSL_TYPE_ERROR`.
+
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+
+use indexmap::IndexMap;
+use tabnas_render::is_json_number;
+use tabnas_transduce::{CaptureSpec, Code, Fail, Selector};
+
+use crate::ast::SourceSpan;
+use crate::interp::Runtime;
+use crate::value::{type_error, Func, Partial, Plan, Seq, Val, MISSING};
+
+/// How many arguments an operator takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arity {
+    Exact(usize),
+    AtLeast(usize),
+    /// From the first to the second, both included.
+    Between(usize, usize),
+}
+
+impl Arity {
+    pub fn exact(self) -> Option<usize> {
+        match self {
+            Arity::Exact(n) => Some(n),
+            Arity::AtLeast(_) | Arity::Between(..) => None,
+        }
+    }
+
+    pub fn accepts(self, n: usize) -> bool {
+        match self {
+            Arity::Exact(k) => n == k,
+            Arity::AtLeast(k) => n >= k,
+            Arity::Between(low, high) => (low..=high).contains(&n),
+        }
+    }
+}
+
+impl std::fmt::Display for Arity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Arity::Exact(n) => write!(f, "{n}"),
+            Arity::AtLeast(n) => write!(f, "at least {n}"),
+            Arity::Between(low, high) => write!(f, "{low} to {high}"),
+        }
+    }
+}
+
+/// What kind of name an operator is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Applied to arguments.
+    Function,
+    /// A value in its own right (`table-end`, `each-index`): the symbol
+    /// denotes it, without a call.
+    Constant,
+    /// A function whose value is a tagged value with the operator's name
+    /// as tag, so `(name p ...)` is also a pattern.
+    Constructor,
+}
+
+/// The implementation of a native: the runtime (to apply functions), the
+/// arguments, and the span of the form being evaluated, for a diagnostic.
+pub type Call = fn(&Runtime, &[Val], &SourceSpan) -> Result<Val, Fail>;
+
+/// One native operator.
+pub struct Native {
+    pub name: &'static str,
+    pub arity: Arity,
+    pub kind: Kind,
+    pub call: Call,
+    /// The signature as the reference prints it.
+    pub signature: &'static str,
+    /// The effect as the reference and the planner print it: what the
+    /// operator retains, when its output is ready, what it consumes.
+    pub effect: &'static str,
+}
+
+impl std::fmt::Debug for Native {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "native {}", self.name)
+    }
+}
+
+/// The native by name.
+pub fn native(name: &str) -> Option<&'static Native> {
+    static INDEX: OnceLock<HashMap<&'static str, &'static Native>> = OnceLock::new();
+    INDEX
+        .get_or_init(|| NATIVES.iter().map(|n| (n.name, n)).collect())
+        .get(name)
+        .copied()
+}
+
+/// Every native, in the order the reference lists them.
+pub fn natives() -> &'static [Native] {
+    NATIVES
+}
+
+// ---------------------------------------------------------------------------
+// Argument helpers
+// ---------------------------------------------------------------------------
+
+fn input_invalid(message: impl std::fmt::Display) -> Fail {
+    Fail::new(Code::InputInvalid, message.to_string())
+}
+
+/// Whether a value is data (what a document can hold), as opposed to a
+/// function, a selector, a capture, a stream or a text.
+fn is_data(v: &Val) -> bool {
+    matches!(
+        v,
+        Val::Null | Val::Bool(_) | Val::Num { .. } | Val::Str(_) | Val::Vector(_) | Val::Record(_)
+    ) || v.is_missing()
+}
+
+fn as_str<'a>(op: &str, what: &str, v: &'a Val) -> Result<&'a Arc<str>, Fail> {
+    match v {
+        Val::Str(s) => Ok(s),
+        other => Err(type_error(format!(
+            "{op}: {what} must be a string, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn as_keyword<'a>(op: &str, what: &str, v: &'a Val) -> Result<&'a Arc<str>, Fail> {
+    match v {
+        Val::Keyword(k) => Ok(k),
+        other => Err(type_error(format!(
+            "{op}: {what} must be a keyword, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn as_fn<'a>(op: &str, what: &str, v: &'a Val) -> Result<&'a Func, Fail> {
+    match v {
+        Val::Fn(f) => Ok(f),
+        other => Err(type_error(format!(
+            "{op}: {what} must be a function, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn as_selector<'a>(op: &str, what: &str, v: &'a Val) -> Result<&'a Arc<Selector>, Fail> {
+    match v {
+        Val::Selector(s) => Ok(s),
+        other => Err(type_error(format!(
+            "{op}: {what} must be a selector, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn as_stream<'a>(op: &str, v: &'a Val) -> Result<&'a Arc<Plan>, Fail> {
+    match v {
+        Val::Stream(p) => Ok(p),
+        other => Err(type_error(format!(
+            "{op}: the data must be a stream, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn as_seq(op: &str, v: &Val) -> Result<Seq, Fail> {
+    match v {
+        Val::Vector(items) => Ok(Seq::Vector(items.clone())),
+        Val::Stream(p) => Ok(Seq::Stream(p.clone())),
+        other => Err(type_error(format!(
+            "{op}: the data must be a vector or a stream, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+/// A string or a text: what the text algebra accepts as an item.
+fn textlike(op: &str, v: &Val) -> Result<(), Fail> {
+    match v {
+        Val::Str(_) | Val::Text(_) => Ok(()),
+        other => Err(type_error(format!(
+            "{op}: expected a string or a text, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+/// A non-negative whole number that fits an index.
+fn as_index(v: &Val) -> Option<usize> {
+    match v {
+        Val::Num { value, .. }
+            if *value >= 0.0 && value.fract() == 0.0 && *value <= u32::MAX as f64 =>
+        {
+            Some(*value as usize)
+        }
+        _ => None,
+    }
+}
+
+/// The field of the options record, or the type error that names it.
+fn option(op: &str, options: &Val, key: &str) -> Result<Val, Fail> {
+    match options {
+        Val::Record(_) => {
+            let v = options.field(key).unwrap_or_else(Val::missing);
+            if v.is_missing() {
+                return Err(type_error(format!("{op}: the options have no :{key}")));
+            }
+            Ok(v)
+        }
+        other => Err(type_error(format!(
+            "{op}: the options must be a record, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Numbers
+// ---------------------------------------------------------------------------
+
+/// The magnitudes written positionally, as the renderers write them:
+/// from `1e-6` up to, not including, `1e21`.
+const POSITIONAL_MIN: f64 = 1e-6;
+const POSITIONAL_MAX: f64 = 1e21;
+
+/// The shortest text that reads back as `value`, laid out as the render
+/// crate lays it out (`number::write_value` there): positional within the
+/// JavaScript range, exponent form outside it. The two must agree byte for
+/// byte, which the differential test checks on every number without a
+/// lexeme.
+pub fn shortest_number(value: f64) -> String {
+    let magnitude = value.abs();
+    if magnitude == 0.0 || (POSITIONAL_MIN..POSITIONAL_MAX).contains(&magnitude) {
+        format!("{value}")
+    } else {
+        format!("{value:e}")
+    }
+}
+
+/// The text of a number as a renderer writes it, with the renderer's
+/// checks: a lexeme that is not a JSON number is `INVALID_NUMBER`, a
+/// non-finite value `TARGET_VALUE_UNREPRESENTABLE`.
+pub fn number_text(value: f64, lexeme: Option<&str>) -> Result<String, Fail> {
+    if let Some(l) = lexeme {
+        if !is_json_number(l) {
+            return Err(Fail::new(
+                Code::InvalidNumber,
+                format!("{l:?} is not a JSON number"),
+            ));
+        }
+    }
+    if !value.is_finite() {
+        let message = match lexeme {
+            Some(l) => format!("{l:?} is {value} as a number, which has no representation"),
+            None => format!("{value} has no representation as a number"),
+        };
+        return Err(Fail::new(Code::TargetValueUnrepresentable, message));
+    }
+    Ok(match lexeme {
+        Some(l) => l.to_string(),
+        None => shortest_number(value),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The implementations
+// ---------------------------------------------------------------------------
+
+fn get(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let key: &str = match &a[0] {
+        Val::Keyword(k) | Val::Str(k) => k,
+        other => {
+            return Err(type_error(format!(
+                "get: the key must be a keyword or a string, not {}",
+                other.kind()
+            )))
+        }
+    };
+    get_field(key, &a[1])
+}
+
+/// `get key data`: a record's field, `missing` for an absent one or from
+/// `missing`; `INPUT_INVALID` from other data, `type_mismatch` from what
+/// is not data. The native table binds a column record by the same rule,
+/// so a column function that answers something other than a record fails
+/// alike both ways.
+pub fn get_field(key: &str, data: &Val) -> Result<Val, Fail> {
+    match data {
+        Val::Record(_) => Ok(data.field(key).unwrap_or_else(Val::missing)),
+        v if v.is_missing() => Ok(Val::missing()),
+        v if is_data(v) => Err(input_invalid(format!(
+            "get: {} has no member {key:?}; an object was expected",
+            v.kind()
+        ))),
+        other => Err(type_error(format!(
+            "get: a record was expected, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn get_path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let selector = as_selector("get-path", "the path", &a[0])?;
+    let segments = crate::value::selector_segments(selector).ok_or_else(|| {
+        type_error(format!(
+            "get-path: the path must name one location, not {selector}"
+        ))
+    })?;
+    if !is_data(&a[1]) {
+        return Err(type_error(format!(
+            "get-path: the data must be a value, not {}",
+            a[1].kind()
+        )));
+    }
+    Ok(a[1].get_path(&segments))
+}
+
+fn as_path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let Val::Vector(items) = &a[0] else {
+        return Err(input_invalid(format!(
+            "as-path: a path must be an array of segments, not {}",
+            a[0].kind()
+        )));
+    };
+    let mut selector = Selector::root();
+    for item in items.iter() {
+        selector = match item {
+            Val::Str(s) => selector.property(&**s),
+            v if as_index(v).is_some() => selector.index(as_index(v).unwrap_or(0)),
+            other => {
+                return Err(input_invalid(format!(
+                    "as-path: a path segment must be a string or a non-negative integer, not {}",
+                    other.kind()
+                )))
+            }
+        };
+    }
+    Ok(Val::Selector(Arc::new(selector)))
+}
+
+fn as_vector(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Vector(_) => Ok(a[0].clone()),
+        other if is_data(other) => Err(input_invalid(format!(
+            "as-vector: an array was expected, not {}",
+            other.kind()
+        ))),
+        other => Err(type_error(format!(
+            "as-vector: a vector was expected, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn record(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let mut fields: IndexMap<Arc<str>, Val> = IndexMap::with_capacity(a.len());
+    for item in a {
+        match item {
+            Val::Tagged { tag, fields: kv } if &**tag == "entry" && kv.len() == 2 => {
+                let key = as_keyword("record", "an entry's key", &kv[0])?;
+                if fields.insert(key.clone(), kv[1].clone()).is_some() {
+                    return Err(Fail::new(
+                        Code::DslTypeError,
+                        format!("duplicate_key: record has two entries for :{key}"),
+                    ));
+                }
+            }
+            other => {
+                return Err(type_error(format!(
+                    "record: every argument must be an entry, not {}",
+                    other.kind()
+                )))
+            }
+        }
+    }
+    Ok(Val::Record(Arc::new(fields)))
+}
+
+fn entry(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    as_keyword("entry", "the key", &a[0])?;
+    Ok(Val::tagged("entry", a.to_vec()))
+}
+
+fn vector(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    if let Some(live) = a.iter().find(|v| v.is_live()) {
+        return Err(type_error(format!(
+            "vector: a vector cannot hold {}; a stream is used once, where it is",
+            live.live_kind()
+        )));
+    }
+    Ok(Val::vector(a.to_vec()))
+}
+
+fn path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let mut selector = Selector::root();
+    for item in a {
+        selector = match item {
+            Val::Str(s) => selector.property(&**s),
+            Val::Selector(s) => selector.compose(s),
+            v if as_index(v).is_some() => selector.index(as_index(v).unwrap_or(0)),
+            other => {
+                return Err(type_error(format!(
+                "path: a segment must be a string, a non-negative integer or a selector, not {}",
+                other.kind()
+            )))
+            }
+        };
+    }
+    Ok(Val::Selector(Arc::new(selector)))
+}
+
+fn root(_: &Runtime, _: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    Ok(Val::Selector(Arc::new(Selector::root())))
+}
+
+fn each_index(_: &Runtime, _: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    Ok(Val::Selector(Arc::new(Selector::root().each_index())))
+}
+
+fn each_member(_: &Runtime, _: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    Ok(Val::Selector(Arc::new(Selector::root().each_member())))
+}
+
+fn property(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let name = as_str("property", "the name", &a[0])?;
+    Ok(Val::Selector(Arc::new(Selector::root().property(&**name))))
+}
+
+fn index(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let i = as_index(&a[0]).ok_or_else(|| {
+        type_error(format!(
+            "index: the position must be a non-negative integer, not {:?}",
+            a[0]
+        ))
+    })?;
+    Ok(Val::Selector(Arc::new(Selector::root().index(i))))
+}
+
+fn compose(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let first = as_selector("compose", "the first selector", &a[0])?;
+    let second = as_selector("compose", "the second selector", &a[1])?;
+    Ok(Val::Selector(Arc::new(
+        Selector::clone(first).compose(second),
+    )))
+}
+
+/// The `Limits` fields a capture may be bounded by, by the keyword that
+/// names each; the byte count is the host's, read when the plan is
+/// lowered ([`capture_budget`]).
+pub const CAPTURE_LIMITS: &[&str] = &[
+    "max_capture_bytes",
+    "max_metadata_bytes",
+    "max_record_bytes",
+];
+
+/// The bytes the host's `limits` give the capture limit `name`.
+pub fn capture_budget(limits: &tabnas_transduce::Limits, name: &str) -> Option<usize> {
+    match name {
+        "max_capture_bytes" => Some(limits.max_capture_bytes),
+        "max_metadata_bytes" => Some(limits.max_metadata_bytes),
+        "max_record_bytes" => Some(limits.max_record_bytes),
+        _ => None,
+    }
+}
+
+fn capture(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let tag = as_keyword("capture", "the tag", &a[0])?;
+    let selector = as_selector("capture", "the selector", &a[1])?;
+    let mut spec = CaptureSpec::materialize(tag.clone(), Selector::clone(selector));
+    if let Some(limit) = a.get(2) {
+        let limit = as_keyword("capture", "the limit", limit)?;
+        let Some(name) = CAPTURE_LIMITS.iter().find(|n| **n == &**limit) else {
+            return Err(type_error(format!(
+                "capture: the limit must be one of :{}, not :{limit}",
+                CAPTURE_LIMITS.join(", :")
+            )));
+        };
+        let bytes = capture_budget(rt.limits(), name).unwrap_or(usize::MAX);
+        spec = spec.budget(bytes, name);
+    }
+    Ok(Val::CaptureSpec(Arc::new(spec)))
+}
+
+fn route(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let Val::Vector(items) = &a[0] else {
+        return Err(type_error(format!(
+            "route: the captures must be a vector, not {}",
+            a[0].kind()
+        )));
+    };
+    let specs = items
+        .iter()
+        .map(|item| match item {
+            Val::CaptureSpec(spec) => Ok(CaptureSpec::clone(spec)),
+            other => Err(type_error(format!(
+                "route: every capture must be a capture, not {}",
+                other.kind()
+            ))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let source = as_stream("route", &a[1])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::Route { specs, source })))
+}
+
+fn select(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let selector = Selector::clone(as_selector("select", "the selector", &a[0])?);
+    let source = as_stream("select", &a[1])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::Select { selector, source })))
+}
+
+fn scan_emit(_: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    let step = as_fn("scan-emit", "the step", &a[1])?.clone();
+    let finish = as_fn("scan-emit", "the finish", &a[2])?.clone();
+    let source = as_stream("scan-emit", &a[3])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::ScanEmit {
+        init: a[0].clone(),
+        step,
+        finish,
+        source,
+        at: at.clone(),
+    })))
+}
+
+fn transition(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    if !matches!(a[1], Val::Vector(_)) {
+        return Err(type_error(format!(
+            "transition: the outputs must be a vector, not {}",
+            a[1].kind()
+        )));
+    }
+    Ok(Val::tagged("transition", a.to_vec()))
+}
+
+fn partial(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let f = as_fn("partial", "the function", &a[0])?.clone();
+    Ok(Val::Fn(Func::Partial(Arc::new(Partial {
+        f,
+        args: a[1..].to_vec(),
+    }))))
+}
+
+fn map(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    let f = as_fn("map", "the function", &a[0])?;
+    match as_seq("map", &a[1])? {
+        Seq::Vector(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                out.push(rt.apply(f, vec![item.clone()], at)?);
+            }
+            Ok(Val::vector(out))
+        }
+        Seq::Stream(source) => Ok(Val::Stream(Arc::new(Plan::Map {
+            f: f.clone(),
+            source,
+            at: at.clone(),
+        }))),
+    }
+}
+
+/// The boolean an `if`, a `filter` or a `case` decides by; anything else
+/// is a type error, since nothing is implicitly true or false.
+pub fn truth(op: &str, v: &Val) -> Result<bool, Fail> {
+    match v {
+        Val::Bool(b) => Ok(*b),
+        other => Err(type_error(format!(
+            "{op}: a boolean was expected, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn filter(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    let f = as_fn("filter", "the predicate", &a[0])?;
+    match as_seq("filter", &a[1])? {
+        Seq::Vector(items) => {
+            let mut out = Vec::new();
+            for item in items.iter() {
+                if truth("filter", &rt.apply(f, vec![item.clone()], at)?)? {
+                    out.push(item.clone());
+                }
+            }
+            Ok(Val::vector(out))
+        }
+        Seq::Stream(source) => Ok(Val::Stream(Arc::new(Plan::Filter {
+            f: f.clone(),
+            source,
+            at: at.clone(),
+        }))),
+    }
+}
+
+fn concat_map(_: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    let f = as_fn("concat-map", "the function", &a[0])?.clone();
+    let items = as_seq("concat-map", &a[1])?;
+    Ok(Val::Text(Arc::new(Plan::ConcatMap {
+        f,
+        items,
+        at: at.clone(),
+    })))
+}
+
+fn join(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let sep = as_str("join", "the separator", &a[0])?.clone();
+    let items = as_seq("join", &a[1])?;
+    if let Seq::Vector(items) = &items {
+        for item in items.iter() {
+            textlike("join", item)?;
+        }
+    }
+    Ok(Val::Text(Arc::new(Plan::Join { sep, items })))
+}
+
+fn concat(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    for item in a {
+        textlike("concat", item)?;
+    }
+    if a.iter().filter(|v| v.is_live()).count() > 1 {
+        return Err(Fail::new(
+            Code::StreamReused,
+            "reused: concat was given two live texts; the input is consumed once",
+        ));
+    }
+    Ok(Val::Text(Arc::new(Plan::concat(a.to_vec()))))
+}
+
+fn text(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("text", "the argument", &a[0])?.clone();
+    Ok(Val::Text(Arc::new(Plan::Lit(s))))
+}
+
+fn replace_text(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let from = as_str("replace-text", "the literal to find", &a[0])?.clone();
+    let to = as_str("replace-text", "the replacement", &a[1])?.clone();
+    textlike("replace-text", &a[2])?;
+    Ok(Val::Text(Arc::new(Plan::Replace {
+        from,
+        to,
+        source: a[2].clone(),
+    })))
+}
+
+/// The text of a scalar cell under the options' policies: what the CSV
+/// renderer writes for the same cell, so that the interpreted and the
+/// native `csv` agree byte for byte.
+fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let options = &a[0];
+    let cell = &a[1];
+    let text: Arc<str> = match cell {
+        Val::Null => as_str(
+            "scalar-text",
+            ":null-text",
+            &option("scalar-text", options, "null-text")?,
+        )?
+        .clone(),
+        Val::Bool(true) => Arc::from("true"),
+        Val::Bool(false) => Arc::from("false"),
+        Val::Num { value, lexeme } => Arc::from(number_text(*value, lexeme.as_deref())?),
+        Val::Str(s) => s.clone(),
+        v if v.is_missing() => match option("scalar-text", options, "missing")? {
+            Val::Keyword(k) if &*k == "error" => {
+                return Err(Fail::new(
+                    Code::MissingValue,
+                    "a cell has no value and the options map missing to :error",
+                ))
+            }
+            Val::Str(t) => t,
+            other => {
+                return Err(type_error(format!(
+                    "scalar-text: :missing must be :error or a string, not {}",
+                    other.kind()
+                )))
+            }
+        },
+        Val::Vector(_) | Val::Record(_) => Arc::from(rt.json_text(cell)?),
+        other => {
+            return Err(type_error(format!(
+                "scalar-text: a scalar was expected, not {}",
+                other.kind()
+            )))
+        }
+    };
+    Ok(Val::Str(text))
+}
+
+fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    let message = as_str("fail", "the message", &a[0])?;
+    let mut f = Fail::new(Code::InputInvalid, message.to_string());
+    if let Some((row, col)) = rt.position(at) {
+        f = f.at(row, col);
+    }
+    Err(f)
+}
+
+fn is_ready_value(v: &Val) -> bool {
+    matches!(v, Val::Tagged { tag, fields } if &**tag == "ready" && fields.len() == 1)
+}
+
+fn is_ready(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    Ok(Val::Bool(is_ready_value(&a[0])))
+}
+
+fn require_columns(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Tagged { tag, fields } if &**tag == "ready" && fields.len() == 1 => {
+            Ok(fields[0].clone())
+        }
+        _ => Err(Fail::new(
+            Code::InputOrderViolation,
+            "a row began before the column metadata had completed; rows must follow their metadata",
+        )),
+    }
+}
+
+fn constructor(name: &'static str) -> impl Fn(&Runtime, &[Val], &SourceSpan) -> Result<Val, Fail> {
+    move |_, a, _| Ok(Val::tagged(name, a.to_vec()))
+}
+
+fn schema(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("schema")(rt, a, at)
+}
+
+fn row(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("row")(rt, a, at)
+}
+
+fn ready(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("ready")(rt, a, at)
+}
+
+fn selected(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("selected")(rt, a, at)
+}
+
+fn table_end(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("table-end")(rt, a, at)
+}
+
+fn no_schema(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor("no-schema")(rt, a, at)
+}
+
+fn missing(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    constructor(MISSING)(rt, a, at)
+}
+
+fn csv_table(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("csv-table", &a[1])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::CsvTable {
+        options: a[0].clone(),
+        source,
+    })))
+}
+
+fn json(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("json", &a[0])?.clone();
+    Ok(Val::Text(Arc::new(Plan::Json { source })))
+}
+
+fn records(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("records", &a[0])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::Records { source })))
+}
+
+// ---------------------------------------------------------------------------
+// The table
+// ---------------------------------------------------------------------------
+
+const fn f(
+    name: &'static str,
+    arity: Arity,
+    call: Call,
+    signature: &'static str,
+    effect: &'static str,
+) -> Native {
+    Native {
+        name,
+        arity,
+        kind: Kind::Function,
+        call,
+        signature,
+        effect,
+    }
+}
+
+const fn c(
+    name: &'static str,
+    call: Call,
+    signature: &'static str,
+    effect: &'static str,
+) -> Native {
+    Native {
+        name,
+        arity: Arity::Exact(0),
+        kind: Kind::Constant,
+        call,
+        signature,
+        effect,
+    }
+}
+
+const fn k(
+    name: &'static str,
+    arity: Arity,
+    call: Call,
+    signature: &'static str,
+    effect: &'static str,
+) -> Native {
+    Native {
+        name,
+        arity,
+        kind: Kind::Constructor,
+        call,
+        signature,
+        effect,
+    }
+}
+
+use Arity::{AtLeast, Between, Exact};
+
+static NATIVES: &[Native] = &[
+    // Values and records.
+    f("get", Exact(2), get, "get key data -> Value", "reads a retained record or object; missing for an absent member"),
+    f("get-path", Exact(2), get_path, "get-path path data -> Value", "walks a retained value by one concrete path; missing where the path leaves it"),
+    f("as-path", Exact(1), as_path, "as-path data -> Selector", "validates a data-supplied array of segments; never reads data as source"),
+    f("as-vector", Exact(1), as_vector, "as-vector data -> Vector", "a captured array as a vector; INPUT_INVALID otherwise"),
+    f("record", AtLeast(0), record, "record entry... -> Record", "a retained record; duplicate keys are an error"),
+    k("entry", Exact(2), entry, "entry :key value -> Entry", "one record field"),
+    f("vector", AtLeast(0), vector, "vector item... -> Vector", "a retained vector; it cannot hold a stream or a live text"),
+    // Selectors.
+    f("path", AtLeast(0), path, "path segment... -> Selector", "a selector from strings, indexes and selectors"),
+    c("root", root, "root -> Selector", "the document"),
+    c("each-index", each_index, "each-index -> Selector", "every element of an array"),
+    c("each-member", each_member, "each-member -> Selector", "every member value of an object"),
+    f("property", Exact(1), property, "property name -> Selector", "one member"),
+    f("index", Exact(1), index, "index n -> Selector", "one element"),
+    f("compose", Exact(2), compose, "compose outer inner -> Selector", "inner below every location outer names"),
+    // Streams.
+    f("capture", Between(2, 3), capture, "capture :tag selector [:limit] -> CaptureSpec", "materialize each selected scope under max_capture_bytes, or under the Limits field the keyword names (:max_metadata_bytes, :max_record_bytes), the host's value for it"),
+    f("route", Exact(2), route, "route captures input -> Stream<Selected>", "one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap"),
+    f("select", Exact(2), select, "select selector input -> Stream<Value>", "route with one capture, delivering the values"),
+    f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its concat-map applies included): at most max_metadata_bytes, no deeper than max_depth, reported in retained_bytes_high; ready after each item; finish runs once at the validated end"),
+    k("transition", Exact(2), transition, "transition state outputs -> Transition", "one step's result: the next state and a vector of outputs"),
+    f("partial", AtLeast(1), partial, "partial f arg... -> Fn", "f with its first arguments supplied"),
+    f("map", Exact(2), map, "map f items -> Vector | Stream", "eager over a vector; per item over a stream, retaining nothing"),
+    f("filter", Exact(2), filter, "filter predicate items -> Vector | Stream", "eager over a vector; per item over a stream"),
+    // Text.
+    f("concat-map", Exact(2), concat_map, "concat-map f items -> Text", "f answers a string or a text per item; each item's text is assembled whole, under max_output_bytes, and written as items arrive, so a failure leaves no half item"),
+    f("join", Exact(2), join, "join separator items -> Text", "the separator between items, never between the fragments of one; each item assembled as concat-map's is"),
+    f("concat", AtLeast(0), concat, "concat item... -> Text", "in order, without assembling the result"),
+    f("text", Exact(1), text, "text string -> Text", "a string as a text"),
+    f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),
+    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
+    f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
+    // The table protocol.
+    f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
+    f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
+    k("schema", Exact(1), schema, "schema columns -> TableEvent", "the table's one schema"),
+    k("row", Exact(1), row, "row cells -> TableEvent", "one row, as wide as the schema"),
+    k("ready", Exact(1), ready, "ready columns -> State", "the state once the metadata is bound"),
+    k("selected", Exact(2), selected, "selected :tag value -> Selected", "what route delivers: the capture's tag and its value"),
+    c("table-end", table_end, "table-end -> TableEvent", "the table's end, after the source validated"),
+    c("no-schema", no_schema, "no-schema -> State", "the state before the metadata"),
+    c("missing", missing, "missing -> Value", "an absent member, distinct from null"),
+    // Renderers and protocol adapters.
+    f("json", Exact(1), json, "json events -> Text", "JsonEvents as compact JSON text, event by event, with a final newline"),
+    f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
+    f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most max_columns, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that holds the quote, a line break or NUL is refused before anything runs"),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_native_is_found_by_name_and_names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for n in natives() {
+            assert!(seen.insert(n.name), "{} twice", n.name);
+            assert!(std::ptr::eq(native(n.name).unwrap(), n));
+            assert!(
+                n.signature.starts_with(n.name),
+                "{}: {}",
+                n.name,
+                n.signature
+            );
+        }
+        assert!(native("nope").is_none());
+    }
+
+    /// `signature` and `effect` are what the reference prints: every
+    /// native with a row of its own in `docs/language.md`'s table reads
+    /// there as it does here (the row's code spans unquoted), so neither
+    /// can change without the other.
+    #[test]
+    fn a_native_reads_as_its_reference_row() {
+        let doc =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/language.md"))
+                .expect("the reference");
+        let spans = |cell: &str| -> Option<String> {
+            let inner = cell.strip_prefix('`')?.strip_suffix('`')?;
+            (!inner.contains('`')).then(|| inner.to_string())
+        };
+        let mut rows = std::collections::HashMap::new();
+        for line in doc.lines() {
+            let Some(inner) = line.strip_prefix("| ").and_then(|l| l.strip_suffix(" |")) else {
+                continue;
+            };
+            let cells: Vec<&str> = inner.split(" | ").collect();
+            if let [name, signature, effect] = cells[..] {
+                if let (Some(name), Some(signature)) = (spans(name), spans(signature)) {
+                    rows.insert(name, (signature, effect.replace('`', "")));
+                }
+            }
+        }
+        let mut compared = 0;
+        for n in natives() {
+            if let Some((signature, effect)) = rows.get(n.name) {
+                assert_eq!(n.signature, signature, "the signature of {}", n.name);
+                assert_eq!(n.effect, effect, "the effect of {}", n.name);
+                compared += 1;
+            }
+        }
+        // The natives the reference lists one to a row, so a table the
+        // reader stops recognizing fails rather than comparing nothing.
+        assert_eq!(compared, 23);
+    }
+
+    #[test]
+    fn constants_take_no_arguments_and_constructors_tag_with_their_name() {
+        for n in natives() {
+            match n.kind {
+                Kind::Constant => assert_eq!(n.arity, Exact(0), "{}", n.name),
+                Kind::Constructor => {
+                    assert!(n.arity.accepts(2) || n.arity.accepts(1), "{}", n.name)
+                }
+                Kind::Function => {}
+            }
+        }
+    }
+
+    #[test]
+    fn numbers_print_as_the_renderers_print_them() {
+        assert_eq!(shortest_number(1.0), "1");
+        assert_eq!(shortest_number(50.25), "50.25");
+        assert_eq!(shortest_number(1e20), "100000000000000000000");
+        assert_eq!(shortest_number(1e21), "1e21");
+        assert_eq!(shortest_number(1e-7), "1e-7");
+        assert_eq!(shortest_number(-0.0), "-0");
+        assert_eq!(number_text(1.5, Some("1.50")).unwrap(), "1.50");
+        assert_eq!(
+            number_text(1.0, Some("01")).unwrap_err().code,
+            Code::InvalidNumber
+        );
+        assert_eq!(
+            number_text(f64::INFINITY, Some("1e999")).unwrap_err().code,
+            Code::TargetValueUnrepresentable
+        );
+        assert_eq!(
+            number_text(f64::NAN, None).unwrap_err().code,
+            Code::TargetValueUnrepresentable
+        );
+    }
+}

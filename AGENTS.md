@@ -55,11 +55,56 @@ sinks; the standard compositions run natively, and a differential test
 proves the interpreted standard-library definitions in `stdlib/*.alc`
 produce the same bytes.
 
+## The reader repeats by replacement, never by a push chain
+
+**Every repetition is a replace loop: the loop is `r:`, the item may be
+`p:`.** An alternate that hands control to another rule either pushes it
+(`p:`), opening a frame that keeps the pusher on the stack for its close
+phase and links parent to child, or replaces with it (`r:`), re-entering
+in the same frame, handing the parent on and linking `prev`; an alternate that only matches its tokens, or pops the frame to end the rule, does neither. Push is for structure (a
+list inside a list, a block under its line), replace for sequence (the
+next line, the next form, the next item). The iterations of a repetition
+then add no depth: rule depth follows a program's nesting, which
+`MAX_NESTING` bounds, and never its length. A repetition spelled as a
+push chain, each item pushing the rule that reads the rest, parses and is
+still wrong: depth grows with the item count until a guard refuses a flat
+input (aless refuses a parse past 3,000 open rules, its `MAX_RULE_DEPTH`;
+tabnas-json refuses nesting past 128 levels), the rule stack and memory
+grow with it (the rewind history does not: it records consumed tokens
+either way and is capped), and the tree comes out nested where the source
+is flat.
+
+**The reader is not in that shape yet.** The grammar document in
+`rs/src/grammar.rs` has no `r:` at all. Each repetition is a close
+alternate that pushes the next item and lets the container re-enter its
+close state when the item pops: `program` and `block` push each further
+`line` (lines 182 and 212), `line` each further inline `form` (line 200),
+`paren` and `bracket` each further item `form` (lines 242 and 253), and
+`@alchemy-collect` and `@alchemy-item` read the finished item back
+through the push link (`child_value`). That is a push per item but not a
+push chain: each item pops before the next is pushed, so depth stays put.
+Measured with a rule subscriber on `make()` (2026-09-27), one line and
+10,000 lines both reach a maximum `d` of 2; one child line and 10,000
+child lines under one line, 4; a line of one form and a line of 10,001
+forms, 2; one item and 10,000 items in `( )` or `[ ]`, 4; while 100
+nested parens reach 201, as real recursion should.
+
+Converting those five repetitions to `r:` loops is its own change, and it
+lands with the test that pins the depth; until it does, do not copy their
+shape into a new rule. The pushes that are structure stay pushes:
+`line`'s `#IN` into `block` (line 195) and `form`'s openers into `paren`
+and `bracket` (lines 220 and 221). The resolver, the checker and the
+interpreter generate no grammar rules (they work on `Expr`); the one
+other grammar this crate runs is tabnas-json, on a program's `json`
+input, and its repetitions are that repository's to keep. Rule depth over
+a repetition is constant; a test that repeats an item ten thousand times
+and asserts the maximum `d` stays what a single item needs is the proof.
+
 ## Repository map
 
-The reader half exists; the rows marked *later* name the modules the
-checker, planner and interpreter will add, and where they will read from
-(`ast.rs` after `desugar.rs`).
+The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
+`resolve` → `check` → `interp` (builds the plan) → `lower` (the sinks);
+`effects` reads the plan for `explain`; `program` is the API around it.
 
 | Path | What it is |
 |---|---|
@@ -67,15 +112,26 @@ checker, planner and interpreter will add, and where they will read from
 | `rs/src/grammar.rs` | the grammar plugin: the document, `alchemy()`, `make()`, `parse_value()`, `parse()`, `parse_file()` |
 | `rs/src/ast.rs` | `Expr`, `SourceSpan`, `same_shape`, `canonical()` and layout `format()` |
 | `rs/src/desugar.rs` | `def` with parameters, `pipe`, the shapes of `let`, `if` and `match` |
-| `rs/src/bin/alchemy.rs` | `alchemy canon | format | check`; `explain` and `run` come with the planner and interpreter |
+| `rs/src/resolve.rs` | scopes and linking: top-level `def`s in any order, locals, the library's names; `unknown_name`; recursion refused |
+| `rs/src/types.rs`, `rs/src/check.rs` | the types and the checker: inference, affine streams (`STREAM_REUSED`), protocols, strict mode (`STREAMABILITY_UNKNOWN`), the `export` contract |
+| `rs/src/effects.rs` | the effect summary and the `explain` report, as text and as JSON |
+| `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
+| `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
+| `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra |
+| `rs/src/program.rs` | the API a host embeds: `compile`, `Program::{output, row_selector, explain, explain_json, sink}` |
+| `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
+| `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded, resolved and checked on first use |
+| `rs/src/bin/alchemy.rs` | `alchemy canon | format | check | explain | run` |
 | `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner`, the layout round trip, the reference's examples |
 | `rs/tests/debug_model_test.rs` | the grammar composed with `tabnas-debug`, as every grammar carries |
 | `rs/tests/cli_test.rs` | the built binary, run as a script runs it |
+| `rs/tests/run_test.rs` | the API end to end: the worked example both ways, the spec's streaming rows, the `json` echo, `records` |
+| `rs/tests/stdlib_test.rs` | the differential test: the interpreted library against the native path on every fixture and generated document |
 | `test/spec/reader.tsv` | shared fixtures: layout → canonical, and the reader's errors by code |
 | `test/spec/pipe.tsv` | shared fixtures: layout → canonical of the desugared program, and the desugaring errors |
+| `test/spec/check.tsv` | shared fixtures: program → `ERROR:<finer code>` for every resolver and checker code, and program → plan report |
 | `docs/language.md` | the language reference; every example in it is a fixture row |
 | `ci/rust/run.sh` | the gate `.github/workflows/rust.yml` runs |
-| `rs/src/resolve.rs`, `check.rs`, `effects.rs`, `interp.rs`, `rs/src/stdlib/`, `stdlib/*.alc` | *later*: scopes and linking, types and affine streams, the `explain` report, the evaluator and its lowering, the native operators and the embedded standard library |
 
 ## Verify your work
 
@@ -116,22 +172,68 @@ message, before `: ` -- the grammar's own (`tab_indent`, `bad_indent`,
 repurpose one; add one when a new failure needs it, with its message and
 hint.
 
+The later stages follow the same convention. `DSL_TYPE_ERROR` carries,
+from the resolver, `unknown_name`, `not_def`, `duplicate_def`,
+`reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; from the checker,
+`arity`, `type_mismatch`, `protocol_mismatch`, `no_export`,
+`bad_output`; from the runtime, `duplicate_key` (a record with two
+entries for one key), `no_match` (a `match` no case took) and
+`render_of_text` (a renderer asked of a program that renders its own
+text). `STREAM_REUSED` carries `reused` or `captured`;
+`STREAMABILITY_UNKNOWN` carries `recursion` (from the resolver, a
+definition that reaches itself; from the evaluator, nesting past
+`MAX_EVAL_DEPTH`, which a function applied to itself reaches),
+`dynamic` or `unknown_output`. `test/spec/check.tsv` pins each code
+`alchemy check` can reach, with the position it names: `check` builds
+the plan, so `duplicate_key`, `no_match` and the evaluator's
+`recursion` have rows where the plan's own evaluation meets them.
+`render_of_text` needs a renderer, which `check` never takes;
+`rs/tests/run_test.rs` and `rs/src/lower.rs` pin it. Runtime failures
+carry the transduce and render codes unchanged, and a `fail "message"`
+in a program is `INPUT_INVALID` with the message and the form's
+position, from `check` too when the plan's evaluation reaches it.
+
 ## Untrusted input
 
 **A program is code; a document is data; the two never mix.** Data-supplied
 paths are validated segment vectors (`as-path`) and are never read as
-source. The interpreter, when it exists, resolves only registered
-operators: there is no `eval`, no host function access, no I/O from a
-program.
+source. The interpreter resolves only registered operators and the
+definitions in front of it: there is no `eval`, no host function access,
+no I/O from a program. A function a program obtains from data (a record
+field) can be applied to values, but strict mode refuses it where a
+stream operator would run it per item.
 
-What bounds a program today is its nesting: at most `MAX_NESTING` (256)
+What bounds a program's text is its nesting: at most `MAX_NESTING` (256)
 levels, counting a layout line, each indentation level and each open
 delimiter as one, refused by the reader as `too_deep` before anything is
 built, and held after desugaring, where a `pipe` nests a level per step.
 The bound is what lets the printers, the desugarer and `Drop` recurse per
 level; without it a two-kilobyte program of nested parentheses aborted
 the process with a stack overflow. The syntax tree is otherwise bounded
-by the source's size. Selector length, route count and every transduce
-limit will apply when the interpreter exists, and a pure program can
-still ask for very large output, so hosts set `max_output_bytes` and a
-timeout.
+by the source's size. The checker types definitions in dependency order,
+so a chain of definitions each naming the next does not nest it, and
+follows a stream into the bodies it is passed to at most `MAX_APPLIED`
+(32) definitions deep.
+
+A program is code, and it runs twice: `compile` evaluates everything a
+stream does not defer to build the plan, and the run evaluates the
+per-item functions. Both are bounded: evaluation nests at most
+`MAX_EVAL_DEPTH` (1,000) levels (`recursion` past it: a function applied
+to itself, or definitions, calls and values chained that deep), and
+building the plan takes at most `MAX_PLAN_STEPS` (1,000,000) evaluation
+steps (`RESOURCE_LIMIT_EXCEEDED` naming `max_plan_steps`; a program of
+forty nested doublings asks for 2^40). Those bounds are only reached
+before the stack's end on a thread of `STACK_BYTES` (64 MiB): `compile`
+makes one, the `alchemy` command runs on one, and a host that pushes
+events into a sink must run it on one. The work of one item is bounded
+by the host's abort flag (`Program::with_abort`), read every few
+evaluation steps. At run time every transduce limit applies as the
+stage that holds the data names it (`max_capture_bytes` for a program's
+`capture` or the limit its third argument names, `max_record_bytes`,
+`max_metadata_bytes` and `max_columns` for both tables,
+`max_metadata_bytes` and `max_depth` for a `scan-emit` state,
+`max_scalar_bytes` for a cell's JSON text, `max_depth`,
+`max_scalar_bytes` and `max_key_bytes` at the source), and the writer
+enforces `max_output_bytes`, which also bounds a finite text and one
+item's text as they are built. Hosts that run programs they did not
+write set `max_output_bytes` and a timeout.
