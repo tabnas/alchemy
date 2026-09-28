@@ -1152,6 +1152,40 @@ mod tests {
         // failure names one, never carried whole.
         let f = eval("", "unrepresentable \"no\" (repeat 5000 \"k\")").unwrap_err();
         assert_eq!(f.message, format!("no: a string (\"{}...)", "k".repeat(59)));
+        // Naming the value never fails in its place. Forty doublings of a
+        // vector, built by sharing, have a JSON text far past
+        // max_scalar_bytes, which the scalar writer refuses; the name is
+        // written only as far as its prefix.
+        let mut shared = String::from("let [v0 [\"kkkkkkkkkk\"]]\n");
+        for i in 1..=40 {
+            shared.push_str(&format!(
+                "{}let [v{i} [v{j} v{j}]]\n",
+                "  ".repeat(i),
+                j = i - 1
+            ));
+        }
+        shared.push_str(&format!("{}unrepresentable \"no\" v40", "  ".repeat(41)));
+        let f = eval("", &shared).unwrap_err();
+        assert_eq!(f.code, Code::TargetValueUnrepresentable, "{f}");
+        assert_eq!(
+            f.message,
+            format!("no: a vector ({}\"kkkkkkkkkk\"],[\"kkk...)", "[".repeat(41))
+        );
+        // A value JSON has no form for is named as the language writes it,
+        // and a missing member as the null a table writes for it.
+        for (expr, named) in [
+            ("unrepresentable \"no\" :kw", "no: :kw"),
+            ("unrepresentable \"no\" [1 :kw]", "no: [1,:kw]"),
+            ("unrepresentable \"no\" (fn [x] x)", "no: <fn [x]>"),
+            (
+                "unrepresentable \"no\" (record (entry :a (get :x (record))))",
+                "no: {\"a\":null}",
+            ),
+        ] {
+            let f = eval("", expr).unwrap_err();
+            assert_eq!(f.code, Code::TargetValueUnrepresentable, "{expr}: {f}");
+            assert_eq!(f.message, named, "{expr}");
+        }
     }
 
     #[test]

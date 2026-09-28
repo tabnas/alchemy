@@ -15,6 +15,7 @@
 //! the program, not the data, chose it is `DSL_TYPE_ERROR`.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
@@ -569,30 +570,106 @@ fn number_class(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// message, the value it concerns and the form's position, as `fail` is
 /// INPUT_INVALID: for a render that meets a value its format cannot write
 /// (a key a YAML mapping repeats). The value is named as every failure
-/// names one: its JSON text when that is short, else its kind and a short
-/// prefix of the text, so a failure over a large value does not carry it.
+/// names one, by [`name_value`], so a failure over a large value does not
+/// carry it, and naming it never fails in its place.
 fn unrepresentable(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
-    const SHORT: usize = 60;
     let message = as_str("unrepresentable", "the message", &a[0])?;
-    let text = match &a[1] {
-        // A long string is cut before it is quoted, so a key of any length
-        // costs no more than its prefix.
-        Val::Str(s) => quote(&s.chars().take(SHORT + 1).collect::<String>()),
-        other => rt.json_text(other)?,
-    };
-    let named = if text.chars().count() <= SHORT {
-        text
-    } else {
-        let cut: String = text.chars().take(SHORT).collect();
-        format!("{} ({cut}...)", a[1].kind())
-    };
     Err(rt.fail_at(
         Fail::new(
             Code::TargetValueUnrepresentable,
-            format!("{message}: {named}"),
+            format!("{message}: {}", name_value(&a[1])),
         ),
         at,
     ))
+}
+
+/// How many characters of a value's text a failure carries before it names
+/// the value by its kind and a prefix instead.
+const NAMED: usize = 60;
+
+/// A value for `unrepresentable`'s message: its compact JSON text when that
+/// is at most [`NAMED`] characters, else its kind and the text's first
+/// [`NAMED`]. The text is written only until it passes [`NAMED`], so the
+/// work is that prefix's, whatever the value's size, depth or sharing, and
+/// no limit applies: a value the scalar writer would refuse as too long is
+/// still named. A value JSON has no form for (a keyword, a function, a
+/// tagged value, a non-finite number) is written as the language writes it.
+fn name_value(v: &Val) -> String {
+    /// A writer that keeps the first `NAMED + 1` characters and refuses
+    /// the rest, which stops the walk.
+    struct Prefix {
+        text: String,
+        chars: usize,
+    }
+    impl fmt::Write for Prefix {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            for c in s.chars() {
+                if self.chars > NAMED {
+                    return Err(fmt::Error);
+                }
+                self.text.push(c);
+                self.chars += 1;
+            }
+            Ok(())
+        }
+    }
+    let mut prefix = Prefix {
+        text: String::new(),
+        chars: 0,
+    };
+    // An error says only that the text passed NAMED characters.
+    let _ = write_named(v, &mut prefix);
+    if prefix.chars <= NAMED {
+        return prefix.text;
+    }
+    let cut: String = prefix.text.chars().take(NAMED).collect();
+    format!("{} ({cut}...)", v.kind())
+}
+
+/// `v` as compact JSON, number lexemes kept, into `out`, stopping at the
+/// first error `out` returns. A string or a key is cut to one character
+/// past [`NAMED`] before it is quoted, so a long one costs no more than
+/// the prefix; the text is cut there anyway.
+fn write_named(v: &Val, out: &mut dyn fmt::Write) -> fmt::Result {
+    fn quote_cut(s: &str) -> String {
+        quote(&s.chars().take(NAMED + 1).collect::<String>())
+    }
+    match v {
+        Val::Null => out.write_str("null"),
+        Val::Bool(b) => write!(out, "{b}"),
+        Val::Num {
+            lexeme: Some(l), ..
+        } => out.write_str(l),
+        Val::Num {
+            value,
+            lexeme: None,
+        } if value.is_finite() => out.write_str(&shortest_number(*value)),
+        Val::Str(s) => out.write_str(&quote_cut(s)),
+        Val::Vector(items) => {
+            out.write_char('[')?;
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.write_char(',')?;
+                }
+                write_named(item, out)?;
+            }
+            out.write_char(']')
+        }
+        Val::Record(fields) => {
+            out.write_char('{')?;
+            for (i, (key, value)) in fields.iter().enumerate() {
+                if i > 0 {
+                    out.write_char(',')?;
+                }
+                out.write_str(&quote_cut(key))?;
+                out.write_char(':')?;
+                write_named(value, out)?;
+            }
+            out.write_char('}')
+        }
+        other if other.is_missing() => out.write_str("null"),
+        other => write!(out, "{other:?}"),
+    }
 }
 
 /// The kind of a value as a keyword, so that a program can tell a string
@@ -1253,7 +1330,7 @@ static NATIVES: &[Native] = &[
     f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
-    f("unrepresentable", Exact(2), unrepresentable, "unrepresentable message value -> Never", "TARGET_VALUE_UNREPRESENTABLE with the message, the value (its JSON text, or its kind and a short prefix of it) and the form's position"),
+    f("unrepresentable", Exact(2), unrepresentable, "unrepresentable message value -> Never", "TARGET_VALUE_UNREPRESENTABLE with the message, the value (its JSON text, or its kind and a short prefix of it, whatever its size) and the form's position"),
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
