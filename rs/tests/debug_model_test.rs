@@ -191,10 +191,17 @@ fn the_grammar_portion_serialises_and_reads_back_with_its_content() {
             "number": false, "comment": true, "string": true, "value": false,
         })
     );
+    // The block is optional, so the rule is `line = form [ IN block ]`.
+    // debug's ABNF emitter renders it so once it stops counting a token
+    // an alternate backtracks (`b: 1`) as content (tabnas/debug#63);
+    // before that it rendered the block as mandatory, `line = form IN
+    // block`. Either is the reader's own shape, and alchemy's CI builds
+    // against debug's main, so the test accepts both until the older
+    // rendering is gone.
     assert!(
-        back["abnf"]
-            .as_str()
-            .is_some_and(|abnf| abnf.contains("line = form IN block")),
+        back["abnf"].as_str().is_some_and(|abnf| {
+            abnf.contains("line = form [ IN block ]") || abnf.contains("line = form IN block")
+        }),
         "{}",
         back["abnf"]
     );
