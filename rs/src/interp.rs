@@ -1135,6 +1135,12 @@ mod tests {
         let f = eval("", "repeat 1.5 \"a\"").unwrap_err();
         assert_eq!(f.code, Code::DslTypeError, "{f}");
         assert!(f.message.contains("not 1.5"), "{f}");
+        // The quoted form of a string can be six times the string: it is
+        // held to the same limit, refused before it is built.
+        let f = eval("", "quoted (repeat 3000000 \"\\u0001\")").unwrap_err();
+        assert_eq!(f.code, Code::ResourceLimitExceeded, "{f}");
+        assert_eq!(f.limit.as_ref().unwrap().name, "max_scalar_bytes");
+        assert!(f.message.starts_with("quoted:"), "{f}");
         // The event values a program builds are the ones `events` delivers.
         assert_eq!(
             eval("", "key \"k\"").unwrap(),

@@ -589,7 +589,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `text` | `text string -> Text` | a string as a text |
 | `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length |
 | `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
-| `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F as `\u00XX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes) |
+| `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F as `\u00XX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past `max_scalar_bytes`, before it is built |
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
@@ -1210,11 +1210,15 @@ let _ = Renderer::Json;
   `max_scalar_bytes`; the tables' `max_metadata_bytes`,
   `max_record_bytes` and `max_columns`; a program's `capture` under
   `max_capture_bytes` or the limit it names; a `scan-emit` state under
-  `max_metadata_bytes` and `max_depth`; a cell's JSON text under
-  `max_scalar_bytes`; and the writer's `max_output_bytes`, which also
-  bounds a finite text and one item's text as they are built. A host
-  that runs programs it did not write sets `max_output_bytes` and a
-  timeout through the abort flag.
+  `max_metadata_bytes` and `max_depth`; a cell's JSON text, a `quoted`
+  form and a `repeat` under `max_scalar_bytes`; and the writer's
+  `max_output_bytes`, which also bounds a finite text and one item's
+  text as they are built. A value the plan folds while the program is
+  compiled (a `repeat` of constants, a `scan-emit`'s initial state) is
+  held to the default limits, since the host's are given to the run; the
+  work per item, where a document's size reaches, runs under the host's.
+  A host that runs programs it did not write sets `max_output_bytes`
+  and a timeout through the abort flag.
 
 ## Spans and errors
 

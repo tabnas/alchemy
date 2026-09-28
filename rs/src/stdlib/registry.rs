@@ -462,6 +462,12 @@ fn count(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// from a number, which no `match` pattern does: the words `Val::kind`
 /// uses in messages, without their article.
 fn kind(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    if a[0].is_live() {
+        return Err(type_error(format!(
+            "kind: {} cannot be asked; a stream is used once, where it is",
+            a[0].live_kind()
+        )));
+    }
     Ok(Val::keyword(kind_word(&a[0])))
 }
 
@@ -783,7 +789,7 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// double-quoted style reads JSON's escapes but its printable set excludes
 /// the C1 controls. Every other character is written as itself.
 pub fn quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
+    let mut out = String::with_capacity(quoted_len(s));
     out.push('"');
     for c in s.chars() {
         match c {
@@ -804,8 +810,34 @@ pub fn quote(s: &str) -> String {
     out
 }
 
-fn quoted(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+/// The length of [`quote`]'s result, counted before it is built: two
+/// quotes, and each character as itself, as a two-byte escape, or as the
+/// six bytes of `\u00XX`.
+pub fn quoted_len(s: &str) -> usize {
+    2 + s
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\t' | '\r' | '\u{8}' | '\u{c}' => 2,
+            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => 6,
+            c => c.len_utf8(),
+        })
+        .sum::<usize>()
+}
+
+/// `quoted string`: the double-quoted form. The result is one scalar of
+/// the output, up to six bytes per byte of the string, so it is held to
+/// `max_scalar_bytes`, refused before it is built.
+fn quoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let s = as_str("quoted", "the string", &a[0])?;
+    let max = rt.limits().max_scalar_bytes;
+    let len = quoted_len(s);
+    if len > max {
+        return Err(Fail::limit(
+            "max_scalar_bytes",
+            max as u64,
+            format!("quoted: the quoted form is {len} bytes, more than {max}"),
+        ));
+    }
     Ok(Val::Str(Arc::from(quote(s))))
 }
 
@@ -1059,7 +1091,7 @@ static NATIVES: &[Native] = &[
     f("text", Exact(1), text, "text string -> Text", "a string as a text"),
     f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),
     f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
-    f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes)"),
+    f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
     // The table protocol.
@@ -1161,6 +1193,15 @@ mod tests {
         // escape: the two agree on JSON's own escapes.
         let json = tabnas_transduce::Datum::String("q\" \\ \n \u{1f} é".into()).to_string();
         assert_eq!(quote("q\" \\ \n \u{1f} é"), json);
+        // The length counted before building is the length built.
+        for s in [
+            "",
+            "plain",
+            "q\" \\ \n \u{1f} é",
+            "del\u{7f} pad\u{80} 日本 🚀",
+        ] {
+            assert_eq!(quoted_len(s), quote(s).len(), "{s:?}");
+        }
     }
 
     /// `kind` names every retained value's kind by one keyword, the word
