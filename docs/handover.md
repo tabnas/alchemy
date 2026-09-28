@@ -399,9 +399,16 @@ name test together.
 
 ### 5.7 alchemy: a lone carriage return at the start of a line
 
-- **The bug:** a layout line whose first character is a lone `\r` (not
-  followed by `\n`) counts as a line to the layout matcher but as a space
-  to the engine's lexer. The matcher emits `#NL` with no form after it.
+- **The contract:** `docs/language.md`, layout rule 7. A line ends at a
+  line feed, alone or after a carriage return. A carriage return anywhere
+  else is whitespace. A lone `\r` restarts the engine's column but not its
+  row, and `SourceSpan::position` does the same
+  (`positions_are_one_based_rows_and_character_columns` in `rs/src/ast.rs`
+  pins it).
+- **The bug:** the layout matcher departs from that rule when a line's
+  first character is a lone `\r` (not followed by `\n`). It counts the
+  line as a line, while the engine's lexer treats the `\r` as whitespace,
+  and it emits `#NL` with no form after it.
 - **Consequences:**
   - `line.close` needs an extra alternative, `{ s: ["#NL", "#DE #ZZ"],
     b: 1 }`, to keep inputs like `"f x\n\r"` parsing.
@@ -410,11 +417,11 @@ name test together.
     internal shape error that reaches the user.
   - The unit test `a_layout_line_with_no_form_on_it` pins the current
     behaviour on purpose.
-- **Earlier related fix:** positions already treat a lone `\r` as a line
-  ending (alchemy#1's review).
-- **The fix:** choose one treatment across the layout matcher, the
-  lexer and positions, so that no input yields "malformed reader output".
-  Remove the extra alternative if it becomes unnecessary. Replace the
+- **The fix:** bring the layout matcher in line with rule 7, so that a
+  lone `\r` at the start of a line is whitespace there too and no input
+  yields "malformed reader output". Do not make a lone `\r` a line
+  ending: that would shift the row of every diagnostic after one. Remove
+  the extra alternative if it becomes unnecessary. Replace the
   pinning test with tests of the fixed behaviour. Compare old and new
   over the fixtures, the docs' code blocks, `stdlib/*.alc` and generated
   inputs with lone `\r`s: only inputs containing a lone `\r` may change.
@@ -546,9 +553,17 @@ Rust parser.
 - **Commits:** by path, never `git add -A`; read `git status --short`
   first. Every commit ends with a `Co-Authored-By:` line and the
   `Claude-Session:` line. No model identifiers in code, docs or PR text.
-  The fleet's AGENTS.md files hold the dependency rule (dependencies
-  change only on instruction, except moving to the latest release) and
-  the progress rule (a status line at least every 30 seconds).
+  The fleet's AGENTS.md files hold two core principles:
+  - **Dependencies change only on the maintainer's explicit
+    instruction.** Adding, removing, re-pointing or re-versioning one is
+    a dependency change. If a change would alter a dependency, stop and
+    ask. The one standing instruction is "Versions track the latest
+    release". tabnas/parser's AGENTS.md spells it out: moving a
+    dependency to its latest published version needs no further
+    instruction, while holding one back, adding, removing or re-pointing
+    one still does. Nothing else is exempt.
+  - **Transient tasks report progress,** a status line at least every 30
+    seconds.
 - **Reviews:** Codex reviews every PR on open. Treat each finding as a
   bug report: reproduce or refute it, fix it with a test that fails
   without the fix, reply once per thread with the commit, and resolve
