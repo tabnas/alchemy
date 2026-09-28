@@ -433,8 +433,11 @@ boolean and nothing else: no value is implicitly true or false.
 
 The checker (`rs/src/check.rs`) infers a type for every definition,
 conservatively: what it cannot decide is `Unknown` and passes; what it
-can see is wrong is reported before anything runs. The types (spec
-section 10.2):
+can see is wrong is reported before anything runs. `Value` is any data,
+so where one kind of data is wanted (a `Record`, a `Vector<Value>`, a
+`Number`) a `Value` passes, since it may be that kind, and the runtime
+checks it; a type that can never be it (a `Number` where a `Record` is
+wanted) is reported. The types (spec section 10.2):
 
 | Type | What it is | Affine |
 |---|---|---|
@@ -508,8 +511,11 @@ ERROR:protocol_mismatch@1:37
 A function given to `map`, `filter` or `concat-map` by name (a
 definition, or a `partial` of one) is checked as the `fn` that calls it
 would be, its parameter against the items of the data, and the failure
-names the data. `public-column` takes a record, so this is
-`type_mismatch` as `(map (fn [x] (public-column x)) [1])` is:
+names the data. Items typed `Value`, as a `select`'s are, pass as they
+would in the `fn`; a native, or a `partial` of one, is checked by its
+arity here and its own checks run on each item at run time.
+`public-column` takes a record, so this is `type_mismatch` as
+`(map (fn [x] (public-column x)) [1])` is:
 
 ```alchemy
 def bad (map public-column [1])

@@ -121,6 +121,36 @@ fn check_is_silent_on_a_program_that_checks() {
     assert_eq!(stderr(&output), "");
 }
 
+/// A library definition over a selection's items, which are typed
+/// `Value`: `check` passes it (the items may be records, or vectors), and
+/// `run` checks each one and prints the result.
+#[test]
+fn a_definition_over_selected_items_checks_and_runs() {
+    let cases = [
+        (
+            "cols.alc",
+            "def cols [input] (map public-column (select (path \"cols\" each-index) input))\ndef export [input] (join \",\" (map (fn [c] (get :label c)) (cols input)))\n",
+            r#"{"cols":[{"label":"a","source":1},{"label":"b"}]}"#,
+            "a,b",
+        ),
+        (
+            "rows.alc",
+            "def export [input]\n  concat-map (partial csv-row csv-options) (select (path \"rows\" each-index) input)\n",
+            r#"{"rows":[[1,"x"],[2,"y"]]}"#,
+            "\"1\",\"x\"\r\n\"2\",\"y\"\r\n",
+        ),
+    ];
+    for (name, program, input, want) in cases {
+        let path = temp_file(name, program);
+        let path = path.to_str().unwrap();
+        let out = run(&["check", path], None);
+        assert_eq!(out.status.code(), Some(0), "{name}: {}", stderr(&out));
+        let out = run(&["run", path, "-"], Some(input));
+        assert_eq!(out.status.code(), Some(0), "{name}: {}", stderr(&out));
+        assert_eq!(stdout(&out), want, "{name}");
+    }
+}
+
 #[test]
 fn check_reports_a_reader_failure_as_json_on_stderr_with_status_2() {
     let output = run(&["check", "-"], Some("pipe x\n  f\n  []\n"));

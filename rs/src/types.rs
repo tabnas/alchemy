@@ -132,11 +132,16 @@ impl Type {
     }
 
     /// Whether a value of type `actual` may be given where `self` is
-    /// expected.
+    /// expected. The checker is conservative: `Value` is any data, so it
+    /// may be the particular data `self` wants (a `Record`, a
+    /// `Vector<Value>`, a `Number`) and passes, for the runtime to check,
+    /// as `Unknown` does; a type that can never be it (a `Number` where a
+    /// `Record` is wanted) does not.
     pub fn accepts(&self, actual: &Type) -> bool {
         match (self, actual) {
             (Type::Unknown, _) | (_, Type::Unknown) | (_, Type::Never) => true,
             (Type::Value, actual) => actual.is_data(),
+            (expected, Type::Value) => expected.is_data(),
             (Type::Vector(a), Type::Vector(b)) => a.accepts(b),
             (Type::Stream(a), Type::Stream(b)) => a.accepts(b),
             (Type::TableEvent, Type::Tagged(tag)) => {
@@ -231,6 +236,40 @@ mod tests {
         assert!(!Type::Value.accepts(&Type::Selector));
         assert!(!Type::Value.accepts(&Type::Text));
         assert!(!Type::Value.accepts(&Type::func_of(1)));
+    }
+
+    /// `Value` is any data: it passes where a particular kind of data is
+    /// wanted, since it may be that kind, and nowhere else.
+    #[test]
+    fn a_value_passes_where_particular_data_is_wanted() {
+        for t in [
+            Type::Record,
+            Type::Number,
+            Type::String,
+            Type::Null,
+            Type::vector(Type::Value),
+            Type::vector(Type::Record),
+            Type::tagged("missing"),
+        ] {
+            assert!(t.accepts(&Type::Value), "{t}");
+        }
+        assert!(Type::vector(Type::Record).accepts(&Type::vector(Type::Value)));
+        for t in [
+            Type::Text,
+            Type::Selector,
+            Type::Keyword,
+            Type::TableEvent,
+            Type::JsonEvents,
+            Type::stream(Type::Value),
+            Type::func_of(1),
+            Type::tagged("row"),
+        ] {
+            assert!(!t.accepts(&Type::Value), "{t}");
+        }
+        // A type that can never be the data wanted is still refused.
+        assert!(!Type::Record.accepts(&Type::Number));
+        assert!(!Type::vector(Type::Value).accepts(&Type::Record));
+        assert!(!Type::Record.accepts(&Type::vector(Type::Value)));
     }
 
     #[test]

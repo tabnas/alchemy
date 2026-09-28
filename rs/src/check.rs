@@ -775,10 +775,15 @@ impl Checker<'_> {
     }
 
     /// A function argument's parameters against the types a higher-order
-    /// native gives it, as a direct call checks its arguments, so a named
-    /// function is checked as its eta expansion is (a `fn` literal's
-    /// parameters are bound to exactly these types, and pass). The arity is
-    /// [`Self::expect_fn`]'s; `span` is the data the items come from.
+    /// native gives it, as a direct call checks its arguments, so a
+    /// definition, or a partial of one, is checked as its eta expansion is
+    /// (a `fn` literal's parameters are bound to exactly these types, and
+    /// pass). Items typed `Value` pass a parameter that takes data, as they
+    /// would in the call ([`Type::accepts`]). A native's parameters are not
+    /// typed here (its type is its arity: [`native_type`]), so a native or
+    /// a partial of one passes, and its own checks run on the items at run
+    /// time. The arity is [`Self::expect_fn`]'s; `span` is the data the
+    /// items come from.
     fn expect_params(
         &self,
         what: &str,
@@ -1653,19 +1658,28 @@ mod tests {
         assert_eq!(code("def step [s] s\ndef fin [s] []\ndef export [input] (join \",\" (scan-emit null step fin (select (path each-index) input)))").1, "arity");
     }
 
-    /// A named function given to `map`, `filter` or `concat-map` is
-    /// checked as its eta expansion is: its parameter against the items
-    /// the data holds, as a direct call checks its arguments.
+    /// A definition given to `map`, `filter` or `concat-map` by name, or a
+    /// partial of one, is checked as its eta expansion is: its parameter
+    /// against the items the data holds, as a direct call checks its
+    /// arguments, with the failure at the data.
     #[test]
-    fn a_named_function_over_items_is_checked_as_its_eta_expansion() {
+    fn a_definition_over_items_is_checked_as_its_eta_expansion() {
         let (c, finer, row, col) =
             code("def bad (map public-column [1])\ndef export [input] (json input)");
         assert_eq!((c, finer.as_str()), (Code::DslTypeError, "type_mismatch"));
         assert_eq!((row, col), (Some(1), Some(28)));
-        assert_eq!(
-            code("def bad (filter public-column [1])\ndef export [input] (json input)").1,
-            "type_mismatch"
+        // Without the parameter check this is the predicate's result (a
+        // Record, not a Bool) at 1:17; the item is refused first, at the
+        // data.
+        let f = check("def bad (filter public-column [1])\ndef export [input] (json input)")
+            .unwrap_err();
+        assert!(
+            f.message.starts_with(
+                "type_mismatch: an item given to the function of filter must be Record, not Number"
+            ),
+            "{f}"
         );
+        assert_eq!((f.row, f.column), (Some(1), Some(31)));
         // A partial of a library definition, over a stream.
         assert_eq!(code("def export [input]\n  concat-map (partial csv-row csv-options) (map (fn [v] 1) (select (path each-index) input))").1, "type_mismatch");
         assert_eq!(code("def export [input]\n  concat-map (fn [r] (scalar-text csv-options (get :label r))) (map public-column (map (fn [v] \"s\") (select (path each-index) input)))").1, "type_mismatch");
@@ -1687,7 +1701,30 @@ mod tests {
                 "def ok [xs] (map {f} xs)\ndef export [input] (json input)"
             ))
             .unwrap();
+            // Items typed Value, as every selection's are, may be records:
+            // both forms pass, and the runtime checks each item.
+            check(&format!(
+                "def cols [input] (map {f} (select (path \"cols\" each-index) input))\ndef export [input] (join \",\" (map (fn [c] (get :label c)) (cols input)))"
+            ))
+            .unwrap_or_else(|e| panic!("{f}: {e}"));
         }
+        for f in [
+            "(partial csv-row csv-options)",
+            "(fn [cells] (csv-row csv-options cells))",
+        ] {
+            check(&format!(
+                "def export [input]\n  concat-map {f} (select (path \"rows\" each-index) input)"
+            ))
+            .unwrap_or_else(|e| panic!("{f}: {e}"));
+        }
+        // A native's parameters are untyped here: a partial of one passes,
+        // and its own check runs on the items at run time, where its eta
+        // expansion, a call, is checked now.
+        check("def ok (map (partial get :a) [1])\ndef export [input] (json input)").unwrap();
+        assert_eq!(
+            code("def bad (map (fn [x] (get :a x)) [1])\ndef export [input] (json input)").1,
+            "type_mismatch"
+        );
     }
 
     #[test]
