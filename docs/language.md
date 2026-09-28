@@ -596,7 +596,10 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema; one row, as wide as the schema; the end, after the source validated |
 | `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |
 | `missing` | `missing -> Value` | an absent member, distinct from `null` |
-| `object-start`, `object-end`, `array-start`, `array-end` | `-> Event` | the container events, as `events` delivers them; each is a constant a `match` case names, as `table-end` is |
+| `object-start` | `object-start -> Event` | an object begins |
+| `object-end` | `object-end -> Event` | an object ends |
+| `array-start` | `array-start -> Event` | an array begins |
+| `array-end` | `array-end -> Event` | an array ends |
 | `key` | `key name -> Event` | the name of the member whose value follows, inside an object |
 | `scalar` | `scalar value -> Event` | one scalar of the source: `null`, a boolean, a number with its lexeme, or a string |
 | `json` | `json events -> Text` | `JsonEvents` as compact JSON text, event by event, with a final newline |

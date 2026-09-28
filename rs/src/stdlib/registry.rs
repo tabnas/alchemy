@@ -813,22 +813,38 @@ fn quoted(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// scalar of the output (a line's indentation), so it is held to
 /// `max_scalar_bytes`, refused before it is built.
 fn repeat(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let n = as_index(&a[0]).ok_or_else(|| {
-        type_error(format!(
-            "repeat: the count must be a non-negative integer, not {:?}",
-            a[0]
-        ))
-    })?;
+    // The count is judged before it is narrowed, so that any whole
+    // non-negative count past the limit is the limit's refusal, and only
+    // a negative or a fractional one is a type error.
+    let count = match &a[0] {
+        Val::Num { value, .. } if *value >= 0.0 && value.fract() == 0.0 => *value,
+        Val::Num { value, lexeme } => {
+            let spelled = lexeme
+                .as_deref()
+                .map_or_else(|| value.to_string(), str::to_string);
+            return Err(type_error(format!(
+                "repeat: the count must be a whole number of at least 0, not {spelled}"
+            )));
+        }
+        other => {
+            return Err(type_error(format!(
+                "repeat: the count must be a number, not {}",
+                other.kind()
+            )))
+        }
+    };
     let s = as_str("repeat", "the string", &a[1])?;
     let max = rt.limits().max_scalar_bytes;
-    match n.checked_mul(s.len()) {
-        Some(len) if len <= max => Ok(Val::Str(Arc::from(s.repeat(n)))),
-        _ => Err(Fail::limit(
+    if count * s.len() as f64 > max as f64 {
+        return Err(Fail::limit(
             "max_scalar_bytes",
             max as u64,
-            format!("repeat: {n} times {} bytes is more than {max}", s.len()),
-        )),
+            format!("repeat: {count} times {} bytes is more than {max}", s.len()),
+        ));
     }
+    // Within the limit, the count fits a usize, or the string is empty.
+    let n = if s.is_empty() { 0 } else { count as usize };
+    Ok(Val::Str(Arc::from(s.repeat(n))))
 }
 
 fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
@@ -1124,7 +1140,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 33);
+        assert_eq!(compared, 37);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

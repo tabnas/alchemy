@@ -1099,7 +1099,7 @@ mod tests {
             ("quoted 1", "quoted: the string must be a string"),
             (
                 "repeat 2.5 \"a\"",
-                "repeat: the count must be a non-negative integer",
+                "repeat: the count must be a whole number of at least 0",
             ),
             ("repeat 2 1", "repeat: the string must be a string"),
         ] {
@@ -1122,8 +1122,19 @@ mod tests {
         let f = eval("", "repeat 1000000000 \"abcdefghij\"").unwrap_err();
         assert_eq!(f.code, Code::ResourceLimitExceeded, "{f}");
         assert_eq!(f.limit.as_ref().unwrap().name, "max_scalar_bytes");
+        // A count past what an index holds is the limit's refusal too,
+        // judged before the count is narrowed; a fraction or a negative
+        // count is a type error.
         let f = eval("", "repeat 100000000000000000000 \"a\"").unwrap_err();
+        assert_eq!(f.code, Code::ResourceLimitExceeded, "{f}");
+        assert_eq!(f.limit.as_ref().unwrap().name, "max_scalar_bytes");
+        assert_eq!(
+            eval("", "repeat 100000000000000000000 \"\"").unwrap(),
+            Val::str("")
+        );
+        let f = eval("", "repeat 1.5 \"a\"").unwrap_err();
         assert_eq!(f.code, Code::DslTypeError, "{f}");
+        assert!(f.message.contains("not 1.5"), "{f}");
         // The event values a program builds are the ones `events` delivers.
         assert_eq!(
             eval("", "key \"k\"").unwrap(),
