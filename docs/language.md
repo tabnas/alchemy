@@ -832,8 +832,12 @@ standard shapes, and `rs/tests/stdlib_test.rs` pins each agreement:
 - **limits**: the metadata is held to `max_metadata_bytes`, each row to
   `max_record_bytes` and the schema to `max_columns`, and a failure names
   the same limit both ways; `max_capture_bytes` decides neither table;
-  both count each row once in `metrics.rows`, however the table stages
-  compose (a `csv-table`, a `csv` or the host's renderer over a table).
+  both count each row once in `metrics.rows`, by the last table stage
+  it passes (the host's renderer, a `csv`, or a `csv-table` whose rows
+  reach no later one), however the stages compose: a `map`, a `filter`
+  or a `scan-emit` between two of them hands the count on, so a row a
+  filter drops is not counted, and a table's events made into a text
+  some other way (a `join` over a `map` of them) count no rows at all.
 
 One difference remains, in a shape the standard binding never reaches,
 and is pinned: metadata selected twice (a `:columns` selector naming

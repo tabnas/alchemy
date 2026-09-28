@@ -602,53 +602,133 @@ fn the_limits_hold_alike_both_ways() {
     assert_eq!(Metrics::get(&metrics.rows), 2);
 }
 
-/// Each row counts once in `metrics.rows`, however the table stages
-/// compose: the native table counts its own rows, `csv-table` those its
-/// source did not, and the adapter to the host's renderer those neither
-/// did; natively and interpreted alike.
+/// Each row counts once in `metrics.rows`, by the last table stage it
+/// passes: the adapter to a renderer, a `csv-table` whose rows reach no
+/// later table stage, or the native table when it hands its rows straight
+/// to a renderer. A `map`, a `filter` or a `scan-emit` between two table
+/// stages hands the count on, so a row a filter drops is never counted,
+/// and rows that only ever become a text of items are not rows of any
+/// table; natively and interpreted alike, with the same bytes.
 #[test]
 fn each_row_counts_once_across_composed_table_stages() {
     let tail = |t: &str| PROGRAM.replace("    csv csv-options\n", t);
-    let cases: Vec<(&str, String, Option<Renderer>)> = vec![
-        ("csv", tail("    csv csv-options\n"), None),
+    let identity = "    map (fn [e] e)\n";
+    let drop_rows = "    filter (fn [e] (match e (case (row cells) false) (case _ true)))\n";
+    let pass_scan = "    scan-emit null (fn [s e] (transition s [e])) (fn [s] []) \n";
+    let as_text = "    map (fn [e] \"x\")\n    join \",\"\n";
+    let cases: Vec<(&str, String, Option<Renderer>, u64)> = vec![
+        ("csv", tail("    csv csv-options\n"), None, 2),
         (
             "csv-table as the result",
             tail("    csv-table csv-options\n"),
             None,
+            2,
         ),
         (
             "csv-table as the result, as json",
             tail("    csv-table csv-options\n"),
             Some(Renderer::Json),
+            2,
         ),
         (
             "csv over csv-table",
             tail("    csv-table csv-options\n    csv csv-options\n"),
             None,
+            2,
         ),
         (
             "records over csv-table",
             tail("    csv-table csv-options\n    records\n    json\n"),
             None,
+            2,
         ),
         (
             "csv-table twice",
             tail("    csv-table csv-options\n    csv-table csv-options\n    csv csv-options\n"),
             None,
+            2,
         ),
         (
             "the library csv over the native table",
             tail("    csv opts\n\ndef opts\n  record\n    entry :delimiter \"||\"\n    entry :newline \"\\r\\n\"\n    entry :header true\n    entry :null-text \"\"\n    entry :missing :error\n"),
             None,
+            2,
+        ),
+        (
+            "a map, then the program's csv",
+            tail(&format!("{identity}    csv csv-options\n")),
+            None,
+            2,
+        ),
+        (
+            "a map, csv-table, csv",
+            tail(&format!("{identity}    csv-table csv-options\n    csv csv-options\n")),
+            None,
+            2,
+        ),
+        (
+            "csv-table, a map, csv",
+            tail(&format!("    csv-table csv-options\n{identity}    csv csv-options\n")),
+            None,
+            2,
+        ),
+        (
+            "a map, the host's renderer",
+            tail(identity),
+            Some(Renderer::Csv),
+            2,
+        ),
+        (
+            "a map, the host's json",
+            tail(identity),
+            Some(Renderer::Json),
+            2,
+        ),
+        (
+            "a filter that keeps every row, the host's renderer",
+            tail("    filter (fn [e] true)\n"),
+            Some(Renderer::Csv),
+            2,
+        ),
+        (
+            "a scan that passes each event on, then csv",
+            tail(&format!("{pass_scan}    csv csv-options\n")),
+            None,
+            2,
+        ),
+        (
+            "a filter that drops every row, then csv",
+            tail(&format!("{drop_rows}    csv csv-options\n")),
+            None,
+            0,
+        ),
+        (
+            "a filter that drops every row, the host's renderer",
+            tail(drop_rows),
+            Some(Renderer::Csv),
+            0,
+        ),
+        (
+            "the table's events as a text: no table stage",
+            tail(as_text),
+            None,
+            0,
+        ),
+        (
+            "csv-table's events as a text",
+            tail(&format!("    csv-table csv-options\n{as_text}")),
+            None,
+            2,
         ),
     ];
     let records = events(tabnas_json::make, RECORDS).unwrap();
-    for (name, src, render) in cases {
+    for (name, src, render, rows) in cases {
         let program = compile(&src, "rows.alc").unwrap();
+        let mut outputs = Vec::new();
         for native in [true, false] {
             let program = program.with_native(native).unwrap();
             let metrics = Metrics::new();
-            run_under(
+            let out = run_under(
                 &program,
                 &records,
                 render,
@@ -656,8 +736,14 @@ fn each_row_counts_once_across_composed_table_stages() {
                 metrics.clone(),
             )
             .unwrap_or_else(|f| panic!("{name} (native: {native}): {f}"));
-            assert_eq!(Metrics::get(&metrics.rows), 2, "{name} (native: {native})");
+            assert_eq!(
+                Metrics::get(&metrics.rows),
+                rows,
+                "{name} (native: {native})"
+            );
+            outputs.push(out);
         }
+        assert_eq!(outputs[0], outputs[1], "{name}: the bytes differ");
     }
 }
 

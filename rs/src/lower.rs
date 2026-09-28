@@ -32,6 +32,7 @@
 //! is `DSL_TYPE_ERROR` with the `protocol_mismatch` finer code, the same
 //! word the checker uses when it can see it first.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use tabnas_render::{
@@ -638,14 +639,26 @@ impl TableSink for TableToTagged {
 /// one), so a longer string cell here is the compact JSON text of a vector
 /// or a record, which the library's `scalar-text` bounds the same way; so
 /// the two paths fail alike, naming the same limit.
+///
+/// The native table adds each row to `metrics.rows` as it hands it on.
+/// When the row is not the native table's to count ([`Lowering::items`]:
+/// its rows become items, which a later table stage counts if they reach
+/// one), `uncount` takes that back as the row arrives, before anything
+/// else sees it, so the count is the interpreted path's: the library's
+/// table is a `scan-emit`, which counts nothing.
 struct CellBound {
     max: usize,
     down: Table,
+    metrics: Arc<Metrics>,
+    uncount: bool,
 }
 
 impl TableSink for CellBound {
     fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
         if let TableEvent::Row(cells) = &ev {
+            if self.uncount {
+                self.metrics.rows.fetch_sub(1, Ordering::Relaxed);
+            }
             for cell in cells.iter() {
                 if let Cell::String(text) = cell {
                     if text.len() > self.max {
@@ -667,9 +680,10 @@ impl TableSink for CellBound {
 /// validates the sequence; what is validated here is that each item is a
 /// table event at all, of the table protocol's shape (at most
 /// `max_columns` columns, labels by [`label_text`]), and that the stream
-/// did end with `table-end`. Each row counts in `metrics.rows`, as the
-/// native table counts its rows, unless the stage it comes from counted it
-/// already ([`counts_rows`]).
+/// did end with `table-end`. It is the last table stage before a
+/// renderer, so it counts each row in `metrics.rows`, as the native table
+/// counts the rows it hands a renderer, unless `count_rows` says a later
+/// stage does ([`Lowering::items`]).
 struct TaggedToTable {
     rt: Arc<Runtime>,
     metrics: Arc<Metrics>,
@@ -720,15 +734,6 @@ impl ItemSink for TaggedToTable {
     }
 }
 
-/// Whether the stages `plan` lowers to already count, in `metrics.rows`,
-/// the rows it yields: the native table counts its own, and `csv-table`
-/// those its source did not. A row is counted once, by the stage nearest
-/// its source that knows it for a row, so a table stage over one of these
-/// passes its rows on without counting them again.
-fn counts_rows(plan: &Plan) -> bool {
-    matches!(plan, Plan::TableFromJson { .. } | Plan::CsvTable { .. })
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     BeforeSchema,
@@ -747,8 +752,8 @@ enum Phase {
 struct CsvTableStage {
     rt: Arc<Runtime>,
     metrics: Arc<Metrics>,
-    /// Whether this stage counts the rows in `metrics.rows`: those its
-    /// source did not count ([`counts_rows`]).
+    /// Whether this stage counts the rows in `metrics.rows`: when no later
+    /// table stage does ([`Lowering::items`]).
     count_rows: bool,
     down: Items,
     phase: Phase,
@@ -1013,11 +1018,11 @@ impl<'a> Lowering<'a> {
                     )),
                     (_, Renderer::Csv) => {
                         let renderer = CsvRenderer::new(out, CsvOptions::default())?;
-                        self.table(plan, Box::new(renderer))
+                        self.table(plan, Box::new(renderer), false)
                     }
                     (_, Renderer::Json) => {
                         let json = JsonRenderer::new(out, json_options());
-                        self.table(plan, Box::new(RecordsToJson::new(json)))
+                        self.table(plan, Box::new(RecordsToJson::new(json)), false)
                     }
                 }
             }
@@ -1042,7 +1047,7 @@ impl<'a> Lowering<'a> {
                     type_error("csv: the options record does not map to the renderer's dialect")
                 })?;
                 let renderer = CsvRenderer::new(out, options)?;
-                self.table(source, Box::new(renderer))
+                self.table(source, Box::new(renderer), false)
             }
             Plan::Json { source } => {
                 self.events(source, Box::new(JsonRenderer::new(out, json_options())))
@@ -1060,6 +1065,7 @@ impl<'a> Lowering<'a> {
                     out,
                     scratch: Scratch::new(self.limits),
                 }),
+                false,
             ),
             Plan::Join {
                 sep,
@@ -1071,6 +1077,7 @@ impl<'a> Lowering<'a> {
                     join: Join::new(out, &**sep),
                     scratch: Scratch::new(self.limits),
                 }),
+                false,
             ),
             Plan::Concat { items, live } => {
                 let Some(live) = *live else {
@@ -1102,7 +1109,11 @@ impl<'a> Lowering<'a> {
     fn events(&self, plan: &Arc<Plan>, sink: EventSink) -> Result<EventSink, Fail> {
         match &**plan {
             Plan::Input => Ok(sink),
-            Plan::Records { source } => self.table(source, Box::new(RecordsToJson::new(sink))),
+            // `records` ends a table: after it the rows are JSON events,
+            // of which a later table makes rows of its own.
+            Plan::Records { source } => {
+                self.table(source, Box::new(RecordsToJson::new(sink)), false)
+            }
             other => Err(protocol_mismatch(format!(
                 "{} yields a stream of items where JSON events were expected",
                 crate::value::plan_name(other)
@@ -1110,7 +1121,15 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn table(&self, plan: &Arc<Plan>, table: Table) -> Result<EventSink, Fail> {
+    /// The sink for the table `plan` yields, handing its events to `table`.
+    /// `counted_later` is as for [`Lowering::items`]: whether the rows
+    /// `table` receives are counted after it rather than here.
+    fn table(
+        &self,
+        plan: &Arc<Plan>,
+        table: Table,
+        counted_later: bool,
+    ) -> Result<EventSink, Fail> {
         match &**plan {
             Plan::TableFromJson {
                 binding,
@@ -1121,6 +1140,8 @@ impl<'a> Lowering<'a> {
                 let table = Box::new(CellBound {
                     max: self.limits.max_scalar_bytes,
                     down: table,
+                    metrics: self.metrics.clone(),
+                    uncount: counted_later,
                 });
                 let transducer = TableFromJson::new(
                     binding,
@@ -1139,17 +1160,32 @@ impl<'a> Lowering<'a> {
                 Box::new(TaggedToTable {
                     rt: self.rt.clone(),
                     metrics: self.metrics.clone(),
-                    count_rows: !counts_rows(plan),
+                    count_rows: !counted_later,
                     table,
                     columns: Vec::new(),
                     cells: Vec::new(),
                     ended: false,
                 }),
+                true,
             ),
         }
     }
 
-    fn items(&self, plan: &Arc<Plan>, down: Items) -> Result<EventSink, Fail> {
+    /// The sink for the stream of items `plan` yields, handing them to
+    /// `down`.
+    ///
+    /// `counted_later` says whether a table stage after `down` counts the
+    /// rows these items carry. Each row is counted in `metrics.rows` once,
+    /// by the last table stage it passes, as the interpreted path counts
+    /// it: the adapter to a renderer, or a `csv-table` whose rows reach no
+    /// later table stage, or the native table when it hands its rows
+    /// straight to a renderer or to `records`. The flag passes through a
+    /// `map`, a `filter` and a `scan-emit` unchanged, so a row a filter
+    /// drops is not counted and one a scan adds is; a table stage sets it
+    /// for its own source; a text over items, and `records`, clear it. The
+    /// native table's rows that become items are never its own to count:
+    /// the library's table, a `scan-emit`, counts none.
+    fn items(&self, plan: &Arc<Plan>, down: Items, counted_later: bool) -> Result<EventSink, Fail> {
         match &**plan {
             Plan::Route { specs, source } => {
                 // A capture bounded by a named limit takes the host's value
@@ -1208,6 +1244,7 @@ impl<'a> Lowering<'a> {
                     self.metrics.clone(),
                     down,
                 )?),
+                counted_later,
             ),
             Plan::Map { f, source, at } => self.items(
                 source,
@@ -1217,6 +1254,7 @@ impl<'a> Lowering<'a> {
                     at: at.clone(),
                     down,
                 }),
+                counted_later,
             ),
             Plan::Filter { f, source, at } => self.items(
                 source,
@@ -1226,8 +1264,11 @@ impl<'a> Lowering<'a> {
                     at: at.clone(),
                     down,
                 }),
+                counted_later,
             ),
-            Plan::TableFromJson { .. } => self.table(plan, Box::new(TableToTagged { down })),
+            Plan::TableFromJson { .. } => {
+                self.table(plan, Box::new(TableToTagged { down }), true)
+            }
             Plan::CsvTable { options, source } => {
                 check_delimiter(options)?;
                 self.items(
@@ -1235,13 +1276,14 @@ impl<'a> Lowering<'a> {
                     Box::new(CsvTableStage {
                         rt: self.rt.clone(),
                         metrics: self.metrics.clone(),
-                        count_rows: !counts_rows(source),
+                        count_rows: !counted_later,
                         down,
                         phase: Phase::BeforeSchema,
                         width: 0,
                         rows: 0,
                         cells: Vec::new(),
                     }),
+                    true,
                 )
             }
             Plan::Input | Plan::Records { .. } => Err(protocol_mismatch(
