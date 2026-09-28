@@ -50,6 +50,13 @@ a\r  b\r c	"(a b c)"
 a \r b	"(a b)"
 a\r  b\r c)	ERROR:unbalanced@1:3
 a\r\n  b\r\n c	ERROR:bad_dedent@3:2
+# In a line's leading whitespace a lone carriage return restarts the indentation, as it restarts the engine's column; a row holding only whitespace and comments after it is blank.
+f x\n\r	"(f x)"
+a\n\r  b	"(a b)"
+a\n  b\n  \r;c\nd	"(a b)\nd"
+a\n  b\n\r;x\n  c	"(a b c)"
+a\n  b\n  \r  \rc	"(a b)\nc"
+\r  a	ERROR:bad_indent@1:3
 # Explicit delimiters suspend layout.
 f (a\n      b\n  c) d	"(f (a b c) d)"
 def f [x]\n  concat (a x) (b x)\n    (c x)	"(def f [x] (concat (a x) (b x) (c x)))"

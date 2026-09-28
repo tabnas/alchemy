@@ -55,7 +55,11 @@ for parentheses. The rules (design brief section 4.1, spec section 9.1):
    carriage return anywhere else is whitespace, which is how the engine
    counts rows, so the row a diagnostic names is the line the layout saw.
    (A lone carriage return does restart the engine's column, and the
-   columns this crate derives from spans restart with it.)
+   columns this crate derives from spans restart with it. In a line's
+   leading whitespace it restarts the indentation too: the indentation
+   of a line is its run of spaces after the last lone carriage return
+   before its first form, and a line holding only whitespace and
+   comments after one is blank.)
 8. A program nests at most 256 levels, counting a layout line, each
    indentation level and each open `(` or `[` as one. The bound holds
    after desugaring too, where a `pipe` adds a level per step.
