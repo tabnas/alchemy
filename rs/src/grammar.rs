@@ -31,15 +31,39 @@
 //! engine's `$`-builtins because every node carries a span the builtins
 //! have no way to record.
 //!
+//! # How the rules repeat
+//!
+//! Every repetition is a replace loop, never a push per item. The
+//! container pushes its first item (`p`); the item's close alternate, on a
+//! token that continues the sequence, replaces the item with the next one
+//! in the same frame (`r`); the container's close runs once, after the
+//! last item. `program` and `block` push the first `line`, and a `line`
+//! replaces itself with the next on `#NL`, or after a block on the next
+//! line's first token. A `line`, a `paren` and a `bracket` push their
+//! first `form`, and a `form` replaces itself with the next until the
+//! token that ends its parent's sequence. The items of a sequence
+//! therefore all run at one rule depth, and depth follows the program's
+//! nesting, never its length. The pushes that remain are structure:
+//! `line`'s `#IN` into `block`, and `form`'s openers into `paren` and
+//! `bracket`.
+//!
 //! # How the rules share cells
 //!
-//! A pushed rule starts on its parent's node cell, so every rule here that
-//! builds a value of its own first replaces its cell (`@alchemy-array`,
-//! `@alchemy-atom`, the two openers), and a parent reads a finished child
-//! through [`Rule::child_value`]. The one deliberate exception is `paren`
-//! and `bracket`, which are pushed onto the tagged list their `form`
-//! parent has just created and fill its `items` in place; when they pop,
-//! the parent's node already is the finished list.
+//! A pushed rule starts on its parent's node cell, and a replacing rule on
+//! the replaced one's, so every rule here that builds a value of its own
+//! first replaces its cell (`@alchemy-array`, `@alchemy-atom`, the two
+//! openers). A replace hands the parent on, so every item of a sequence
+//! sees its container's node as [`Rule::parent_node`], and each item
+//! appends its finished value there in its own close action
+//! (`@alchemy-item` for a form, `@alchemy-line-end` for a line). Nothing
+//! reads a finished item back through the push link, which names only the
+//! first item of a replace loop.
+//!
+//! The containers that build nothing of their own run on their parent's
+//! cell, so their items land in the parent's value directly: `paren` and
+//! `bracket` are pushed onto the tagged list their `form` has just
+//! created, and `block` onto its line's array of items, after the inline
+//! forms. When they pop, the parent's node already holds every item.
 
 // The engine's error carries a code, position, hint and a formatted
 // report, so it is large by design and `Result<_, TabnasError>` trips
@@ -66,7 +90,6 @@ pub const UNNAMED: &str = "<program>";
 /// The action and condition references the document names, all registered
 /// by [`alchemy`] before the document is installed.
 const A_ARRAY: &str = "@alchemy-array";
-const A_COLLECT: &str = "@alchemy-collect";
 const A_CHILDREN: &str = "@alchemy-children";
 const A_LINE_END: &str = "@alchemy-line-end";
 const A_OPEN_LIST: &str = "@alchemy-open-list";
@@ -75,10 +98,14 @@ const A_ITEM: &str = "@alchemy-item";
 const A_CLOSE_SEQ: &str = "@alchemy-close-seq";
 const A_ATOM: &str = "@alchemy-atom";
 const C_CHILDREN: &str = "@alchemy-has-children";
+const C_IN_LINE: &str = "@alchemy-in-line";
+const C_IN_PAREN: &str = "@alchemy-in-paren";
+const C_IN_BRACKET: &str = "@alchemy-in-bracket";
 const E_UNBALANCED: &str = "@alchemy-unbalanced";
 
-/// The rule-local flag a `line` sets once it has taken a block of
-/// children. In `u`, the bag that does not descend, because it describes
+/// What a `line` records once it has taken a block of children: where
+/// that block's lines begin among the line's items. In `u`, the bag that
+/// neither descends nor passes to the next line, because it describes
 /// this line alone.
 const U_CHILDREN: &str = "children";
 
@@ -171,50 +198,71 @@ fn document() -> serde_json::Value {
 
         "rule": {
             // A program: layout lines until the source ends. The node is
-            // the array of finished lines.
+            // the array of finished lines. The program pushes the first
+            // line and the lines follow it in one frame (see `line`), so
+            // the close runs once, on the end of the source.
             "program": {
                 "open": [
                     { "s": "#ZZ", "a": A_ARRAY, "g": "alchemy" },
                     { "p": "line", "a": A_ARRAY, "g": "alchemy" },
                 ],
                 "close": [
-                    { "s": "#ZZ", "a": A_COLLECT, "g": "alchemy" },
-                    { "p": "line", "a": A_COLLECT, "g": "alchemy" },
+                    { "s": "#ZZ", "g": "alchemy" },
                 ],
             },
-            // A layout line: inline forms, then what ends it. `#DE` and
-            // `#ZZ` are left (`b: 1`) for the block or program above; a
-            // block's `#IN` is taken here and the block pushed, and once
-            // the block is back the line closes on whatever follows
-            // without consuming it.
+            // A layout line: inline forms, then what ends it. The line
+            // pushes its first form, and the forms follow it in one frame
+            // up to a layout token or the end of the source (see `form`).
+            // A block's `#IN` is taken here and the block pushed. `#NL` is
+            // the next line of this level, and so is whatever follows a
+            // block that did not also close this level: either way the
+            // line appends itself to the level's node and replaces itself
+            // with the next line (`r`). `#DE` and `#ZZ` end the level and
+            // are left (`b: 1`) for the block or program above, and so
+            // does a `#NL` right before them, which a layout line with no
+            // form on it leaves (its first character a lone `\r`, a line
+            // to the layout and a space to the engine): the `#NL` is taken
+            // and the level closes on what follows.
             "line": {
                 "open": [
                     { "p": "form", "a": A_ARRAY, "g": "alchemy" },
                 ],
                 "close": [
                     { "s": "#IN", "p": "block", "a": A_CHILDREN, "g": "alchemy" },
-                    { "s": "#NL", "a": A_LINE_END, "g": "alchemy" },
+                    { "s": ["#NL", "#DE #ZZ"], "b": 1, "a": A_LINE_END, "g": "alchemy" },
+                    { "s": "#NL", "r": "line", "a": A_LINE_END, "g": "alchemy" },
                     { "s": "#DE", "b": 1, "a": A_LINE_END, "g": "alchemy" },
                     { "s": "#ZZ", "b": 1, "a": A_LINE_END, "g": "alchemy" },
-                    { "c": C_CHILDREN, "a": A_LINE_END, "g": "alchemy" },
-                    { "p": "form", "a": A_COLLECT, "g": "alchemy" },
+                    { "c": C_CHILDREN, "r": "line", "a": A_LINE_END, "g": "alchemy" },
                 ],
             },
             // The children of a line, one per level: lines until the
-            // `#DE` that closes the level, or the end of the source.
+            // `#DE` that closes the level, or the end of the source. The
+            // block runs on its line's array, so each child line appends
+            // itself there, after the line's inline forms.
             "block": {
                 "open": [
-                    { "p": "line", "a": A_ARRAY, "g": "alchemy" },
+                    { "p": "line", "g": "alchemy" },
                 ],
                 "close": [
-                    { "s": "#DE", "a": A_COLLECT, "g": "alchemy" },
-                    { "s": "#ZZ", "b": 1, "a": A_COLLECT, "g": "alchemy" },
-                    { "p": "line", "a": A_COLLECT, "g": "alchemy" },
+                    { "s": "#DE", "g": "alchemy" },
+                    { "s": "#ZZ", "b": 1, "g": "alchemy" },
                 ],
             },
             // One form: an explicit list or vector, or an atom. A closer
             // with nothing open, or the end of the source inside a
             // delimiter, arrives here and is `unbalanced`.
+            //
+            // A form is an item of the sequence its parent reads: a line's
+            // inline forms, or the items of `( )` or `[ ]`. Its close
+            // appends it to the parent's node and then either ends the
+            // sequence, leaving the token that ends it (`b: 1`) for the
+            // parent, or goes on to the next item in this frame (`r`).
+            // What ends a sequence is the parent's: the closer for `paren`
+            // and `bracket`, a layout token or the end of the source for a
+            // line. The layout tokens only arrive outside delimiters,
+            // where the parent is a line; the end of the source inside a
+            // delimiter goes on to the next form, whose open reports it.
             "form": {
                 "open": [
                     { "s": "#OP", "p": "paren", "a": A_OPEN_LIST, "g": "alchemy" },
@@ -228,10 +276,21 @@ fn document() -> serde_json::Value {
                     { "s": "#CS", "e": E_UNBALANCED, "g": "alchemy" },
                     { "s": "#ZZ", "e": E_UNBALANCED, "g": "alchemy" },
                 ],
-                "close": [],
+                "close": [
+                    { "s": "#CP", "c": C_IN_PAREN, "b": 1, "a": A_ITEM, "g": "alchemy" },
+                    { "s": "#CS", "c": C_IN_BRACKET, "b": 1, "a": A_ITEM, "g": "alchemy" },
+                    { "s": "#IN", "b": 1, "a": A_ITEM, "g": "alchemy" },
+                    { "s": "#NL", "b": 1, "a": A_ITEM, "g": "alchemy" },
+                    { "s": "#DE", "b": 1, "a": A_ITEM, "g": "alchemy" },
+                    { "s": "#ZZ", "c": C_IN_LINE, "b": 1, "a": A_ITEM, "g": "alchemy" },
+                    { "r": "form", "a": A_ITEM, "g": "alchemy" },
+                ],
             },
             // The items of `( ... )`, filled into the form's list in
-            // place. An empty list leaves its closer for the close phase.
+            // place: the list pushes its first item and the rest follow it
+            // in one frame (see `form`), so the close runs once, after the
+            // last item, and takes the closer. An empty list leaves its
+            // closer for the close phase.
             "paren": {
                 "open": [
                     { "s": "#CP", "b": 1, "g": "alchemy" },
@@ -239,7 +298,6 @@ fn document() -> serde_json::Value {
                 ],
                 "close": [
                     { "s": "#CP", "a": A_CLOSE_SEQ, "g": "alchemy" },
-                    { "p": "form", "a": A_ITEM, "g": "alchemy" },
                 ],
             },
             // The items of `[ ... ]`, likewise.
@@ -250,7 +308,6 @@ fn document() -> serde_json::Value {
                 ],
                 "close": [
                     { "s": "#CS", "a": A_CLOSE_SEQ, "g": "alchemy" },
-                    { "p": "form", "a": A_ITEM, "g": "alchemy" },
                 ],
             },
         },
@@ -325,68 +382,104 @@ fn atom(token: &Token) -> Value {
     }
 }
 
-/// Append `value` to the array in `rule`'s node; a node that is not an
-/// array is left alone (the rules only ever call this on one that is).
-fn push_node(rule: &mut Rule, value: Value) {
-    if let Value::Array(items) = &mut *rule.node.borrow_mut() {
-        Arc::make_mut(items).push(value);
+/// Append `value` to the sequence in `cell`: the array of a program's
+/// lines or of a line's items, or the `items` of a tagged list or vector.
+/// Any other value is left alone (the rules only ever append to those).
+fn append(cell: &RefCell<Value>, value: Value) {
+    match &mut *cell.borrow_mut() {
+        Value::Array(items) => Arc::make_mut(items).push(value),
+        Value::Object(fields) => {
+            if let Some(Value::Array(items)) = Arc::make_mut(fields).get_mut("items") {
+                Arc::make_mut(items).push(value);
+            }
+        }
+        _ => {}
     }
 }
 
-/// Append `value` to the `items` of the tagged list in `rule`'s node.
-fn push_item(rule: &mut Rule, value: Value) {
-    if let Value::Object(fields) = &mut *rule.node.borrow_mut() {
-        if let Some(Value::Array(items)) = Arc::make_mut(fields).get_mut("items") {
-            Arc::make_mut(items).push(value);
-        }
+/// Append `rule`'s finished node to its container's: how an item of a
+/// replace loop reaches the sequence it belongs to. A replace hands the
+/// parent on, so every item of one sequence has the container's node as
+/// its [`Rule::parent_node`].
+fn append_to_parent(rule: &Rule) {
+    let Some(parent) = rule.parent_node.as_ref() else {
+        return;
+    };
+    // Every item has a cell of its own by its close; appending a cell to
+    // itself would be a cycle, never a value.
+    if Rc::ptr_eq(parent, &rule.node) {
+        return;
+    }
+    let value = rule.node.borrow().clone();
+    append(parent, value);
+}
+
+/// Where the lines of `rule`'s latest block begin among its items, once
+/// the line has taken a block.
+fn children_start(rule: &Rule) -> Option<usize> {
+    match rule.u.get(U_CHILDREN) {
+        Some(Value::Number(start)) => Some(*start as usize),
+        _ => None,
     }
 }
 
 fn has_children(rule: &Rule) -> bool {
-    matches!(rule.u.get(U_CHILDREN), Some(Value::Bool(true)))
+    children_start(rule).is_some()
+}
+
+/// Whether `rule` is an item of a sequence the rule `name` reads: its
+/// parent, which a replace hands on to every item after the first.
+fn parent_is(rule: &Rule, name: &str) -> bool {
+    rule.parent_rule
+        .as_ref()
+        .is_some_and(|parent| parent.name.as_str() == name)
 }
 
 /// Register every action, condition and error hook the document names.
 fn register_refs(parser: &mut Tabnas) {
     parser.action(A_ARRAY, |rule| fresh(rule, Value::array(Vec::new())));
-    parser.action(A_COLLECT, |rule| {
-        if rule.has_child_value() {
-            let child = rule.child_value();
-            push_node(rule, child);
-        }
-    });
+    // A line takes one block. A second can only follow a layout line with
+    // no form on it, whose first character is a lone `\r` (a line to the
+    // layout, a space to the engine): the earlier block then stays one
+    // array item of this line, before the next block's lines, which is
+    // the value the reader has always built there and `Expr` refuses as
+    // malformed.
     parser.action(A_CHILDREN, |rule| {
-        if rule.has_child_value() {
-            let child = rule.child_value();
-            push_node(rule, child);
-        }
+        let earlier = children_start(rule);
+        let start = match &mut *rule.node.borrow_mut() {
+            Value::Array(items) => {
+                if let Some(earlier) = earlier.filter(|earlier| *earlier <= items.len()) {
+                    let lines = Arc::make_mut(items).split_off(earlier);
+                    Arc::make_mut(items).push(Value::array(lines));
+                }
+                items.len()
+            }
+            _ => 0,
+        };
         rule.u_mut()
-            .insert(U_CHILDREN.to_string(), Value::Bool(true));
+            .insert(U_CHILDREN.to_string(), Value::Number(start as f64));
     });
+    // The line's items are in its node: the inline forms, each appended by
+    // its own close, then the child lines, appended by theirs through the
+    // block that ran on this node.
     parser.action(A_LINE_END, |rule| {
         let children = has_children(rule);
         let mut items: Vec<Value> = match &*rule.node.borrow() {
             Value::Array(items) => items.as_ref().clone(),
             _ => Vec::new(),
         };
-        if rule.has_child_value() {
-            match rule.child_value() {
-                // The block's lines, when this line took a block.
-                Value::Array(lines) if children => items.extend(lines.iter().cloned()),
-                form => items.push(form),
-            }
-        }
         if items.len() == 1 && !children {
             let only = items.pop().expect("one item was just counted");
             fresh(rule, only);
-            return;
+        } else {
+            let start = items.first().and_then(span_of).map_or(0, |span| span.0);
+            let end = items.last().and_then(span_of).map_or(start, |span| span.1);
+            fresh(
+                rule,
+                tagged("list", vec![("items", Value::array(items))], (start, end)),
+            );
         }
-        let start = items.first().and_then(span_of).map_or(0, |span| span.0);
-        let end = items.last().and_then(span_of).map_or(start, |span| span.1);
-        fresh(
-            rule,
-            tagged("list", vec![("items", Value::array(items))], (start, end)),
-        );
+        append_to_parent(rule);
     });
     parser.action(A_OPEN_LIST, |rule| {
         let span = rule.o0().map_or((0, 0), token_span);
@@ -402,17 +495,9 @@ fn register_refs(parser: &mut Tabnas) {
             tagged("vector", vec![("items", Value::array(Vec::new()))], span),
         );
     });
-    parser.action(A_ITEM, |rule| {
-        if rule.has_child_value() {
-            let child = rule.child_value();
-            push_item(rule, child);
-        }
-    });
+    parser.action(A_ITEM, |rule| append_to_parent(rule));
+    // The items are already in the list; the closer ends its span.
     parser.action(A_CLOSE_SEQ, |rule| {
-        if rule.has_child_value() {
-            let child = rule.child_value();
-            push_item(rule, child);
-        }
         let end = rule.c0().map(|closer| token_span(closer).1);
         if let (Some(end), Value::Object(fields)) = (end, &mut *rule.node.borrow_mut()) {
             if let Some(Value::Array(span)) = Arc::make_mut(fields).get_mut("span") {
@@ -428,6 +513,9 @@ fn register_refs(parser: &mut Tabnas) {
         }
     });
     parser.alt_condition(C_CHILDREN, |rule, _context| has_children(rule));
+    parser.alt_condition(C_IN_LINE, |rule, _context| parent_is(rule, "line"));
+    parser.alt_condition(C_IN_PAREN, |rule, _context| parent_is(rule, "paren"));
+    parser.alt_condition(C_IN_BRACKET, |rule, _context| parent_is(rule, "bracket"));
     // The offending token is the one under the cursor: the closer with
     // nothing open, or the `#ZZ` inside an open delimiter.
     parser.alt_error(E_UNBALANCED, |_rule, context| {
@@ -617,6 +705,34 @@ mod tests {
         assert_eq!(
             json("a\n  b\n    c\nd"),
             r#"[{"$":"list","items":[{"$":"sym","name":"a","span":[0,1]},{"$":"list","items":[{"$":"sym","name":"b","span":[4,5]},{"$":"sym","name":"c","span":[10,11]}],"span":[4,11]}],"span":[0,11]},{"$":"sym","name":"d","span":[12,13]}]"#
+        );
+    }
+
+    /// A layout line whose first character is a lone `\r` has no form on
+    /// it: the layout counts it as a line, the engine as a space. The
+    /// `#NL` it leaves right before the end of a level ends the line above
+    /// it, and a block indented under it stays apart from the block before
+    /// it, one array item of the line both follow, as the reader has
+    /// always built it (`Expr` refuses that node as malformed).
+    #[test]
+    fn a_layout_line_with_no_form_on_it() {
+        assert_eq!(
+            json("f x\n\r"),
+            r#"[{"$":"list","items":[{"$":"sym","name":"f","span":[0,1]},{"$":"sym","name":"x","span":[2,3]}],"span":[0,3]}]"#
+        );
+        assert_eq!(
+            json("a\n  b\n  \r;c\nd"),
+            r#"[{"$":"list","items":[{"$":"sym","name":"a","span":[0,1]},{"$":"sym","name":"b","span":[4,5]}],"span":[0,5]},{"$":"sym","name":"d","span":[12,13]}]"#
+        );
+        assert_eq!(
+            json("a\n  b\n\r;x\n  c"),
+            r#"[{"$":"list","items":[{"$":"sym","name":"a","span":[0,1]},[{"$":"sym","name":"b","span":[4,5]}],{"$":"sym","name":"c","span":[12,13]}],"span":[0,13]}]"#
+        );
+        let fail = parse("a\n  b\n\r;x\n  c").expect_err("a node that is not an object");
+        assert!(
+            fail.message.starts_with("malformed reader output"),
+            "{}",
+            fail.message
         );
     }
 

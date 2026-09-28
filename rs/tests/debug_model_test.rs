@@ -55,7 +55,10 @@ fn the_model_is_the_structured_alchemy_grammar() {
     );
 
     // The rule graph: a program is lines, a line takes a block of lines
-    // and pushes forms, a form opens the two delimited sequences.
+    // and pushes forms, a form opens the two delimited sequences. Every
+    // repetition is a replace loop: a container pushes its first item
+    // from its open phase, and a line and a form replace themselves with
+    // the next; the one push left in a close phase is a line's block.
     let edge = |name: &str| {
         m.graph
             .iter()
@@ -63,18 +66,23 @@ fn the_model_is_the_structured_alchemy_grammar() {
             .unwrap_or_else(|| panic!("an edge entry for {name}"))
     };
     assert_eq!(edge("program").open_push, ["line"]);
-    assert_eq!(edge("program").close_push, ["line"]);
+    assert!(edge("program").close_push.is_empty());
     assert_eq!(edge("line").open_push, ["form"]);
-    let mut line_close = edge("line").close_push.clone();
-    line_close.sort_unstable();
-    line_close.dedup();
-    assert_eq!(line_close, ["block", "form"]);
+    assert_eq!(edge("line").close_push, ["block"]);
+    assert_eq!(edge("line").close_replace, ["line"]);
     assert_eq!(edge("block").open_push, ["line"]);
+    assert!(edge("block").close_push.is_empty());
     let mut form_open = edge("form").open_push.clone();
     form_open.sort_unstable();
     assert_eq!(form_open, ["bracket", "paren"]);
-    assert_eq!(edge("paren").close_push, ["form"]);
-    assert_eq!(edge("bracket").close_push, ["form"]);
+    assert_eq!(edge("form").close_replace, ["form"]);
+    for sequence in ["paren", "bracket"] {
+        assert_eq!(edge(sequence).open_push, ["form"], "{sequence}");
+        assert!(edge(sequence).close_push.is_empty(), "{sequence}");
+    }
+    for edges in &m.graph {
+        assert!(edges.open_replace.is_empty(), "{}", edges.name);
+    }
 
     // The structural tokens the matcher emits are registered.
     let tokens: Vec<&str> = m.tokens.iter().map(|token| token.name.as_str()).collect();
@@ -114,9 +122,11 @@ fn the_grammar_portion_serialises_and_reads_back_with_its_content() {
         ["block", "bracket", "form", "line", "paren", "program"]
     );
 
-    // A line opens on a form; it closes on `#IN` (pushing its block), on
-    // `#NL`, on `#DE` or `#ZZ` left for the rule above, on the condition
-    // that it took a block, or on another form.
+    // A line opens on a form; it closes on `#IN` (pushing its block), on a
+    // `#NL` right before `#DE` or `#ZZ` (taking the `#NL` alone), on `#NL`
+    // (replacing itself with the next line), on `#DE` or `#ZZ` left for the
+    // rule above, or, on the condition that it took a block, on the next
+    // line's first token (replacing itself again).
     let line = back["rules"]
         .as_array()
         .expect("rules")
@@ -128,19 +138,30 @@ fn the_grammar_portion_serialises_and_reads_back_with_its_content() {
             .as_array()
             .expect("alternates")
             .iter()
-            .map(|alt| serde_json::json!([alt["seq"], alt["push"], alt["back"], alt["cond"]]))
+            .map(|alt| {
+                serde_json::json!([
+                    alt["seq"],
+                    alt["push"],
+                    alt["replace"],
+                    alt["back"],
+                    alt["cond"]
+                ])
+            })
             .collect()
     };
-    assert_eq!(alts("open"), [serde_json::json!([[], "form", null, false])]);
+    assert_eq!(
+        alts("open"),
+        [serde_json::json!([[], "form", null, null, false])]
+    );
     assert_eq!(
         alts("close"),
         [
-            serde_json::json!([["#IN"], "block", null, false]),
-            serde_json::json!([["#NL"], null, null, false]),
-            serde_json::json!([["#DE"], null, 1, false]),
-            serde_json::json!([["#ZZ"], null, 1, false]),
-            serde_json::json!([[], null, null, true]),
-            serde_json::json!([[], "form", null, false]),
+            serde_json::json!([["#IN"], "block", null, null, false]),
+            serde_json::json!([["#NL", ["#DE", "#ZZ"]], null, null, 1, false]),
+            serde_json::json!([["#NL"], null, "line", null, false]),
+            serde_json::json!([["#DE"], null, null, 1, false]),
+            serde_json::json!([["#ZZ"], null, null, 1, false]),
+            serde_json::json!([[], null, "line", null, true]),
         ]
     );
 
@@ -175,7 +196,7 @@ fn the_grammar_portion_serialises_and_reads_back_with_its_content() {
     assert!(
         back["abnf"]
             .as_str()
-            .is_some_and(|abnf| abnf.contains("line = form [ IN block ]")),
+            .is_some_and(|abnf| abnf.contains("line = form IN block")),
         "{}",
         back["abnf"]
     );
