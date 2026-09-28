@@ -481,6 +481,120 @@ fn keys(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     }
 }
 
+/// `put key value record`: the record with `key` set to `value`, where it
+/// was when the record had it and appended otherwise. A bounded operation
+/// over one record, a step per entry copied so the host's abort flag stops
+/// a wide one; with `get`, a set a program keeps (the keys a mapping has
+/// written). It cannot hold a stream or a live text.
+fn put(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let key: Arc<str> = match &a[0] {
+        Val::Keyword(k) | Val::Str(k) => k.clone(),
+        other => {
+            return Err(type_error(format!(
+                "put: the key must be a keyword or a string, not {}",
+                other.kind()
+            )))
+        }
+    };
+    if a[1].is_live() {
+        return Err(type_error(format!(
+            "put: a record cannot hold {}; a stream is used once, where it is",
+            a[1].live_kind()
+        )));
+    }
+    let Val::Record(fields) = &a[2] else {
+        return Err(type_error(format!(
+            "put: the record must be a record, not {}",
+            a[2].kind()
+        )));
+    };
+    let mut out: IndexMap<Arc<str>, Val> = IndexMap::with_capacity(fields.len() + 1);
+    for (k, v) in fields.iter() {
+        rt.tick()?;
+        out.insert(k.clone(), v.clone());
+    }
+    out.insert(key, a[1].clone());
+    Ok(Val::Record(Arc::new(out)))
+}
+
+/// `length string`: how many characters the string holds, as a column
+/// counts them (Unicode scalar values).
+fn length(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("length", "the string", &a[0])?;
+    Ok(Val::num(s.chars().count() as f64))
+}
+
+/// `compare a b`: how two numbers are ordered, `:less`, `:equal` or
+/// `:greater`, and `:unordered` when either is NaN; -0 and 0 are equal.
+fn compare(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let number = |v: &Val, which: &str| match v {
+        Val::Num { value, .. } => Ok(*value),
+        other => Err(type_error(format!(
+            "compare: the {which} must be a number, not {}",
+            other.kind()
+        ))),
+    };
+    let (x, y) = (number(&a[0], "first")?, number(&a[1], "second")?);
+    Ok(Val::keyword(match x.partial_cmp(&y) {
+        Some(std::cmp::Ordering::Less) => "less",
+        Some(std::cmp::Ordering::Equal) => "equal",
+        Some(std::cmp::Ordering::Greater) => "greater",
+        None => "unordered",
+    }))
+}
+
+/// `number-class number`: `:finite`, `:infinity`, `:negative-infinity` or
+/// `:nan`, so that a program writing a format with spellings for the
+/// numbers JSON has none for (YAML's `.inf`, `-.inf` and `.nan`) can choose
+/// them; `scalar-text` refuses those numbers, as JSON and CSV must.
+fn number_class(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Num { value, .. } => Ok(Val::keyword(if value.is_nan() {
+            "nan"
+        } else if *value == f64::INFINITY {
+            "infinity"
+        } else if *value == f64::NEG_INFINITY {
+            "negative-infinity"
+        } else {
+            "finite"
+        })),
+        other => Err(type_error(format!(
+            "number-class: the number must be a number, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+/// `unrepresentable message value`: TARGET_VALUE_UNREPRESENTABLE with the
+/// message, the value it concerns and the form's position, as `fail` is
+/// INPUT_INVALID: for a render that meets a value its format cannot write
+/// (a key a YAML mapping repeats). The value is named as every failure
+/// names one: its JSON text when that is short, else its kind and a short
+/// prefix of the text, so a failure over a large value does not carry it.
+fn unrepresentable(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    const SHORT: usize = 60;
+    let message = as_str("unrepresentable", "the message", &a[0])?;
+    let text = match &a[1] {
+        // A long string is cut before it is quoted, so a key of any length
+        // costs no more than its prefix.
+        Val::Str(s) => quote(&s.chars().take(SHORT + 1).collect::<String>()),
+        other => rt.json_text(other)?,
+    };
+    let named = if text.chars().count() <= SHORT {
+        text
+    } else {
+        let cut: String = text.chars().take(SHORT).collect();
+        format!("{} ({cut}...)", a[1].kind())
+    };
+    Err(rt.fail_at(
+        Fail::new(
+            Code::TargetValueUnrepresentable,
+            format!("{message}: {named}"),
+        ),
+        at,
+    ))
+}
+
 /// The kind of a value as a keyword, so that a program can tell a string
 /// from a number, which no `match` pattern does: the words `Val::kind`
 /// uses in messages, without their article.
@@ -1106,6 +1220,10 @@ static NATIVES: &[Native] = &[
     f("top", Exact(1), top, "top vector -> Value", "the last item; an empty vector is a type error"),
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
     f("keys", Exact(1), keys, "keys record -> Vector", "the record's keys as strings, in its order, which for a captured object is the document's"),
+    f("put", Exact(3), put, "put key value record -> Record", "the record with key set to value, where it was or appended; it cannot hold a stream or a live text"),
+    f("length", Exact(1), length, "length string -> Number", "how many characters the string holds"),
+    f("compare", Exact(2), compare, "compare a b -> Keyword", "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"),
+    f("number-class", Exact(1), number_class, "number-class number -> Keyword", ":finite, :infinity, :negative-infinity or :nan"),
     f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
     // Selectors.
     f("path", AtLeast(0), path, "path segment... -> Selector", "a selector from strings, indexes and selectors"),
@@ -1135,6 +1253,7 @@ static NATIVES: &[Native] = &[
     f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
+    f("unrepresentable", Exact(2), unrepresentable, "unrepresentable message value -> Never", "TARGET_VALUE_UNREPRESENTABLE with the message, the value (its JSON text, or its kind and a short prefix of it) and the form's position"),
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
@@ -1213,7 +1332,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 38);
+        assert_eq!(compared, 43);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
@@ -1258,6 +1377,31 @@ mod tests {
         assert_eq!(kind_of(Val::vector(vec![])), "vector");
         assert_eq!(kind_of(Val::missing()), "missing");
         assert_eq!(kind_of(Val::tagged("key", vec![Val::str("a")])), "tagged");
+    }
+
+    /// NaN and the infinities, which no literal spells: `number-class`
+    /// names each, and `compare` orders the infinities and leaves NaN
+    /// unordered.
+    #[test]
+    fn number_class_and_compare_see_the_non_finite_numbers() {
+        let rt = crate::lower::tests::runtime("", true);
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let word = |v: Val| match v {
+            Val::Keyword(k) => k.to_string(),
+            other => panic!("{other:?}"),
+        };
+        let class = |v: f64| word(number_class(&rt, &[Val::num(v)], &at).unwrap());
+        assert_eq!(class(1.5), "finite");
+        assert_eq!(class(-0.0), "finite");
+        assert_eq!(class(f64::INFINITY), "infinity");
+        assert_eq!(class(f64::NEG_INFINITY), "negative-infinity");
+        assert_eq!(class(f64::NAN), "nan");
+        let order = |x: f64, y: f64| word(compare(&rt, &[Val::num(x), Val::num(y)], &at).unwrap());
+        assert_eq!(order(f64::NAN, 1.0), "unordered");
+        assert_eq!(order(1.0, f64::NAN), "unordered");
+        assert_eq!(order(-0.0, 0.0), "equal");
+        assert_eq!(order(f64::NEG_INFINITY, -1e308), "less");
+        assert_eq!(order(f64::INFINITY, f64::INFINITY), "equal");
     }
 
     #[test]

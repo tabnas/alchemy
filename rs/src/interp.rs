@@ -1073,6 +1073,87 @@ mod tests {
     /// The stack operators: data last, a new vector each time, bounded by
     /// the vector's length; an empty vector refuses `pop` and `top` with a
     /// type error naming the operator.
+    /// What a render needs beyond the stack: `put` and `get` keep a set
+    /// (the keys a mapping has written), `length` and `compare` see a key
+    /// past a length, `number-class` names a number's class, and
+    /// `unrepresentable` refuses a value the format cannot write.
+    #[test]
+    fn the_render_operators() {
+        let strings = |items: &[&str]| Val::vector(items.iter().map(|s| Val::str(s)).collect());
+        // `put` sets a key where it was, or appends it.
+        assert_eq!(
+            eval(
+                "",
+                "keys (put :a 3 (put \"c\" 2 (record (entry :a 1) (entry :b 2))))"
+            )
+            .unwrap(),
+            strings(&["a", "b", "c"])
+        );
+        assert_eq!(
+            eval("", "get :a (put :a 3 (record (entry :a 1)))").unwrap(),
+            Val::num(3.0)
+        );
+        assert!(eval("", "get \"x\" (put \"y\" true (record))")
+            .unwrap()
+            .is_missing());
+        for (expr, message) in [
+            (
+                "put :a 1 [1]",
+                "put: the record must be a record, not a vector",
+            ),
+            (
+                "put 1 1 (record)",
+                "put: the key must be a keyword or a string, not a number",
+            ),
+            ("length 1", "length: the string must be a string"),
+            (
+                "compare 1 \"2\"",
+                "compare: the second must be a number, not a string",
+            ),
+            (
+                "number-class \"1\"",
+                "number-class: the number must be a number, not a string",
+            ),
+        ] {
+            let f = eval("", expr).unwrap_err();
+            assert_eq!(f.code, Code::DslTypeError, "{expr}");
+            assert!(
+                f.message.starts_with(&format!("type_mismatch: {message}")),
+                "{expr}: {f}"
+            );
+        }
+        // `length` counts characters, not bytes.
+        assert_eq!(eval("", "length \"héllo 日本\"").unwrap(), Val::num(8.0));
+        assert_eq!(eval("", "length \"\"").unwrap(), Val::num(0.0));
+        for (expr, want) in [
+            ("compare 1 2", "less"),
+            ("compare 2 2", "equal"),
+            ("compare 3 2.5", "greater"),
+            ("compare (length \"abc\") 3", "equal"),
+            ("number-class 1e3", "finite"),
+            ("number-class 1e400", "infinity"),
+            ("number-class -1e400", "negative-infinity"),
+        ] {
+            assert_eq!(eval("", expr).unwrap(), Val::keyword(want), "{expr}");
+        }
+        // `unrepresentable` is TARGET_VALUE_UNREPRESENTABLE with the value's
+        // JSON text, at the form's position, as `fail` is INPUT_INVALID.
+        let f = eval(
+            "def refuse [k]\n  unrepresentable \"a mapping repeats the key\" k",
+            "refuse \"a\\\"b\"",
+        )
+        .unwrap_err();
+        assert_eq!(f.code, Code::TargetValueUnrepresentable, "{f}");
+        assert_eq!(f.message, "a mapping repeats the key: \"a\\\"b\"");
+        assert_eq!((f.row, f.column), (Some(2), Some(3)));
+        let f = eval("", "unrepresentable \"no\" [1 (record (entry :k null))]").unwrap_err();
+        assert_eq!(f.message, "no: [1,{\"k\":null}]");
+        // A long value is named by its kind and a short prefix, as every
+        // failure names one, never carried whole.
+        let f = eval("", "unrepresentable \"no\" (repeat 5000 \"k\")").unwrap_err();
+        assert_eq!(f.message, format!("no: a string (\"{}...)", "k".repeat(59)));
+    }
+
     #[test]
     fn the_stack_operators_and_the_string_forms() {
         assert_eq!(

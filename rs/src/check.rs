@@ -1054,6 +1054,30 @@ impl Checker<'_> {
                 self.expect("the record of keys", &Record, t(0), at(0))?;
                 Type::vector(Type::String)
             }
+            "put" => {
+                match t(0) {
+                    Keyword | String | Unknown | Never => {}
+                    other => return Err(self.mismatch("the key of put", &Keyword, other, at(0))),
+                }
+                if t(1).is_stream_or_source() {
+                    no_stream(self, 1, "a record")?;
+                }
+                self.expect("the record of put", &Record, t(2), at(2))?;
+                Record
+            }
+            "length" => {
+                self.expect("the string of length", &String, t(0), at(0))?;
+                Number
+            }
+            "compare" => {
+                self.expect("the first number of compare", &Number, t(0), at(0))?;
+                self.expect("the second number of compare", &Number, t(1), at(1))?;
+                Keyword
+            }
+            "number-class" => {
+                self.expect("the number of number-class", &Number, t(0), at(0))?;
+                Keyword
+            }
             "kind" => {
                 if t(0).is_affine() {
                     return Err(self.mismatch("the value of kind", &Value, t(0), at(0)));
@@ -1190,6 +1214,11 @@ impl Checker<'_> {
             }
             "fail" => {
                 self.expect("the message of fail", &String, t(0), at(0))?;
+                Never
+            }
+            "unrepresentable" => {
+                self.expect("the message of unrepresentable", &String, t(0), at(0))?;
+                no_stream(self, 1, "the value of unrepresentable")?;
                 Never
             }
             "is-ready" => Bool,

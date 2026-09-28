@@ -202,7 +202,9 @@ needs several sources, which `check` never takes;
 `rs/tests/sources_test.rs` pins it. Runtime failures
 carry the transduce and render codes unchanged, and a `fail "message"`
 in a program is `INPUT_INVALID` with the message and the form's
-position, from `check` too when the plan's evaluation reaches it.
+position, from `check` too when the plan's evaluation reaches it; an
+`unrepresentable "message" value`, for a value a render's format cannot
+write, is `TARGET_VALUE_UNREPRESENTABLE` the same way, naming the value.
 
 ## Untrusted input
 

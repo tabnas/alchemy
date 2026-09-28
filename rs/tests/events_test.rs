@@ -242,6 +242,121 @@ fn events_render_a_nested_document_as_a_yaml_like_block() {
     assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth");
 }
 
+/// A program whose state keeps, for each open container, the set of keys
+/// written in it (`put` and `get` over a record), as a YAML render must to
+/// refuse a key a mapping repeats. Each key is written on its own line,
+/// in the explicit form past YAML's 1024-character limit on an implicit
+/// key (`length` and `compare`), and each number in YAML's spellings, the
+/// non-finite ones included (`number-class`).
+const KEY_SET: &str = r#"def key-line [name]
+  match (compare (length (quoted name)) 1024)
+    case :greater ["? " (quoted name) "\n"]
+    case _ [(quoted name) ":\n"]
+
+def number-line [n]
+  match (number-class n)
+    case :finite [(scalar-text csv-options n) "\n"]
+    case :infinity [".inf\n"]
+    case :negative-infinity ["-.inf\n"]
+    case :nan [".nan\n"]
+
+def step [s event]
+  match event
+    case object-start (transition (push (record) s) [])
+    case array-start (transition (push (record) s) [])
+    case object-end (transition (pop s) [])
+    case array-end (transition (pop s) [])
+    case (key name)
+      match (kind (get name (top s)))
+        case :missing
+          transition (push (put name true (top s)) (pop s)) (key-line name)
+        case _
+          unrepresentable "a mapping repeats the key" name
+    case (scalar v)
+      match (kind v)
+        case :number (transition s (number-line v))
+        case _ (transition s [])
+
+def finish [s] []
+
+def export [input]
+  join ""
+    scan-emit [] step finish (events input)
+"#;
+
+/// The set of written keys is per container, refuses a repeat naming the
+/// key where the program refuses it, and is state like any other: capped
+/// at `max_metadata_bytes`, the one part of it that grows with a
+/// document's width.
+#[test]
+fn a_set_of_written_keys_refuses_a_repeat() {
+    let program = compile(KEY_SET, "keys.alc").unwrap();
+    // The same key in another object, or in the next item's object, is
+    // no repeat.
+    assert_eq!(
+        render(&program, r#"{"a":{"b":1,"a":2},"b":[{"a":3},{"a":4}]}"#),
+        "\"a\":\n\"b\":\n1\n\"a\":\n2\n\"b\":\n\"a\":\n3\n\"a\":\n4\n"
+    );
+    // A key the incremental source streams twice in one object is refused
+    // at the program's `unrepresentable`, naming it.
+    let (outcome, _) = drive(&program, r#"{"a":1,"b\"c":2,"b\"c":3}"#, &Limits::default());
+    let fail = outcome.unwrap_err();
+    assert_eq!(fail.code, Code::TargetValueUnrepresentable, "{fail}");
+    assert_eq!(fail.message, "a mapping repeats the key: \"b\\\"c\"");
+    let line = KEY_SET
+        .lines()
+        .position(|l| l.contains("unrepresentable"))
+        .unwrap();
+    assert_eq!((fail.row, fail.column), (Some(line as u64 + 1), Some(11)));
+    // Past 1024 characters, quotes included, a key takes the explicit form.
+    let long = "k".repeat(1023);
+    assert_eq!(
+        render(&program, &format!(r#"{{"{}":1}}"#, &long[..1022])),
+        format!("\"{}\":\n1\n", &long[..1022])
+    );
+    assert_eq!(
+        render(&program, &format!(r#"{{"{long}":1}}"#)),
+        format!("? \"{long}\"\n1\n")
+    );
+    // The keys are state: a wide object passes a small metadata cap.
+    let wide = format!(
+        "{{{}}}",
+        (0..40)
+            .map(|i| format!(r#""key{i}":{i}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let small = Limits {
+        max_metadata_bytes: 512,
+        ..Limits::default()
+    };
+    let (outcome, _) = drive(&program, &wide, &small);
+    let fail = outcome.unwrap_err();
+    assert_eq!(fail.code, Code::ResourceLimitExceeded, "{fail}");
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_metadata_bytes");
+}
+
+/// YAML's non-finite numbers arrive as numbers with no lexeme, and a
+/// program writes them in YAML's spellings, where `scalar-text` would
+/// refuse them as JSON and CSV must; a quoted `'.inf'` is a string.
+#[test]
+fn the_non_finite_numbers_are_written_in_yamls_spellings() {
+    let program = compile(KEY_SET, "keys.alc").unwrap();
+    let metrics = Metrics::new();
+    let buffer = Shared::default();
+    let sink = program
+        .sink(Box::new(buffer.clone()), None, &Limits::default(), metrics)
+        .unwrap();
+    let (outcome, _) = ParserSource::new(
+        tabnas_yaml::make(),
+        "- .inf\n- -.inf\n- .nan\n- 1.5\n- '.inf'\n",
+    )
+    .run_owned(sink);
+    outcome.unwrap();
+    let out = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(out, ".inf\n-.inf\n.nan\n1.5\n");
+}
+
 /// `events` consumes the input, so a program that reads it twice, or
 /// captures it in a function, is refused as any affine stream is.
 #[test]
