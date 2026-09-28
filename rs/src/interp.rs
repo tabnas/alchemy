@@ -749,7 +749,9 @@ enum Node<'v> {
     Val(&'v Val),
     Plan(&'v Plan),
     Env(&'v Env),
-    /// The function a partial applies, when it is itself a partial.
+    /// A function held by something other than a value: the function a
+    /// partial applies, when it is itself a partial, or the one a plan
+    /// applies.
     Fn(&'v Func),
 }
 
@@ -839,20 +841,53 @@ impl Runtime {
                         pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
                         sep.len()
                     }
-                    Plan::ConcatMap {
-                        items: Seq::Vector(items),
-                        ..
-                    } => {
-                        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
+                    // A finite concat-map keeps the function it applies
+                    // until it is written: a partial over the state before
+                    // holds that state, so the function is walked like any
+                    // value the plan holds.
+                    Plan::ConcatMap { f, items, .. } => {
+                        pending.push((Node::Fn(f), depth + 1));
+                        if let Seq::Vector(items) = items {
+                            pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
+                        }
                         0
                     }
                     Plan::Replace { from, to, source } => {
                         pending.push((Node::Val(source), depth + 1));
                         from.len() + to.len()
                     }
-                    // A live plan is the one pass over the input, not a
-                    // retained value.
-                    _ => 0,
+                    // A live plan's source is the one pass over the input,
+                    // not a retained value, and is not walked; what the
+                    // plan itself holds (its functions, its options, a
+                    // scan's initial state) is.
+                    Plan::Map { f, .. } | Plan::Filter { f, .. } => {
+                        pending.push((Node::Fn(f), depth + 1));
+                        0
+                    }
+                    Plan::ScanEmit {
+                        init, step, finish, ..
+                    } => {
+                        pending.push((Node::Val(init), depth + 1));
+                        pending.push((Node::Fn(step), depth + 1));
+                        pending.push((Node::Fn(finish), depth + 1));
+                        0
+                    }
+                    Plan::TableFromJson { binding: v, .. }
+                    | Plan::CsvTable { options: v, .. }
+                    | Plan::Csv { options: v, .. } => {
+                        pending.push((Node::Val(v), depth + 1));
+                        0
+                    }
+                    Plan::Route { specs, .. } => specs
+                        .iter()
+                        .map(|c| c.tag.len() + c.selector.to_string().len())
+                        .sum(),
+                    Plan::Select { selector, .. } => selector.to_string().len(),
+                    Plan::Join {
+                        sep,
+                        items: Seq::Stream(_),
+                    } => sep.len(),
+                    Plan::Input | Plan::Records { .. } | Plan::Json { .. } => 0,
                 },
                 // A frame's value, and the frames outside it one level
                 // further: a chain of frames is dropped one inside another.
@@ -1147,6 +1182,72 @@ mod tests {
             Measure {
                 bytes: 6 * 16 + 300,
                 depth: 4
+            }
+        );
+        let long = chain(1000);
+        let fail = rt.measure(&long, bounds(1 << 30, 256)).unwrap_err();
+        assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth", "{fail}");
+        let fail = rt.measure(&long, bounds(4096, usize::MAX)).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().unwrap().name,
+            "max_metadata_bytes",
+            "{fail}"
+        );
+    }
+
+    /// A finite text keeps the function its concat-map applies, so a state
+    /// that hides the one before it in that function's partial (a state of
+    /// `[(concat-map (partial g s) ["x"])]`) is walked through it: vector,
+    /// text, plan, function, then the state before, each a level.
+    #[test]
+    fn the_function_a_finite_text_applies_is_measured() {
+        let rt = runtime("");
+        let file: Arc<str> = Arc::from("t.alc");
+        let at = SourceSpan::new(&file, 0, 0);
+        let g = || Func::Native(registry::native("vector").unwrap());
+        let link = |prev: Val| {
+            let Val::Fn(f) = partial(g(), vec![prev]) else {
+                unreachable!()
+            };
+            let items: Arc<[Val]> = Arc::from(vec![Val::str("x")]);
+            let text = Val::Text(Arc::new(Plan::ConcatMap {
+                f,
+                items: Seq::Vector(items),
+                at: at.clone(),
+            }));
+            Val::Vector(Arc::from(vec![text]))
+        };
+        let chain = |links: usize| {
+            let mut v = Val::Vector(Arc::from(Vec::<Val>::new()));
+            for _ in 0..links {
+                v = link(v);
+            }
+            v
+        };
+        let bounds = |max_bytes: u64, max_depth: usize| Bounds {
+            node_bytes: 16,
+            max_bytes,
+            bytes_limit: "max_metadata_bytes",
+            max_depth,
+            what: "the state",
+        };
+        // One link: the vector (1), its text (2), the plan (3), the
+        // function and the item "x" (4), the state before (5).
+        let one = rt.measure(&chain(1), bounds(u64::MAX, usize::MAX)).unwrap();
+        assert_eq!(
+            one,
+            Measure {
+                bytes: 6 * 16 + 1,
+                depth: 5
+            }
+        );
+        // Each further link is four more levels and five more nodes.
+        let three = rt.measure(&chain(3), bounds(u64::MAX, usize::MAX)).unwrap();
+        assert_eq!(
+            three,
+            Measure {
+                bytes: 16 * 16 + 3,
+                depth: 13
             }
         );
         let long = chain(1000);

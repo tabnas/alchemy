@@ -629,6 +629,20 @@ fn a_scan_emit_state_is_measured_and_capped() {
         "max_metadata_bytes",
         "{fail}"
     );
+    // A state that keeps the one before inside the partial a finite text's
+    // concat-map applies is walked through that function: it fails as the
+    // vector does, rather than growing a level per item.
+    let text = "def g [prev y] y\ndef step [s x] (transition [(concat-map (partial g s) [\"x\"])] [])\ndef fin [s] [\"done\"]\ndef export [input]\n  join \",\"\n    scan-emit [] step fin (select (path each-index) input)\n";
+    let program = compile(text, "text.alc").unwrap();
+    let (fail, _) = err(&program, &numbers, &Limits::default());
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth", "{fail}");
+    assert_eq!((fail.row, fail.column), (Some(6), Some(5)));
+    let (fail, _) = err(&program, &numbers, &small);
+    assert_eq!(
+        fail.limit.as_ref().unwrap().name,
+        "max_metadata_bytes",
+        "{fail}"
+    );
     // A state that keeps the last item is measured and reported.
     let last = "def step [s x] (transition x [])\ndef fin [s] [\"done\"]\ndef export [input]\n  join \",\"\n    scan-emit null step fin (select (path each-index) input)\n";
     let program = compile(last, "last.alc").unwrap();
