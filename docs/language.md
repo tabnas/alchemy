@@ -572,7 +572,6 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `top` | `top vector -> Value` | the last item; an empty vector is a type error |
 | `count` | `count vector -> Number` | how many items the vector holds |
 | `keys` | `keys record -> Vector` | the record's keys as strings, in its order, which for a captured object is the document's |
-| `put` | `put key value record -> Record` | the record with key set to value, where it was or appended; it cannot hold a stream or a live text |
 | `length` | `length string -> Number` | how many characters the string holds |
 | `compare` | `compare a b -> Keyword` | how two numbers are ordered: `:less`, `:equal` or `:greater`, and `:unordered` when either is NaN |
 | `number-class` | `number-class number -> Keyword` | `:finite`, `:infinity`, `:negative-infinity` or `:nan` |
@@ -597,7 +596,6 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F as `\u00XX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past `max_scalar_bytes`, before it is built |
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
-| `unrepresentable` | `unrepresentable message value -> Never` | `TARGET_VALUE_UNREPRESENTABLE` with the message, the value (its JSON text, or its kind and a short prefix of it, whatever its size) and the form's position |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema, of at most `max_columns` columns, refused where it is built past them; one row, as wide as the schema; the end, after the source validated |
 | `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |
@@ -1367,10 +1365,7 @@ repurposed; one may be added.
 Runtime failures carry the transduce and render codes unchanged
 (`INPUT_ORDER_VIOLATION`, `MISSING_VALUE`, `RESOURCE_LIMIT_EXCEEDED` with
 the limit's name, `PROTOCOL_ORDER_ERROR`, ...); a `fail "message"` in a
-program is `INPUT_INVALID` with the message and the form's position, and
-an `unrepresentable "message" value`, for a value the program's format
-cannot write, is `TARGET_VALUE_UNREPRESENTABLE` with the message, the
-value and the form's position. A
+program is `INPUT_INVALID` with the message and the form's position. A
 failure's message names a value by its kind and a short prefix of its
 text (`no_match: no case matches a vector ([...)`), never the whole of
 it, so a failure over a large document does not carry the document.

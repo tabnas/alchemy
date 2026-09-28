@@ -15,7 +15,6 @@
 //! the program, not the data, chose it is `DSL_TYPE_ERROR`.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
@@ -482,42 +481,6 @@ fn keys(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     }
 }
 
-/// `put key value record`: the record with `key` set to `value`, where it
-/// was when the record had it and appended otherwise. A bounded operation
-/// over one record, a step per entry copied so the host's abort flag stops
-/// a wide one; with `get`, a set a program keeps (the keys a mapping has
-/// written). It cannot hold a stream or a live text.
-fn put(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let key: Arc<str> = match &a[0] {
-        Val::Keyword(k) | Val::Str(k) => k.clone(),
-        other => {
-            return Err(type_error(format!(
-                "put: the key must be a keyword or a string, not {}",
-                other.kind()
-            )))
-        }
-    };
-    if a[1].is_live() {
-        return Err(type_error(format!(
-            "put: a record cannot hold {}; a stream is used once, where it is",
-            a[1].live_kind()
-        )));
-    }
-    let Val::Record(fields) = &a[2] else {
-        return Err(type_error(format!(
-            "put: the record must be a record, not {}",
-            a[2].kind()
-        )));
-    };
-    let mut out: IndexMap<Arc<str>, Val> = IndexMap::with_capacity(fields.len() + 1);
-    for (k, v) in fields.iter() {
-        rt.tick()?;
-        out.insert(k.clone(), v.clone());
-    }
-    out.insert(key, a[1].clone());
-    Ok(Val::Record(Arc::new(out)))
-}
-
 /// `length string`: how many characters the string holds, as a column
 /// counts them (Unicode scalar values).
 fn length(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -563,112 +526,6 @@ fn number_class(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             "number-class: the number must be a number, not {}",
             other.kind()
         ))),
-    }
-}
-
-/// `unrepresentable message value`: TARGET_VALUE_UNREPRESENTABLE with the
-/// message, the value it concerns and the form's position, as `fail` is
-/// INPUT_INVALID: for a render that meets a value its format cannot write
-/// (a key a YAML mapping repeats). The value is named as every failure
-/// names one, by [`name_value`], so a failure over a large value does not
-/// carry it, and naming it never fails in its place.
-fn unrepresentable(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
-    let message = as_str("unrepresentable", "the message", &a[0])?;
-    Err(rt.fail_at(
-        Fail::new(
-            Code::TargetValueUnrepresentable,
-            format!("{message}: {}", name_value(&a[1])),
-        ),
-        at,
-    ))
-}
-
-/// How many characters of a value's text a failure carries before it names
-/// the value by its kind and a prefix instead.
-const NAMED: usize = 60;
-
-/// A value for `unrepresentable`'s message: its compact JSON text when that
-/// is at most [`NAMED`] characters, else its kind and the text's first
-/// [`NAMED`]. The text is written only until it passes [`NAMED`], so the
-/// work is that prefix's, whatever the value's size, depth or sharing, and
-/// no limit applies: a value the scalar writer would refuse as too long is
-/// still named. A value JSON has no form for (a keyword, a function, a
-/// tagged value, a non-finite number) is written as the language writes it.
-fn name_value(v: &Val) -> String {
-    /// A writer that keeps the first `NAMED + 1` characters and refuses
-    /// the rest, which stops the walk.
-    struct Prefix {
-        text: String,
-        chars: usize,
-    }
-    impl fmt::Write for Prefix {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            for c in s.chars() {
-                if self.chars > NAMED {
-                    return Err(fmt::Error);
-                }
-                self.text.push(c);
-                self.chars += 1;
-            }
-            Ok(())
-        }
-    }
-    let mut prefix = Prefix {
-        text: String::new(),
-        chars: 0,
-    };
-    // An error says only that the text passed NAMED characters.
-    let _ = write_named(v, &mut prefix);
-    if prefix.chars <= NAMED {
-        return prefix.text;
-    }
-    let cut: String = prefix.text.chars().take(NAMED).collect();
-    format!("{} ({cut}...)", v.kind())
-}
-
-/// `v` as compact JSON, number lexemes kept, into `out`, stopping at the
-/// first error `out` returns. A string or a key is cut to one character
-/// past [`NAMED`] before it is quoted, so a long one costs no more than
-/// the prefix; the text is cut there anyway.
-fn write_named(v: &Val, out: &mut dyn fmt::Write) -> fmt::Result {
-    fn quote_cut(s: &str) -> String {
-        quote(&s.chars().take(NAMED + 1).collect::<String>())
-    }
-    match v {
-        Val::Null => out.write_str("null"),
-        Val::Bool(b) => write!(out, "{b}"),
-        Val::Num {
-            lexeme: Some(l), ..
-        } => out.write_str(l),
-        Val::Num {
-            value,
-            lexeme: None,
-        } if value.is_finite() => out.write_str(&shortest_number(*value)),
-        Val::Str(s) => out.write_str(&quote_cut(s)),
-        Val::Vector(items) => {
-            out.write_char('[')?;
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.write_char(',')?;
-                }
-                write_named(item, out)?;
-            }
-            out.write_char(']')
-        }
-        Val::Record(fields) => {
-            out.write_char('{')?;
-            for (i, (key, value)) in fields.iter().enumerate() {
-                if i > 0 {
-                    out.write_char(',')?;
-                }
-                out.write_str(&quote_cut(key))?;
-                out.write_char(':')?;
-                write_named(value, out)?;
-            }
-            out.write_char('}')
-        }
-        other if other.is_missing() => out.write_str("null"),
-        other => write!(out, "{other:?}"),
     }
 }
 
@@ -1297,7 +1154,6 @@ static NATIVES: &[Native] = &[
     f("top", Exact(1), top, "top vector -> Value", "the last item; an empty vector is a type error"),
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
     f("keys", Exact(1), keys, "keys record -> Vector", "the record's keys as strings, in its order, which for a captured object is the document's"),
-    f("put", Exact(3), put, "put key value record -> Record", "the record with key set to value, where it was or appended; it cannot hold a stream or a live text"),
     f("length", Exact(1), length, "length string -> Number", "how many characters the string holds"),
     f("compare", Exact(2), compare, "compare a b -> Keyword", "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"),
     f("number-class", Exact(1), number_class, "number-class number -> Keyword", ":finite, :infinity, :negative-infinity or :nan"),
@@ -1330,7 +1186,6 @@ static NATIVES: &[Native] = &[
     f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
-    f("unrepresentable", Exact(2), unrepresentable, "unrepresentable message value -> Never", "TARGET_VALUE_UNREPRESENTABLE with the message, the value (its JSON text, or its kind and a short prefix of it, whatever its size) and the form's position"),
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
@@ -1409,7 +1264,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 43);
+        assert_eq!(compared, 41);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

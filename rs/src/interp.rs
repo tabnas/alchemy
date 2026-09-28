@@ -1070,41 +1070,11 @@ mod tests {
         assert!(no.message.len() < 200, "{}", no.message.len());
     }
 
-    /// The stack operators: data last, a new vector each time, bounded by
-    /// the vector's length; an empty vector refuses `pop` and `top` with a
-    /// type error naming the operator.
-    /// What a render needs beyond the stack: `put` and `get` keep a set
-    /// (the keys a mapping has written), `length` and `compare` see a key
-    /// past a length, `number-class` names a number's class, and
-    /// `unrepresentable` refuses a value the format cannot write.
+    /// What a render needs beyond the stack: `length` and `compare` see a
+    /// key past a length, and `number-class` names a number's class.
     #[test]
     fn the_render_operators() {
-        let strings = |items: &[&str]| Val::vector(items.iter().map(|s| Val::str(s)).collect());
-        // `put` sets a key where it was, or appends it.
-        assert_eq!(
-            eval(
-                "",
-                "keys (put :a 3 (put \"c\" 2 (record (entry :a 1) (entry :b 2))))"
-            )
-            .unwrap(),
-            strings(&["a", "b", "c"])
-        );
-        assert_eq!(
-            eval("", "get :a (put :a 3 (record (entry :a 1)))").unwrap(),
-            Val::num(3.0)
-        );
-        assert!(eval("", "get \"x\" (put \"y\" true (record))")
-            .unwrap()
-            .is_missing());
         for (expr, message) in [
-            (
-                "put :a 1 [1]",
-                "put: the record must be a record, not a vector",
-            ),
-            (
-                "put 1 1 (record)",
-                "put: the key must be a keyword or a string, not a number",
-            ),
             ("length 1", "length: the string must be a string"),
             (
                 "compare 1 \"2\"",
@@ -1136,58 +1106,11 @@ mod tests {
         ] {
             assert_eq!(eval("", expr).unwrap(), Val::keyword(want), "{expr}");
         }
-        // `unrepresentable` is TARGET_VALUE_UNREPRESENTABLE with the value's
-        // JSON text, at the form's position, as `fail` is INPUT_INVALID.
-        let f = eval(
-            "def refuse [k]\n  unrepresentable \"a mapping repeats the key\" k",
-            "refuse \"a\\\"b\"",
-        )
-        .unwrap_err();
-        assert_eq!(f.code, Code::TargetValueUnrepresentable, "{f}");
-        assert_eq!(f.message, "a mapping repeats the key: \"a\\\"b\"");
-        assert_eq!((f.row, f.column), (Some(2), Some(3)));
-        let f = eval("", "unrepresentable \"no\" [1 (record (entry :k null))]").unwrap_err();
-        assert_eq!(f.message, "no: [1,{\"k\":null}]");
-        // A long value is named by its kind and a short prefix, as every
-        // failure names one, never carried whole.
-        let f = eval("", "unrepresentable \"no\" (repeat 5000 \"k\")").unwrap_err();
-        assert_eq!(f.message, format!("no: a string (\"{}...)", "k".repeat(59)));
-        // Naming the value never fails in its place. Forty doublings of a
-        // vector, built by sharing, have a JSON text far past
-        // max_scalar_bytes, which the scalar writer refuses; the name is
-        // written only as far as its prefix.
-        let mut shared = String::from("let [v0 [\"kkkkkkkkkk\"]]\n");
-        for i in 1..=40 {
-            shared.push_str(&format!(
-                "{}let [v{i} [v{j} v{j}]]\n",
-                "  ".repeat(i),
-                j = i - 1
-            ));
-        }
-        shared.push_str(&format!("{}unrepresentable \"no\" v40", "  ".repeat(41)));
-        let f = eval("", &shared).unwrap_err();
-        assert_eq!(f.code, Code::TargetValueUnrepresentable, "{f}");
-        assert_eq!(
-            f.message,
-            format!("no: a vector ({}\"kkkkkkkkkk\"],[\"kkk...)", "[".repeat(41))
-        );
-        // A value JSON has no form for is named as the language writes it,
-        // and a missing member as the null a table writes for it.
-        for (expr, named) in [
-            ("unrepresentable \"no\" :kw", "no: :kw"),
-            ("unrepresentable \"no\" [1 :kw]", "no: [1,:kw]"),
-            ("unrepresentable \"no\" (fn [x] x)", "no: <fn [x]>"),
-            (
-                "unrepresentable \"no\" (record (entry :a (get :x (record))))",
-                "no: {\"a\":null}",
-            ),
-        ] {
-            let f = eval("", expr).unwrap_err();
-            assert_eq!(f.code, Code::TargetValueUnrepresentable, "{expr}: {f}");
-            assert_eq!(f.message, named, "{expr}");
-        }
     }
 
+    /// The stack operators: data last, a new vector each time, bounded by
+    /// the vector's length; an empty vector refuses `pop` and `top` with a
+    /// type error naming the operator.
     #[test]
     fn the_stack_operators_and_the_string_forms() {
         assert_eq!(
