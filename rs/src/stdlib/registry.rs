@@ -458,6 +458,29 @@ fn count(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::num(as_items("count", &a[0])?.len() as f64))
 }
 
+/// `keys record`: the record's keys as strings, in its order, which for
+/// a captured object is the document's. A bounded operation over one
+/// record, not a fold: the library's inferred table binding reads its
+/// columns from the first row with it.
+fn keys(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Record(fields) => {
+            // A step per key, so the host's abort flag stops a wide
+            // record's copy as it stops any other long evaluation.
+            let mut out = Vec::with_capacity(fields.len());
+            for k in fields.keys() {
+                rt.tick()?;
+                out.push(Val::Str(k.clone()));
+            }
+            Ok(Val::vector(out))
+        }
+        other => Err(type_error(format!(
+            "keys: the record must be a record, not {}",
+            other.kind()
+        ))),
+    }
+}
+
 /// The kind of a value as a keyword, so that a program can tell a string
 /// from a number, which no `match` pattern does: the words `Val::kind`
 /// uses in messages, without their article.
@@ -911,7 +934,25 @@ fn constructor(name: &'static str) -> impl Fn(&Runtime, &[Val], &SourceSpan) -> 
     move |_, a, _| Ok(Val::tagged(name, a.to_vec()))
 }
 
+/// `schema columns`: the table's one schema. A table has at most
+/// `max_columns` columns, so a schema past it is refused where it is
+/// built, whatever consumes it: the native table binds no more, and the
+/// library's twin of it, whose events may reach no renderer that would
+/// check them, is held to the same count.
 fn schema(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    if let Val::Vector(columns) = &a[0] {
+        let max = rt.limits().max_columns;
+        if columns.len() > max {
+            return Err(Fail::limit(
+                "max_columns",
+                max as u64,
+                format!(
+                    "the schema declares {} columns, more than {max}",
+                    columns.len()
+                ),
+            ));
+        }
+    }
     constructor("schema")(rt, a, at)
 }
 
@@ -1064,6 +1105,7 @@ static NATIVES: &[Native] = &[
     f("pop", Exact(1), pop, "pop vector -> Vector", "the vector without its last item; an empty vector is a type error"),
     f("top", Exact(1), top, "top vector -> Value", "the last item; an empty vector is a type error"),
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
+    f("keys", Exact(1), keys, "keys record -> Vector", "the record's keys as strings, in its order, which for a captured object is the document's"),
     f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
     // Selectors.
     f("path", AtLeast(0), path, "path segment... -> Selector", "a selector from strings, indexes and selectors"),
@@ -1096,7 +1138,7 @@ static NATIVES: &[Native] = &[
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
-    k("schema", Exact(1), schema, "schema columns -> TableEvent", "the table's one schema"),
+    k("schema", Exact(1), schema, "schema columns -> TableEvent", "the table's one schema, of at most max_columns columns, refused where it is built past them"),
     k("row", Exact(1), row, "row cells -> TableEvent", "one row, as wide as the schema"),
     k("ready", Exact(1), ready, "ready columns -> State", "the state once the metadata is bound"),
     k("selected", Exact(2), selected, "selected :tag value -> Selected", "what route delivers: the capture's tag and its value"),
@@ -1171,7 +1213,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 37);
+        assert_eq!(compared, 38);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

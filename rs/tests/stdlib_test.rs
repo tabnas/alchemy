@@ -602,6 +602,167 @@ fn the_limits_hold_alike_both_ways() {
     assert_eq!(Metrics::get(&metrics.rows), 2);
 }
 
+/// A program over an inferred binding (`:columns :infer`): a root array
+/// of rows, written as CSV with a missing cell as an empty field.
+const INFERRED: &str = "def options
+  record
+    entry :delimiter \",\"
+    entry :newline \"\\r\\n\"
+    entry :header true
+    entry :null-text \"\"
+    entry :missing \"\"
+
+def rows-binding
+  record
+    entry :columns :infer
+    entry :rows (path each-index)
+
+def export [input]
+  pipe input
+    table-from-json rows-binding
+    csv options
+";
+
+/// The inferred binding: the columns are the first row's keys, in its
+/// order, each reading its own key. Natively it is transduce's
+/// `Schema::Infer`; the library's text infers them with `keys`. Both ways
+/// write the same bytes, fail with the same code, and hold the same
+/// limits, over every shape a first row and a later row can take.
+#[test]
+fn an_inferred_binding_agrees_both_ways() {
+    let program = compile(INFERRED, "inferred.alc").expect("the inferred program compiles");
+    let json = |text: &str| events(tabnas_json::make, text).unwrap();
+    let ok = |name: &str, text: &str, want: &str| {
+        agree(name, &program, &json(text), &Limits::default(), Ok(want))
+    };
+    let err = |name: &str, text: &str, code: Code| {
+        agree(name, &program, &json(text), &Limits::default(), Err(code))
+    };
+    ok(
+        "the first row's keys, in its order",
+        r#"[{"b":1,"a":"x"},{"a":"y","b":2}]"#,
+        "\"b\",\"a\"\r\n\"1\",\"x\"\r\n\"2\",\"y\"\r\n",
+    );
+    ok(
+        "a key a later row lacks is a missing cell",
+        r#"[{"a":1,"b":2},{"a":3}]"#,
+        "\"a\",\"b\"\r\n\"1\",\"2\"\r\n\"3\",\"\"\r\n",
+    );
+    ok(
+        "a key only a later row has is no column",
+        r#"[{"a":1},{"c":3,"a":2}]"#,
+        "\"a\"\r\n\"1\"\r\n\"2\"\r\n",
+    );
+    ok(
+        "cells of every kind",
+        r#"[{"s":"q\"x","n":1.5,"t":true,"z":null,"o":{"k":[1,2]}}]"#,
+        "\"s\",\"n\",\"t\",\"z\",\"o\"\r\n\"q\"\"x\",\"1.5\",\"true\",\"\",\"{\"\"k\"\":[1,2]}\"\r\n",
+    );
+    ok(
+        "a key that spells an index names a member",
+        r#"[{"0":"zero","1":"one"}]"#,
+        "\"0\",\"1\"\r\n\"zero\",\"one\"\r\n",
+    );
+    ok(
+        "a later row that is not an object has missing cells",
+        r#"[{"a":1},2]"#,
+        "\"a\"\r\n\"1\"\r\n\"\"\r\n",
+    );
+    err(
+        "a first row that is a scalar",
+        r#"[1,{"a":1}]"#,
+        Code::InputInvalid,
+    );
+    err(
+        "a first row that is an array",
+        r#"[[1],{"a":1}]"#,
+        Code::InputInvalid,
+    );
+    // A table of no columns, from no rows or from an empty first row, is
+    // one the CSV renderer refuses, as it refuses any.
+    err("no rows", "[]", Code::TargetValueUnrepresentable);
+    err(
+        "an empty first row",
+        r#"[{},{"a":1}]"#,
+        Code::TargetValueUnrepresentable,
+    );
+    let three = json(r#"[{"a":1,"b":2,"c":3}]"#);
+    agree(
+        "max_columns holds the inferred columns",
+        &program,
+        &three,
+        &Limits {
+            max_columns: 2,
+            ..Limits::default()
+        },
+        Err(Code::ResourceLimitExceeded),
+    );
+    // Three one-byte names take 16 + 3 * (16 + 1) = 67 bytes natively; the
+    // library's state holding them is larger still.
+    agree(
+        "max_metadata_bytes holds the inferred columns",
+        &program,
+        &three,
+        &Limits {
+            max_metadata_bytes: 40,
+            ..Limits::default()
+        },
+        Err(Code::ResourceLimitExceeded),
+    );
+    agree(
+        "max_record_bytes holds each row",
+        &program,
+        &three,
+        &Limits {
+            max_record_bytes: 8,
+            ..Limits::default()
+        },
+        Err(Code::ResourceLimitExceeded),
+    );
+    // The column count holds where the schema is built, so it holds when
+    // the table events reach no renderer that would check them.
+    for (name, binding) in [
+        ("an inferred table's events as items", "(record (entry :columns :infer) (entry :rows (path each-index)))"),
+        ("a described table's events as items", "(record (entry :columns (path \"m\")) (entry :rows (path \"r\" each-index)) (entry :column (fn [d] (record (entry :label d) (entry :source (path d))))))"),
+    ] {
+        let items = compile(
+            &format!("def b {binding}\ndef export [input] (join \"\" (map (fn [e] \"x\") (table-from-json b input)))"),
+            "items.alc",
+        )
+        .unwrap();
+        let events = if name.starts_with("an inferred") {
+            three.clone()
+        } else {
+            json(r#"{"m":["a","b","c"],"r":[{"a":1,"b":2,"c":3}]}"#)
+        };
+        agree(
+            name,
+            &items,
+            &events,
+            &Limits {
+                max_columns: 2,
+                ..Limits::default()
+            },
+            Err(Code::ResourceLimitExceeded),
+        );
+        agree(name, &items, &events, &Limits::default(), Ok("xxx"));
+    }
+    // The worked example's documents, bound by inference from their rows.
+    let api = INFERRED.replace(
+        "(path each-index)",
+        "(path \"response\" \"payload\" \"deep\" \"records\" each-index)",
+    );
+    let api = compile(&api, "inferred-api.alc").expect("the api-shaped program compiles");
+    let mut failures = Vec::new();
+    for n in [0, 1, 2, 3, 50] {
+        let events = events(tabnas_json::make, &support::records_json(n)).unwrap();
+        if let Err(report) = differential(&format!("records_json({n})"), &api, &events) {
+            failures.push(report);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// Each row counts once in `metrics.rows`, by the last table stage it
 /// passes: the adapter to a renderer, a `csv-table` whose rows reach no
 /// later table stage, or the native table when it hands its rows straight

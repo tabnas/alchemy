@@ -173,8 +173,13 @@ mod tests {
             names,
             [
                 "public-column",
+                "table-inferred-column",
+                "table-row",
+                "table-first-row",
                 "table-step",
                 "table-finish",
+                "table-finish-for",
+                "table-captures",
                 "table-from-json",
                 "csv-options",
                 "csv-field",

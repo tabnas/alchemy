@@ -571,6 +571,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `pop` | `pop vector -> Vector` | the vector without its last item; an empty vector is a type error |
 | `top` | `top vector -> Value` | the last item; an empty vector is a type error |
 | `count` | `count vector -> Number` | how many items the vector holds |
+| `keys` | `keys record -> Vector` | the record's keys as strings, in its order, which for a captured object is the document's |
 | `kind` | `kind value -> Keyword` | the kind of a value as a keyword: `:null`, `:boolean`, `:number`, `:string`, `:keyword`, `:vector`, `:record`, `:missing`, `:tagged`, `:function`, `:selector` or `:capture`; a stream or a text cannot be asked |
 | `path` | `path segment... -> Selector` | a selector from strings, indexes and selectors |
 | `root`, `each-index`, `each-member` | `-> Selector` | the document; every element of an array; every member value of an object |
@@ -593,7 +594,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
-| `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema; one row, as wide as the schema; the end, after the source validated |
+| `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema, of at most `max_columns` columns, refused where it is built past them; one row, as wide as the schema; the end, after the source validated |
 | `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |
 | `missing` | `missing -> Value` | an absent member, distinct from `null` |
 | `object-start` | `object-start -> Event` | an object begins |
@@ -739,7 +740,7 @@ proves the native path and this text produce the same bytes, or fail
 with the same code.
 
 They are the spec's definitions (sections 12.2, 13.1 and 13.2) with
-three differences. The spec writes a `let` as a line `let columns` over
+four differences. The spec writes a `let` as a line `let columns` over
 two child lines, the value and the body; here `let` has one shape,
 `let [name value] body`, and the library is written in it. The two
 captures of `table-from-json` name the limits the native table holds the
@@ -747,9 +748,16 @@ same scopes to (`:max_metadata_bytes`, `:max_record_bytes`), where the
 spec's generic `capture` would take `max_capture_bytes`. And `csv`
 passes its events through `csv-table`, the protocol validator section
 13.2 asks for, so a stream that breaks the table protocol fails as the
-native renderer fails it rather than being printed.
+native renderer fails it rather than being printed. And the binding may
+take its columns from the first row rather than from metadata
+(`:columns :infer`), which the spec leaves to the host: `table-captures`
+routes only the rows then, `table-first-row` binds the columns from the
+first row's keys (`keys`), and `table-finish-for` writes the schema of
+no columns for a document with no rows, leaving `table-finish` as the
+spec has it.
 
-The metadata-first table transducer, `JsonEvents` in, `TableEvents` out:
+The table transducer, metadata first or inferred from the first row,
+`JsonEvents` in, `TableEvents` out:
 
 ```alchemy
 def public-column [column]
@@ -758,6 +766,51 @@ def public-column [column]
 ```
 ```core
 (def public-column (fn [column] (record (entry :label (get :label column)))))
+```
+
+```alchemy
+def table-inferred-column [key]
+  record
+    entry :label key
+    entry :source (path key)
+```
+```core
+(def table-inferred-column (fn [key] (record (entry :label key) (entry :source (path key)))))
+```
+
+```alchemy
+def table-row [columns raw]
+  row
+    map
+      fn [column]
+        get-path (get :source column) raw
+      columns
+```
+```core
+(def table-row (fn [columns raw] (row (map (fn [column] (get-path (get :source column) raw)) columns))))
+```
+
+```alchemy
+def table-first-row [binding state raw]
+  match (get :columns binding)
+    case :infer
+      match (kind raw)
+        case :record
+          let [columns (map table-inferred-column (keys raw))]
+            transition (ready columns)
+              vector
+                schema
+                  map public-column columns
+                table-row columns raw
+        case _
+          fail "The first row is not an object, so no columns can be inferred from it"
+    case _
+      transition state
+        vector
+          table-row (require-columns state) raw
+```
+```core
+(def table-first-row (fn [binding state raw] (match (get :columns binding) (case :infer (match (kind raw) (case :record (let [columns (map table-inferred-column (keys raw))] (transition (ready columns) (vector (schema (map public-column columns)) (table-row columns raw))))) (case _ (fail "The first row is not an object, so no columns can be inferred from it")))) (case _ (transition state (vector (table-row (require-columns state) raw)))))))
 ```
 
 ```alchemy
@@ -772,17 +825,14 @@ def table-step [binding state event]
               schema
                 map public-column columns
     case (selected :row raw)
-      let [columns (require-columns state)]
+      if (is-ready state)
         transition state
           vector
-            row
-              map
-                fn [column]
-                  get-path (get :source column) raw
-                columns
+            table-row (require-columns state) raw
+        table-first-row binding state raw
 ```
 ```core
-(def table-step (fn [binding state event] (match event (case (selected :columns raw) (if (is-ready state) (fail "Metadata selected more than once") (let [columns (map (get :column binding) (as-vector raw))] (transition (ready columns) (vector (schema (map public-column columns))))))) (case (selected :row raw) (let [columns (require-columns state)] (transition state (vector (row (map (fn [column] (get-path (get :source column) raw)) columns)))))))))
+(def table-step (fn [binding state event] (match event (case (selected :columns raw) (if (is-ready state) (fail "Metadata selected more than once") (let [columns (map (get :column binding) (as-vector raw))] (transition (ready columns) (vector (schema (map public-column columns))))))) (case (selected :row raw) (if (is-ready state) (transition state (vector (table-row (require-columns state) raw))) (table-first-row binding state raw))))))
 ```
 
 ```alchemy
@@ -797,16 +847,45 @@ def table-finish [state]
 ```
 
 ```alchemy
-def table-from-json [binding input]
-  pipe input
-    route
+def table-finish-for [binding state]
+  match (get :columns binding)
+    case :infer
+      if (is-ready state)
+        vector
+          table-end
+        vector
+          schema []
+          table-end
+    case _
+      table-finish state
+```
+```core
+(def table-finish-for (fn [binding state] (match (get :columns binding) (case :infer (if (is-ready state) (vector table-end) (vector (schema []) table-end))) (case _ (table-finish state)))))
+```
+
+```alchemy
+def table-captures [binding]
+  match (get :columns binding)
+    case :infer
+      vector
+        capture :row (get :rows binding) :max_record_bytes
+    case _
       vector
         capture :columns (get :columns binding) :max_metadata_bytes
         capture :row (get :rows binding) :max_record_bytes
-    scan-emit no-schema (partial table-step binding) table-finish
 ```
 ```core
-(def table-from-json (fn [binding input] (scan-emit no-schema (partial table-step binding) table-finish (route (vector (capture :columns (get :columns binding) :max_metadata_bytes) (capture :row (get :rows binding) :max_record_bytes)) input))))
+(def table-captures (fn [binding] (match (get :columns binding) (case :infer (vector (capture :row (get :rows binding) :max_record_bytes))) (case _ (vector (capture :columns (get :columns binding) :max_metadata_bytes) (capture :row (get :rows binding) :max_record_bytes))))))
+```
+
+```alchemy
+def table-from-json [binding input]
+  pipe input
+    route (table-captures binding)
+    scan-emit no-schema (partial table-step binding) (partial table-finish-for binding)
+```
+```core
+(def table-from-json (fn [binding input] (scan-emit no-schema (partial table-step binding) (partial table-finish-for binding) (route (table-captures binding) input))))
 ```
 
 The binding is a record of `:columns` (the selector of the metadata
@@ -814,6 +893,19 @@ array), `:rows` (the selector of each row) and `:column` (a function from
 one descriptor to a column record with `:label` and `:source`). Rows
 that begin before the metadata has completed are `INPUT_ORDER_VIOLATION`;
 a document with no rows is a valid empty table.
+
+Or `:columns` is the keyword `:infer`, and the columns are the first
+row's keys, in its order, each labelled by its key and reading that key
+(`:column` is not read). A first row that is not an object is
+`INPUT_INVALID`. A key a later row lacks is a missing cell, a key only a
+later row has is not a column, and a later row that is not an object has
+only missing cells. A document with no rows, or a first row with no
+keys, is a table of no columns, which the CSV renderer refuses
+(`TARGET_VALUE_UNREPRESENTABLE`) as it refuses any. Natively the binding
+is transduce's `Schema::Infer`; the library infers with `keys`, and the
+differential test holds the two to the same bytes and codes. A host that
+reads rows of other shapes (a scalar row as a `value` column) puts that
+policy in front of the program.
 
 The always-quoted CSV renderer, `TableEvents` in, `Text` out:
 
@@ -1243,7 +1335,7 @@ carries the span of the form it came from. A failure raised inside the
 standard library carries no row or column of its own, since a row there
 would name a line of the user's file that says something else; its
 message ends with the library file, row and column instead,
-`Required metadata was not found (at stdlib/table.alc:38:5)`, and when
+`Required metadata was not found (at stdlib/table.alc:68:5)`, and when
 it passes a form of the program on its way out (a native the program
 called applied the library's function), that form's row and column are
 the failure's. Library spans are told apart from the program's by the

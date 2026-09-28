@@ -251,7 +251,7 @@ impl Runtime {
     /// was compiled from several sources. A form of the standard
     /// library gives none, since a row there would name a line of the
     /// user's file that says something else; the message ends with the
-    /// library file, row and column instead, `(at stdlib/table.alc:38:5)`,
+    /// library file, row and column instead, `(at stdlib/table.alc:68:5)`,
     /// once, and a form of the program around the library's call, when
     /// the failure passes one on its way out, gives the row and column.
     pub fn fail_at(&self, mut fail: Fail, at: &SourceSpan) -> Fail {
@@ -1143,6 +1143,19 @@ mod tests {
             eval("", "map kind [1 \"s\"]").unwrap(),
             Val::vector(vec![Val::keyword("number"), Val::keyword("string")])
         );
+        // `keys` answers a record's keys in its order, as strings; a value
+        // that is no record is a type error.
+        assert_eq!(
+            eval("", "keys (record (entry :b 1) (entry :a 2))").unwrap(),
+            Val::vector(vec![Val::str("b"), Val::str("a")])
+        );
+        assert_eq!(eval("", "keys (record)").unwrap(), Val::vector(vec![]));
+        let f = eval("", "keys [1]").unwrap_err();
+        assert!(
+            f.message
+                .starts_with("type_mismatch: keys: the record must be a record, not a vector"),
+            "{f}"
+        );
         let f = eval("", "map kind [(text \"x\")]").unwrap_err();
         assert_eq!(f.code, Code::DslTypeError, "{f}");
         assert!(
@@ -1223,14 +1236,15 @@ mod tests {
         let f = eval("", "table-finish no-schema").unwrap_err();
         assert_eq!(f.code, Code::InputInvalid);
         let lib = stdlib::source("stdlib/table.alc").unwrap();
-        let row = lib
+        let (row, line) = lib
             .lines()
-            .position(|l| l.contains("fail \"Required metadata was not found\""))
-            .unwrap()
-            + 1;
+            .enumerate()
+            .find(|(_, l)| l.contains("fail \"Required metadata was not found\""))
+            .unwrap();
+        let (row, col) = (row + 1, line.find("fail").unwrap() + 1);
         assert_eq!(
             f.message,
-            format!("Required metadata was not found (at stdlib/table.alc:{row}:5)")
+            format!("Required metadata was not found (at stdlib/table.alc:{row}:{col})")
         );
         assert_eq!((f.row, f.column), (None, None));
         // A program named like a library file is still its own text.
@@ -1250,7 +1264,7 @@ mod tests {
         let f = eval("", "map (fn [s] (table-finish s)) [no-schema]").unwrap_err();
         assert!(
             f.message
-                .ends_with(&format!("(at stdlib/table.alc:{row}:5)")),
+                .ends_with(&format!("(at stdlib/table.alc:{row}:{col})")),
             "{f}"
         );
         assert_eq!((f.row, f.column), (Some(1), Some(1)));

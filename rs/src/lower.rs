@@ -99,14 +99,25 @@ fn protocol_mismatch(message: impl std::fmt::Display) -> Fail {
 }
 
 /// Whether a value has the shape of the standard table binding: a record
-/// with `:columns` and `:rows` selectors and a `:column` function.
+/// with `:columns` and `:rows` selectors and a `:column` function, or
+/// with `:columns` the keyword `:infer` (the columns are the first row's
+/// keys, and `:column` is not read) and a `:rows` selector.
 pub fn is_table_binding(v: &Val) -> bool {
     let Val::Record(fields) = v else {
         return false;
     };
-    matches!(fields.get("columns"), Some(Val::Selector(_)))
-        && matches!(fields.get("rows"), Some(Val::Selector(_)))
-        && matches!(fields.get("column"), Some(Val::Fn(_)))
+    let rows = matches!(fields.get("rows"), Some(Val::Selector(_)));
+    match fields.get("columns") {
+        Some(Val::Selector(_)) => rows && matches!(fields.get("column"), Some(Val::Fn(_))),
+        Some(Val::Keyword(k)) => rows && &**k == "infer",
+        _ => false,
+    }
+}
+
+/// Whether a table binding takes its columns from the first row:
+/// `:columns` is the keyword `:infer`.
+pub fn is_inferred(binding: &Val) -> bool {
+    matches!(binding.field("columns"), Some(Val::Keyword(k)) if &*k == "infer")
 }
 
 /// The renderer's dialect for a `csv-options` record, when every field
@@ -1333,9 +1344,22 @@ impl<'a> Lowering<'a> {
     /// The native transducer's binding from the standard binding record.
     /// The column function is the program's, applied to each descriptor
     /// as the metadata completes; its record must carry a string `:label`
-    /// and a `:source` selector naming one location.
+    /// and a `:source` selector naming one location. An inferred binding
+    /// is the transducer's `Schema::Infer`: the first row's keys.
     fn table_binding(&self, binding: &Val, at: &SourceSpan) -> Result<TableBinding, Fail> {
         let get = |key: &str| binding.field(key).unwrap_or_else(Val::missing);
+        if is_inferred(binding) {
+            let Val::Selector(rows) = get("rows") else {
+                return Err(self.rt.fail_at(
+                    type_error("table-from-json: an inferred binding must carry a :rows selector"),
+                    at,
+                ));
+            };
+            return Ok(TableBinding {
+                schema: Schema::Infer,
+                rows: (*rows).clone(),
+            });
+        }
         let (Val::Selector(columns), Val::Selector(rows), Val::Fn(column)) =
             (get("columns"), get("rows"), get("column"))
         else {

@@ -1,15 +1,48 @@
 ; The standard table transducer: JsonEvents in, TableRows out, with the
-; metadata-first policy (design document section 12.2). The only engine
-; operations here are route capture, transitions, value operations and
-; stream scanning; the runtime runs `table-from-json` natively when the
-; binding is a record of two selectors and a column function, and the
-; differential test proves that path and this text produce the same bytes.
-; The captures name the limits the native table holds the same scopes to:
-; the metadata under max_metadata_bytes, each row under max_record_bytes.
+; metadata-first policy (design document section 12.2), or with the
+; columns taken from the first row when the binding's `:columns` is the
+; keyword `:infer`. The only engine operations here are route capture,
+; transitions, value operations and stream scanning; the runtime runs
+; `table-from-json` natively when the binding is a record of two
+; selectors and a column function, or of `:infer` and a rows selector,
+; and the differential test proves that path and this text produce the
+; same bytes. The captures name the limits the native table holds the
+; same scopes to: the metadata under max_metadata_bytes, each row under
+; max_record_bytes.
 
 def public-column [column]
   record
     entry :label (get :label column)
+
+def table-inferred-column [key]
+  record
+    entry :label key
+    entry :source (path key)
+
+def table-row [columns raw]
+  row
+    map
+      fn [column]
+        get-path (get :source column) raw
+      columns
+
+def table-first-row [binding state raw]
+  match (get :columns binding)
+    case :infer
+      match (kind raw)
+        case :record
+          let [columns (map table-inferred-column (keys raw))]
+            transition (ready columns)
+              vector
+                schema
+                  map public-column columns
+                table-row columns raw
+        case _
+          fail "The first row is not an object, so no columns can be inferred from it"
+    case _
+      transition state
+        vector
+          table-row (require-columns state) raw
 
 def table-step [binding state event]
   match event
@@ -22,14 +55,11 @@ def table-step [binding state event]
               schema
                 map public-column columns
     case (selected :row raw)
-      let [columns (require-columns state)]
+      if (is-ready state)
         transition state
           vector
-            row
-              map
-                fn [column]
-                  get-path (get :source column) raw
-                columns
+            table-row (require-columns state) raw
+        table-first-row binding state raw
 
 def table-finish [state]
   if (is-ready state)
@@ -37,10 +67,29 @@ def table-finish [state]
       table-end
     fail "Required metadata was not found"
 
-def table-from-json [binding input]
-  pipe input
-    route
+def table-finish-for [binding state]
+  match (get :columns binding)
+    case :infer
+      if (is-ready state)
+        vector
+          table-end
+        vector
+          schema []
+          table-end
+    case _
+      table-finish state
+
+def table-captures [binding]
+  match (get :columns binding)
+    case :infer
+      vector
+        capture :row (get :rows binding) :max_record_bytes
+    case _
       vector
         capture :columns (get :columns binding) :max_metadata_bytes
         capture :row (get :rows binding) :max_record_bytes
-    scan-emit no-schema (partial table-step binding) table-finish
+
+def table-from-json [binding input]
+  pipe input
+    route (table-captures binding)
+    scan-emit no-schema (partial table-step binding) (partial table-finish-for binding)

@@ -22,7 +22,7 @@ use tabnas_transduce::{Duplicates, Selector};
 
 use crate::ast::Expr;
 use crate::program::{Output, Program};
-use crate::value::{Plan, Seq, Val};
+use crate::value::{Func, Plan, Scope, Seq, Val};
 
 /// What a stage keeps alive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,10 +266,29 @@ fn duplicates_of(stages: &[&Plan], policy: Duplicates, finite: bool) -> String {
     }
 }
 
-/// The summary of a compiled program.
+/// Whether a scan is the standard library's table, the twin of
+/// `table-from-json`: the library's `table-step`, bare or partially
+/// applied, from the state before the metadata (`no-schema`). Every path
+/// through it that binds columns builds their `schema` in the same step,
+/// which holds them to `max_columns`; a scan seeded with columns already
+/// bound builds none, so the cap is not claimed for it.
+fn is_library_table(init: &Val, step: &Func) -> bool {
+    fn is_table_step(f: &Func) -> bool {
+        match f {
+            Func::Partial(p) => is_table_step(&p.f),
+            Func::Closure(c) => c.scope == Scope::Stdlib && c.name.as_deref() == Some("table-step"),
+            Func::Native(_) => false,
+        }
+    }
+    let unbound =
+        matches!(init, Val::Tagged { tag, fields } if &**tag == "no-schema" && fields.is_empty());
+    unbound && is_table_step(step)
+}
+
 /// The selection summary of a plan that selects nothing.
 const PASS_THROUGH: &str = "none; every event passes through";
 
+/// The summary of a compiled program.
 pub fn summarize(program: &Program) -> EffectSummary {
     let output = program.output();
     let plan: Option<&Plan> = match program.result() {
@@ -361,16 +380,31 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     Some(Val::Selector(s)) => Some((*s).clone()),
                     _ => None,
                 };
-                selection = "shared prefix matcher, two capture routes".to_string();
+                let inferred = crate::lower::is_inferred(binding);
                 readiness = Readiness::Record;
                 output_order = "schema first; cells in schema order".to_string();
-                retention.push(Retention {
-                    scope: RetentionScope::Metadata,
-                    label: "Retained metadata:",
-                    reason: "the column descriptors, bound once they complete".to_string(),
-                    selector: selector("columns"),
-                    limit: Some("max_metadata_bytes"),
-                });
+                if inferred {
+                    selection = "shared prefix matcher, one capture route".to_string();
+                    // No selector: the report prints the reason, since
+                    // what is kept is the first row's keys, not a match.
+                    retention.push(Retention {
+                        scope: RetentionScope::Metadata,
+                        label: "Inferred columns:",
+                        reason: "the first row's keys, taken as the columns once it completes, at most max_columns of them"
+                            .to_string(),
+                        selector: None,
+                        limit: Some("max_metadata_bytes"),
+                    });
+                } else {
+                    selection = "shared prefix matcher, two capture routes".to_string();
+                    retention.push(Retention {
+                        scope: RetentionScope::Metadata,
+                        label: "Retained metadata:",
+                        reason: "the column descriptors, bound once they complete".to_string(),
+                        selector: selector("columns"),
+                        limit: Some("max_metadata_bytes"),
+                    });
+                }
                 retention.push(Retention {
                     scope: RetentionScope::Record,
                     label: "Row capture:",
@@ -379,11 +413,13 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     selector: selector("rows"),
                     limit: Some("max_record_bytes"),
                 });
-                order_constraints.push(OrderConstraint {
-                    before: "metadata completes".to_string(),
-                    after: "first row begins".to_string(),
-                    enforcement: "runtime",
-                });
+                if !inferred {
+                    order_constraints.push(OrderConstraint {
+                        before: "metadata completes".to_string(),
+                        after: "first row begins".to_string(),
+                        enforcement: "runtime",
+                    });
+                }
             }
             Plan::Route { specs, .. } => {
                 selection = format!(
@@ -435,12 +471,20 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     selection = "none; every event is delivered as an item".to_string();
                 }
             }
-            Plan::ScanEmit { .. } => {
+            Plan::ScanEmit { init, step, .. } => {
                 confidence = Confidence::Conditional;
+                // The library's twin of `table-from-json` keeps the table's
+                // columns as its state, and the `schema` it builds holds
+                // them to `max_columns`, as the native table does.
+                let reason = if is_library_table(init, step) {
+                    "the table's columns once bound, at most max_columns of them, no deeper than max_depth"
+                } else {
+                    "what the step returns, no deeper than max_depth"
+                };
                 retention.push(Retention {
                     scope: RetentionScope::State,
                     label: "Retained state:",
-                    reason: "what the step returns, no deeper than max_depth".to_string(),
+                    reason: reason.to_string(),
                     selector: None,
                     limit: Some("max_metadata_bytes"),
                 });
@@ -722,6 +766,96 @@ mod tests {
         assert_eq!(j["order_constraints"][0]["enforcement"], "runtime");
     }
 
+    /// An inferred binding reads one capture route, retains the columns it
+    /// took from the first row under `max_columns`, and orders nothing
+    /// before the rows, since there is no metadata; the library's twin
+    /// routes one capture too.
+    #[test]
+    fn an_inferred_binding_reports_one_route() {
+        let src = "def b (record (entry :columns :infer) (entry :rows (path each-index)))\ndef export [input] (csv csv-options (table-from-json b input))";
+        let program = compile(src, "inferred.alc").unwrap();
+        let s = summarize(&program);
+        assert_eq!(s.selection, "shared prefix matcher, one capture route");
+        assert_eq!(
+            s.retention
+                .iter()
+                .map(|r| (r.scope, r.label, r.limit))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    RetentionScope::Metadata,
+                    "Inferred columns:",
+                    Some("max_metadata_bytes")
+                ),
+                (
+                    RetentionScope::Record,
+                    "Row capture:",
+                    Some("max_record_bytes")
+                ),
+            ]
+        );
+        // The renderer's own order stays; none puts metadata before rows.
+        assert!(
+            s.order_constraints
+                .iter()
+                .all(|o| o.before != "metadata completes"),
+            "{:?}",
+            s.order_constraints
+        );
+        assert!(program.explain().contains("Inferred columns:"));
+        let twin = summarize(&program.with_native(false).unwrap());
+        assert_eq!(twin.selection, "shared prefix matcher, one capture route");
+        // The twin's state is the table's columns, and it reports their
+        // count's cap as the native table does.
+        let state = twin
+            .retention
+            .iter()
+            .find(|r| r.scope == RetentionScope::State)
+            .unwrap();
+        assert!(
+            state.reason.contains("at most max_columns"),
+            "{}",
+            state.reason
+        );
+        assert_eq!(state.limit, Some("max_metadata_bytes"));
+    }
+
+    /// A program may run the library's `table-step` itself. Seeded with
+    /// columns already bound, the scan builds no `schema`, so nothing holds
+    /// the columns to `max_columns` and the report does not claim it; seeded
+    /// with `no-schema`, it is the library's table and does.
+    #[test]
+    fn a_table_step_seeded_with_columns_claims_no_column_cap() {
+        let src = |init: &str| {
+            format!(
+                "def b (record (entry :columns :infer) (entry :rows (path each-index)))\n\
+                 def export [input]\n  join \"\"\n    map (fn [e] \"x\")\n      \
+                 scan-emit {init} (partial table-step b) (fn [s] [])\n        \
+                 route (table-captures b) input"
+            )
+        };
+        let state = |init: &str| {
+            let program = compile(&src(init), "step.alc").unwrap();
+            summarize(&program)
+                .retention
+                .into_iter()
+                .find(|r| r.scope == RetentionScope::State)
+                .unwrap()
+        };
+        let seeded = state("(ready [])");
+        assert_eq!(
+            seeded.reason,
+            "what the step returns, no deeper than max_depth"
+        );
+        assert_eq!(seeded.limit, Some("max_metadata_bytes"));
+        let unbound = state("no-schema");
+        assert!(
+            unbound.reason.contains("at most max_columns"),
+            "{}",
+            unbound.reason
+        );
+    }
+
     /// `events` after a stage that selected keeps that stage's selection
     /// in the report: the stages are read from the input outward, and
     /// the events of a table's records are still the table's captures.
@@ -801,7 +935,9 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(text.contains("Retained state:        what the step returns, no deeper than max_depth, capped at max_metadata_bytes\n"), "{text}");
+        // Its state is the table's columns, whose count the `schema` it
+        // builds holds to max_columns, as the native table's is.
+        assert!(text.contains("Retained state:        the table's columns once bound, at most max_columns of them, no deeper than max_depth, capped at max_metadata_bytes\n"), "{text}");
         assert!(text.contains("Contract verification: runtime\n"), "{text}");
         assert!(
             text.contains("Ordering contract:     each item before its outputs\n"),
