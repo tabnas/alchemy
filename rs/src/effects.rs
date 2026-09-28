@@ -17,7 +17,7 @@
 //! information as one object, for a host's `--explain`.
 
 use serde_json::{json, Value as Json};
-use tabnas_render::{CsvOptions, Newline};
+use tabnas_render::{CsvOptions, MissingText, Newline};
 use tabnas_transduce::{Duplicates, Selector};
 
 use crate::ast::Expr;
@@ -603,6 +603,15 @@ impl EffectSummary {
                     Newline::Lf => "\n",
                 },
                 "header": options.header,
+                "null_text": &*options.null_text,
+                "missing": match options.missing {
+                    MissingText::Error => "error",
+                    MissingText::Text(_) => "text",
+                },
+                "missing_text": match &options.missing {
+                    MissingText::Error => None,
+                    MissingText::Text(t) => Some(&**t),
+                },
                 "host": host,
             }),
             RendererProfile::Json { host } => {
@@ -856,9 +865,23 @@ mod tests {
         assert_eq!(r["newline"], "\n");
         assert_eq!(r["header"], false);
         assert_eq!(r["delimiter"], ";");
+        assert_eq!(r["null_text"], "NULL");
+        assert_eq!(r["missing"], "text");
+        assert_eq!(r["missing_text"], "-");
         assert_eq!(
             crate::lower::tests::run(&lf, crate::lower::tests::RECORDS, true, None).unwrap(),
             "\"123\";\"Alice\";\"50.25\"\n\"456\";\"Bob\";\"72\"\n"
+        );
+        // The null and missing texts reach the output as reported: a
+        // record with a null name and no balance.
+        let sparse = crate::lower::tests::RECORDS.replace(
+            r#"{"account":{"balance":72},"person":{"name":"Bob"},"id":456}"#,
+            r#"{"person":{"name":null},"id":456}"#,
+        );
+        assert_ne!(sparse, crate::lower::tests::RECORDS);
+        assert_eq!(
+            crate::lower::tests::run(&lf, &sparse, true, None).unwrap(),
+            "\"123\";\"Alice\";\"50.25\"\n\"456\";\"NULL\";\"-\"\n"
         );
         // The default dialect, and the host's renderer, report the defaults.
         let default = compile(PROGRAM, "export.alc").unwrap();
@@ -870,6 +893,9 @@ mod tests {
             assert_eq!(r["delimiter"], ",", "{name}");
             assert_eq!(r["newline"], "\r\n", "{name}");
             assert_eq!(r["header"], true, "{name}");
+            assert_eq!(r["null_text"], "", "{name}");
+            assert_eq!(r["missing"], "error", "{name}");
+            assert_eq!(r["missing_text"], Json::Null, "{name}");
         }
     }
 

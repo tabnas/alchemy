@@ -991,8 +991,10 @@ Qualification:
 `readiness`, `order_constraints`, `renderer`, `confidence`,
 `guarantee`, `qualification`, ...), for a host's `--explain`. A CSV
 `renderer` carries the dialect it is built with (`delimiter`, `newline`,
-`header`): the program's own options when its `csv` runs natively, the
-defaults when the host renders a table.
+`header`, `null_text`, and `missing`, `"error"` or `"text"` with its
+`missing_text`, `null` when there is none): the program's own options
+when its `csv` runs natively, the defaults when the host renders a
+table.
 
 ## run
 
