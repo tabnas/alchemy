@@ -55,11 +55,13 @@ pub mod stdlib;
 pub mod types;
 pub mod value;
 
-pub use ast::{canonical, canonical_form, format, same_program, Expr, SourceSpan, MAX_NESTING};
+pub use ast::{
+    canonical, canonical_form, format, same_program, Expr, SourceSpan, Sources, MAX_NESTING,
+};
 pub use check::MAX_APPLIED;
 pub use grammar::{alchemy, make, parse, parse_file, parse_value, UNNAMED};
 pub use interp::{MAX_EVAL_DEPTH, MAX_PLAN_STEPS};
-pub use program::{compile, Output, Program, Renderer};
+pub use program::{compile, compile_sources, Output, Program, Renderer, Source};
 
 /// The stack the checker and the evaluator are given: [`compile`] runs on
 /// a thread of this size, and so does the `alchemy` command, so a program

@@ -1,4 +1,5 @@
-//! The public API a host embeds: [`compile`] a program, ask it what it
+//! The public API a host embeds: [`compile`] a program (or
+//! [`compile_sources`], several files linked into one), ask it what it
 //! produces, and take a [`Sink`] to push the source's events into.
 //!
 //! aless runs a pipeline on its parse thread, so everything here is
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use tabnas_render::{TextOut, WriteOut};
 use tabnas_transduce::{AbortFlag, Code, Duplicates, Fail, Limits, Metrics, Selector, Sink};
 
+use crate::ast::Sources;
 use crate::interp::{Runtime, MAX_PLAN_STEPS};
 use crate::lower::{EventSink, Lowering, Out};
 use crate::resolve::{resolve, Resolved};
@@ -48,7 +50,7 @@ impl Output {
 #[derive(Clone)]
 pub struct Program {
     resolved: Arc<Resolved>,
-    src: Arc<str>,
+    sources: Sources,
     /// What the checker decided from `export`'s type.
     output: Output,
     native: bool,
@@ -76,13 +78,66 @@ impl std::fmt::Debug for Program {
 /// runs on a thread of [`crate::STACK_BYTES`], and building the plan is
 /// bounded by [`MAX_PLAN_STEPS`] and [`crate::MAX_EVAL_DEPTH`].
 pub fn compile(src: &str, file: &str) -> Result<Program, Fail> {
+    compile_sources(&[Source { file, text: src }])
+}
+
+/// One of the sources a program is compiled from: the file it is named
+/// by in diagnostics, and its text.
+#[derive(Clone, Copy, Debug)]
+pub struct Source<'a> {
+    pub file: &'a str,
+    pub text: &'a str,
+}
+
+/// Compile a program from several sources linked into one namespace: a
+/// definition in any of them is in scope in all, `export` is defined in
+/// one, and a name defined twice, in one file or across two, is
+/// `duplicate_def`. Each source is named by its file, and the names are
+/// distinct (`duplicate_file` otherwise). A failure in a program of
+/// several sources carries the file its position is in, `Fail::file`,
+/// displayed `(file:row:col)`, beside the row and column; a program of
+/// one source is [`compile`], which positions without a file. This is
+/// how a host links a format's parts (its lift and render: libraries of
+/// definitions with no `export`) with the program that calls them.
+pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
     on_stack(|| {
-        let forms = desugar::program(parse_file(src, file)?, src)?;
-        let resolved = Arc::new(resolve(forms, src, file, &stdlib::outer)?);
-        let checked = crate::check::program(&resolved, src)?;
+        let mut named: Vec<(Arc<str>, Arc<str>)> = Vec::with_capacity(sources.len());
+        for source in sources {
+            if named.iter().any(|(file, _)| &**file == source.file) {
+                return Err(Fail::new(
+                    Code::DslTypeError,
+                    format!(
+                        "duplicate_file: {} is given twice; each source has its own name",
+                        source.file
+                    ),
+                ));
+            }
+            named.push((Arc::from(source.file), Arc::from(source.text)));
+        }
+        if named.is_empty() {
+            return Err(crate::check::no_export());
+        }
+        let linked = Sources::several(named);
+        let mut forms = Vec::new();
+        for source in sources {
+            // The reader and the desugarer see one file at a time, so the
+            // file is added here; the stages after them position through
+            // `linked`.
+            let in_file = |fail: Fail| {
+                if linked.names_files() {
+                    fail.in_file(source.file)
+                } else {
+                    fail
+                }
+            };
+            let parsed = parse_file(source.text, source.file).map_err(in_file)?;
+            forms.extend(desugar::program(parsed, source.text).map_err(in_file)?);
+        }
+        let resolved = Arc::new(resolve(forms, &linked, &stdlib::outer)?);
+        let checked = crate::check::program(&resolved, &linked)?;
         Program::build_here(
             resolved,
-            src,
+            linked,
             checked.output,
             true,
             Duplicates::Reject,
@@ -115,24 +170,24 @@ fn on_stack<T: Send>(work: impl FnOnce() -> Result<T, Fail> + Send) -> Result<T,
 impl Program {
     fn build(
         resolved: Arc<Resolved>,
-        src: &str,
+        sources: Sources,
         output: Output,
         native: bool,
         duplicates: Duplicates,
         abort: AbortFlag,
     ) -> Result<Program, Fail> {
-        on_stack(|| Program::build_here(resolved, src, output, native, duplicates, abort))
+        on_stack(|| Program::build_here(resolved, sources, output, native, duplicates, abort))
     }
 
     fn build_here(
         resolved: Arc<Resolved>,
-        src: &str,
+        sources: Sources,
         output: Output,
         native: bool,
         duplicates: Duplicates,
         abort: AbortFlag,
     ) -> Result<Program, Fail> {
-        let result = Runtime::new(resolved.clone(), src)
+        let result = Runtime::new(resolved.clone(), sources.clone())
             .with_native(native)
             .with_duplicates(duplicates)
             .with_fuel(Some(MAX_PLAN_STEPS))
@@ -140,7 +195,7 @@ impl Program {
             .export()?;
         Ok(Program {
             resolved,
-            src: Arc::from(src),
+            sources,
             output,
             native,
             duplicates,
@@ -155,7 +210,7 @@ impl Program {
     pub fn with_native(&self, native: bool) -> Result<Program, Fail> {
         Program::build(
             self.resolved.clone(),
-            &self.src,
+            self.sources.clone(),
             self.output,
             native,
             self.duplicates,
@@ -168,7 +223,7 @@ impl Program {
     pub fn with_duplicates(&self, duplicates: Duplicates) -> Result<Program, Fail> {
         Program::build(
             self.resolved.clone(),
-            &self.src,
+            self.sources.clone(),
             self.output,
             self.native,
             duplicates,
@@ -197,7 +252,8 @@ impl Program {
         self.duplicates
     }
 
-    /// The file name the program was compiled under.
+    /// The file name the program was compiled under: the first, of
+    /// several.
     pub fn file(&self) -> &str {
         &self.resolved.file
     }
@@ -308,7 +364,7 @@ impl Program {
         metrics: Arc<Metrics>,
     ) -> Result<EventSink, Fail> {
         let rt = Arc::new(
-            Runtime::new(self.resolved.clone(), &self.src)
+            Runtime::new(self.resolved.clone(), self.sources.clone())
                 .with_native(self.native)
                 .with_duplicates(self.duplicates)
                 .with_limits(limits)

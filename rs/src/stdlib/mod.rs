@@ -23,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 use indexmap::IndexMap;
 use tabnas_transduce::Fail;
 
-use crate::ast::SourceSpan;
+use crate::ast::{SourceSpan, Sources};
 use crate::desugar;
 use crate::grammar::parse_file;
 use crate::resolve::{resolve, Def, NameKind, Resolved};
@@ -98,7 +98,7 @@ pub fn load() -> Result<Stdlib, Fail> {
             }
             native_kind(name)
         };
-        let resolved = resolve(forms, src, file, &outer)?;
+        let resolved = resolve(forms, &Sources::one(file, src), &outer)?;
         crate::check::stdlib_file(&resolved, src)?;
         for (name, def) in &resolved.defs {
             if defs.insert(name.clone(), def.clone()).is_some() {

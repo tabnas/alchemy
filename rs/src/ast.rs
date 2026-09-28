@@ -79,6 +79,75 @@ impl SourceSpan {
     }
 }
 
+/// The texts a program is compiled from, each under the file name its
+/// spans carry: one for [`crate::compile`], several for
+/// [`crate::compile_sources`]. A diagnostic positions a span in the text
+/// of the span's own file, and names the file when there are several.
+#[derive(Clone, Debug)]
+pub struct Sources {
+    files: Arc<[(Arc<str>, Arc<str>)]>,
+}
+
+impl Sources {
+    /// One text, named `file`.
+    pub fn one(file: &str, text: &str) -> Sources {
+        Sources {
+            files: Arc::from(vec![(Arc::from(file), Arc::from(text))]),
+        }
+    }
+
+    /// Several texts, each under its name, in order; the caller holds the
+    /// names distinct, since a span names its file by name.
+    pub(crate) fn several(files: Vec<(Arc<str>, Arc<str>)>) -> Sources {
+        debug_assert!(!files.is_empty(), "a program has at least one source");
+        Sources {
+            files: Arc::from(files),
+        }
+    }
+
+    /// The first file's name: the program's, when there is one.
+    pub fn first(&self) -> &Arc<str> {
+        &self.files[0].0
+    }
+
+    /// Whether a diagnostic names its file: when the sources are several.
+    pub fn names_files(&self) -> bool {
+        self.files.len() > 1
+    }
+
+    /// The text of `span`'s file, when it is one of these.
+    fn find(&self, span: &SourceSpan) -> Option<&str> {
+        self.files
+            .iter()
+            .find(|(file, _)| **file == *span.file)
+            .map(|(_, text)| &**text)
+    }
+
+    /// The text a span is positioned in: its file's, or the first when its
+    /// file is not among these (a span of the standard library, whose text
+    /// [`crate::stdlib::file_of`] gives, or of an unnamed parse).
+    pub fn text_of(&self, span: &SourceSpan) -> &str {
+        self.find(span).unwrap_or(&self.files[0].1)
+    }
+
+    /// The 1-based row and column of `span` in its file's text.
+    pub fn position(&self, span: &SourceSpan) -> (usize, usize) {
+        span.position(self.text_of(span))
+    }
+
+    /// `fail` at `span`: its row and column, and its file when the sources
+    /// are several and the span is in one of them.
+    pub fn fail_at(&self, fail: Fail, span: &SourceSpan) -> Fail {
+        let (row, col) = self.position(span);
+        let fail = fail.at(row as u64, col as u64);
+        if self.names_files() && self.find(span).is_some() {
+            fail.in_file(&*span.file)
+        } else {
+            fail
+        }
+    }
+}
+
 /// The largest character boundary at or before `index`.
 fn floor_boundary(text: &str, index: usize) -> usize {
     let mut index = index.min(text.len());
@@ -505,6 +574,52 @@ mod tests {
             name: name.into(),
             span: SourceSpan::new(&Arc::from("t"), 0, 0),
         }
+    }
+
+    /// A span is positioned in its own file's text, and a program of
+    /// several sources names the file; one source, or a span of a file
+    /// not among them, names none.
+    #[test]
+    fn sources_position_a_span_in_its_file_and_name_it_when_several() {
+        let a: Arc<str> = Arc::from("a.alc");
+        let b: Arc<str> = Arc::from("b.alc");
+        let one = Sources::one("a.alc", "x\ny");
+        let f = one.fail_at(
+            Fail::new(Code::InputInvalid, "m"),
+            &SourceSpan::new(&a, 2, 3),
+        );
+        assert_eq!(
+            (f.row, f.column, f.file.as_deref()),
+            (Some(2), Some(1), None)
+        );
+        assert_eq!(f.to_string(), "INPUT_INVALID: m (2:1)");
+        let two = Sources::several(vec![
+            (a.clone(), Arc::from("x\ny")),
+            (b.clone(), Arc::from("\n\nz")),
+        ]);
+        let f = two.fail_at(
+            Fail::new(Code::InputInvalid, "m"),
+            &SourceSpan::new(&b, 2, 3),
+        );
+        assert_eq!(
+            (f.row, f.column, f.file.as_deref()),
+            (Some(3), Some(1), Some("b.alc"))
+        );
+        assert_eq!(f.to_string(), "INPUT_INVALID: m (b.alc:3:1)");
+        let f = two.fail_at(
+            Fail::new(Code::InputInvalid, "m"),
+            &SourceSpan::new(&a, 2, 3),
+        );
+        assert_eq!(
+            (f.row, f.column, f.file.as_deref()),
+            (Some(2), Some(1), Some("a.alc"))
+        );
+        let other: Arc<str> = Arc::from("stdlib/table.alc");
+        let f = two.fail_at(
+            Fail::new(Code::InputInvalid, "m"),
+            &SourceSpan::new(&other, 2, 3),
+        );
+        assert_eq!((f.row, f.column, f.file), (Some(2), Some(1), None));
     }
 
     #[test]

@@ -884,11 +884,7 @@ fn repeat(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 
 fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     let message = as_str("fail", "the message", &a[0])?;
-    let mut f = Fail::new(Code::InputInvalid, message.to_string());
-    if let Some((row, col)) = rt.position(at) {
-        f = f.at(row, col);
-    }
-    Err(f)
+    Err(rt.fail_at(Fail::new(Code::InputInvalid, message.to_string()), at))
 }
 
 fn is_ready_value(v: &Val) -> bool {

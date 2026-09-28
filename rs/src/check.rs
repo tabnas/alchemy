@@ -43,7 +43,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use tabnas_transduce::{Code, Fail};
 
-use crate::ast::{Expr, SourceSpan};
+use crate::ast::{Expr, SourceSpan, Sources};
 use crate::program::Output;
 use crate::resolve::{fn_form, Def, Resolved};
 use crate::stdlib::registry::{native, Kind, Native};
@@ -115,7 +115,7 @@ pub const MAX_APPLIED: usize = 32;
 /// The checker for one scope's definitions: a program's, or one standard
 /// library file's.
 struct Checker<'a> {
-    src: &'a str,
+    sources: &'a Sources,
     defs: &'a IndexMap<Arc<str>, Def>,
     /// The library file's declared signatures stand for its definitions;
     /// a program's are inferred.
@@ -138,8 +138,8 @@ impl Checker<'_> {
         message: impl std::fmt::Display,
         span: &SourceSpan,
     ) -> Fail {
-        let (row, col) = span.position(self.src);
-        Fail::new(code, format!("{finer}: {message}")).at(row as u64, col as u64)
+        self.sources
+            .fail_at(Fail::new(code, format!("{finer}: {message}")), span)
     }
 
     fn type_error(&self, finer: &str, message: impl std::fmt::Display, span: &SourceSpan) -> Fail {
@@ -1293,9 +1293,9 @@ fn output_of(export: &Type) -> Result<Output, (Code, &'static str, String)> {
 
 /// Check a resolved program: `export` with its input, then every other
 /// definition.
-pub fn program(resolved: &Resolved, src: &str) -> Result<Checked, Fail> {
+pub fn program(resolved: &Resolved, sources: &Sources) -> Result<Checked, Fail> {
     let mut checker = Checker {
-        src,
+        sources,
         defs: &resolved.defs,
         declared: false,
         memo: HashMap::new(),
@@ -1303,10 +1303,7 @@ pub fn program(resolved: &Resolved, src: &str) -> Result<Checked, Fail> {
         applying: 0,
     };
     let Some(export) = resolved.get("export") else {
-        return Err(Fail::new(
-            Code::DslTypeError,
-            "no_export: the program has no `def export [input]`",
-        ));
+        return Err(no_export());
     };
     let Expr::List { items, .. } = &*export.value else {
         return Err(checker.type_error(
@@ -1371,12 +1368,21 @@ pub fn program(resolved: &Resolved, src: &str) -> Result<Checked, Fail> {
     })
 }
 
+/// The failure of a program with no `export`.
+pub(crate) fn no_export() -> Fail {
+    Fail::new(
+        Code::DslTypeError,
+        "no_export: the program has no `def export [input]`",
+    )
+}
+
 /// Check one standard library file: every definition against its
 /// declared signature; a definition without one is a defect of the
 /// library.
 pub fn stdlib_file(resolved: &Resolved, src: &str) -> Result<(), Fail> {
+    let sources = Sources::one(&resolved.file, src);
     let mut checker = Checker {
-        src,
+        sources: &sources,
         defs: &resolved.defs,
         declared: true,
         memo: HashMap::new(),
@@ -1407,8 +1413,9 @@ mod tests {
 
     fn check(src: &str) -> Result<Checked, Fail> {
         let forms = desugar::program(parse_file(src, "t.alc").unwrap(), src).unwrap();
-        let resolved = resolve(forms, src, "t.alc", &stdlib::outer)?;
-        program(&resolved, src)
+        let sources = Sources::one("t.alc", src);
+        let resolved = resolve(forms, &sources, &stdlib::outer)?;
+        program(&resolved, &sources)
     }
 
     fn code(src: &str) -> (Code, String, Option<u64>, Option<u64>) {

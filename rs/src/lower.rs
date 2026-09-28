@@ -1385,6 +1385,7 @@ fn bound_column(column: &Val) -> Result<BoundColumn, Fail> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::ast::Sources;
     use crate::resolve::resolve;
     use crate::{desugar, parse_file, stdlib};
     use tabnas_transduce::{ParserSource, Prune, SourceMode};
@@ -1400,8 +1401,9 @@ pub(crate) mod tests {
 
     pub(crate) fn runtime(src: &str, native: bool) -> Arc<Runtime> {
         let forms = desugar::program(parse_file(src, "t.alc").unwrap(), src).unwrap();
-        let resolved = resolve(forms, src, "t.alc", &stdlib::outer).unwrap();
-        Arc::new(Runtime::new(Arc::new(resolved), src).with_native(native))
+        let sources = Sources::one("t.alc", src);
+        let resolved = resolve(forms, &sources, &stdlib::outer).unwrap();
+        Arc::new(Runtime::new(Arc::new(resolved), sources).with_native(native))
     }
 
     /// A writer the test keeps a handle on after the sink took it.
