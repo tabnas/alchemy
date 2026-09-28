@@ -1070,6 +1070,44 @@ mod tests {
         assert!(no.message.len() < 200, "{}", no.message.len());
     }
 
+    /// What a render needs beyond the stack: `length` and `compare` see a
+    /// key past a length, and `number-class` names a number's class.
+    #[test]
+    fn the_render_operators() {
+        for (expr, message) in [
+            ("length 1", "length: the string must be a string"),
+            (
+                "compare 1 \"2\"",
+                "compare: the second must be a number, not a string",
+            ),
+            (
+                "number-class \"1\"",
+                "number-class: the number must be a number, not a string",
+            ),
+        ] {
+            let f = eval("", expr).unwrap_err();
+            assert_eq!(f.code, Code::DslTypeError, "{expr}");
+            assert!(
+                f.message.starts_with(&format!("type_mismatch: {message}")),
+                "{expr}: {f}"
+            );
+        }
+        // `length` counts characters, not bytes.
+        assert_eq!(eval("", "length \"héllo 日本\"").unwrap(), Val::num(8.0));
+        assert_eq!(eval("", "length \"\"").unwrap(), Val::num(0.0));
+        for (expr, want) in [
+            ("compare 1 2", "less"),
+            ("compare 2 2", "equal"),
+            ("compare 3 2.5", "greater"),
+            ("compare (length \"abc\") 3", "equal"),
+            ("number-class 1e3", "finite"),
+            ("number-class 1e400", "infinity"),
+            ("number-class -1e400", "negative-infinity"),
+        ] {
+            assert_eq!(eval("", expr).unwrap(), Val::keyword(want), "{expr}");
+        }
+    }
+
     /// The stack operators: data last, a new vector each time, bounded by
     /// the vector's length; an empty vector refuses `pop` and `top` with a
     /// type error naming the operator.

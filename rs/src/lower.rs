@@ -1430,6 +1430,17 @@ pub(crate) mod tests {
         Arc::new(Runtime::new(Arc::new(resolved), sources).with_native(native))
     }
 
+    /// [`runtime`] with the host's abort flag handed to it.
+    pub(crate) fn runtime_with_abort(
+        src: &str,
+        abort: tabnas_transduce::AbortFlag,
+    ) -> Arc<Runtime> {
+        let forms = desugar::program(parse_file(src, "t.alc").unwrap(), src).unwrap();
+        let sources = Sources::one("t.alc", src);
+        let resolved = resolve(forms, &sources, &stdlib::outer).unwrap();
+        Arc::new(Runtime::new(Arc::new(resolved), sources).with_abort(abort))
+    }
+
     /// A writer the test keeps a handle on after the sink took it.
     #[derive(Clone, Default)]
     pub(crate) struct Shared(pub Arc<Mutex<Vec<u8>>>);

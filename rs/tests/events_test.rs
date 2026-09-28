@@ -242,6 +242,75 @@ fn events_render_a_nested_document_as_a_yaml_like_block() {
     assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth");
 }
 
+/// A program that writes each key on its own line, in the explicit form
+/// past YAML's 1024-character limit on an implicit key (`length` and
+/// `compare`), and each number in YAML's spellings, the non-finite ones
+/// included (`number-class`), as a YAML render does.
+const KEY_FORMS: &str = r#"def key-line [name]
+  match (compare (length (quoted name)) 1024)
+    case :greater ["? " (quoted name) "\n"]
+    case _ [(quoted name) ":\n"]
+
+def number-line [n]
+  match (number-class n)
+    case :finite [(scalar-text csv-options n) "\n"]
+    case :infinity [".inf\n"]
+    case :negative-infinity ["-.inf\n"]
+    case :nan [".nan\n"]
+
+def step [s event]
+  match event
+    case (key name) (transition s (key-line name))
+    case (scalar v)
+      match (kind v)
+        case :number (transition s (number-line v))
+        case _ (transition s [])
+    case _ (transition s [])
+
+def finish [s] []
+
+def export [input]
+  join ""
+    scan-emit [] step finish (events input)
+"#;
+
+/// Past 1024 characters, quotes included, a key takes the explicit form;
+/// at 1024 it is still implicit.
+#[test]
+fn a_key_past_the_implicit_limit_takes_the_explicit_form() {
+    let program = compile(KEY_FORMS, "keys.alc").unwrap();
+    let long = "k".repeat(1023);
+    assert_eq!(
+        render(&program, &format!(r#"{{"{}":1}}"#, &long[..1022])),
+        format!("\"{}\":\n1\n", &long[..1022])
+    );
+    assert_eq!(
+        render(&program, &format!(r#"{{"{long}":1}}"#)),
+        format!("? \"{long}\"\n1\n")
+    );
+}
+
+/// YAML's non-finite numbers arrive as numbers with no lexeme, and a
+/// program writes them in YAML's spellings, where `scalar-text` would
+/// refuse them as JSON and CSV must; a quoted `'.inf'` is a string.
+#[test]
+fn the_non_finite_numbers_are_written_in_yamls_spellings() {
+    let program = compile(KEY_FORMS, "keys.alc").unwrap();
+    let metrics = Metrics::new();
+    let buffer = Shared::default();
+    let sink = program
+        .sink(Box::new(buffer.clone()), None, &Limits::default(), metrics)
+        .unwrap();
+    let (outcome, _) = ParserSource::new(
+        tabnas_yaml::make(),
+        "- .inf\n- -.inf\n- .nan\n- 1.5\n- '.inf'\n",
+    )
+    .run_owned(sink);
+    outcome.unwrap();
+    let out = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(out, ".inf\n-.inf\n.nan\n1.5\n");
+}
+
 /// `events` consumes the input, so a program that reads it twice, or
 /// captures it in a function, is refused as any affine stream is.
 #[test]

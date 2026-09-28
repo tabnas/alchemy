@@ -1054,6 +1054,19 @@ impl Checker<'_> {
                 self.expect("the record of keys", &Record, t(0), at(0))?;
                 Type::vector(Type::String)
             }
+            "length" => {
+                self.expect("the string of length", &String, t(0), at(0))?;
+                Number
+            }
+            "compare" => {
+                self.expect("the first number of compare", &Number, t(0), at(0))?;
+                self.expect("the second number of compare", &Number, t(1), at(1))?;
+                Keyword
+            }
+            "number-class" => {
+                self.expect("the number of number-class", &Number, t(0), at(0))?;
+                Keyword
+            }
             "kind" => {
                 if t(0).is_affine() {
                     return Err(self.mismatch("the value of kind", &Value, t(0), at(0)));
