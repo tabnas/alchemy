@@ -22,7 +22,7 @@ use tabnas_transduce::{Duplicates, Selector};
 
 use crate::ast::Expr;
 use crate::program::{Output, Program};
-use crate::value::{Plan, Seq, Val};
+use crate::value::{Func, Plan, Scope, Seq, Val};
 
 /// What a stage keeps alive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,10 +266,20 @@ fn duplicates_of(stages: &[&Plan], policy: Duplicates, finite: bool) -> String {
     }
 }
 
-/// The summary of a compiled program.
+/// Whether a step is the standard library's `table-step`, partially
+/// applied or not: the step of the library's twin of `table-from-json`.
+fn is_library_table_step(f: &Func) -> bool {
+    match f {
+        Func::Partial(p) => is_library_table_step(&p.f),
+        Func::Closure(c) => c.scope == Scope::Stdlib && c.name.as_deref() == Some("table-step"),
+        Func::Native(_) => false,
+    }
+}
+
 /// The selection summary of a plan that selects nothing.
 const PASS_THROUGH: &str = "none; every event passes through";
 
+/// The summary of a compiled program.
 pub fn summarize(program: &Program) -> EffectSummary {
     let output = program.output();
     let plan: Option<&Plan> = match program.result() {
@@ -452,12 +462,20 @@ pub fn summarize(program: &Program) -> EffectSummary {
                     selection = "none; every event is delivered as an item".to_string();
                 }
             }
-            Plan::ScanEmit { .. } => {
+            Plan::ScanEmit { step, .. } => {
                 confidence = Confidence::Conditional;
+                // The library's twin of `table-from-json` keeps the table's
+                // columns as its state, and the `schema` it builds holds
+                // them to `max_columns`, as the native table does.
+                let reason = if is_library_table_step(step) {
+                    "the table's columns once bound, at most max_columns of them, no deeper than max_depth"
+                } else {
+                    "what the step returns, no deeper than max_depth"
+                };
                 retention.push(Retention {
                     scope: RetentionScope::State,
                     label: "Retained state:",
-                    reason: "what the step returns, no deeper than max_depth".to_string(),
+                    reason: reason.to_string(),
                     selector: None,
                     limit: Some("max_metadata_bytes"),
                 });
@@ -778,6 +796,19 @@ mod tests {
         assert!(program.explain().contains("Inferred columns:"));
         let twin = summarize(&program.with_native(false).unwrap());
         assert_eq!(twin.selection, "shared prefix matcher, one capture route");
+        // The twin's state is the table's columns, and it reports their
+        // count's cap as the native table does.
+        let state = twin
+            .retention
+            .iter()
+            .find(|r| r.scope == RetentionScope::State)
+            .unwrap();
+        assert!(
+            state.reason.contains("at most max_columns"),
+            "{}",
+            state.reason
+        );
+        assert_eq!(state.limit, Some("max_metadata_bytes"));
     }
 
     /// `events` after a stage that selected keeps that stage's selection
@@ -859,7 +890,9 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(text.contains("Retained state:        what the step returns, no deeper than max_depth, capped at max_metadata_bytes\n"), "{text}");
+        // Its state is the table's columns, whose count the `schema` it
+        // builds holds to max_columns, as the native table's is.
+        assert!(text.contains("Retained state:        the table's columns once bound, at most max_columns of them, no deeper than max_depth, capped at max_metadata_bytes\n"), "{text}");
         assert!(text.contains("Contract verification: runtime\n"), "{text}");
         assert!(
             text.contains("Ordering contract:     each item before its outputs\n"),
