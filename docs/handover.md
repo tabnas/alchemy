@@ -6,8 +6,9 @@ it up can continue without the session's scratch files, which do not
 survive it. Everything a later step needs is written here or linked from
 here.
 
-Read sections 1 to 3 for orientation, section 4 for what was running when
-this was written, and section 5 for the next work in order. Section 6
+Read sections 1 to 3 for orientation, section 4 for what merged since
+the last refresh and what it left, and section 5 for the next work in
+order. Section 6
 lists the conventions and traps that cost time.
 
 ## 1. What was asked
@@ -111,7 +112,7 @@ Requests that came in the second session (2026-09-28, from 12:50 UTC):
 | rjrodger/aless | `--render csv\|json` streams a document's records through the transducer (aless#10); `--grammar NAME=FILE` and `--grammar-expr` read any text format through a custom ABNF grammar (aless#11); `--alchemy FILE`, `--alchemy-expr TEXT` and `--explain` run a program over the input (aless#13); a custom grammar runs under the shared depth cap (aless#12); `--render yaml` writes any format as YAML through tabnas-yaml's own render (aless#21); the viewer draws through ratatui, measuring text by grapheme cluster (aless#22); panes put the document beside its output and the program (aless#23); a pane's text is coloured through tabnas-lsp, off the viewer's thread (aless#24); the explorer sees a change its directory's clock does not show (aless#25) | README "Scripts and agents", `skills/aless/SKILL.md` |
 | tabnas/yaml | `alchemy/render.alc`: YAML's render as an alchemy part, named by the manifest's `translate` object and handed over as `render_text()` and `manifest_text()` (yaml#87) | `AGENTS.md`, "The translation parts" |
 | tabnas/debug | `rs/src/abnf.rs`: the ABNF emitter reads the bnf#80 repeat loop by its whole scaffold and renders it as `*A` / `*( a b )` / `1*A` (debug#63) | `docs/reference.md`, "The repeat loop: the Rust port leads" |
-| tabnas/parser | `options.rule.history` in the Rust port: a bound, 1 to 16, on the rule history a replace or push links, so a flat document's memory follows its nesting and not its length (parser#252) | `doc/rule-history-bound.md`, `DIVERGENCE.md` |
+| tabnas/parser | `options.rule.history` in the Rust port: a bound, 1 to 16, on the rule history a replace or push links, so the rule history a flat document keeps follows its nesting and not its length; the value it builds still grows with it (parser#252) | `doc/rule-history-bound.md`, `DIVERGENCE.md` |
 | tabnas/lsp | `rs/`: the full Rust port (semantic tokens, documents, instances, analyze, outline, hover, completion, registry, loaders, the JSON-RPC server and the `tabnas-lsp` binary, the generator's Rust target) | `rs/README.md` |
 
 Design decisions that are not obvious from the code:
@@ -152,38 +153,45 @@ and finished bnf#80 on its original branch. Merges use merge commits titled
 | tabnas/render | #1 the crate | none |
 | tabnas/alchemy | #1 the reader, #2 phase 3 (`4c9c2a2`), #3 the reader's repetitions as `r:` loops (`f67942d`), #5 a lone carriage return at a line start is whitespace (09-28 12:08, `e9e4daf`), #6 the handover refreshed (15:04, `ae93555`), #7 the debug test accepts both renderings of the optional block (15:09, `c5f966d`), #8 the handover refreshed (18:08, `1b91383`), #9 `events` (20:47, `60850cb`), #10 `compile_sources` (21:02, `32427c4`), #11 `table-from-json` infers its columns under `:columns :infer` (22:03, `5909c43`), #12 `length`, `compare` and `number-class` (23:04, `5b31951`), #13 the handover refreshed (09-29 00:08, `ad0d0b4`), #14 the handover refreshed (01:31, `b04a255`), #15 the handover refreshed (02:26, `a6b7119`), #16 the handover refreshed (04:10, `536f0bc`) | this handover (#17) |
 | rjrodger/aless | #10 `--render`, #11 custom ABNF grammars (`0cc8a94`), #12 a grammar from the command line runs under the shared depth cap (09-28 12:53, `5e2b7bf`), #13 `--alchemy`, `--alchemy-expr` and `--explain` (09-28 14:45, `2eec30f`), #21 `--render yaml` (23:39, `36897d7`); #22 the viewer draws through ratatui (09-29 01:01, `7232e41`); #23 panes: the document beside its output and the program (02:19, `1a73b87`); #24 colour for a pane's text through tabnas-lsp (03:35, `2bce042`); #25 the explorer sees a change its directory's clock does not show (04:07, `e98e598`) | none |
-| tabnas/parser | #245, #246 guide notes; #248 Go builtins append `src` in amortized constant time (`8e60c46`); #249 TypeScript `@capture$` and `@fold$` append a child's kids one at a time, over the count the child had (09-28 12:36, `d8d00c3`); **#252** a bound on the rule history, the design and its Rust prototype (09-29 08:11, `3391d35`, 4.3); #253 the Rust package renamed `tabnas-parser` 0.12.6 for crates.io, by another session (11:10, `c2dd3a6`, 4.4) | none |
+| tabnas/parser | #245, #246 guide notes; #248 Go builtins append `src` in amortized constant time (`8e60c46`); #249 TypeScript `@capture$` and `@fold$` append a child's kids one at a time, over the count the child had (09-28 12:36, `d8d00c3`); **#252** a bound on the rule history, the design and its Rust prototype (09-29 08:08, `3391d35`, 4.3); #253 the Rust package renamed `tabnas-parser` 0.12.6 for crates.io (11:10, `c2dd3a6`, 4.4) and #254 a Rust release tag of its own (12:25, `e58c4bf`), both by another session | none |
 | tabnas/bnf | **#80** every repetition compiles to a same-depth replace loop (09-28 12:40, `d0a9227`) | none; the release is deferred (5.1) |
 | tabnas/abnf | #97 guide note | none |
 | tabnas/ebnf | #45, #46 guide notes | none |
 | tabnas/gbnf | #47, #48 guide notes; #49 the DIVERGENCE.md 3 pin follows the compiler (`5ee4ff3`); #50 close DIVERGENCE.md 3 and hold the linear side as a standing check (09-28 12:51, `5c24c4d`) | none |
-| tabnas/debug | **#63** the Rust emitter renders the repeat loop (12:11, `be188f1`, 4.1); `main`'s three `ci / ts` jobs are red until the TypeScript port (5.6), and its `Rust` job until the rename reaches its manifest (4.4) | none |
+| tabnas/debug | **#63** the Rust emitter renders the repeat loop (09-29 12:11, `be188f1`, 4.1); `main`'s three `ci / ts` jobs are red until the TypeScript port (5.6), and its `Rust` job until the rename reaches its manifest (4.4) | none |
 | tabnas/lsp | #20 the semantic-token crate (`b6339f9`); **#21** the full Rust port, eighteen commits (09-28 17:56, `2562bfa`); #23 the generator's patch tables name the engine only (18:34, `ab2646d`) | none |
 | tabnas/yaml | #87 YAML's render as an alchemy part, the manifest's `translate` object, `render_text()` and `manifest_text()` (09-28 23:25, `b7c28c4`) | none |
 | tabnas/admin | #93 the descriptor task keeps a descriptor's `translate` object and checks its shape (09-28 21:56, `2dc8003`) | none |
 
 Another session, not these, drove the parser 0.12.5 release and the
 yaml, ini and csv releases after it, and prepared the parser's 0.12.6
-release under its crates.io name (parser#253, 4.4). Leave those alone.
+release under its crates.io name (parser#253, 4.4, and parser#254, the
+Rust release tag). Leave those alone.
 
 ## 4. Merged since the last refresh, and what they left
 
 ### 4.1 tabnas/debug#63: the Rust emitter renders the repeat loop, merged
 
-Merged on the maintainer's word ("Merge") at 12:11 as `be188f1`, over
-red jobs of two kinds. The `Rust` job had been red on every run since
-the parser's rename an hour before (4.4), which no change here could
-fix. The three `ci / ts` jobs had been red since bnf#80: debug's shared CI builds
-the sibling abnf against bnf `main`, whose compiler emits the loop, and
+Merged on the maintainer's word ("Merge") at 09-29 12:11 as `be188f1`,
+over red jobs of two kinds. The `Rust` job had been red on every run
+since the parser's rename an hour before (4.4); the one-line manifest
+change that fixes it is a dependency change, left for the maintainer.
+The three `ci / ts` jobs had been red since bnf#80: debug's shared CI
+builds the sibling abnf against bnf `main`, whose compiler emits the loop, and
 the TypeScript emitter still lists the loop's entry as one of the
-rule's alternatives, so `round-trips repetition` and `keeps repetition
-as a production` in `ts/test/abnf.test.js` fail on `main` until the
-TypeScript port (5.6) lands.
+rule's alternatives, so four tests in `ts/test/abnf.test.js` fail on
+`main` until the TypeScript port (5.6) lands: `round-trips repetition
+(star and plus)`, `round-trips repetition inside a group`, `keeps
+repetition as a production (does not fold *)`, and `round-trips a
+control-character literal as %x, not a quoted char-val`, whose grammar
+`csv = row *( CR row )` renders the loop's entry as an alternative.
 
 Before the merge, eleven more Codex reviews found hand-built shapes the
-emitter read as a loop, or rendered short of what the rule takes. The
-first five were answered by refusing each shape; the sixth changed the
-approach, and those after it tightened it, and the loop reading now
+emitter read as a loop, or rendered short of what the rule takes, and
+once a wording error in the reference; a twelfth, of the final head
+`b889ec6` a minute before the merge, found nothing. The first five were
+answered by refusing each shape; the sixth changed the approach, and
+those after it tightened it, and the loop reading now
 accepts only what tabnas-bnf writes, as a dump of its output shows it:
 the entry `{ c: [n.rep == 0], n: {rep: 1}, r: H }`, matching no token,
 setting no other counter, first and once; continues in the compiler's
@@ -203,12 +211,14 @@ close that replaces with the rule renders as its name (`H = *A [ B H
 ]`). A synthetic rule the iteration pushes that repeats by a cycle of
 its own, or a `$alt` rule with an empty way through, stays a
 production. A `_plus` or `_rep` helper is written back as `1*X` /
-`2*X`, and a `_plus` folds, only when its chain is the compiler's
+`n*X`, and a `_plus` folds, only when its chain is the compiler's
 construction, consuming or pushing exactly the item its loop repeats,
 the loop's whole iteration being that item. The start rule is always a
-production. Twenty-one hand-built non-loops are pinned in
-`rs/tests/abnf_test.rs`, each rendering as `main` did, with the helper,
-close, plus and start shapes beside them.
+production. In `rs/tests/abnf_test.rs` the scaffold test
+(`abnf_does_not_read_an_entry_without_its_scaffold_as_a_loop`) pins
+twenty-one hand-built non-loops, each rendering as `main` did; other
+tests pin the helper, close, plus and start shapes and more entry-like
+transitions.
 
 Verification, rebuilt in the session's scratch (gone with it; rebuild
 the same way): a harness over `/home/user/parser/rs`, `/home/user/bnf/rs`,
@@ -223,7 +233,8 @@ was compared with that of `52e30a0`, the first head of the whole-scaffold
 check, over the same corpus: byte-identical on all 1,980 grammars that
 compile within 20 s (73 slower ones skipped), and the IR-level set
 still reads all 150 loops, the 30 debt-guarded ones included. That
-comparison, run on every round, caught one regression, pushed and fixed
+comparison ran over the whole corpus ten times in the course of the
+rounds, the last on the final head, and caught one regression, pushed and fixed
 within the round (`ee11ad6`, then `59f534d`): the construction check
 first read a terminal item only without lookahead, and `2*"d"` came out
 as `D D *D`.
@@ -305,7 +316,7 @@ merged. The PR body is the full record. In short:
 
 ### 4.3 tabnas/parser#252: a bound on the rule history, merged
 
-Merged on the maintainer's word at 09-29 08:11 as `3391d35`, after three
+Merged on the maintainer's word at 09-29 08:08 as `3391d35`, after three
 more Codex rounds and two adversarial passes. `doc/rule-history-bound.md`
 is the design; the Rust port carries `options.rule.history`, the number
 of predecessor snapshots a rule can reach through `prev`:
@@ -327,7 +338,9 @@ of predecessor snapshots a rule can reach through `prev`:
 - **Measured**, release build, strict-JSON fixture, same value under
   every setting: 300,000 array items 2.8 s and 553 MB unbounded, 1.2 s
   and 57 MB at 3, 2.2 s and 51 to 56 MB at 16; the 25 MB records file
-  2,724 MB unbounded, 795 MB at 3. A probe over 20 grammar shapes found
+  2,724 MB and 223 s unbounded, 795 MB and 16 s at 3, both runs on a
+  loaded machine (unbounded took 29 s on a quiet one, so read the times
+  as a ratio at best). A probe over 20 grammar shapes found
   what a rule can reach constant in length at 1, 3 and 16.
 - **Registered** in `DIVERGENCE.md` and `test/spec/divergent.tsv`, each
   row against a control: `prev.prev`, `prev.child` and `prev.next`
@@ -348,36 +361,50 @@ entry for admin's `DECISIONS.md`.
 ### 4.4 tabnas/parser#253: the crate renamed, which stops every build by path
 
 Merged by the maintainer at 09-29 11:10 as `c2dd3a6`, from another
-session: the Rust package is now `tabnas-parser`, version 0.12.6, ready
-for crates.io, and its library keeps the name `tabnas`, so `use
-tabnas::…` is unchanged. A manifest that takes the engine by path as
-`tabnas = { path = "../../parser/rs" }` no longer resolves against it:
-cargo looks for a package named `tabnas` there and stops with `no
-matching package named tabnas found` (checked in this session with a
-scratch crate against `c2dd3a6`). Each such manifest needs `tabnas = {
-package = "tabnas-parser", path = … }` and its lockfile refreshed, and a
-build from sibling checkouts of `main` needs every sibling's manifest
-changed too, since each of them takes the engine the same way:
-alchemy's own and those of transduce, render, json, support, debug and
-the grammars its `rs/Cargo.toml` names.
+session, and followed by parser#254 (12:25, `e58c4bf`), which gives the
+Rust release a tag of its own: the Rust package is now `tabnas-parser`,
+version 0.12.6, ready for crates.io, and its library keeps the name
+`tabnas`, so `use tabnas::…` is unchanged. A manifest that takes the
+engine by path as `tabnas = { path = "../../parser/rs" }` no longer
+resolves against it: cargo looks for a package named `tabnas` there and
+stops with `no matching package named tabnas found`. Each such manifest
+needs `tabnas = { package = "tabnas-parser", path = … }` and its
+lockfile refreshed. A profile keyed by the engine, such as aless's
+`[profile.dev.package.tabnas]`, which keeps the engine's debug
+assertions off (its `AGENTS.md` says why), must become
+`[profile.dev.package.tabnas-parser]`: a profile names the package, not
+the dependency's alias, and cargo only warns about a key that matches
+nothing, so the build passes with the assertions back on. Both were
+checked in this session with scratch crates.
 
 - **What is red.** debug's `Rust` job, on every run since 11:10: the
-  last runs on debug#63 and, since its merge, `main` at `be188f1`. The
-  Rust gate of any other crate built from sibling checkouts meets the
-  same failure on its next run; those were not checked one by one.
-  alchemy's `Rust` gate runs only on changes
-  under `rs/`, `test/spec/`, `stdlib/`, `ci/rust/`, `docs/language.md`
-  and the workflow, so a handover change does not run it; the next change
-  that does fails until the rename reaches alchemy's manifest and every
-  sibling's.
+  last runs on debug#63 and, since its merge, `main` at `be188f1`. It
+  clones the parser's `main` and no other sibling, so it passes once
+  debug's own manifest names the package.
+- **What is red on its next run.** alchemy's `Rust` gate runs only on
+  changes under `rs/`, `test/spec/`, `stdlib/`, `ci/rust/`,
+  `docs/language.md` and the workflow, so a handover change does not run
+  it. It takes each sibling from the branch of the same name when there
+  is one, else from `main`. Against the parser's `main`, it passes once
+  alchemy's own manifest names the package, and so do those of the
+  siblings it builds that take the engine: json, jsonl, jsonic, yaml,
+  csv, debug, transduce and render (support takes none). The parser's
+  `claude/alchemy-handover-continuation-bil4x7` is still at `3391d35`,
+  before the rename, so an alchemy change on that branch name builds
+  against the old engine, and passes against it, until that parser
+  branch is restarted from `main`.
 - **What is not.** aless takes the tabnas crates from GitHub at the
-  revisions its `Cargo.lock` pins, so it builds as before; moving its
-  parser pin past `c2dd3a6` is the step that meets the rename.
+  revisions its `Cargo.lock` pins (the parser at `d8d00c3`, 0.12.5), so
+  it builds as before; a parser pin at or after `c2dd3a6` meets the
+  rename, and with it the manifest line and the profile key above.
 - **Whose it is.** Renaming a dependency is a dependency change in each
   repository, which only the maintainer instructs (each repository's
   dependency rule), so this session did not make it. It is one line per
-  manifest and a lockfile refresh, in dependency order: the engine's
-  direct dependents first.
+  manifest, aless's profile key, and a lockfile refresh. Each
+  repository's CI builds against its siblings' `main`, so the order in
+  which each can go green is the sibling graph's: json and debug, which
+  take the engine alone; then jsonl and jsonic, which take json; then
+  yaml and csv, which take jsonic; then transduce, render and alchemy.
 
 ## 5. Next work, in order
 
@@ -390,9 +417,10 @@ ports wait on the maintainer, as does 5.6's TypeScript port (the Rust
 emitter is merged, debug#63, 4.1, and debug's `main` is red on
 TypeScript until the port lands); 5.8's audit is done and its fixes
 are TypeScript-first changes that wait on the maintainer. So does the
-parser's rename (4.4): until every manifest names `tabnas-parser`, no
-Rust change here or in debug can pass its gate. 5.13 is Rust work that
-needs no one's word.
+parser's rename (4.4): debug's Rust gate passes once its own manifest
+names `tabnas-parser`, and alchemy's once its own and its siblings' do
+(on this session's branch name it still builds against the engine
+before the rename). So does 5.13, a Rust repair parser#252 deferred.
 Where a subsection below keeps the fleet's TypeScript-first rule for
 landing a change, that landing waits on the maintainer's word; the step
 before it does not.
@@ -568,10 +596,12 @@ for 25 MB. aless#21 measured the same on 33 MB of JSON: 2.09 GB under
 
 The first change is designed and merged in Rust: parser#252 (4.3), which
 bounds the rule history and takes the 25 MB records file from 2,724 MB
-to 795 MB and from 223 s to 16 s under `history: 3`. aless and the
+to 795 MB under `history: 3` (the times, 223 s to 16 s, were read on a
+loaded machine; unbounded took 29 s on a quiet one). aless and the
 transducer do not set the option yet; doing so is the next measurable
-step, once aless takes a parser pin with it (a pin past `c2dd3a6`
-meets the rename, 4.4). The second change, the
+step, once aless takes a parser pin with it (`3391d35` carries the
+option without the rename; a pin at or after `c2dd3a6` meets the
+rename, 4.4). The second change, the
 per-rule cost, has no design yet. The TypeScript and Go ports, and what
 lands in what order, are the maintainer's.
 
@@ -588,15 +618,19 @@ loop: the Rust port leads" records that the port leads until then):
   other self-replace keeps its content (`one = A [ one ]`).
 - A rule whose open alternatives are the loop's whole scaffold is a
   loop: the entry first (no token, no push, `r` itself, the `n.rep == 0`
-  guard, the counter set to 1, no dynamic route), continues that each
-  come back to the rule having consumed or pushed, and an exit, with no
-  continue after an empty exit. It is rendered wherever referenced as
-  `*A` / `*( a b )` over its
-  continue alternatives; its back edges render nothing; it and its
-  helpers are never productions. The helpers are everything the
+  guard, the counter set to 1), continues in the compiler's two shapes,
+  each coming back to the rule having consumed or pushed, and the
+  unconditional empty exit `{ }` with no continue after it; no
+  alternative a function routes. Point 3 of the reference's section is
+  the full list, and 4.1 summarises it. It is rendered wherever
+  referenced as `*A` / `*( a b )` over its continue alternatives; its
+  back edges render nothing; it and its helpers are never productions,
+  but the start rule always is. The helpers are everything the
   iteration reaches short of a kept production (a user rule, another
-  loop, an old-shape repetition helper), so a group's own `$alt`/`$step`
-  chain inlines and an old push-chain star inside stays a production.
+  loop, an old-shape repetition helper, a synthetic rule that repeats
+  by a cycle of its own, a `$alt` rule with an empty way through), so a
+  group's own `$alt`/`$step` chain inlines and an old push-chain star
+  inside stays a production.
 - A `_plus` or `_rep` helper over the loop's item is written back as
   `1*A` / `n*A`; a repetition over an optional is `*[ A ]`; a helper's
   kind is read from its own name segment.
@@ -1031,8 +1065,13 @@ child, and the child's own snapshot, the one the pusher keeps as
 Repair direction Rust: link the child's snapshot to the pusher once the
 pusher has linked it, then delete the `pusher-through-child` row and
 keep the bounded row with the history entry. No fleet grammar reads the
-four-hop path. Rust-only, so it needs no one's word; it is an engine
-change, so it goes through the parser's own gates and the fleet run.
+four-hop path. parser#252 listed this fix among what waits on the
+maintainer's word on the design, and `DIVERGENCE.md` marks the entry
+Deferred, so it waits on the maintainer. When it lands it is an engine
+change: the parser's own gates (its Rust gate passes on `c2dd3a6`), and
+the Rust dependents run by hand, since the fleet run covers only
+TypeScript and Go; built from sibling checkouts of `main`, those wait on
+the rename (4.4).
 
 ## 6. Conventions and traps
 
