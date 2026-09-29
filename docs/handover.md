@@ -52,7 +52,9 @@ Requests that came later, in order:
   - A third pane can show the alchemy program.
   - Panes can be arranged vertically or horizontally.
   - Consider ratatui, and highlight with tabnas/lsp where possible.
-  - Not started; see 5.9.
+  - In progress; see 5.9. ratatui draws the viewer (aless#22, merged),
+    the panes are aless#23 (open), and highlighting through tabnas/lsp
+    is the third pull request, not yet opened.
 - **A full Rust port of tabnas/lsp,** used directly as a Rust dependency
   of aless. Done, lsp#21; see 4.2 for what its reviews found and 5.9
   for what aless meets when it takes the crate.
