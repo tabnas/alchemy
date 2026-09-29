@@ -1,6 +1,6 @@
 # Handover: streaming transducers, alchemy, and the work around them
 
-Status as of 2026-09-29 01:07 UTC. This records the state of one working
+Status as of 2026-09-29 02:25 UTC. This records the state of one working
 session across the tabnas fleet and rjrodger/aless, so that whoever picks
 it up can continue without the session's scratch files, which do not
 survive it. Everything a later step needs is written here or linked from
@@ -52,9 +52,9 @@ Requests that came later, in order:
   - A third pane can show the alchemy program.
   - Panes can be arranged vertically or horizontally.
   - Consider ratatui, and highlight with tabnas/lsp where possible.
-  - In progress; see 5.9. ratatui draws the viewer (aless#22, merged),
-    the panes are aless#23 (open), and highlighting through tabnas/lsp
-    is the third pull request, not yet opened.
+  - In progress; see 5.9. ratatui draws the viewer (aless#22) and the
+    panes are merged (aless#23); highlighting through tabnas/lsp is
+    aless#24, open.
 - **A full Rust port of tabnas/lsp,** used directly as a Rust dependency
   of aless. Done, lsp#21; see 4.2 for what its reviews found and 5.9
   for what aless meets when it takes the crate.
@@ -108,7 +108,7 @@ Requests that came in the second session (2026-09-28, from 12:50 UTC):
 | tabnas/transduce | `tabnas-transduce`: protocols, the event source (whole walk, incremental from rule events, line-chunked JSON Lines and CSV), router and matcher, captures, `ScanEmit`, `TableFromJson`, limits, stable error codes | `docs/architecture.md` (the canonical design), `docs/reference.md`, `docs/BENCH.md`, `docs/translation.md` (any format to any other) |
 | tabnas/render | `tabnas-render`: text algebra (`TextOut`, `WriteOut`, `StringOut`, `Join`, `ReplaceText`, `Concat`), the always-quoted CSV renderer, the JSON renderer, `RecordsToJson`, protocol validators | `docs/reference.md` |
 | tabnas/alchemy | `tabnas-alchemy`: the language reader as a tabnas grammar plugin; desugar, resolve, check, effects and `explain`; the evaluator that builds plans; lowering onto transduce and render; the standard library; `events` and `compile_sources`, which a format's own render needs; the `alchemy` binary (`canon`, `format`, `check`, `explain`, `run`) | `docs/language.md`, `AGENTS.md`, `rs/README.md` |
-| rjrodger/aless | `--render csv\|json` streams a document's records through the transducer (aless#10); `--grammar NAME=FILE` and `--grammar-expr` read any text format through a custom ABNF grammar (aless#11); `--alchemy FILE`, `--alchemy-expr TEXT` and `--explain` run a program over the input (aless#13); a custom grammar runs under the shared depth cap (aless#12); `--render yaml` writes any format as YAML through tabnas-yaml's own render (aless#21); the viewer draws through ratatui, measuring text by grapheme cluster (aless#22) | README "Scripts and agents", `skills/aless/SKILL.md` |
+| rjrodger/aless | `--render csv\|json` streams a document's records through the transducer (aless#10); `--grammar NAME=FILE` and `--grammar-expr` read any text format through a custom ABNF grammar (aless#11); `--alchemy FILE`, `--alchemy-expr TEXT` and `--explain` run a program over the input (aless#13); a custom grammar runs under the shared depth cap (aless#12); `--render yaml` writes any format as YAML through tabnas-yaml's own render (aless#21); the viewer draws through ratatui, measuring text by grapheme cluster (aless#22); panes put the document beside its output and the program (aless#23) | README "Scripts and agents", `skills/aless/SKILL.md` |
 | tabnas/yaml | `alchemy/render.alc`: YAML's render as an alchemy part, named by the manifest's `translate` object and handed over as `render_text()` and `manifest_text()` (yaml#87) | `AGENTS.md`, "The translation parts" |
 | tabnas/debug | `rs/src/abnf.rs`: the ABNF emitter reads the bnf#80 repeat loop by shape and renders it as `*A` / `*( a b )` / `1*A` (debug#63, open) | `docs/reference.md`, "The repeat loop: the Rust port leads" |
 | tabnas/lsp | `rs/`: the full Rust port (semantic tokens, documents, instances, analyze, outline, hover, completion, registry, loaders, the JSON-RPC server and the `tabnas-lsp` binary, the generator's Rust target) | `rs/README.md` |
@@ -149,8 +149,8 @@ and finished bnf#80 on its original branch. Merges use merge commits titled
 |---|---|---|
 | tabnas/transduce | #1 the crate, #2 and #3 repetition-rule guide notes; #4 the translation design, `docs/translation.md` (09-28 19:10, `d5da8bc`); #5 `Fail` carries its file (21:00, `35ffda6`); #6 `Schema::Infer` binds the first row's names under `max_metadata_bytes` (21:41, `17da362`); #8 what the translation pilot found (23:53, `b81a495`) | none |
 | tabnas/render | #1 the crate | none |
-| tabnas/alchemy | #1 the reader, #2 phase 3 (`4c9c2a2`), #3 the reader's repetitions as `r:` loops (`f67942d`), #5 a lone carriage return at a line start is whitespace (09-28 12:08, `e9e4daf`), #6 the handover refreshed (15:04, `ae93555`), #7 the debug test accepts both renderings of the optional block (15:09, `c5f966d`), #8 the handover refreshed (18:08, `1b91383`), #9 `events` (20:47, `60850cb`), #10 `compile_sources` (21:02, `32427c4`), #11 `table-from-json` infers its columns under `:columns :infer` (22:03, `5909c43`), #12 `length`, `compare` and `number-class` (23:04, `5b31951`) | this handover (#13) |
-| rjrodger/aless | #10 `--render`, #11 custom ABNF grammars (`0cc8a94`), #12 a grammar from the command line runs under the shared depth cap (09-28 12:53, `5e2b7bf`), #13 `--alchemy`, `--alchemy-expr` and `--explain` (09-28 14:45, `2eec30f`), #21 `--render yaml` (23:39, `36897d7`); #22 the viewer draws through ratatui (09-29 01:01, `7232e41`) | **#23** panes: the document beside its output and the program (5.9) |
+| tabnas/alchemy | #1 the reader, #2 phase 3 (`4c9c2a2`), #3 the reader's repetitions as `r:` loops (`f67942d`), #5 a lone carriage return at a line start is whitespace (09-28 12:08, `e9e4daf`), #6 the handover refreshed (15:04, `ae93555`), #7 the debug test accepts both renderings of the optional block (15:09, `c5f966d`), #8 the handover refreshed (18:08, `1b91383`), #9 `events` (20:47, `60850cb`), #10 `compile_sources` (21:02, `32427c4`), #11 `table-from-json` infers its columns under `:columns :infer` (22:03, `5909c43`), #12 `length`, `compare` and `number-class` (23:04, `5b31951`), #13 the handover refreshed (09-29 00:08, `ad0d0b4`), #14 the handover refreshed (01:31, `b04a255`) | this handover (#15) |
+| rjrodger/aless | #10 `--render`, #11 custom ABNF grammars (`0cc8a94`), #12 a grammar from the command line runs under the shared depth cap (09-28 12:53, `5e2b7bf`), #13 `--alchemy`, `--alchemy-expr` and `--explain` (09-28 14:45, `2eec30f`), #21 `--render yaml` (23:39, `36897d7`); #22 the viewer draws through ratatui (09-29 01:01, `7232e41`); #23 panes: the document beside its output and the program (02:19, `1a73b87`) | **#24** colour for a pane's text through tabnas-lsp (5.9) |
 | tabnas/parser | #245, #246 guide notes; #248 Go builtins append `src` in amortized constant time (`8e60c46`); #249 TypeScript `@capture$` and `@fold$` append a child's kids one at a time, over the count the child had (09-28 12:36, `d8d00c3`) | **#252** a bound on the rule history: the design and a Rust prototype (head `a5b604a`), for the maintainer to decide and merge, TypeScript first (4.3) |
 | tabnas/bnf | **#80** every repetition compiles to a same-depth replace loop (09-28 12:40, `d0a9227`) | none; the release is deferred (5.1) |
 | tabnas/abnf | #97 guide note | none |
@@ -330,10 +330,10 @@ The Rust-only instruction (section 1) orders the rest: 5.6's TypeScript
 port waits on the maintainer, 5.5's design and prototype are parser#252
 (4.3) and wait on the maintainer too, 5.8's audit is done and its
 fixes are TypeScript-first changes that wait on the maintainer, 5.9 is
-aless: its first pull request merged, and its second is aless#23. Where a
-subsection below keeps the fleet's TypeScript-first rule for landing a
-change, that landing waits on the maintainer's word; the step before it
-does not.
+aless: its first two pull requests merged, and its third is aless#24.
+Where a subsection below keeps the fleet's TypeScript-first rule for
+landing a change, that landing waits on the maintainer's word; the step
+before it does not.
 
 ### 5.1 bnf#80: merged; the release deferred
 
@@ -678,8 +678,8 @@ Three pull requests, in this order.
 - **An idle tick writes about 22 bytes**: the synchronized-update
   brackets and a hide-cursor, where the old loop wrote nothing.
 
-**2. Panes: open as aless#23,** as planned below, with these
-differences:
+**2. Panes: merged** (aless#23, 09-29 02:19, `1a73b87`), as planned
+below, with these differences:
 
 - **`s`**, the key aless already gave the source view, switches the
   focused pane between its tree and its text; the plan said `S`.
@@ -690,6 +690,40 @@ differences:
   **`:only`** keeps the input pane alone.
 - **The run happens on the viewer's thread,** under the parse timeout,
   keeping at most 16 MiB of output.
+- **The output is written as the command line would write it:**
+  `--indent` as given, a pane's new document folded to `--depth`, and a
+  renderer given naming the output's format.
+- **`Tab::apply` moves a tab's generation** with every document it
+  takes, so the output follows `:format` as it follows a reload.
+- **Each pane keeps its own place.** A change to a tab re-anchors it in
+  the view of the pane that shows it (`pane_view`). A text view's
+  scroll is clamped to a shorter text and to a taller pane; the single
+  view had both gaps before.
+- **Giving `--panes` means the viewer,** whatever it names; a value
+  that names no pane is refused.
+
+Codex reviewed it five times: the first four rounds' findings were
+fixed, and the fifth found none. Its Windows CI showed a race in code
+it does not touch. The explorer notices a new entry only by its
+directory's modification time, and NTFS's clock ticks about every
+16 ms. So a file made within a tick of the directory's last change
+stays out of the tree, and `explorer_parent_and_refresh` failed once.
+
+The fix waits for its own pull request after the third, since the
+branch carries one at a time. It is a local commit, "The explorer sees
+a change its directory's clock does not show", and
+[the comment on aless#23](https://github.com/rjrodger/aless/pull/23#issuecomment-5882152411)
+describes it in full, should the commit be lost:
+
+- A `Listing` records when it was read (`read_at`).
+- `Explorer::changed` reads again, and compares, any listing read less
+  than two seconds (`RACY`) after its directory's last change. Two
+  seconds covers FAT, a second on ext3 and HFS+, and NTFS's tick.
+- A reading that finds nothing new replaces the old one, so a directory
+  is read again only until a reading comes after the window.
+- `Tab::stamp_changed` takes `&mut self`.
+- `a_change_the_clock_does_not_show_is_still_seen` holds a directory's
+  time as a coarse clock would, and checks both halves.
 
 The plan it follows:
 
@@ -711,7 +745,24 @@ The plan it follows:
   `:pane out|program|close`, a focus key jless leaves free, `--panes
   out` and `--stacked`. Headless output is unchanged.
 
-**3. Highlighting through tabnas/lsp's Rust crate.**
+**3. Highlighting through tabnas/lsp's Rust crate: open as aless#24,**
+as planned below, with these differences:
+
+- **Colours are made off the viewer's thread,** on one worker, and the
+  text shows plain until its colours come in. Colouring holds the whole
+  lex trace: 0.9 MB of JSON took a second of a release build and peaked
+  at 270 MB.
+- **Limits:** text over 512 KiB stays plain, and one text's colouring
+  stops after ten seconds, or the parse timeout when that is shorter.
+- **The fallback is plain text,** not aless's value-kind colouring. Plain
+  text and a grammar the registry marks speculative stay plain; no
+  bundled grammar is marked so today.
+- **The output is lexed by its own format's grammar,** the one it is
+  read back with, and colours are keyed by tab, generation and grammar.
+- **What lsp maps today** leaves TOML's string values and alchemy's
+  `:name` keywords uncoloured; closing those gaps is lsp's work.
+
+The plan it follows:
 
 The crate is on lsp's `main` since #21. Taking it by git with no
 feature on needs only the `tabnas` patch aless already keeps per
