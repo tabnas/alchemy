@@ -1,6 +1,6 @@
 # Handover: streaming transducers, alchemy, and the work around them
 
-Status as of 2026-09-28 23:55 UTC. This records the state of one working
+Status as of 2026-09-29 01:07 UTC. This records the state of one working
 session across the tabnas fleet and rjrodger/aless, so that whoever picks
 it up can continue without the session's scratch files, which do not
 survive it. Everything a later step needs is written here or linked from
@@ -106,7 +106,7 @@ Requests that came in the second session (2026-09-28, from 12:50 UTC):
 | tabnas/transduce | `tabnas-transduce`: protocols, the event source (whole walk, incremental from rule events, line-chunked JSON Lines and CSV), router and matcher, captures, `ScanEmit`, `TableFromJson`, limits, stable error codes | `docs/architecture.md` (the canonical design), `docs/reference.md`, `docs/BENCH.md`, `docs/translation.md` (any format to any other) |
 | tabnas/render | `tabnas-render`: text algebra (`TextOut`, `WriteOut`, `StringOut`, `Join`, `ReplaceText`, `Concat`), the always-quoted CSV renderer, the JSON renderer, `RecordsToJson`, protocol validators | `docs/reference.md` |
 | tabnas/alchemy | `tabnas-alchemy`: the language reader as a tabnas grammar plugin; desugar, resolve, check, effects and `explain`; the evaluator that builds plans; lowering onto transduce and render; the standard library; `events` and `compile_sources`, which a format's own render needs; the `alchemy` binary (`canon`, `format`, `check`, `explain`, `run`) | `docs/language.md`, `AGENTS.md`, `rs/README.md` |
-| rjrodger/aless | `--render csv\|json` streams a document's records through the transducer (aless#10); `--grammar NAME=FILE` and `--grammar-expr` read any text format through a custom ABNF grammar (aless#11); `--alchemy FILE`, `--alchemy-expr TEXT` and `--explain` run a program over the input (aless#13); a custom grammar runs under the shared depth cap (aless#12); `--render yaml` writes any format as YAML through tabnas-yaml's own render (aless#21) | README "Scripts and agents", `skills/aless/SKILL.md` |
+| rjrodger/aless | `--render csv\|json` streams a document's records through the transducer (aless#10); `--grammar NAME=FILE` and `--grammar-expr` read any text format through a custom ABNF grammar (aless#11); `--alchemy FILE`, `--alchemy-expr TEXT` and `--explain` run a program over the input (aless#13); a custom grammar runs under the shared depth cap (aless#12); `--render yaml` writes any format as YAML through tabnas-yaml's own render (aless#21); the viewer draws through ratatui, measuring text by grapheme cluster (aless#22) | README "Scripts and agents", `skills/aless/SKILL.md` |
 | tabnas/yaml | `alchemy/render.alc`: YAML's render as an alchemy part, named by the manifest's `translate` object and handed over as `render_text()` and `manifest_text()` (yaml#87) | `AGENTS.md`, "The translation parts" |
 | tabnas/debug | `rs/src/abnf.rs`: the ABNF emitter reads the bnf#80 repeat loop by shape and renders it as `*A` / `*( a b )` / `1*A` (debug#63, open) | `docs/reference.md`, "The repeat loop: the Rust port leads" |
 | tabnas/lsp | `rs/`: the full Rust port (semantic tokens, documents, instances, analyze, outline, hover, completion, registry, loaders, the JSON-RPC server and the `tabnas-lsp` binary, the generator's Rust target) | `rs/README.md` |
@@ -148,7 +148,7 @@ and finished bnf#80 on its original branch. Merges use merge commits titled
 | tabnas/transduce | #1 the crate, #2 and #3 repetition-rule guide notes; #4 the translation design, `docs/translation.md` (09-28 19:10, `d5da8bc`); #5 `Fail` carries its file (21:00, `35ffda6`); #6 `Schema::Infer` binds the first row's names under `max_metadata_bytes` (21:41, `17da362`); #8 what the translation pilot found (23:53, `b81a495`) | none |
 | tabnas/render | #1 the crate | none |
 | tabnas/alchemy | #1 the reader, #2 phase 3 (`4c9c2a2`), #3 the reader's repetitions as `r:` loops (`f67942d`), #5 a lone carriage return at a line start is whitespace (09-28 12:08, `e9e4daf`), #6 the handover refreshed (15:04, `ae93555`), #7 the debug test accepts both renderings of the optional block (15:09, `c5f966d`), #8 the handover refreshed (18:08, `1b91383`), #9 `events` (20:47, `60850cb`), #10 `compile_sources` (21:02, `32427c4`), #11 `table-from-json` infers its columns under `:columns :infer` (22:03, `5909c43`), #12 `length`, `compare` and `number-class` (23:04, `5b31951`) | this handover (#13) |
-| rjrodger/aless | #10 `--render`, #11 custom ABNF grammars (`0cc8a94`), #12 a grammar from the command line runs under the shared depth cap (09-28 12:53, `5e2b7bf`), #13 `--alchemy`, `--alchemy-expr` and `--explain` (09-28 14:45, `2eec30f`), #21 `--render yaml` (23:39, `36897d7`) | none; the branch is at main |
+| rjrodger/aless | #10 `--render`, #11 custom ABNF grammars (`0cc8a94`), #12 a grammar from the command line runs under the shared depth cap (09-28 12:53, `5e2b7bf`), #13 `--alchemy`, `--alchemy-expr` and `--explain` (09-28 14:45, `2eec30f`), #21 `--render yaml` (23:39, `36897d7`); #22 the viewer draws through ratatui (09-29 01:01, `7232e41`) | **#23** panes: the document beside its output and the program (5.9) |
 | tabnas/parser | #245, #246 guide notes; #248 Go builtins append `src` in amortized constant time (`8e60c46`); #249 TypeScript `@capture$` and `@fold$` append a child's kids one at a time, over the count the child had (09-28 12:36, `d8d00c3`) | **#252** a bound on the rule history: the design and a Rust prototype (head `a5b604a`), for the maintainer to decide and merge, TypeScript first (4.3) |
 | tabnas/bnf | **#80** every repetition compiles to a same-depth replace loop (09-28 12:40, `d0a9227`) | none; the release is deferred (5.1) |
 | tabnas/abnf | #97 guide note | none |
@@ -326,8 +326,9 @@ so is the translation pilot (5.12), which came between; what remains of
 each is listed.
 The Rust-only instruction (section 1) orders the rest: 5.6's TypeScript
 port waits on the maintainer, 5.5's design and prototype are parser#252
-(4.3) and wait on the maintainer too, 5.8's next step is the audit of
-the Rust grammars, 5.9 is aless. Where a
+(4.3) and wait on the maintainer too, 5.8's audit is done and its
+fixes are TypeScript-first changes that wait on the maintainer, 5.9 is
+aless: its first pull request merged, and its second is aless#23. Where a
 subsection below keeps the fleet's TypeScript-first rule for landing a
 change, that landing waits on the maintainer's word; the step before it
 does not.
@@ -561,60 +562,134 @@ new binaries agreed on every input without a lone `\r` over the
 fixtures, the reference's blocks, `stdlib/*.alc` and 5,500 generated
 inputs; the 85 that met "malformed reader output" parse.
 
-### 5.8 The fleet's repetitions against the rule
+### 5.8 The fleet's repetitions against the rule: audited
 
-A read-only audit classified every repetition in the local checkouts as
-a replace loop, a push from the close state (constant depth, but the rule
-broken in letter), or a push chain (depth grows with the item count). It
-measured depth at 1 and 10,000 items.
+Two read-only audits classified every repetition as a replace loop, a
+push from the close state (constant depth, but the rule broken in
+letter), a push chain (depth grows with the item count), or real
+nesting. The first (09-28) read the local checkouts and stopped on a
+usage limit. The second (09-29, the Rust ports) measured the ten
+repositories the first left and verified its suspects. It read the
+engine's rule depth `d` through `subscribe_rules`, as
+`rs/tests/repeat_test.rs` does, at 1, 2 and 10,000 items, and `d`
+equalled the rule stack's length at every step. Four crates keep their
+parser private (css, abnf, ebnf and gbnf); it measured copies of them
+with a subscriber added and nothing else changed. An independent check
+through the public APIs reproduced the toml, c and ebnf results below.
+
+The second audit's checkouts: css `e0ea0b4`, c `baf1f8a`, proto
+`ffb89e1`, expr `b34a559`, abnf `0fbe319`, ebnf `89b6772`, gbnf
+`5c24c4d`, parser `a5b604a` (parser#252's head, engine 0.12.5), debug
+`cdfd35b`, support `5c4b5f9`, jsonic `4be139f`, yaml `b7c28c4`, ini
+`2b7f6c7`, toml `e5121ad`, semver `f4aed5d` and chess `54aa55b`, with
+bnf at `d0a9227` (bnf#80 merged).
 
 | Repository | Result |
 |---|---|
 | json, jsonl, jsonc, csv, xml, markdown, zon | every repetition a replace loop, ports agree |
 | json5, feed, path, hoover | define no rules of their own |
 | directive, multisource | rules, but no repetitions |
-| jsonic | replace loops, except path-dive keys (`a:b:c:1`): depth grows with the key count, but so does the value's nesting, so this is structure, not a repetition. Confirm and record it as such. |
-| yaml | the same path dive, inherited from jsonic (`a: b: c: 1`) |
-| ini | `dive` (dotted section path `[a.b.c]`) is a push chain: depth 4 for one segment, 128 for many. The value nests too; decide whether this is structure or a loop to convert. |
-| toml | `dive` (dotted key `a.b.c = 1`) is a push chain: depth 4, then 10,002. Same question as ini. |
-| semver | 21 push chains, all ABNF repetitions compiled by the old bnf (depth up to 20,009). They are fixed by regenerating with bnf#80's compiler once released. |
-| chess | the game's tag section is a push from the close state (`{s:#OS, p:tag, b:1, c:@more-tags}`): constant depth, but convert it to an `r:` loop |
+| debug | no rules |
+| parser | the one grammar the crate ships, `make_json()`: elements and members are replace loops, `d` 3 at any length |
+| support | `rs/adder`'s `1+1+…` is a replace loop, `d` 1 |
+| proto | ABNF compiled at install through abnf and bnf `d0a9227`: every repetition is bnf#80's replace loop, constant from 2 items to 10,000; nested messages take 4 a level |
+| semver | **fixed in Rust by bnf#80**: every port compiles the ABNF when it installs, and the Rust crate compiles it through the bnf beside it: its 26 repetition helpers are now replace loops, constant to 10,000. The TypeScript and Go ports take bnf's last release, 0.1.22, which predates #80, so they keep the first audit's 21 push chains until 5.1's release. Three Rust passages still say depth grows per character (`rs/AGENTS.md`, `rs/tests/perf_test.rs`, `rs/src/lib.rs`), and `rs/Cargo.lock` pins `tabnas` 0.12.4 against the engine's 0.12.5 |
+| css | its own rule machine, not the engine, with the same `p` and `r`: every repetition a replace loop, `d` 4 to 7 at any length. Nested rules and `@media` take 4 and 3 a level, and the machine has no nesting cap |
+| jsonic | **structure, confirmed**: a path-dive key `a:a:…:1` reaches `d` = 3N, exactly as `{a:{a:…}}` does, and is refused past 127 levels |
+| yaml | the same, inherited: `a: a: …: 1` reaches 3N+1, as its flow form does, and is refused past 127 |
+| expr | replace loops for infix, suffix, lists and arguments; the call chain `f(1)(1)…` pushes from the close state at constant depth; prefix and ternary chains nest as their operands do, bounded by `NODE_LIMIT` (127) and `RULE_LIMIT` (1,024) |
+| abnf, gbnf | productions are a replace loop; alternatives and sequences push their item from the close state, `d` 5 at any length; groups nest, capped |
+| ebnf | as abnf, plus one push chain: **`post`**, a run of postfix operators `"a"???…`, pushes a rule per operator (`d` = N+5) and is refused at 130 by `MAX_NEST_DEPTH`. The crate's own doc spells it as a repetition, `('?' \| '*' \| '+')*` |
+| c | every repetition a replace loop or a push from the close state, constant to 10,000. Eight of those alternates also carry an `r:` that the push makes dead. Blocks and `while` nest, 3 and 2 a level, refused near 1,040 by `RULE_LIMIT` |
+| chess | the game's tag section pushes from the close state (`game.close[0]`, `p:tag`): `d` 4 at any length. Games and moves are replace loops |
+| ini | **push chain, confirmed**: `dive` (`[a.b.c]`) reaches `d` = N+1 and is refused past 127. The path it builds is flat: `@dive-push` copies the segment vector, and `open_section` walks it without recursion |
+| toml | **push chain, confirmed, and unbounded**: `dive` (`a.b.c = 1`) reaches `d` = N+2: 1,002 at 1,000 segments, and 10,002 at 10,000, which took 82 to 92 s in a release build. A table header of the same path, `[a.a.…]`, builds the same nesting at a constant `d` 4 through `table`'s replace loop |
 
-Not audited, because the run stopped on a usage limit: css, c, proto,
-expr, abnf, ebnf, gbnf, parser, debug and support. The suspects above
-also still need their independent verification. Each fix in a grammar
-repository is its own PR with the depth test that proves the rule. The
-fleet's convention is TypeScript first, which the Rust-only instruction
-defers: the next step is the audit of the Rust grammars still unlisted
-above, recorded here, and a fix across a grammar's ports waits on the
-maintainer's word. The rule's text is in every affected repository's
-AGENTS.md, "Repetition is replacement, never a push chain".
+jsonic's and yaml's dives, expr's prefix and ternary chains, and the
+nesting in c and css are structure: their depth follows the value's.
+The fixes are below. Each is its own PR in its repository, with the depth
+test that proves the rule. Each lands TypeScript first, so under the
+Rust-only instruction each waits on the maintainer's word.
+
+1. **toml `dive`**, the one unbounded chain: make it a replace loop, as
+   `table` already is.
+2. **ini `dive` and ebnf `post`**: make each a replace loop. ini's path
+   is already flat. ebnf's syntax tree nests an element per operator,
+   which the loop can build as it goes, with no rule per level.
+3. **The pushes from the close state** (chess, the abnf, ebnf and gbnf
+   readers, expr's call chain, and c): their depth is constant, so they
+   break the rule's letter, not its bound. Convert each when its
+   repository is next changed, and drop c's dead `r:`s.
+4. **semver**: correct the three stale passages. Its lock moves with the
+   next change there, and its TypeScript and Go ports are fixed by bnf's
+   release (5.1).
+
+The rule's text is in every affected repository's AGENTS.md,
+"Repetition is replacement, never a push chain".
+
+Found on the way, outside the rule, and not yet filed:
+
+- **c refuses a cast of a cast**, `(int)(long)y` or `(int)((int)y)`, as
+  `unexpected`. No fixture has one.
+- **c's tree doubles per operator.** It repeats each binary node's
+  operands under `children` and again under `left` and `right`, so the
+  JSON of `x = 1+1+…` is 0.5 MB at 8 terms, 8 MB at 12 and 128 MB at 16.
+- **c's `__asm__` operand, clobber and label lists stop after one
+  item.** The rest is read as a second declaration, and the parse
+  succeeds.
+- **c's `preprocessor_line` is unreachable** in either mode.
+- **c's declarators grow worse than linearly**: `int a0, …` takes 47 ms
+  with 1,000 of them and 10 to 23 s with 10,000.
+- **toml's dotted paths also grow worse than linearly**, `table`'s loop
+  included: a header takes 1.5 ms at 100 segments, 100 ms at 1,000, and
+  41 s at 10,000.
+
+The independent check reproduced the cast, the doubling (at 4, 8 and
+12 terms), and toml's depths and times up to 1,000 segments.
 
 ### 5.9 aless: ratatui, panes and highlighting
 
 Three pull requests, in this order.
 
-**1. Adopt ratatui as the drawing layer, with no new behaviour.**
+**1. ratatui as the drawing layer: merged** (aless#22, 09-29 01:01,
+`7232e41`). It went as planned, with these differences:
 
-- **Version and minimum Rust:** ratatui 0.30 with the `crossterm_0_29`
-  feature needs Rust 1.88. Raise `rust-version`, the CI job "rust 1.86
-  (minimum supported)", the README and AGENTS.md, and say why in the PR.
-- **Port:**
-  - aless's `Style`, `Color`, `Span` and `Line` become ratatui's.
-  - `render(app)` becomes `draw(frame, app)`, composing widgets: the
-    tree pane, the source view, the error panel, the status bar, the
-    prompt and the overlay.
-  - `paint` is replaced by `terminal.draw`.
-- **Keep:**
-  - `sanitize` at every point text enters a `Span`.
-  - The horizontal `skip` of the focused row.
-  - aless's own panic hook (not `ratatui::init`).
-  - The key map, mouse support, and the headless contract.
-- **Tests:** a `screen_text` shim over `TestBackend` keeps every existing
-  render, app and app_flow assertion text. Add a CJK and emoji
-  column-arithmetic test.
+- **Rust 1.88** is the minimum, in `rust-version`, the CI job "rust 1.88
+  (minimum supported)", the README and AGENTS.md.
+- **`render::screen(app)`** returns the cells of a `TestBackend` draw.
+  It stands where the planned `screen_text` shim would, and the render,
+  app and app_flow tests read the screen through it.
+- **Widths are measured by grapheme cluster,** with ratatui's
+  `CellWidth`, as the buffer places text. The old per-character measure
+  gave a family emoji joined by zero-width joiners six cells for the
+  terminal's two, and a halfwidth kana with its sound mark one cell for
+  two. The measures walk the clusters lazily. `tests/render_memory.rs`,
+  a counting allocator in a binary of its own, holds measuring and
+  clipping a million-character value to under 64 KiB; collecting the
+  clusters first had held 36 MiB (Codex's finding).
+- **`scripts/pty-smoke.py` reads the screen through a terminal model.**
+  ratatui writes only the cells that changed, so a word on screen is no
+  longer contiguous in the byte stream.
+- **`tests/yaml_render.rs` reads `cargo metadata` offline, then online.**
+  The lock names ratatui's optional packages, which a build never
+  downloads, and the offline read failed on Windows CI.
+- **An idle tick writes about 22 bytes**: the synchronized-update
+  brackets and a hide-cursor, where the old loop wrote nothing.
 
-**2. Panes.**
+**2. Panes: open as aless#23,** as planned below, with these
+differences:
+
+- **`s`**, the key aless already gave the source view, switches the
+  focused pane between its tree and its text; the plan said `S`.
+- **`C-w`** moves the focus, and a click focuses the pane under it.
+- **The output pane's tree** is its text read back in its own format
+  (CSV, JSON or a format's own), not a recorder of the protocol stream.
+- **`r` in the program pane** reads the program again, watched or not.
+  **`:only`** keeps the input pane alone.
+- **The run happens on the viewer's thread,** under the parse timeout,
+  keeping at most 16 MiB of output.
+
+The plan it follows:
 
 - **Model:** `Workspace { panes, arrangement: SideBySide | Stacked,
   focus }` and `Pane { role: Input | Output | Program, mode: Source |
