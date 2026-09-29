@@ -23,7 +23,7 @@ path = "src/bin/alchemy.rs"
 # Sibling checkouts, the standard tabnas development model: the engine
 # the grammar plugin installs into, and the two crates the language's
 # streams and texts lower to.
-tabnas = { path = "../../parser/rs" }
+tabnas = { package = "tabnas-parser", path = "../../parser/rs" }
 tabnas-transduce = { path = "../../transduce/rs" }
 tabnas-render = { path = "../../render/rs" }
 # The JSON grammar the binary's `run` parses its input with (already in the
