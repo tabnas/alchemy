@@ -1,6 +1,6 @@
 # Handover: streaming transducers, alchemy, and the work around them
 
-Status as of 2026-09-29 12:15 UTC. This records the state of one working
+Status as of 2026-09-29 12:40 UTC. This records the state of one working
 session across the tabnas fleet and rjrodger/aless, so that whoever picks
 it up can continue without the session's scratch files, which do not
 survive it. Everything a later step needs is written here or linked from
@@ -579,14 +579,16 @@ both:
 2. Reduce the per-rule cost, which is allocation and cloning per step.
 
 Both are engine changes across three runtimes with a parity contract.
-Start with a profile of the Rust port on the 24.6 MB records file and
-write the design in tabnas/parser's DIVERGENCE and ADR terms; those two
-steps are Rust work and the next ones. The fleet lands an engine change
-TypeScript first, which the Rust-only instruction defers: the landing
-order is the maintainer's to set once the design is in. The transduce benches (`cargo bench` in `rs/`) and
+The first is designed and merged in Rust (parser#252, below); do not
+redo its profile or design. For the second, start with a profile of the
+Rust port on the 24.6 MB records file and write the design in
+tabnas/parser's DIVERGENCE and ADR terms; those two steps are Rust work.
+The fleet lands an engine change TypeScript first, which the Rust-only
+instruction defers: the landing order is the maintainer's to set once a
+design is in. The transduce benches (`cargo bench` in `rs/`) and
 aless's `--render` acceptance runs are the measurements to repeat
-afterwards, including a 2 GB JSON Lines export, which the line-chunked
-source already bounds in memory.
+after each change, including a 2 GB JSON Lines export, which the
+line-chunked source already bounds in memory.
 
 Measured again on 09-28 in aless#13 (above): the program path is linear
 in the document and costs about half again the plain renderer's time on
