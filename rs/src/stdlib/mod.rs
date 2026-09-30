@@ -1,6 +1,8 @@
 //! The standard library: the natives ([`registry`]) and the definitions
-//! written in alchemy itself, embedded from `stdlib/*.alc` at the
-//! repository root.
+//! written in alchemy itself. The crate embeds copies under
+//! `rs/stdlib/*.alc`, because a crates.io package cannot contain the
+//! canonical `stdlib/*.alc` files above its package root. A unit test holds
+//! each packaged copy byte-for-byte to its canonical file.
 //!
 //! `table.alc` is the metadata-first table transducer (design document
 //! section 12.2: `public-column`, `table-step`, `table-finish`,
@@ -32,11 +34,8 @@ use registry::Kind;
 
 /// The embedded sources, by the file name their spans carry.
 pub const SOURCES: &[(&str, &str)] = &[
-    (
-        "stdlib/table.alc",
-        include_str!("../../../stdlib/table.alc"),
-    ),
-    ("stdlib/csv.alc", include_str!("../../../stdlib/csv.alc")),
+    ("stdlib/table.alc", include_str!("../../stdlib/table.alc")),
+    ("stdlib/csv.alc", include_str!("../../stdlib/csv.alc")),
 ];
 
 /// The library, loaded: each file's resolved definitions, and all of them
@@ -163,7 +162,33 @@ pub fn outer(name: &str) -> Option<NameKind> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+
     use super::*;
+
+    /// A crates.io package holds nothing above `rs/`, so the crate embeds
+    /// package-local copies. In a repository checkout, hold each one to its
+    /// canonical root file. In an extracted crate there is no repository
+    /// root, and the package verification build has already proved the
+    /// embedded copies are present.
+    #[test]
+    fn packaged_sources_match_the_repository_sources() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("rs/ has a parent");
+        if !root.join(".tabnas-kind").is_file() {
+            return;
+        }
+        for (path, embedded) in SOURCES {
+            let canonical = fs::read_to_string(root.join(path))
+                .unwrap_or_else(|error| panic!("cannot read canonical {path}: {error}"));
+            assert_eq!(
+                canonical, *embedded,
+                "rs/{path} is not the canonical {path}: copy it into rs/stdlib"
+            );
+        }
+    }
 
     #[test]
     fn the_library_loads_with_the_spec_definitions() {

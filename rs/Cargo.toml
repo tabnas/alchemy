@@ -1,13 +1,16 @@
 [package]
 name = "tabnas-alchemy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Richard Rodger <http://richardrodger.com>"]
 description = "The alchemy grammar plugin and language for the tabnas parsing engine: declarative streaming transducers and renderers."
 license = "MIT"
+homepage = "https://tabnas.dev"
+documentation = "https://docs.rs/tabnas-alchemy"
 repository = "https://github.com/tabnas/alchemy"
 readme = "README.md"
+include = ["src/**", "README.md", "LICENSE", "stdlib/**"]
 keywords = ["parser", "grammar", "dsl", "streaming", "transducer"]
 categories = ["parsing", "compilers"]
 
