@@ -1,14 +1,14 @@
 /* Copyright (c) 2026 tabnas, MIT License */
 
 // The checker (rs/src/check.rs's tests), through the front end a host
-// calls: `analyze` parses, desugars, resolves and checks. The Rust tests
-// that compile a program to its plan (a live text refused where a vector
-// is built) are the evaluator's, and arrive with pass 2.
+// calls: `analyze` parses, desugars, resolves and checks; and, where a
+// test needs the plan built (a live text refused where a vector is
+// built), `compile`.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 
-import { SOURCES, analyze, analyzeSources, checkStdlibFile, stdlib, stdlibSignature, types } from '../dist/alchemy'
+import { SOURCES, analyze, analyzeSources, checkStdlibFile, compile, stdlib, stdlibSignature, types } from '../dist/alchemy'
 
 import { finer, thrown } from './common'
 
@@ -159,9 +159,15 @@ describe('check', () => {
     assert.equal(code('def export [input] (json [input])')[1], 'type_mismatch')
     assert.equal(code('def export [input] (join "," [(select (path each-index) input)])')[1], 'type_mismatch')
     assert.equal(code('def export [input] (join "," (vector (select (path each-index) input)))')[1], 'type_mismatch')
-    // A live text in a vector is refused where the vector is built: the
-    // evaluator's (pass 2); the front end passes it.
+    // A live text in a vector is refused where the vector is built, with
+    // its name: the evaluator's; the front end passes it.
     assert.equal(check('def export [input] (join "," [(json input)])').output, 'Text')
+    let f = thrown(() => compile('def export [input] (join "," [(json input)])', 't.alc'))
+    assert.equal(f.code, 'DSL_TYPE_ERROR')
+    assert.match(f.message, /cannot hold a live text/)
+    f = thrown(() => compile('def export [input] (join "," (vector (json input)))', 't.alc'))
+    assert.match(f.message, /cannot hold a live text/)
+    assert.equal(compile('def export [input] (concat (join "," [(text "i") "j"]) (json input))', 't.alc').output, 'Text')
   })
 
   it('a chain of definitions is typed without nesting the checker', () => {

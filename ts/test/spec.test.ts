@@ -4,34 +4,37 @@
 // runner as every grammar repository runs its own (rs/tests/spec_test.rs
 // is the Rust half). What is specific to this package is what a row's
 // input becomes: the canonical form of the parsed program (reader.tsv),
-// or of the desugared program (pipe.tsv), as a JSON string; the checker's
-// verdict (check.tsv); the bytes a run writes (run.tsv).
+// or of the desugared program (pipe.tsv), as a JSON string; the plan
+// report (check.tsv); the bytes a run writes (run.tsv).
 //
-// This is pass 1 of the TypeScript port: the front end. Building the plan
-// is the evaluator's work, so the check.tsv rows that need it (a plan
-// report, or a failure only evaluation meets) are skipped BY NAME below,
-// each with its reason, and run.tsv is skipped as a whole file. Pass 2
-// removes the skips. Every other row runs.
+// Every row of every file runs. run.tsv runs each row twice, with the
+// standard compositions native and through the library's text
+// (`withNative(false)`), and a row whose two paths differ in a byte, a
+// code or a position fails whatever its expected cell says.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import {
-  SpecRow,
-  isErrorExpect,
-  loadSpec,
-  loadSpecDir,
-  makeRunner,
-  parseExpect,
-} from '@tabnas/support'
+import { SpecRow, isErrorExpect, loadSpec, loadSpecDir, makeRunner, parseExpect } from '@tabnas/support'
+import { make as makeJson } from '@tabnas/json'
+import { BytesWriter } from '@tabnas/render'
+import { Fail, Limits, Metrics, ParserSource, Prune, SourceMode } from '@tabnas/transduce'
 
-import { analyze, canonical, desugarProgram, format, parse, sameProgram } from '../dist/alchemy'
+import {
+  Program,
+  Renderer,
+  canonical,
+  compile,
+  desugarProgram,
+  format,
+  parse,
+  rendererNamed,
+  sameProgram,
+} from '../dist/alchemy'
 
 import { REPO_ROOT, SPEC_DIR, failCode } from './common'
-
-const PASS_2 = 'needs interpreter (pass 2)'
 
 // The finer code a row pins, and the position the failure names.
 const runnerOptions = {
@@ -40,9 +43,8 @@ const runnerOptions = {
 }
 
 describe('fixtures', () => {
-  // Every fixture the directory holds has a runner below (or is skipped
-  // by name, as run.tsv is until pass 2); a new file added without one
-  // fails here rather than passing silently.
+  // Every fixture the directory holds has a runner below; a new file added
+  // without one fails here rather than passing silently.
   it('every fixture has a runner', () => {
     const files = loadSpecDir(SPEC_DIR)
       .map((spec) => spec.file)
@@ -53,6 +55,14 @@ describe('fixtures', () => {
     for (const file of files) {
       assert.ok(guide.includes(`[\`${file}\`](spec/${file})`), `test/AGENTS.md does not describe ${file}`)
     }
+  })
+
+  // The columns a run row reads by name, so a renamed header fails here
+  // rather than reading empty cells.
+  it('run.tsv has its columns', () => {
+    const spec = loadSpec(join(SPEC_DIR, 'run.tsv'))
+    assert.deepStrictEqual(spec.header, ['input', 'expected', 'doc', 'render'])
+    assert.ok(spec.rows.every((row: SpecRow) => -1 !== row.index_of('doc') && -1 !== row.index_of('render')))
   })
 })
 
@@ -66,86 +76,93 @@ makeRunner({
   parse: (input: string) => canonical(desugarProgram(parse(input), input)),
 }).file(join(SPEC_DIR, 'pipe.tsv'))
 
-// The check.tsv rows the front end cannot decide, by their input (the
-// row's name: its program). A plan report needs the plan, and these
-// failures are met only where evaluating `export` to build the plan
-// reaches them. Each entry must name a row of the file, and each such
-// program must pass the front end, or the skip is wrong; a row not named
-// here runs, so a new report row fails until it is listed (or pass 2
-// lands).
-const WORKED_EXAMPLE =
-  'def column-from-meta [source]\n  record\n    entry :label (get "title" source)\n    entry :source\n      as-path\n        get "path" source\n\n' +
-  'def api-binding\n  record\n    entry :columns\n      path "response" "metadata" "fields"\n    entry :rows\n      path "response" "payload" "deep" "records" each-index\n    entry :column column-from-meta\n\n' +
-  'def api-table [input]\n  table-from-json api-binding input\n\n' +
-  'def export [input]\n  pipe input\n    api-table\n    csv csv-options'
-const KEY_LINES =
-  'def key-lines [s event]\n  match event\n    case (key name) (transition s [(quoted name) "\\n"])\n    case _ (transition s [])\n\n' +
-  'def export [input]\n  join ""\n    scan-emit [] key-lines (fn [s] []) (events input)'
-const ROWS_BINDING =
-  'def rows-binding\n  record\n    entry :columns :infer\n    entry :rows (path each-index)\n\n' +
-  'def export [input]\n  pipe input\n    table-from-json rows-binding\n    csv csv-options'
-const CHECK_SKIPS: ReadonlyArray<readonly [string, string]> = [
-  // The evaluator's `recursion`: a function applied to itself.
-  ['def w [f] (f f)\ndef export [input]\n  let [x (w w)]\n    json input', 'evaluator recursion'],
-  // A live text refused where the vector is built.
-  ['def export [input] (join "," [(json input)])', 'a live text in a vector'],
-  ['def export [input] (concat (get :a (record (entry :a "1") (entry :a "2"))) (json input))', 'duplicate_key'],
-  ['def export [input] (concat (match 5 (case 1 "one")) (json input))', 'no_match'],
-  ['def export [input] (let [x (pop [])] (json input))', 'pop of an empty vector'],
-  ['def export [input] (let [x (top [])] (json input))', 'top of an empty vector'],
-  ['def export [input] (let [x (repeat -1 "ab")] (json input))', 'repeat of a negative count'],
-  ['def export [input] (let [x (string-join "," ["a" 1])] (json input))', 'string-join of a non-string'],
-  // The plan reports (test/effects.test.ts holds each to its row, from a
-  // plan built by hand).
-  [WORKED_EXAMPLE, 'the plan report'],
-  ['def export [input]\n  json input', 'the plan report'],
-  ['def export [input] input', 'the plan report'],
-  ['def export [input] "done"', 'the plan report'],
-  [KEY_LINES, 'the plan report'],
-  [ROWS_BINDING, 'the plan report'],
-]
+// A program that checks prints its plan report; one that does not fails
+// with the resolver's, the checker's or the plan evaluation's code, at the
+// position it names.
+makeRunner({
+  ...runnerOptions,
+  parse: (input: string) => compile(input, 'check').explain(),
+}).file(join(SPEC_DIR, 'check.tsv'))
 
-// Whether a check.tsv row is skipped, and why.
-function checkSkip(input: string): string | undefined {
-  const named = CHECK_SKIPS.find(([program]) => program === input)
-  return undefined === named ? undefined : `${PASS_2}: ${named[1]}`
+// Compile `program` and run it over `doc`, as `alchemy run` does: the
+// document read by the JSON grammar incrementally, pruned under the
+// program's row selector when it has one, with the default limits.
+function runBoth(program: string, doc: string, render: Renderer | undefined, native: boolean): string {
+  let compiled = compile(program, 'run')
+  if (!native) compiled = compiled.withNative(false)
+  return drive(compiled, doc, render)
 }
 
-describe('spec: check.tsv', () => {
-  const spec = loadSpec(join(SPEC_DIR, 'check.tsv'))
-  const runner = makeRunner({
-    ...runnerOptions,
-    parse: (input: string) => {
-      analyze(input, 'check')
-      throw new Error(`${PASS_2}: the program checks, and its plan report needs the plan`)
-    },
-  })
-  runner.checkSpec(spec)
-  for (const row of spec.rows) {
-    const input = row.unesc(row.resolve(0))
-    const expected = row.col(row.resolve(1))
-    const skip = checkSkip(input)
-    it(`row ${row.line}: ${JSON.stringify(input)}`, { skip }, () => runner.row(row, input, expected))
+function drive(program: Program, doc: string, render: Renderer | undefined): string {
+  const limits = Limits.default()
+  const metrics = new Metrics()
+  const writer = new BytesWriter()
+  const sink = program.sink(writer, render, limits, metrics)
+  const selector = program.rowSelector()
+  const prune = undefined === selector ? Prune.never() : Prune.under(selector)
+  new ParserSource(makeJson(), doc)
+    .grammar('json')
+    .mode(SourceMode.incremental(prune))
+    .limits(limits)
+    .metrics(metrics)
+    .run(sink)
+  return writer.text()
+}
+
+type Outcome = { ok: true; text: string } | { ok: false; fail: unknown }
+
+function outcome(work: () => string): Outcome {
+  try {
+    return { ok: true, text: work() }
+  } catch (fail) {
+    return { ok: false, fail }
   }
+}
 
-  it('every skip names a row the front end accepts', () => {
-    const inputs = spec.rows.map((row: SpecRow) => row.unesc(row.resolve(0)))
-    for (const [program, why] of CHECK_SKIPS) {
-      assert.ok(inputs.includes(program), `the skip ${JSON.stringify(why)} names no row`)
-    }
-    // A skipped row is one only the evaluator decides: the front end
-    // accepts its program. One the front end refuses runs above instead.
-    for (const row of spec.rows) {
-      const input = row.unesc(row.resolve(0))
-      if (undefined === checkSkip(input)) continue
-      assert.doesNotThrow(() => analyze(input, 'check'), `row ${row.line} passes the front end`)
-    }
-  })
-})
+function shown(o: Outcome): string {
+  return o.ok ? JSON.stringify(o.text) : String(o.fail)
+}
 
-describe('spec: run.tsv', { skip: `${PASS_2}: every row runs a program` }, () => {
-  it('runs', () => {})
-})
+// A program run over a JSON document: the bytes it writes, or the failure.
+// See test/AGENTS.md for the columns. Both paths, compared before the
+// expected cell is.
+makeRunner({
+  ...runnerOptions,
+  parse: (program: string, row: SpecRow) => {
+    const cell = row.unescNamed('doc')
+    const doc = '' === cell ? 'null' : cell
+    const name = row.named('render')
+    let render: Renderer | undefined
+    if ('' !== name) {
+      render = rendererNamed(name)
+      if (undefined === render) throw new Error(`${row.where()}: render is csv, json or empty`)
+    }
+    const native = outcome(() => runBoth(program, doc, render, true))
+    const interpreted = outcome(() => runBoth(program, doc, render, false))
+    let agree: boolean
+    if (native.ok && interpreted.ok) {
+      agree = native.text === interpreted.text
+    } else if (!native.ok && !interpreted.ok) {
+      const a: any = native.fail
+      const b: any = interpreted.fail
+      agree =
+        a instanceof Fail &&
+        b instanceof Fail &&
+        failCode(a) === failCode(b) &&
+        a.row === b.row &&
+        a.col === b.col
+    } else {
+      agree = false
+    }
+    if (!agree) {
+      throw new Error(
+        `native and interpreted runs disagree:\n  native:      ${shown(native)}\n  interpreted: ${shown(interpreted)}`,
+      )
+    }
+    if (native.ok) return native.text
+    throw native.fail
+  },
+}).file(join(SPEC_DIR, 'run.tsv'))
 
 // `format` prints a program the reader reads back to the same forms, spans
 // aside, for every program the fixtures parse.

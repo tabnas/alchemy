@@ -1,18 +1,21 @@
 /* Copyright (c) 2026 tabnas, MIT License */
 
-// tabnas-alchemy for TypeScript: the alchemy grammar plugin and the front
-// end of the language, ported from the Rust crate in ../rs (the
-// reference implementation).
+// tabnas-alchemy for TypeScript: the alchemy grammar plugin and the
+// language, ported from the Rust crate in ../rs (the reference
+// implementation).
 //
 // The pipeline reads left to right: `./lex` and `./grammar` (the reader)
-// → `./ast` → `./desugar` → `./resolve` → `./check`, with `./effects`
-// reading a built plan for `explain`. `./program` is the API around the
-// front end (`analyze`, `analyzeSources`).
+// → `./ast` → `./desugar` → `./resolve` → `./check` → `./interp` (builds
+// the plan `./value` describes) → `./lower` (the transduce and render
+// sinks); `./effects` reads the plan for `explain`; `./program` is the API
+// a host embeds (`compile`, `compileSources`, `Program`). The natives are
+// listed in `./stdlib/registry` and implemented in `./stdlib/natives`.
+// `./cli` is the `alchemy` command (`bin/alchemy`).
 //
-// Pass 2 of the port adds the evaluator (`./interp`, building the plan
-// `./value` describes), the lowering to transduce and render sinks
-// (`./lower`), `compile` and `Program` in `./program`, and the
-// natives' implementations (`installCalls` in `./stdlib/registry`).
+// The checker and the evaluator recurse on an explicit stack
+// (`./trampoline`), so MAX_NESTING, MAX_APPLIED and MAX_EVAL_DEPTH are
+// reached as failures in Node's default stack, where the Rust crate runs
+// them on a thread of 64 MiB.
 
 // VERSION is this package's version. It MUST equal package.json "version",
 // which is the crate's (rs/Cargo.toml): the runtimes ship as one version.
@@ -65,8 +68,28 @@ export type { Type } from './types'
 export { MAX_APPLIED, checkProgram, checkStdlibFile, noExport, stdlibSignature } from './check'
 export type { Checked } from './check'
 
-export { analyze, analyzeSources } from './program'
+export { Program, analyze, analyzeSources, compile, compileSources } from './program'
 export type { Analyzed, Output, Source } from './program'
+
+export { MAX_EVAL_DEPTH, MAX_PLAN_STEPS, Runtime, arityError, partial } from './interp'
+export type { Bounds, Measure } from './interp'
+
+export {
+  Lowering,
+  brief,
+  csvOptions,
+  isTableBinding,
+  jsonOptions,
+  rendererNamed,
+  stateBounds,
+  writeFinite,
+} from './lower'
+export type { ItemSink, Renderer } from './lower'
+
+export { run, isWalk } from './trampoline'
+export type { G } from './trampoline'
+
+export { main as cli } from './cli'
 
 export {
   csvDialect,
@@ -95,3 +118,19 @@ export {
   natives,
 } from './stdlib/registry'
 export type { Arity, Kind, Native } from './stdlib/registry'
+
+export {
+  CAPTURE_LIMITS,
+  LENGTH_CHUNK,
+  captureBudget,
+  getField,
+  implOf,
+  kindWord,
+  numberText,
+  quote,
+  quotedLen,
+  shortestNumber,
+  truth,
+  unimplemented,
+} from './stdlib/natives'
+export type { NativeImpl } from './stdlib/natives'

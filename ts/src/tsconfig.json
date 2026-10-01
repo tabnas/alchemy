@@ -11,6 +11,6 @@
     "target": "es2021",
     "declaration": true,
     "declarationDir": "../dist",
-    "types": []
+    "types": ["node"]
   }
 }

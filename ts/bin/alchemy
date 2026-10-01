@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+'use strict'
+// The `alchemy` command: canon | format | check | explain | run. See
+// src/cli.ts, which this runs, for the arguments, outputs and statuses.
+process.exitCode = require('../dist/cli').main(process.argv.slice(2))

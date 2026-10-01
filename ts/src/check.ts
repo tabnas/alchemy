@@ -33,6 +33,7 @@ import { Expr, SourceSpan, Sources, canonicalForm, symbolOf } from './ast'
 import { Output } from './output'
 import { Def, Resolved, fnForm } from './resolve'
 import { Native, arityAccepts, arityExact, arityText, native } from './stdlib/registry'
+import { G, run } from './trampoline'
 import {
   Type,
   Unknown,
@@ -130,41 +131,12 @@ function nativeType(n: Native): Type {
 // a stream is passed to: MAX_NESTING levels, MAX_APPLIED bodies deep, is
 // tens of thousands of nested calls, past what Node's default stack holds.
 // So the walks are generators, and a call is a request: `yield
-// this.infer(...)` hands the callee's generator to `run`, which drives
-// every pending call on an explicit stack of its own and resumes the
-// caller with the result (or throws the callee's failure into it, so a
-// `finally` that restores the environment still runs). The JavaScript
-// stack stays a few frames deep however deep the walk goes.
-type G<T> = Generator<unknown, T, any>
-
-function run<T>(root: G<T>): T {
-  const stack: G<any>[] = [root]
-  let input: any = undefined
-  let failed = false
-  let failure: unknown = undefined
-  for (;;) {
-    const top = stack[stack.length - 1]
-    let step: IteratorResult<unknown, any>
-    try {
-      step = failed ? top.throw(failure) : top.next(input)
-      failed = false
-    } catch (err) {
-      stack.pop()
-      if (0 === stack.length) throw err
-      failed = true
-      failure = err
-      continue
-    }
-    if (step.done) {
-      stack.pop()
-      if (0 === stack.length) return step.value
-      input = step.value
-    } else {
-      stack.push(step.value as G<any>)
-      input = undefined
-    }
-  }
-}
+// this.infer(...)` hands the callee's generator to `run` (`./trampoline`,
+// which the evaluator shares), which drives every pending call on an
+// explicit stack of its own and resumes the caller with the result (or
+// throws the callee's failure into it, so a `finally` that restores the
+// environment still runs). The JavaScript stack stays a few frames deep
+// however deep the walk goes.
 
 // A local binding.
 type Local = { name: string; ty: Type }

@@ -22,6 +22,7 @@ import {
   parseFile,
   source,
   stdlib,
+  unimplemented,
 } from '../dist/alchemy'
 
 import { REPO_ROOT, thrown } from './common'
@@ -128,11 +129,18 @@ describe('natives', () => {
 
   // The seam the evaluator plugs into: implementations by name, for names
   // the table holds only.
-  it('implementations are installed by name', () => {
-    assert.equal(nativeCall('count'), undefined)
+  // Every native in the table has its implementation (rs/src/stdlib/
+  // registry.rs keeps both in one table; here ./natives installs them by
+  // name), and a name the table does not hold is refused.
+  it('every native has its implementation, installed by name', () => {
+    assert.deepStrictEqual(unimplemented(), [])
+    for (const n of natives()) assert.equal(typeof nativeCall(n.name), 'function', n.name)
+    const count = nativeCall('count')
     const impl = () => 0
     installCalls({ count: impl })
     assert.equal(nativeCall('count'), impl)
+    installCalls({ count })
+    assert.equal(nativeCall('count'), count)
     assert.match(String(thrown(() => installCalls({ nope: impl }))), /nope is not a native/)
   })
 

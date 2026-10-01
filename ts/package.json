@@ -28,10 +28,14 @@
   },
   "files": [
     "dist",
+    "bin",
     "LICENSE"
   ],
   "exports": {
     ".": "./dist/alchemy.js"
+  },
+  "bin": {
+    "alchemy": "bin/alchemy"
   },
   "peerDependencies": {
     "@tabnas/json": ">=0",
@@ -43,6 +47,7 @@
     "@tabnas/csv": "*",
     "@tabnas/debug": "*",
     "@tabnas/json": "*",
+    "@tabnas/jsonic": "*",
     "@tabnas/jsonl": "*",
     "@tabnas/parser": "*",
     "@tabnas/render": "*",
