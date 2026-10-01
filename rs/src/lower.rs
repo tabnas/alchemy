@@ -8,8 +8,10 @@
 //! stage that owns it. Four kinds of stage exist, one per protocol
 //! boundary:
 //!
-//! - **events** (`JsonEvents/1`): the host's input, or a `records` stage
-//!   ([`RecordsToJson`]) over table events;
+//! - **events** (`JsonEvents/1`): the host's input, a `records` stage
+//!   ([`RecordsToJson`]) over table events, or an adapter
+//!   ([`TaggedToJson`]) reading the tagged events an interpreted stream
+//!   yields, the reverse of `events`;
 //! - **table** (`TableRows/1`): the native table transducer
 //!   ([`TableFromJson`]) over events, or an adapter reading the tagged
 //!   `schema`, `row` and `table-end` values an interpreted stream yields;
@@ -42,9 +44,9 @@ use tabnas_render::{
 };
 use tabnas_transduce::limits::NODE_BYTES;
 use tabnas_transduce::{
-    BoundColumn, CaptureSpec, Cell, Code, Datum, Fail, Flow, JsonEvent, Limits, Metrics,
-    PublicColumn, RouteSink, Router, ScanEmit, Schema, Selected, Sink, TableBinding, TableEvent,
-    TableFromJson, TableSink, Transition,
+    BoundColumn, CaptureSpec, Cell, Code, Datum, Fail, Flow, Guarded, JsonEvent, Limits, Metrics,
+    Number, PublicColumn, RouteSink, Router, ScanEmit, Schema, Selected, Sink, TableBinding,
+    TableEvent, TableFromJson, TableSink, Transition,
 };
 
 use crate::ast::SourceSpan;
@@ -470,6 +472,58 @@ impl Sink for EventsToItems {
             JsonEvent::End => return self.down.end(),
         };
         self.down.item(item)
+    }
+}
+
+/// The tagged events an interpreted stream yields, as the JSON events a
+/// taker of `JsonEvents` reads (`json`, `table-from-json`, `select`,
+/// `route`, `events` again): the reverse of [`EventsToItems`], so a
+/// program can rewrite a document event by event (`events` through a
+/// `scan-emit`), or build events with their constructors, and hand them
+/// on. Each item must be an event of the shape the constructors make
+/// (`object-start`, `object-end`, `array-start`, `array-end`, `(key
+/// name)`, `(scalar value)`); anything else is `PROTOCOL_ORDER_ERROR`
+/// naming it. The sequence is the taker's to validate, as the source's own
+/// events are, and the stream's end is the events' `End`. The sink beneath
+/// is the source's guard ([`Guarded`]), so the source's limits hold on
+/// these events as on its own.
+struct TaggedToJson {
+    down: EventSink,
+}
+
+impl ItemSink for TaggedToJson {
+    fn item(&mut self, v: Val) -> Result<Flow, Fail> {
+        let Val::Tagged { tag, fields } = &v else {
+            return Err(Fail::protocol(format!(
+                "an event was expected, not {}",
+                v.kind()
+            )));
+        };
+        let event = match (&**tag, &**fields) {
+            ("object-start", []) => JsonEvent::ObjectStart,
+            ("object-end", []) => JsonEvent::ObjectEnd,
+            ("array-start", []) => JsonEvent::ArrayStart,
+            ("array-end", []) => JsonEvent::ArrayEnd,
+            ("key", [Val::Str(name)]) => JsonEvent::Key(name),
+            ("scalar", [Val::Null]) => JsonEvent::Null,
+            ("scalar", [Val::Bool(b)]) => JsonEvent::Bool(*b),
+            ("scalar", [Val::Num { value, lexeme }]) => JsonEvent::Number(Number {
+                value: *value,
+                lexeme: lexeme.as_deref(),
+            }),
+            ("scalar", [Val::Str(s)]) => JsonEvent::String(s),
+            _ => {
+                return Err(Fail::protocol(format!(
+                    "an event was expected, not {}",
+                    brief(&v)
+                )))
+            }
+        };
+        self.down.event(event)
+    }
+
+    fn end(&mut self) -> Result<Flow, Fail> {
+        self.down.event(JsonEvent::End)
     }
 }
 
@@ -1158,6 +1212,33 @@ impl<'a> Lowering<'a> {
             Plan::Records { source } => {
                 self.table(source, Box::new(RecordsToJson::new(sink)), false)
             }
+            // A stream whose items may be events (`events` itself, or a
+            // `scan-emit`, `map` or `filter` over anything): each item is
+            // turned back into an event as the stream runs, the reverse of
+            // `events`, so a program can rewrite a document event by event,
+            // or build events, and hand them to any taker of JSON events.
+            Plan::Events { .. }
+            | Plan::ScanEmit { .. }
+            | Plan::Map { .. }
+            | Plan::Filter { .. } => {
+                // The source's three limits hold on the events a program
+                // made as on the source's own, through the source's guard:
+                // a document built deeper than `max_depth`, a key longer
+                // than `max_key_bytes` or a scalar past `max_scalar_bytes`
+                // is refused where it arrives, whatever the input held. The
+                // guard counts into metrics of its own: the source's count
+                // the source's events, and these are the program's.
+                let guarded = Guarded::new(sink, self.limits, self.rt.abort(), Metrics::new());
+                self.items(
+                    plan,
+                    Box::new(TaggedToJson {
+                        down: Box::new(guarded),
+                    }),
+                    false,
+                )
+            }
+            // A stream that never yields events: `select`'s values,
+            // `route`'s selections, a table's events as items.
             other => Err(protocol_mismatch(format!(
                 "{} yields a stream of items where JSON events were expected",
                 crate::value::plan_name(other)

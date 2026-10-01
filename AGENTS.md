@@ -122,7 +122,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/effects.rs` | the effect summary and the `explain` report, as text and as JSON |
 | `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
 | `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
-| `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra |
+| `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra, and the two adapters from an interpreted stream, `TaggedToTable` to table events and `TaggedToJson` to JSON events |
 | `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
 | `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded, resolved and checked on first use |
@@ -245,7 +245,8 @@ stage that holds the data names it (`max_capture_bytes` for a program's
 `max_metadata_bytes` and `max_columns` for both tables,
 `max_metadata_bytes` and `max_depth` for a `scan-emit` state,
 `max_scalar_bytes` for a cell's JSON text, `max_depth`,
-`max_scalar_bytes` and `max_key_bytes` at the source), and the writer
+`max_scalar_bytes` and `max_key_bytes` at the source, and again on the
+events a program hands to a taker of JSON events), and the writer
 enforces `max_output_bytes`, which also bounds a finite text and one
 item's text as they are built. Hosts that run programs they did not
 write set `max_output_bytes` and a timeout.

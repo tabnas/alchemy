@@ -1255,7 +1255,7 @@ static NATIVES: &[Native] = &[
     k("key", Exact(1), key, "key name -> Event", "the name of the member whose value follows, inside an object"),
     k("scalar", Exact(1), scalar, "scalar value -> Event", "one scalar of the source: null, a boolean, a number with its lexeme, or a string"),
     // Renderers and protocol adapters.
-    f("json", Exact(1), json, "json events -> Text", "JsonEvents as compact JSON text, event by event, with a final newline"),
+    f("json", Exact(1), json, "json events -> Text", "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
     f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most max_columns, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that holds the quote, a line break or NUL is refused before anything runs"),
 ];

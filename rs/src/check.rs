@@ -1857,8 +1857,16 @@ mod tests {
             ])
         );
         assert_eq!(code("def export [input] (events input)").1, "bad_output");
+        // A stream of events reaches a taker of JSON events; a stream of
+        // values does not, nor do events reach a taker of table events.
         assert_eq!(
-            code("def export [input] (json (events input))").1,
+            check("def export [input] (json (events input))")
+                .unwrap()
+                .export,
+            Type::Text
+        );
+        assert_eq!(
+            code("def export [input] (json (select (path each-index) input))").1,
             "protocol_mismatch"
         );
         assert_eq!(

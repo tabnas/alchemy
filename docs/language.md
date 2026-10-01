@@ -452,7 +452,7 @@ wanted) is reported. The types (spec section 10.2):
 | `Vector<T>` | a finite retained collection; it cannot hold a stream | |
 | `Stream<T>` | an ordered single-use sequence of items | yes |
 | `TableEvents` | `Stream<TableEvent>`: `schema`, `row`s, `table-end`, the `TableRows/1` protocol as tagged values | yes |
-| `Stream<Event>` | the source's own events as items, what `events` yields: `object-start`, `object-end`, `array-start`, `array-end`, `(key name)`, `(scalar value)` | yes |
+| `Stream<Event>` | the source's own events as items, what `events` yields: `object-start`, `object-end`, `array-start`, `array-end`, `(key name)`, `(scalar value)`; a program hands such a stream to any taker of `JsonEvents` (`json`, `table-from-json`, `select`, `route`, `events`), each item turned back into an event as the stream runs, one that is not an event refused there (`PROTOCOL_ORDER_ERROR`), and the source's limits (`max_depth`, `max_key_bytes`, `max_scalar_bytes`) holding on them as on the source's own | yes |
 | `JsonEvents` | the single-use source, `JsonEvents/1` | yes |
 | `Text` | single-use incremental text | yes |
 | `String` | a finite retained string; where a text is wanted, a string lifts to one | |
@@ -506,7 +506,7 @@ definition's declared signature, or what a program definition's body
 inferred: a wrong count is `arity`, a wrong kind `type_mismatch`, and one
 protocol where another was wanted `protocol_mismatch` (`csv` given
 `JsonEvents`, `table-from-json` given `Text`, `json` given a stream of
-items):
+values):
 
 ```alchemy
 def export [input] (csv csv-options input)
@@ -607,7 +607,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `array-end` | `array-end -> Event` | an array ends |
 | `key` | `key name -> Event` | the name of the member whose value follows, inside an object |
 | `scalar` | `scalar value -> Event` | one scalar of the source: `null`, a boolean, a number with its lexeme, or a string |
-| `json` | `json events -> Text` | `JsonEvents` as compact JSON text, event by event, with a final newline |
+| `json` | `json events -> Text` | `JsonEvents`, or a `Stream<Event>` a program built, as compact JSON text, event by event, with a final newline |
 | `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
 | `csv-table` | `csv-table options events -> TableEvents` | the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most `max_columns`, labels strings, numbers or booleans; rows as wide as the schema; one `table-end`; a delimiter that holds the quote, a line break or NUL is refused before anything runs |
 
@@ -643,6 +643,11 @@ scan-emit [] step finish (events input)
 ```canonical
 (scan-emit [] step finish (events input))
 ```
+
+And back: a stream of events a program built reaches any taker of
+`JsonEvents`, so `(json (scan-emit [] step finish (events input)))`
+writes the document the step rewrote, and `table-from-json` reads the
+rows a step made.
 
 Values and the table protocol:
 
