@@ -1,0 +1,65 @@
+{
+  "name": "@tabnas/alchemy",
+  "version": "0.1.1",
+  "main": "dist/alchemy.js",
+  "type": "commonjs",
+  "types": "dist/alchemy.d.ts",
+  "description": "The alchemy grammar plugin and language for the tabnas parsing engine: declarative streaming transducers and renderers.",
+  "homepage": "https://tabnas.dev",
+  "keywords": [
+    "parser",
+    "grammar",
+    "dsl",
+    "streaming",
+    "transducer"
+  ],
+  "author": "Richard Rodger (http://richardrodger.com)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "embed": "node embed-grammar.js",
+    "build": "tsc --build src && tsc --build test",
+    "watch": "tsc --build src test -w",
+    "clean": "rm -rf node_modules dist dist-test package-lock.json",
+    "reset": "npm run clean && npm i && npm run build && npm test",
+    "test": "npm run build && node --enable-source-maps --test \"dist-test/*.test.js\""
+  },
+  "files": [
+    "dist",
+    "bin",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./dist/alchemy.js"
+  },
+  "bin": {
+    "alchemy": "bin/alchemy"
+  },
+  "peerDependencies": {
+    "@tabnas/json": ">=0",
+    "@tabnas/parser": ">=0",
+    "@tabnas/render": ">=0",
+    "@tabnas/transduce": ">=0"
+  },
+  "devDependencies": {
+    "@tabnas/csv": "*",
+    "@tabnas/debug": "*",
+    "@tabnas/json": "*",
+    "@tabnas/jsonic": "*",
+    "@tabnas/jsonl": "*",
+    "@tabnas/parser": "*",
+    "@tabnas/render": "*",
+    "@tabnas/support": "*",
+    "@tabnas/transduce": "*",
+    "@tabnas/yaml": "*",
+    "@types/node": "26.x",
+    "typescript": "7.x"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/tabnas/alchemy.git",
+    "directory": "ts"
+  }
+}
