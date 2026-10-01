@@ -33,7 +33,7 @@ func specDir(t *testing.T) string {
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	return filepath.Dir(specDir(t)[:len(specDir(t))-len("/spec")])
+	return filepath.Dir(filepath.Dir(specDir(t)))
 }
 
 // failError is a *Fail as the runner sees it: an error whose code is the
@@ -245,4 +245,116 @@ func TestSpecCheck(t *testing.T) {
 		}
 	}
 	t.Logf("check.tsv: %d rows run, %d need the interpreter", ran, skipped)
+}
+
+// TestFormatRoundTripsEveryFixtureRow: Format prints a program the reader
+// reads back to the same forms, spans aside, for every program the
+// fixtures parse.
+func TestFormatRoundTripsEveryFixtureRow(t *testing.T) {
+	specs, err := support.LoadSpecDir(specDir(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	for _, spec := range specs {
+		for _, row := range spec.Rows {
+			if support.IsErrorExpect(row.Col(1)) {
+				continue
+			}
+			rows++
+			input := row.Unesc(0)
+			program, f := Parse(input)
+			if f != nil {
+				continue // the fixture's own runner reports it
+			}
+			layout := Format(program)
+			again, f := Parse(layout)
+			if f != nil {
+				t.Errorf("%s: the layout form does not parse: %v\n  layout: %q", row.Where(), f, layout)
+				continue
+			}
+			if !SameProgram(program, again) {
+				t.Errorf("%s: format changed the program\n  input:  %q\n  layout: %q", row.Where(), input, layout)
+			}
+		}
+	}
+	if rows == 0 {
+		t.Fatal("the fixtures hold no value rows")
+	}
+}
+
+// TestEveryLanguageReferenceExampleIsAFixtureRow: each `alchemy` block of
+// docs/language.md with the canonical, core or check block after it is a
+// row of reader.tsv, pipe.tsv or check.tsv, and the result shown is that
+// row's expected value.
+func TestEveryLanguageReferenceExampleIsAFixtureRow(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "language.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := func(file string) map[string]string {
+		spec, err := support.LoadSpec(filepath.Join(specDir(t), file), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, row := range spec.Rows {
+			out[strings.TrimRight(row.Unesc(0), "\n")] = row.Col(1)
+		}
+		return out
+	}
+	fixtures := map[string]map[string]string{
+		"canonical": rows("reader.tsv"),
+		"core":      rows("pipe.tsv"),
+		"check":     rows("check.tsv"),
+	}
+	type block struct{ language, text string }
+	var blocks []block
+	open := false
+	var language string
+	var text []string
+	for _, line := range strings.Split(string(doc), "\n") {
+		rest, fence := strings.CutPrefix(line, "```")
+		switch {
+		case !open && fence && rest != "":
+			open, language, text = true, rest, nil
+		case open && fence && rest == "":
+			blocks = append(blocks, block{language, strings.Join(text, "\n")})
+			open = false
+		case open:
+			text = append(text, line)
+		}
+	}
+	examples := 0
+	for i, b := range blocks {
+		if b.language != "alchemy" {
+			continue
+		}
+		examples++
+		if i+1 >= len(blocks) || fixtures[blocks[i+1].language] == nil {
+			t.Errorf("%q: an alchemy block is followed by a canonical, core or check block", b.text)
+			continue
+		}
+		cell, ok := fixtures[blocks[i+1].language][strings.TrimRight(b.text, "\n")]
+		if !ok {
+			t.Errorf("%q: not a fixture row", b.text)
+			continue
+		}
+		shown := cell
+		if !support.IsErrorExpect(cell) {
+			v, err := support.ParseExpect(cell)
+			s, isString := v.(string)
+			if err != nil || !isString {
+				t.Errorf("%q: the fixture expects %v", b.text, v)
+				continue
+			}
+			shown = s
+		}
+		if strings.TrimRight(shown, "\n") != blocks[i+1].text {
+			t.Errorf("%q: the page shows %q, the fixture pins %q", b.text, blocks[i+1].text, shown)
+		}
+	}
+	if examples == 0 {
+		t.Fatal("the reference holds no examples")
+	}
 }
