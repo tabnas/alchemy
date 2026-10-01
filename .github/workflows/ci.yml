@@ -1,0 +1,24 @@
+# CI caller — org-standard replacement for .github/workflows/build.yml.
+# Live. Change it here, in a reviewed pull request: session credentials
+# can push .github/workflows/* (admin DECISIONS.md ADR-8, as amended
+# 2026-09-24).
+#
+# deps is in dependency order, and the build order is deps then alchemy.
+# transduce and render are the protocols a program lowers to, and every
+# runtime's tests read transduce's fixture documents from the checkout
+# beside this one (../transduce/rs/tests/fixtures). Their Go modules are
+# not yet published, so the Go job reaches them through the workspace the
+# reusable workflow builds over the clones (`go work use`); its
+# GOWORK=off step, and the TypeScript job's `npm i`, need them published.
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  ci:
+    uses: tabnas/.github/.github/workflows/polyglot-ci.yml@main
+    with:
+      deps: "parser support debug json jsonic jsonl yaml csv transduce render"

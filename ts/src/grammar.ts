@@ -90,9 +90,10 @@ const grammarText = `
 # together, so there is one definition of the language rather than two
 # halves that can drift. Every runtime embeds this file VERBATIM between
 # its \`--- BEGIN/END EMBEDDED alchemy-grammar.jsonic ---\` markers (Rust:
-# \`GRAMMAR_TEXT\` in rs/src/grammar.rs) and parses it once at run time.
-# Never hand-edit between the markers: edit this file and run
-# \`node scripts/embed.js\` (\`make embed\`).
+# \`GRAMMAR_TEXT\` in rs/src/grammar.rs; TypeScript: \`grammarText\` in
+# ts/src/grammar.ts; Go: \`grammarText\` in go/alchemy.go) and parses it
+# once at run time. Never hand-edit between the markers: edit this file
+# and run \`make embed\` (\`npm run embed\` in ts/).
 #
 # The text is JSON plus \`#\` line comments: every key and every string is
 # double-quoted, numbers are JSON numbers, and there are no trailing

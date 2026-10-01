@@ -95,9 +95,10 @@ const grammarText = `
 # together, so there is one definition of the language rather than two
 # halves that can drift. Every runtime embeds this file VERBATIM between
 # its ` + "`" + `--- BEGIN/END EMBEDDED alchemy-grammar.jsonic ---` + "`" + ` markers (Rust:
-# ` + "`" + `GRAMMAR_TEXT` + "`" + ` in rs/src/grammar.rs) and parses it once at run time.
-# Never hand-edit between the markers: edit this file and run
-# ` + "`" + `node scripts/embed.js` + "`" + ` (` + "`" + `make embed` + "`" + `).
+# ` + "`" + `GRAMMAR_TEXT` + "`" + ` in rs/src/grammar.rs; TypeScript: ` + "`" + `grammarText` + "`" + ` in
+# ts/src/grammar.ts; Go: ` + "`" + `grammarText` + "`" + ` in go/alchemy.go) and parses it
+# once at run time. Never hand-edit between the markers: edit this file
+# and run ` + "`" + `make embed` + "`" + ` (` + "`" + `npm run embed` + "`" + ` in ts/).
 #
 # The text is JSON plus ` + "`" + `#` + "`" + ` line comments: every key and every string is
 # double-quoted, numbers are JSON numbers, and there are no trailing
@@ -435,6 +436,17 @@ type tagged struct {
 }
 
 func (t *tagged) isSeq() bool { return t.tag == "list" || t.tag == "vector" }
+
+// MarshalJSON encodes a sequence the parse built as the tagged value tree
+// ParseValue answers, not as the empty object its unexported fields would
+// give. So a raw parse value, Make().Parse's, encodes as the documented
+// tree: the uniform C library (go/clib) answers it as its value, as every
+// other grammar's library answers its engine's.
+func (s *seq) MarshalJSON() ([]byte, error) { return json.Marshal(plain(s)) }
+
+// MarshalJSON encodes a node of the tree as ParseValue answers it (see
+// seq's).
+func (t *tagged) MarshalJSON() ([]byte, error) { return json.Marshal(plain(t)) }
 
 // plain is a node as the tagged value tree ParseValue answers: arrays as
 // []any, nodes as ordered maps.

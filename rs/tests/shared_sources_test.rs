@@ -6,7 +6,7 @@
 // `BEGIN/END EMBEDDED` markers of `rs/src/grammar.rs`; and `stdlib/*.alc`,
 // the standard library's own definitions, as the package-local copies in
 // `rs/stdlib/` that `rs/src/stdlib/mod.rs` embeds (a crate holds nothing
-// above `rs/`). `scripts/embed.js` (`make embed`) writes both. This fails
+// above `rs/`). `ts/embed-grammar.js` (`make embed`) writes both. This fails
 // when a copy and its source differ, or when a file is in one place and
 // not the other, so a forgotten embed is red rather than a quiet drift.
 

@@ -2,7 +2,7 @@
 //! written in alchemy itself. The crate embeds copies under
 //! `rs/stdlib/*.alc`, because a crates.io package cannot contain the
 //! canonical `stdlib/*.alc` files above its package root; `make embed`
-//! (`scripts/embed.js`) writes them. A unit test holds each packaged copy
+//! (`ts/embed-grammar.js`) writes them. A unit test holds each packaged copy
 //! byte-for-byte to its canonical file, and `tests/shared_sources_test.rs`
 //! holds the two directories to the same files and [`SOURCES`] to all of
 //! them.

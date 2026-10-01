@@ -1,19 +1,29 @@
 # The Rust gate: ci/rust/run.sh, with the sibling checkouts it needs.
-#
-# Runs on every branch push and on pull requests. `branches` is set
-# explicitly so a tag push does not run the gate on a ref where the path
-# filters mean nothing.
+# Standalone rather than an arm of ci.yml, because ci.yml calls the
+# org-shared polyglot workflow and that takes no Rust input: this file
+# needs no change in tabnas/.github.
 name: Rust
 
+# Runs on EVERY branch push, not just main, and the path lists are
+# written out twice. GitHub Actions has no YAML anchors, so a version
+# sharing one list between the two triggers does not run at all; and
+# restricting `push` to main while leaning on `pull_request` leaves a gate
+# that reaches a pull request green because it never executed.
 on:
+  # `branches` is set explicitly. A `push` trigger that names neither
+  # branches nor tags also matches TAG pushes, and Actions does not
+  # evaluate `paths` for a tag ref, so release.yml pushing `ts/v…` and
+  # `go/v…` would run this whole gate once per tag.
   push:
     branches: [ '**' ]
     paths:
       - 'rs/**'
       - 'test/spec/**'
+      # rs/tests/spec_test.rs holds every fixture file to the guide's table.
+      - 'test/AGENTS.md'
       - 'stdlib/**'
       - 'alchemy-grammar.jsonic'
-      - 'scripts/**'
+      - 'ts/embed-grammar.js'
       - 'docs/language.md'
       - 'ci/rust/**'
       - '.github/workflows/rust.yml'
@@ -21,9 +31,11 @@ on:
     paths:
       - 'rs/**'
       - 'test/spec/**'
+      # rs/tests/spec_test.rs holds every fixture file to the guide's table.
+      - 'test/AGENTS.md'
       - 'stdlib/**'
       - 'alchemy-grammar.jsonic'
-      - 'scripts/**'
+      - 'ts/embed-grammar.js'
       - 'docs/language.md'
       - 'ci/rust/**'
       - '.github/workflows/rust.yml'
@@ -32,6 +44,8 @@ on:
 permissions:
   contents: read
 
+# Actions are pinned to full commit SHAs with the corresponding release
+# as a trailing comment, at the action's latest release (ADR-16).
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -46,7 +60,9 @@ jobs:
       # A sibling is taken from the branch of the same name when it has one,
       # else from main: cross-repository work lands on same-named branches
       # in each repo, and a pull request here can then be gated against the
-      # sibling changes it needs before they merge.
+      # sibling changes it needs before they merge. The list is
+      # ci/rust/run.sh's SIBLINGS, read from the script, so the two cannot
+      # disagree.
       - name: Check out the sibling crates
         run: |
           set -euo pipefail
@@ -63,6 +79,13 @@ jobs:
             fi
           done
 
+      # Pinned to the MSRV in rs/Cargo.toml rather than to `stable`, so
+      # this fails on a change that needs a newer compiler instead of
+      # passing here and breaking for anyone honouring rust-version.
+      # rustup, NOT dtolnay/rust-toolchain: the org admits only
+      # GitHub-owned and verified-creator actions, so that action is
+      # refused before any job starts. The runners ship rustup. `default`
+      # is what makes the MSRV the toolchain the gate runs under.
       - name: Install the MSRV toolchain
         run: |
           MSRV=$(awk -F'"' '/^rust-version = /{print $2; exit}' alchemy/rs/Cargo.toml)

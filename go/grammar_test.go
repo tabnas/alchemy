@@ -7,12 +7,15 @@ package tabnasalchemy
 // tests).
 
 import (
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
 	tabnas "github.com/tabnas/parser/go"
+	support "github.com/tabnas/support/go"
 )
 
 // valueJSON writes a ParseValue tree as compact JSON, its keys in order.
@@ -311,5 +314,51 @@ func TestAlchemyInstallsOnABareEngine(t *testing.T) {
 	}
 	if got := valueJSON(plain(v)); !strings.HasPrefix(got, `[{"$":"list"`) {
 		t.Errorf("%s", got)
+	}
+}
+
+// A raw parse value, Make().Parse's, encodes as JSON exactly as the tree
+// ParseValue answers, so the uniform C library (go/clib), which answers a
+// handle's engine's value, carries the documented tree: over every
+// program reader.tsv holds, the two encodings agree, and so do the codes
+// of the programs the reader refuses.
+func TestARawParseValueEncodesAsTheTaggedTree(t *testing.T) {
+	spec, err := support.LoadSpec(filepath.Join(specDir(t), "reader.tsv"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := Make()
+	accepted, refused := 0, 0
+	for _, row := range spec.Rows {
+		src := row.Unesc(0)
+		raw, rawErr := engine.Parse(src)
+		value, valueErr := ParseValue(src)
+		if (rawErr == nil) != (valueErr == nil) {
+			t.Errorf("%s: Make().Parse %v, ParseValue %v", row.Where(), rawErr, valueErr)
+			continue
+		}
+		if rawErr != nil {
+			var a, b *tabnas.TabnasError
+			if !errors.As(rawErr, &a) || !errors.As(valueErr, &b) || a.Code != b.Code {
+				t.Errorf("%s: Make().Parse %v, ParseValue %v", row.Where(), rawErr, valueErr)
+			}
+			refused++
+			continue
+		}
+		got, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatalf("%s: %v", row.Where(), err)
+		}
+		want, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("%s: %v", row.Where(), err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s: the raw value encodes as\n  %s\nand ParseValue's as\n  %s", row.Where(), got, want)
+		}
+		accepted++
+	}
+	if accepted == 0 || refused == 0 {
+		t.Fatalf("reader.tsv gave %d accepted and %d refused programs", accepted, refused)
 	}
 }

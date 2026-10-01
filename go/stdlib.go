@@ -12,9 +12,10 @@ import (
 // (rs/src/stdlib/mod.rs).
 //
 // The module embeds its copies under go/stdlib/*.alc, because a published
-// Go module holds nothing above its own root; `go run ./internal/embed`
-// writes them from the canonical stdlib/*.alc, and
-// shared_sources_test.go holds each copy byte for byte to its file.
+// Go module holds nothing above its own root; `make embed` (the
+// repository's one embedder, ts/embed-grammar.js) writes them from the
+// canonical stdlib/*.alc, and shared_sources_test.go holds each copy byte
+// for byte to its file.
 //
 // table.alc is the metadata-first table transducer and csv.alc the
 // always-quoted CSV renderer. Both are parsed, desugared, resolved and

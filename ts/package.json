@@ -5,7 +5,7 @@
   "type": "commonjs",
   "types": "dist/alchemy.d.ts",
   "description": "The alchemy grammar plugin and language for the tabnas parsing engine: declarative streaming transducers and renderers.",
-  "homepage": "https://tabnas.dev",
+  "homepage": "https://github.com/tabnas/alchemy",
   "keywords": [
     "parser",
     "grammar",
