@@ -50,7 +50,7 @@ func resolveCode(t *testing.T, src string) coded {
 	if f == nil {
 		t.Fatalf("%q resolved", src)
 	}
-	return coded{f.Code, f.FinerCode(), f.Row, f.Column}
+	return coded{f.Code, FinerCode(f), f.Row, f.Column}
 }
 
 func TestDefinitionsSeeEachOtherInAnyOrder(t *testing.T) {
@@ -133,12 +133,12 @@ func TestADuplicateAcrossSourcesNamesTheFirst(t *testing.T) {
 		{File: "a.alc", Text: "def x 1\n"},
 		{File: "b.alc", Text: "\ndef x 2\ndef export [input] input"},
 	})
-	if f == nil || f.FinerCode() != "duplicate_def" || f.File != "b.alc" || f.Row != 2 ||
+	if f == nil || FinerCode(f) != "duplicate_def" || f.File != "b.alc" || f.Row != 2 ||
 		!strings.Contains(f.Message, "first at a.alc:1:1") {
 		t.Errorf("%v", f)
 	}
 	_, f = AnalyzeSources([]Source{{File: "a.alc", Text: "x"}, {File: "a.alc", Text: "y"}})
-	if f == nil || f.FinerCode() != "duplicate_file" {
+	if f == nil || FinerCode(f) != "duplicate_file" {
 		t.Errorf("%v", f)
 	}
 }
@@ -160,14 +160,14 @@ func TestASourceLinkedUnderAnotherName(t *testing.T) {
 		{File: "lib.alc", Text: "def x 1", ExportAs: "program-export"},
 		{File: "render.alc", Text: "def export [input] input"},
 	})
-	if f == nil || f.FinerCode() != "no_export" || f.File != "lib.alc" {
+	if f == nil || FinerCode(f) != "no_export" || f.File != "lib.alc" {
 		t.Errorf("%v", f)
 	}
 	_, f = AnalyzeSources([]Source{
 		{File: "p.alc", Text: "def export [program-export] program-export", ExportAs: "program-export"},
 		{File: "render.alc", Text: "def export [input] input"},
 	})
-	if f == nil || f.FinerCode() != "duplicate_def" || f.Row != 1 || f.Column != 13 {
+	if f == nil || FinerCode(f) != "duplicate_def" || f.Row != 1 || f.Column != 13 {
 		t.Errorf("%v", f)
 	}
 }
@@ -312,7 +312,7 @@ func checkCode(t *testing.T, src string) coded {
 	if f == nil {
 		t.Fatalf("%q checked", src)
 	}
-	return coded{f.Code, f.FinerCode(), f.Row, f.Column}
+	return coded{f.Code, FinerCode(f), f.Row, f.Column}
 }
 
 const binding = "def column-from-meta [source]\n  record\n    entry :label (get \"title\" source)\n    entry :source (as-path (get \"path\" source))\ndef api-binding\n  record\n    entry :columns (path \"response\" \"metadata\" \"fields\")\n    entry :rows (path \"response\" \"payload\" \"deep\" \"records\" each-index)\n    entry :column column-from-meta\n"
@@ -491,10 +491,22 @@ func TestAVectorMayHoldAFiniteTextAndNeverAStream(t *testing.T) {
 		"def export [input] (concat (join \",\" (vector (text \"i\") \"j\")) (json input))",
 		"def export [input] (concat (join \",\" (map text [\"a\" \"b\"])) (json input))",
 		// A live text in a vector passes the checker; building the plan
-		// refuses it, which is the interpreter's (check.tsv pins it).
+		// refuses it, below.
 		"def export [input] (join \",\" [(json input)])",
 	} {
 		mustCheck(t, src)
+	}
+	// A live text is refused where the vector is built, with its name.
+	for _, src := range []string{
+		"def export [input] (join \",\" [(json input)])",
+		"def export [input] (join \",\" (vector (json input)))",
+	} {
+		if _, f := Compile(src, "t.alc"); f == nil || f.Code != CodeDSLTypeError || !strings.Contains(f.Message, "cannot hold a live text") {
+			t.Errorf("%q: %v", src, f)
+		}
+	}
+	if p, f := Compile("def export [input] (concat (join \",\" [(text \"i\") \"j\"]) (json input))", "t.alc"); f != nil || p.Output() != OutputText {
+		t.Errorf("%v", f)
 	}
 	for _, src := range []string{
 		"def export [input] (json [input])",

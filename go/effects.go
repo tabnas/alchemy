@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	tt "github.com/tabnas/transduce/go"
 )
 
 // effects.go: the effect summary and the plan report (rs/src/effects.rs).
@@ -16,12 +18,12 @@ import (
 // retains. Explain prints the report in the layout of spec 15.5;
 // EffectSummary.JSON is the same information as one object.
 //
-// The plan is the interpreter's (the second half of the port), so this
-// file reads it through a view: PlanView, the facts the summary needs,
-// with the plan's stages from the input outward as Stage values. The
-// interpreter builds the view from its plan (the Rust `stages` walk, the
-// library-table test, the CSV dialect and the inferred-binding test); the
-// summary, the text and the JSON are all here.
+// The summary reads the plan through a view: PlanView, the facts the
+// summary needs, with the plan's stages from the input outward as Stage
+// values. Program.PlanView builds the view from the plan the program built
+// (the Rust `stages` walk, the library-table test, the CSV dialect and the
+// inferred-binding test, in program.go); the summary, the text and the
+// JSON are all here.
 
 // StageKind is the kind of one stage of a plan.
 type StageKind uint8
@@ -99,14 +101,14 @@ type Stage struct {
 }
 
 // Duplicates is the policy for a member name an object of the source
-// repeats.
-type Duplicates uint8
+// repeats: transduce's.
+type Duplicates = tt.Duplicates
 
 // The policies.
 const (
-	DuplicatesReject Duplicates = iota
-	DuplicatesLastWins
-	DuplicatesFirstWins
+	DuplicatesReject    = tt.Reject
+	DuplicatesLastWins  = tt.LastWins
+	DuplicatesFirstWins = tt.FirstWins
 )
 
 // PlanView is what the summary reads from a compiled program: the output

@@ -14,10 +14,9 @@ import (
 // planner report.
 //
 // This is the front end's half of the table: what the resolver and the
-// checker read. The implementations are the interpreter's, the second
-// half of the port, which keys them by name beside this table (and holds
-// the two to the same names in a test), so the metadata here stays the
-// one copy.
+// checker read. The implementations are keyed by name beside this table
+// (natives.go), and TestEveryNativeHasAnImplementation holds the two to
+// the same names, so the metadata here stays the one copy.
 
 // Arity is how many arguments an operator takes: from Min to Max, both
 // included, where Max < 0 is no upper bound.

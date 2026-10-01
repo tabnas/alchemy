@@ -19,10 +19,21 @@
 // protocol composition (types.go, check.go); the effects summary
 // (effects.go) prints the `explain` report from the stages of a plan.
 //
-// Front (frontend.go) runs the whole front end over one or several
-// sources. Building the plan (the interpreter), lowering it to transduce
-// and render sinks, the Program API and the `alchemy` command are the
-// second half of the port.
+// AnalyzeSources (frontend.go) runs the whole front end over one or
+// several sources. The back end builds the plan and runs it: the runtime
+// values (value.go), the evaluator and the natives' implementations
+// (interp.go, natives.go), the lowering of a plan onto transduce's and
+// render's Go ports (lower.go), and the API a host embeds, Compile,
+// CompileSources and Program (program.go). The `alchemy` command is
+// cmd/alchemy.
+//
+// A program's sink takes any source's events. `alchemy run` reads its
+// document as the Rust command does, with the JSON grammar through
+// transduce's ParserSource incrementally, which this release of
+// transduce's Go port builds only with the tabnas_nodecell tag; without
+// it the incremental source refuses (STREAMABILITY_UNKNOWN) before
+// reading, and the command reports that rather than read the document
+// some other way (see cmd/alchemy).
 package tabnasalchemy
 
 import (

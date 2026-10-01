@@ -124,7 +124,7 @@ func finerAt(t *testing.T, src string) (string, uint64, uint64) {
 	if f == nil {
 		t.Fatalf("%q parsed", src)
 	}
-	return f.FinerCode(), f.Row, f.Column
+	return FinerCode(f), f.Row, f.Column
 }
 
 // A lone `\r` at the start of a line is whitespace there too: it restarts
