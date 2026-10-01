@@ -927,6 +927,44 @@ fn quoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Str(Arc::from(quote(s))))
 }
 
+/// `string-join separator strings`: the strings of a vector joined into
+/// one string, the separator between them, so that a program can build
+/// one scalar from several: a table cell from the runs of a Markdown
+/// cell, a failure message that names a key. The result is one scalar,
+/// so it is held to `max_scalar_bytes`, refused before it is built.
+fn string_join(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let separator = as_str("string-join", "the separator", &a[0])?;
+    let items = as_items("string-join", &a[1])?;
+    let mut len = 0usize;
+    for (i, item) in items.iter().enumerate() {
+        let Val::Str(s) = item else {
+            return Err(type_error(format!(
+                "string-join: every item must be a string, not {}",
+                item.kind()
+            )));
+        };
+        len += s.len() + if i > 0 { separator.len() } else { 0 };
+    }
+    let max = rt.limits().max_scalar_bytes;
+    if len > max {
+        return Err(Fail::limit(
+            "max_scalar_bytes",
+            max as u64,
+            format!("string-join: the joined string is {len} bytes, more than {max}"),
+        ));
+    }
+    let mut out = String::with_capacity(len);
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(separator);
+        }
+        if let Val::Str(s) = item {
+            out.push_str(s);
+        }
+    }
+    Ok(Val::Str(Arc::from(out)))
+}
+
 /// `repeat count string`: the string `count` times over. The result is one
 /// scalar of the output (a line's indentation), so it is held to
 /// `max_scalar_bytes`, refused before it is built.
@@ -1196,6 +1234,7 @@ static NATIVES: &[Native] = &[
     f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),
     f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
     f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
+    f("string-join", Exact(2), string_join, "string-join separator strings -> String", "the strings of a vector joined into one string, the separator between them; refused past max_scalar_bytes, before it is built"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
     // The table protocol.
@@ -1276,7 +1315,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 41);
+        assert_eq!(compared, 42);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

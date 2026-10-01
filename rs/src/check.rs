@@ -1201,6 +1201,16 @@ impl Checker<'_> {
                 self.expect("the string of repeat", &String, t(1), at(1))?;
                 String
             }
+            "string-join" => {
+                self.expect("the separator of string-join", &String, t(0), at(0))?;
+                self.expect(
+                    "the strings of string-join",
+                    &Type::vector(Unknown),
+                    t(1),
+                    at(1),
+                )?;
+                String
+            }
             "fail" => {
                 self.expect("the message of fail", &String, t(0), at(0))?;
                 Never
