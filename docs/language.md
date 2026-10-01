@@ -1289,7 +1289,10 @@ let _ = Renderer::Json;
   can call it. That is how a host composes a whole program's output
   into a format's render, `def export [input] (yaml-render
   (program-export input))`, in one plan under one set of limits; a
-  source linked so must define `export` (`no_export`, naming the file).
+  source linked so must define `export` (`no_export`, naming the file)
+  and must not mention the new name already (`duplicate_def`, at the
+  mention), since renaming beside a binding of that name would change
+  what the source means.
 - `Program::output()` is what the program produces (`Text`,
   `TableRows`, `JsonEvents`), so the host knows whether `--render`
   applies; `row_selector()` is the selector under which the source is

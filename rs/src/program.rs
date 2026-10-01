@@ -94,7 +94,9 @@ pub struct Source<'a> {
     /// call it: a host composes a program's output into a format's render
     /// by linking the program as `program-export` and writing
     /// `def export [input] (yaml-render (program-export input))`. The
-    /// source must define `export` (`no_export` otherwise).
+    /// source must define `export` (`no_export` otherwise) and must not
+    /// mention the name already (`duplicate_def`), since renaming beside
+    /// a binding of that name would change what the source means.
     pub export_as: Option<&'a str>,
 }
 
@@ -170,11 +172,32 @@ pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
             let mut own = desugar::program(parsed, source.text).map_err(in_file)?;
             if let Some(name) = source.export_as {
                 if !own.iter().any(|form| defines(form, "export")) {
-                    return Err(Fail::new(
+                    return Err(in_file(Fail::new(
                         Code::DslTypeError,
                         format!(
                             "no_export: {} defines no export to link as {name}",
                             source.file
+                        ),
+                    )));
+                }
+                // Renaming every `export` is a consistent renaming only
+                // while nothing in the source is already called `name`: a
+                // parameter or a `let` of that name would capture a renamed
+                // mention. The host chooses the name, so one in use is its
+                // mistake, said at the first mention.
+                if let Some(taken) = own.iter().find_map(|form| mentions(form, name)) {
+                    return Err(in_file(
+                        Fail::new(
+                            Code::DslTypeError,
+                            format!(
+                                "duplicate_def: {} already names {name}, so its export cannot \
+                                 be linked under it; link it under another name",
+                                source.file
+                            ),
+                        )
+                        .at(
+                            linked.position(taken).0 as u64,
+                            linked.position(taken).1 as u64,
                         ),
                     ));
                 }
@@ -208,10 +231,22 @@ fn defines(form: &Expr, name: &str) -> bool {
     }
 }
 
+/// The span of the first symbol `name` in `form`, when it mentions one.
+/// Recursive per level, which [`crate::MAX_NESTING`] bounds.
+fn mentions<'f>(form: &'f Expr, name: &str) -> Option<&'f crate::ast::SourceSpan> {
+    match form {
+        Expr::Symbol { name: n, span } if n == name => Some(span),
+        Expr::List { items, .. } | Expr::Vector { items, .. } => {
+            items.iter().find_map(|item| mentions(item, name))
+        }
+        _ => None,
+    }
+}
+
 /// Every symbol `from` in `form` becomes `to`: the name a `def` binds and
 /// every mention of it alike, so the source means what it meant under
-/// the new name. Recursive per level, which [`crate::MAX_NESTING`]
-/// bounds.
+/// the new name, which [`compile_sources`] has checked is not in use.
+/// Recursive per level, which [`crate::MAX_NESTING`] bounds.
 fn rename_symbol(form: &mut Expr, from: &str, to: &str) {
     match form {
         Expr::Symbol { name, .. } if name == from => *name = to.to_string(),
