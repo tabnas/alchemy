@@ -44,9 +44,9 @@ use tabnas_render::{
 };
 use tabnas_transduce::limits::NODE_BYTES;
 use tabnas_transduce::{
-    BoundColumn, CaptureSpec, Cell, Code, Datum, Fail, Flow, JsonEvent, Limits, Metrics, Number,
-    PublicColumn, RouteSink, Router, ScanEmit, Schema, Selected, Sink, TableBinding, TableEvent,
-    TableFromJson, TableSink, Transition,
+    BoundColumn, CaptureSpec, Cell, Code, Datum, Fail, Flow, Guarded, JsonEvent, Limits, Metrics,
+    Number, PublicColumn, RouteSink, Router, ScanEmit, Schema, Selected, Sink, TableBinding,
+    TableEvent, TableFromJson, TableSink, Transition,
 };
 
 use crate::ast::SourceSpan;
@@ -484,7 +484,9 @@ impl Sink for EventsToItems {
 /// (`object-start`, `object-end`, `array-start`, `array-end`, `(key
 /// name)`, `(scalar value)`); anything else is `PROTOCOL_ORDER_ERROR`
 /// naming it. The sequence is the taker's to validate, as the source's own
-/// events are, and the stream's end is the events' `End`.
+/// events are, and the stream's end is the events' `End`. The sink beneath
+/// is the source's guard ([`Guarded`]), so the source's limits hold on
+/// these events as on its own.
 struct TaggedToJson {
     down: EventSink,
 }
@@ -1218,7 +1220,23 @@ impl<'a> Lowering<'a> {
             Plan::Events { .. }
             | Plan::ScanEmit { .. }
             | Plan::Map { .. }
-            | Plan::Filter { .. } => self.items(plan, Box::new(TaggedToJson { down: sink }), false),
+            | Plan::Filter { .. } => {
+                // The source's three limits hold on the events a program
+                // made as on the source's own, through the source's guard:
+                // a document built deeper than `max_depth`, a key longer
+                // than `max_key_bytes` or a scalar past `max_scalar_bytes`
+                // is refused where it arrives, whatever the input held. The
+                // guard counts into metrics of its own: the source's count
+                // the source's events, and these are the program's.
+                let guarded = Guarded::new(sink, self.limits, self.rt.abort(), Metrics::new());
+                self.items(
+                    plan,
+                    Box::new(TaggedToJson {
+                        down: Box::new(guarded),
+                    }),
+                    false,
+                )
+            }
             // A stream that never yields events: `select`'s values,
             // `route`'s selections, a table's events as items.
             other => Err(protocol_mismatch(format!(

@@ -245,7 +245,8 @@ stage that holds the data names it (`max_capture_bytes` for a program's
 `max_metadata_bytes` and `max_columns` for both tables,
 `max_metadata_bytes` and `max_depth` for a `scan-emit` state,
 `max_scalar_bytes` for a cell's JSON text, `max_depth`,
-`max_scalar_bytes` and `max_key_bytes` at the source), and the writer
+`max_scalar_bytes` and `max_key_bytes` at the source, and again on the
+events a program hands to a taker of JSON events), and the writer
 enforces `max_output_bytes`, which also bounds a finite text and one
 item's text as they are built. Hosts that run programs they did not
 write set `max_output_bytes` and a timeout.

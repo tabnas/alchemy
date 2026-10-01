@@ -147,6 +147,12 @@ impl Runtime {
     /// The host's cancellation: once it is set, the next evaluation step
     /// fails with `ABORTED`, however long the item's computation would
     /// have run.
+    /// The abort flag the program's stages read between steps, for a
+    /// stage of the host's or of transduce's that polls it too.
+    pub fn abort(&self) -> AbortFlag {
+        self.abort.clone()
+    }
+
     pub fn with_abort(mut self, abort: AbortFlag) -> Runtime {
         self.abort = abort;
         self

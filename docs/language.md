@@ -452,7 +452,7 @@ wanted) is reported. The types (spec section 10.2):
 | `Vector<T>` | a finite retained collection; it cannot hold a stream | |
 | `Stream<T>` | an ordered single-use sequence of items | yes |
 | `TableEvents` | `Stream<TableEvent>`: `schema`, `row`s, `table-end`, the `TableRows/1` protocol as tagged values | yes |
-| `Stream<Event>` | the source's own events as items, what `events` yields: `object-start`, `object-end`, `array-start`, `array-end`, `(key name)`, `(scalar value)`; a program hands such a stream to any taker of `JsonEvents` (`json`, `table-from-json`, `select`, `route`, `events`), each item turned back into an event as the stream runs, and one that is not an event refused there (`PROTOCOL_ORDER_ERROR`) | yes |
+| `Stream<Event>` | the source's own events as items, what `events` yields: `object-start`, `object-end`, `array-start`, `array-end`, `(key name)`, `(scalar value)`; a program hands such a stream to any taker of `JsonEvents` (`json`, `table-from-json`, `select`, `route`, `events`), each item turned back into an event as the stream runs, one that is not an event refused there (`PROTOCOL_ORDER_ERROR`), and the source's limits (`max_depth`, `max_key_bytes`, `max_scalar_bytes`) holding on them as on the source's own | yes |
 | `JsonEvents` | the single-use source, `JsonEvents/1` | yes |
 | `Text` | single-use incremental text | yes |
 | `String` | a finite retained string; where a text is wanted, a string lifts to one | |

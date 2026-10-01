@@ -489,4 +489,50 @@ fn events_a_program_builds_feed_any_taker_of_json_events() {
     )
     .unwrap_err();
     assert!(fail.message.starts_with("protocol_mismatch"), "{fail}");
+    // The source's limits hold on the events a program made: a document
+    // built deeper than max_depth from a flat input, or a key longer than
+    // max_key_bytes, is refused where the limit is passed, as the
+    // source's own events would be.
+    let deepen = compile(
+        "def step [s e]\n\
+         \x20 match e\n\
+         \x20   case (scalar true) (transition s [array-start])\n\
+         \x20   case (scalar false) (transition s [array-end])\n\
+         \x20   case _ (transition s [])\n\
+         \n\
+         def export [input]\n\
+         \x20 json (scan-emit [] step (fn [s] []) (events input))",
+        "deepen.alc",
+    )
+    .unwrap();
+    let flat = |n: usize| {
+        let mut items = vec!["true"; n];
+        items.extend(vec!["false"; n]);
+        format!("[{}]", items.join(","))
+    };
+    let limits = Limits {
+        max_depth: 8,
+        ..Limits::default()
+    };
+    let (outcome, out) = drive(&deepen, &flat(8), &limits);
+    outcome.unwrap_or_else(|f| panic!("{f}"));
+    assert_eq!(out, format!("{}{}\n", "[".repeat(8), "]".repeat(8)));
+    let (outcome, _) = drive(&deepen, &flat(9), &limits);
+    let fail = outcome.unwrap_err();
+    assert_eq!(fail.code, Code::ResourceLimitExceeded, "{fail}");
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth", "{fail}");
+    let widen = compile(
+        "def export [input] (json (scan-emit [] (fn [s e] (transition s [object-start (key \
+         (repeat 40 \"k\")) e object-end])) (fn [s] []) (events input)))",
+        "widen.alc",
+    )
+    .unwrap();
+    let limits = Limits {
+        max_key_bytes: 16,
+        ..Limits::default()
+    };
+    let (outcome, _) = drive(&widen, "1", &limits);
+    let fail = outcome.unwrap_err();
+    assert_eq!(fail.code, Code::ResourceLimitExceeded, "{fail}");
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_key_bytes", "{fail}");
 }
