@@ -329,11 +329,12 @@ fn events_over_the_input_is_affine() {
     let fail = compile(captured, "captured.alc").unwrap_err();
     assert_eq!(fail.code, Code::StreamReused, "{fail}");
     assert!(fail.message.starts_with("captured: "), "{fail}");
-    // The stream `events` yields is a stream of items: it is not JSON
-    // events for `json`, not table events for `csv`, and not the output.
+    // The stream `events` yields is a stream of items: events, which
+    // `json` takes back, but not table events for `csv` and not the
+    // output; a stream of values is not events.
     for (src, finer) in [
         (
-            "def export [input] (json (events input))",
+            "def export [input] (json (select (path each-index) input))",
             "protocol_mismatch",
         ),
         (
@@ -415,4 +416,77 @@ fn explain_reports_an_events_pipeline() {
         render(&keys, r#"{"a":1,"b":{"c":[2,{"d":3}]},"a":4}"#),
         "\"a\"\n\"b\"\n\"c\"\n\"d\"\n\"a\"\n"
     );
+}
+
+/// A stream of events a program built reaches any taker of JSON events,
+/// the reverse of `events`: the events and back through `json` is the
+/// document again, lexemes kept; a `scan-emit` over them rewrites it on
+/// the way; `table-from-json` reads the rows a step made; an item that is
+/// not an event is refused as the stream runs, naming it, where the
+/// checker lets a stream of unknown items through; and a stream of
+/// values is refused before anything runs.
+#[test]
+fn events_a_program_builds_feed_any_taker_of_json_events() {
+    let back = compile("def export [input] (json (events input))", "back.alc").unwrap();
+    assert_eq!(back.output(), Output::Text);
+    let nested = r#"{"a":"x","b":["y",null,{"c":1.50,"d":{}}],"e":[],"n":-0,"t":true}"#;
+    assert_eq!(render(&back, nested), format!("{nested}\n"));
+    let rename = compile(
+        "def step [s e]\n\
+         \x20 match e\n\
+         \x20   case (key \"a\") (transition s [(key \"b\")])\n\
+         \x20   case _ (transition s [e])\n\
+         \n\
+         def export [input]\n\
+         \x20 json (scan-emit [] step (fn [s] []) (events input))",
+        "rename.alc",
+    )
+    .unwrap();
+    assert_eq!(
+        render(&rename, r#"{"a":1,"x":{"a":[2]}}"#),
+        "{\"b\":1,\"x\":{\"b\":[2]}}\n"
+    );
+    // The rows a step made: each scalar of the root array wrapped as an
+    // object of one member, read by table-from-json, written by records.
+    let wrap = compile(
+        "def step [s e]\n\
+         \x20 match s\n\
+         \x20   case 0 (transition 1 [e])\n\
+         \x20   case _\n\
+         \x20     match e\n\
+         \x20       case (scalar v) (transition 1 [object-start (key \"value\") e object-end])\n\
+         \x20       case _ (transition 1 [e])\n\
+         \n\
+         def rows (record (entry :columns :infer) (entry :rows (path each-index)))\n\
+         \n\
+         def export [input]\n\
+         \x20 json (records (table-from-json rows (scan-emit 0 step (fn [s] []) (events input))))",
+        "wrap.alc",
+    )
+    .unwrap();
+    assert_eq!(
+        render(&wrap, r#"[1,"two",true]"#),
+        "[{\"value\":1},{\"value\":\"two\"},{\"value\":true}]\n"
+    );
+    // An item that is not an event is refused where it arrives.
+    let bad = compile(
+        "def export [input] (json (scan-emit [] (fn [s e] (transition s [1])) (fn [s] []) (events input)))",
+        "bad.alc",
+    )
+    .unwrap();
+    let (outcome, out) = drive(&bad, "[1]", &Limits::default());
+    let fail = outcome.unwrap_err();
+    assert_eq!(fail.code, Code::ProtocolOrderError, "{fail}");
+    assert!(
+        fail.message.starts_with("an event was expected, not"),
+        "{fail}"
+    );
+    assert_eq!(out, "");
+    // A stream of values is not a stream of events: the checker says so.
+    let fail = compile(
+        "def export [input] (json (select (path each-index) input))",
+        "values.alc",
+    )
+    .unwrap_err();
+    assert!(fail.message.starts_with("protocol_mismatch"), "{fail}");
 }

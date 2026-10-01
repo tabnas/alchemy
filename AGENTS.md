@@ -122,7 +122,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/effects.rs` | the effect summary and the `explain` report, as text and as JSON |
 | `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
 | `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
-| `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra |
+| `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra, and the two adapters from an interpreted stream, `TaggedToTable` to table events and `TaggedToJson` to JSON events |
 | `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
 | `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded, resolved and checked on first use |

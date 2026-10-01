@@ -164,6 +164,10 @@ impl Type {
                 "object-start" | "object-end" | "array-start" | "array-end" | "key" | "scalar"
             ),
             (Type::Fn(ps, r), Type::Fn(qs, s)) => ps.len() == qs.len() && r.accepts(s),
+            // A stream of events reaches any taker of JSON events: the
+            // lowering turns each item back into an event as the stream
+            // runs, and refuses one that is not.
+            (Type::JsonEvents, Type::Stream(item)) => Type::Event.accepts(item),
             (a, b) => a == b,
         }
     }
@@ -304,6 +308,9 @@ mod tests {
         assert!(!table.accepts(&events));
         assert!(!events.accepts(&table));
         assert!(!events.accepts(&Type::JsonEvents));
+        assert!(Type::JsonEvents.accepts(&events));
+        assert!(Type::JsonEvents.accepts(&Type::stream(Type::Unknown)));
+        assert!(!Type::JsonEvents.accepts(&Type::stream(Type::Value)));
         assert!(events.is_affine() && events.is_protocol());
         assert_eq!(events.to_string(), "Stream<Event>");
         assert!(table.is_affine() && Type::Text.is_affine() && !Type::String.is_affine());

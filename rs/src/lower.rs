@@ -8,8 +8,10 @@
 //! stage that owns it. Four kinds of stage exist, one per protocol
 //! boundary:
 //!
-//! - **events** (`JsonEvents/1`): the host's input, or a `records` stage
-//!   ([`RecordsToJson`]) over table events;
+//! - **events** (`JsonEvents/1`): the host's input, a `records` stage
+//!   ([`RecordsToJson`]) over table events, or an adapter
+//!   ([`TaggedToJson`]) reading the tagged events an interpreted stream
+//!   yields, the reverse of `events`;
 //! - **table** (`TableRows/1`): the native table transducer
 //!   ([`TableFromJson`]) over events, or an adapter reading the tagged
 //!   `schema`, `row` and `table-end` values an interpreted stream yields;
@@ -42,7 +44,7 @@ use tabnas_render::{
 };
 use tabnas_transduce::limits::NODE_BYTES;
 use tabnas_transduce::{
-    BoundColumn, CaptureSpec, Cell, Code, Datum, Fail, Flow, JsonEvent, Limits, Metrics,
+    BoundColumn, CaptureSpec, Cell, Code, Datum, Fail, Flow, JsonEvent, Limits, Metrics, Number,
     PublicColumn, RouteSink, Router, ScanEmit, Schema, Selected, Sink, TableBinding, TableEvent,
     TableFromJson, TableSink, Transition,
 };
@@ -470,6 +472,56 @@ impl Sink for EventsToItems {
             JsonEvent::End => return self.down.end(),
         };
         self.down.item(item)
+    }
+}
+
+/// The tagged events an interpreted stream yields, as the JSON events a
+/// taker of `JsonEvents` reads (`json`, `table-from-json`, `select`,
+/// `route`, `events` again): the reverse of [`EventsToItems`], so a
+/// program can rewrite a document event by event (`events` through a
+/// `scan-emit`), or build events with their constructors, and hand them
+/// on. Each item must be an event of the shape the constructors make
+/// (`object-start`, `object-end`, `array-start`, `array-end`, `(key
+/// name)`, `(scalar value)`); anything else is `PROTOCOL_ORDER_ERROR`
+/// naming it. The sequence is the taker's to validate, as the source's own
+/// events are, and the stream's end is the events' `End`.
+struct TaggedToJson {
+    down: EventSink,
+}
+
+impl ItemSink for TaggedToJson {
+    fn item(&mut self, v: Val) -> Result<Flow, Fail> {
+        let Val::Tagged { tag, fields } = &v else {
+            return Err(Fail::protocol(format!(
+                "an event was expected, not {}",
+                v.kind()
+            )));
+        };
+        let event = match (&**tag, &**fields) {
+            ("object-start", []) => JsonEvent::ObjectStart,
+            ("object-end", []) => JsonEvent::ObjectEnd,
+            ("array-start", []) => JsonEvent::ArrayStart,
+            ("array-end", []) => JsonEvent::ArrayEnd,
+            ("key", [Val::Str(name)]) => JsonEvent::Key(name),
+            ("scalar", [Val::Null]) => JsonEvent::Null,
+            ("scalar", [Val::Bool(b)]) => JsonEvent::Bool(*b),
+            ("scalar", [Val::Num { value, lexeme }]) => JsonEvent::Number(Number {
+                value: *value,
+                lexeme: lexeme.as_deref(),
+            }),
+            ("scalar", [Val::Str(s)]) => JsonEvent::String(s),
+            _ => {
+                return Err(Fail::protocol(format!(
+                    "an event was expected, not {}",
+                    brief(&v)
+                )))
+            }
+        };
+        self.down.event(event)
+    }
+
+    fn end(&mut self) -> Result<Flow, Fail> {
+        self.down.event(JsonEvent::End)
     }
 }
 
@@ -1158,6 +1210,17 @@ impl<'a> Lowering<'a> {
             Plan::Records { source } => {
                 self.table(source, Box::new(RecordsToJson::new(sink)), false)
             }
+            // A stream whose items may be events (`events` itself, or a
+            // `scan-emit`, `map` or `filter` over anything): each item is
+            // turned back into an event as the stream runs, the reverse of
+            // `events`, so a program can rewrite a document event by event,
+            // or build events, and hand them to any taker of JSON events.
+            Plan::Events { .. }
+            | Plan::ScanEmit { .. }
+            | Plan::Map { .. }
+            | Plan::Filter { .. } => self.items(plan, Box::new(TaggedToJson { down: sink }), false),
+            // A stream that never yields events: `select`'s values,
+            // `route`'s selections, a table's events as items.
             other => Err(protocol_mismatch(format!(
                 "{} yields a stream of items where JSON events were expected",
                 crate::value::plan_name(other)
