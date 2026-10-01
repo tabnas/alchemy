@@ -12,7 +12,10 @@ Every `alchemy` example below, together with the `canonical`, `core` or
 [`test/spec/pipe.tsv`](../test/spec/pipe.tsv) or
 [`test/spec/check.tsv`](../test/spec/check.tsv), and
 `rs/tests/spec_test.rs` fails when one is not, so what this page shows is
-what the crate does.
+what the crate does. What a program writes when it runs, the worked
+examples under [Programs](#programs) among them, is pinned the same way,
+byte for byte, by [`test/spec/run.tsv`](../test/spec/run.tsv): a program
+and a JSON document, and the output or the failure's code.
 
 ## Forms
 

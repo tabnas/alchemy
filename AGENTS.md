@@ -74,8 +74,8 @@ grow with it (the rewind history does not: it records consumed tokens
 either way and is capped), and the tree comes out nested where the source
 is flat.
 
-**The reader is in that shape.** In the grammar document in
-`rs/src/grammar.rs`, a container pushes its first item and the item's
+**The reader is in that shape.** In the grammar document,
+`alchemy-grammar.jsonic`, a container pushes its first item and the item's
 close replaces it with the next, in the same frame, so the container's
 close runs once, after the last item. `program` and `block` push the
 first `line`, and `line`'s close replaces it with the next line
@@ -113,8 +113,10 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 
 | Path | What it is |
 |---|---|
+| `alchemy-grammar.jsonic` | the grammar document, options and rules: the single source every runtime embeds (see "Shared sources") |
+| `scripts/embed.js` | `make embed`: copies the grammar between the `BEGIN/END EMBEDDED` markers of `rs/src/grammar.rs`, and `stdlib/*.alc` into `rs/stdlib/`; `--check` only compares |
 | `rs/src/lex.rs` | the layout lex matcher: `#IN`, `#DE`, `#NL`, `#KW`, words and the delimiter-depth scan |
-| `rs/src/grammar.rs` | the grammar plugin: the document, `alchemy()`, `make()`, `parse_value()`, `parse()`, `parse_file()` |
+| `rs/src/grammar.rs` | the grammar plugin: the embedded document (`GRAMMAR_TEXT`, read once with the JSON grammar), the refs it names, `alchemy()`, `make()`, `parse_value()`, `parse()`, `parse_file()` |
 | `rs/src/ast.rs` | `Expr`, `SourceSpan`, `Sources` (the texts a program is compiled from, each span positioned in its own file's), `same_shape`, `canonical()` and layout `format()` |
 | `rs/src/desugar.rs` | `def` with parameters, `pipe`, the shapes of `let`, `if` and `match` |
 | `rs/src/resolve.rs` | scopes and linking: top-level `def`s in any order, locals, the library's names; `unknown_name`; recursion refused |
@@ -125,20 +127,52 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra, and the two adapters from an interpreted stream, `TaggedToTable` to table events and `TaggedToJson` to JSON events |
 | `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
-| `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded, resolved and checked on first use |
+| `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded from the crate's copies in `rs/stdlib/`, resolved and checked on first use |
 | `rs/src/bin/alchemy.rs` | `alchemy canon | format | check | explain | run` |
-| `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner`, the layout round trip, the reference's examples |
+| `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner` (`run.tsv` both natively and interpreted), the layout round trip, the reference's examples |
 | `rs/tests/debug_model_test.rs` | the grammar composed with `tabnas-debug`, as every grammar carries |
 | `rs/tests/repeat_test.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
 | `rs/tests/cli_test.rs` | the built binary, run as a script runs it |
 | `rs/tests/run_test.rs` | the API end to end: the worked example both ways, the spec's streaming rows, the `json` echo, `records` |
 | `rs/tests/sources_test.rs` | `compile_sources`: a format's part linked with a program and run as one, a program linked under another name and fed to a render, every stage's failure naming the file it is in, and the linking's refusals |
+| `rs/tests/shared_sources_test.rs` | the embedded grammar is `alchemy-grammar.jsonic`, and `rs/stdlib/` is `stdlib/`, file for file |
 | `rs/tests/stdlib_test.rs` | the differential test: the interpreted library against the native path on every fixture and generated document |
 | `test/spec/reader.tsv` | shared fixtures: layout → canonical, and the reader's errors by code |
 | `test/spec/pipe.tsv` | shared fixtures: layout → canonical of the desugared program, and the desugaring errors |
 | `test/spec/check.tsv` | shared fixtures: program → `ERROR:<finer code>` for every resolver and checker code, and program → plan report |
+| `test/spec/run.tsv` | shared fixtures: program and JSON document → the exact bytes the run writes, or `ERROR:<code>` |
+| `test/AGENTS.md` | the fixtures' columns, the error-code contract, who runs what |
 | `docs/language.md` | the language reference; every example in it is a fixture row |
 | `ci/rust/run.sh` | the gate `.github/workflows/rust.yml` runs |
+
+## Shared sources
+
+Two sources are authored once, at the root, and every runtime embeds them
+verbatim; never edit a copy.
+
+- **`alchemy-grammar.jsonic`**, the grammar document. Rust carries it
+  between the `--- BEGIN/END EMBEDDED alchemy-grammar.jsonic ---` markers
+  of `rs/src/grammar.rs` as `GRAMMAR_TEXT` and parses it once per
+  process. The text is JSON with `#` line comments, so the strict JSON
+  grammar (`tabnas_json`, comment lexing on) reads it and the crate needs
+  no jsonic; keep it in that subset (quoted keys and strings, no trailing
+  commas), which is also valid jsonic. Whole numbers are put back into
+  integer form after the read (`b` is an integer field).
+- **`stdlib/*.alc`**, the library's own definitions. A crate holds
+  nothing above `rs/`, so Rust embeds its copies in `rs/stdlib/`.
+
+Edit the root file and run `make embed` (`node scripts/embed.js`, no
+dependencies). `rs/tests/shared_sources_test.rs` fails when a copy and
+its source differ or a file is in one place only, and
+`refs_the_document_names_are_the_ones_registered` in `rs/src/grammar.rs`
+when the document names an `@` reference the crate does not register, or
+the reverse. The TypeScript and Go ports add their targets to
+`scripts/embed.js` (which then moves to `ts/embed-grammar.js`, run by
+`npm run embed`, as in every plugin repository): a template literal in
+the TS source, a raw string in the Go source, and `go/stdlib/` for
+`go:embed`, each with a test holding it to the root file, and each
+registering the same `@alchemy-*` references before installing the
+document.
 
 ## Verify your work
 
