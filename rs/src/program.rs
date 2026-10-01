@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tabnas_render::{TextOut, WriteOut};
 use tabnas_transduce::{AbortFlag, Code, Duplicates, Fail, Limits, Metrics, Selector, Sink};
 
-use crate::ast::Sources;
+use crate::ast::{Expr, Sources};
 use crate::interp::{Runtime, MAX_PLAN_STEPS};
 use crate::lower::{EventSink, Lowering, Out};
 use crate::resolve::{resolve, Resolved};
@@ -78,15 +78,44 @@ impl std::fmt::Debug for Program {
 /// runs on a thread of [`crate::STACK_BYTES`], and building the plan is
 /// bounded by [`MAX_PLAN_STEPS`] and [`crate::MAX_EVAL_DEPTH`].
 pub fn compile(src: &str, file: &str) -> Result<Program, Fail> {
-    compile_sources(&[Source { file, text: src }])
+    compile_sources(&[Source::new(file, src)])
 }
 
 /// One of the sources a program is compiled from: the file it is named
-/// by in diagnostics, and its text.
+/// by in diagnostics, its text, and the name its own `export` is linked
+/// under when another source's `export` is the program's.
 #[derive(Clone, Copy, Debug)]
 pub struct Source<'a> {
     pub file: &'a str,
     pub text: &'a str,
+    /// When set, this source's `export` is defined under this name in the
+    /// linked namespace, and every mention of `export` in this source
+    /// names it, so that the program's `export`, in another source, can
+    /// call it: a host composes a program's output into a format's render
+    /// by linking the program as `program-export` and writing
+    /// `def export [input] (yaml-render (program-export input))`. The
+    /// source must define `export` (`no_export` otherwise) and must not
+    /// mention the name already (`duplicate_def`), since renaming beside
+    /// a binding of that name would change what the source means.
+    pub export_as: Option<&'a str>,
+}
+
+impl<'a> Source<'a> {
+    pub fn new(file: &'a str, text: &'a str) -> Source<'a> {
+        Source {
+            file,
+            text,
+            export_as: None,
+        }
+    }
+
+    /// The same source with its `export` linked under `name`.
+    pub fn export_as(self, name: &'a str) -> Source<'a> {
+        Source {
+            export_as: Some(name),
+            ..self
+        }
+    }
 }
 
 /// Compile a program from several sources linked into one namespace: a
@@ -99,6 +128,15 @@ pub struct Source<'a> {
 /// one source is [`compile`], which positions without a file. This is
 /// how a host links a format's parts (its lift and render: libraries of
 /// definitions with no `export`) with the program that calls them.
+///
+/// A source whose `export` is not the program's is linked with
+/// [`Source::export_as`]: its `export` is defined under that name
+/// instead, so that the program's `export` can call it. This is how a
+/// host composes a whole program's output into a format's render
+/// (`def export [input] (yaml-render (program-export input))`, with the
+/// user's program linked as `program-export`), in one plan under one
+/// set of limits. The renamed source positions its failures in its own
+/// file as any source does.
 pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
     on_stack(|| {
         let mut named: Vec<(Arc<str>, Arc<str>)> = Vec::with_capacity(sources.len());
@@ -131,7 +169,43 @@ pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
                 }
             };
             let parsed = parse_file(source.text, source.file).map_err(in_file)?;
-            forms.extend(desugar::program(parsed, source.text).map_err(in_file)?);
+            let mut own = desugar::program(parsed, source.text).map_err(in_file)?;
+            if let Some(name) = source.export_as {
+                if !own.iter().any(|form| defines(form, "export")) {
+                    return Err(in_file(Fail::new(
+                        Code::DslTypeError,
+                        format!(
+                            "no_export: {} defines no export to link as {name}",
+                            source.file
+                        ),
+                    )));
+                }
+                // Renaming every `export` is a consistent renaming only
+                // while nothing in the source is already called `name`: a
+                // parameter or a `let` of that name would capture a renamed
+                // mention. The host chooses the name, so one in use is its
+                // mistake, said at the first mention.
+                if let Some(taken) = own.iter().find_map(|form| mentions(form, name)) {
+                    return Err(in_file(
+                        Fail::new(
+                            Code::DslTypeError,
+                            format!(
+                                "duplicate_def: {} already names {name}, so its export cannot \
+                                 be linked under it; link it under another name",
+                                source.file
+                            ),
+                        )
+                        .at(
+                            linked.position(taken).0 as u64,
+                            linked.position(taken).1 as u64,
+                        ),
+                    ));
+                }
+                for form in &mut own {
+                    rename_symbol(form, "export", name);
+                }
+            }
+            forms.extend(own);
         }
         let resolved = Arc::new(resolve(forms, &linked, &stdlib::outer)?);
         let checked = crate::check::program(&resolved, &linked)?;
@@ -144,6 +218,45 @@ pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
             AbortFlag::new(),
         )
     })
+}
+
+/// Whether `form` is a top-level `def` of `name`, as the desugarer leaves
+/// one: `(def name value)`.
+fn defines(form: &Expr, name: &str) -> bool {
+    match form {
+        Expr::List { items, .. } => {
+            items.len() == 3 && items[0].symbol() == Some("def") && items[1].symbol() == Some(name)
+        }
+        _ => false,
+    }
+}
+
+/// The span of the first symbol `name` in `form`, when it mentions one.
+/// Recursive per level, which [`crate::MAX_NESTING`] bounds.
+fn mentions<'f>(form: &'f Expr, name: &str) -> Option<&'f crate::ast::SourceSpan> {
+    match form {
+        Expr::Symbol { name: n, span } if n == name => Some(span),
+        Expr::List { items, .. } | Expr::Vector { items, .. } => {
+            items.iter().find_map(|item| mentions(item, name))
+        }
+        _ => None,
+    }
+}
+
+/// Every symbol `from` in `form` becomes `to`: the name a `def` binds and
+/// every mention of it alike, so the source means what it meant under
+/// the new name, which [`compile_sources`] has checked is not in use.
+/// Recursive per level, which [`crate::MAX_NESTING`] bounds.
+fn rename_symbol(form: &mut Expr, from: &str, to: &str) {
+    match form {
+        Expr::Symbol { name, .. } if name == from => *name = to.to_string(),
+        Expr::List { items, .. } | Expr::Vector { items, .. } => {
+            for item in items {
+                rename_symbol(item, from, to);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Run `work` on a thread of [`crate::STACK_BYTES`], so the checker's and

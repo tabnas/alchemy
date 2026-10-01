@@ -595,6 +595,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
 | `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F as `\u00XX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past `max_scalar_bytes`, before it is built |
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
+| `string-join` | `string-join separator strings -> String` | the strings of a vector joined into one string, the separator between them; refused past `max_scalar_bytes`, before it is built |
 | `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema, of at most `max_columns` columns, refused where it is built past them; one row, as wide as the schema; the end, after the source validated |
@@ -1267,7 +1268,7 @@ let _ = Renderer::Json;
   most `MAX_EVAL_DEPTH` (1,000) levels of nesting, `recursion` past them.
   It runs on a thread of `STACK_BYTES` (64 MiB) whatever thread calls it,
   so those bounds hold in a debug build as in a release one.
-- `compile_sources(&[Source { file, text }, …])` compiles one program
+- `compile_sources(&[Source::new(file, text), …])` compiles one program
   from several sources linked into one namespace, as a host links a
   format's parts (libraries of definitions prefixed by the format's
   name, with no `export`) with the program that calls them. A
@@ -1280,7 +1281,18 @@ let _ = Renderer::Json;
   display writes as `(lines/render.alc:3:18)` and `to_json` as `file`,
   from every stage: the reader, the desugarer, the resolver, the checker
   (a render handed the wrong shape fails at the render's own line) and
-  the run. One source is `compile`, whose failures name no file.
+  the run. One source is `compile`, whose failures name no file. A
+  source whose `export` is not the program's is linked with
+  `Source::new(file, text).export_as("program-export")`: its `export`
+  is defined under that name instead, and every mention of `export` in
+  that source names it, so the program's `export`, in another source,
+  can call it. That is how a host composes a whole program's output
+  into a format's render, `def export [input] (yaml-render
+  (program-export input))`, in one plan under one set of limits; a
+  source linked so must define `export` (`no_export`, naming the file)
+  and must not mention the new name already (`duplicate_def`, at the
+  mention), since renaming beside a binding of that name would change
+  what the source means.
 - `Program::output()` is what the program produces (`Text`,
   `TableRows`, `JsonEvents`), so the host knows whether `--render`
   applies; `row_selector()` is the selector under which the source is

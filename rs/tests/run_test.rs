@@ -269,6 +269,48 @@ fn a_very_large_selected_row_names_the_limit() {
     }
 }
 
+/// `string-join` builds one string from a vector of strings, the
+/// separator between them: a cell from the runs of a Markdown cell, a
+/// `fail` message that names a key. An item that is not a string is a
+/// type error where the plan is built, and the joined string is held to
+/// `max_scalar_bytes` before it is built.
+#[test]
+fn string_join_builds_one_string_from_several() {
+    let program = compile(
+        "def export [input]\n  concat\n    string-join \", \" [\"a\" \"b\" \"c\"]\n    \"|\"\n    string-join \"-\" []\n    \"|\"\n    string-join \"\" [\"x\"]\n    \"|\"\n    string-join \" \" [(quoted \"k\") \"holds\" (scalar-text csv-options 1.5)]\n    \"\\n\"\n",
+        "join.alc",
+    )
+    .unwrap();
+    assert_eq!(program.output(), Output::Text);
+    let (outcome, out) = drive(&program, "null", None, &Limits::default());
+    outcome.unwrap();
+    assert_eq!(out, "a, b, c||x|\"k\" holds 1.5\n");
+    // A failure that names a key, built from the parts.
+    let fail = compile(
+        "def export [input] (let [m (fail (string-join \" \" [\"no value under\" (quoted \"k\")]))] (json input))",
+        "named.alc",
+    )
+    .unwrap_err();
+    assert_eq!(fail.code, Code::InputInvalid, "{fail}");
+    assert_eq!(fail.message, "no value under \"k\"", "{fail}");
+    // The joined string is one scalar, held to max_scalar_bytes: here one
+    // built at the end of a scan over the events, under the run's limits.
+    let program = compile(
+        "def step [s e] (transition (push \"abcd\" s) [])\ndef fin [s] [(string-join \"\" s)]\ndef export [input]\n  join \"\" (scan-emit [] step fin (events input))\n",
+        "big.alc",
+    )
+    .unwrap();
+    let limits = Limits {
+        max_scalar_bytes: 16,
+        ..Limits::default()
+    };
+    let (fail, out) = err(&program, "[1,2,3,4,5,6,7,8]", &limits);
+    assert_eq!(fail.code, Code::ResourceLimitExceeded, "{fail}");
+    assert_eq!(fail.limit.as_ref().unwrap().name, "max_scalar_bytes");
+    assert!(fail.message.contains("string-join"), "{fail}");
+    assert_eq!(out, "");
+}
+
 /// A missing cell under the standard options is `MISSING_VALUE`, and a
 /// null is the empty string, both ways.
 #[test]

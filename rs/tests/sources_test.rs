@@ -31,7 +31,7 @@ const MAIN_FILE: &str = "main.alc";
 
 fn sources<'a>(list: &[(&'a str, &'a str)]) -> Vec<Source<'a>> {
     list.iter()
-        .map(|&(file, text)| Source { file, text })
+        .map(|&(file, text)| Source::new(file, text))
         .collect()
 }
 

@@ -63,6 +63,9 @@ def export [input] (join "" (map (fn [e] (match e (case (key a b) a) (case _ "")
 def export [input] (let [x (pop [])] (json input))	ERROR:type_mismatch@1:28
 def export [input] (let [x (top [])] (json input))	ERROR:type_mismatch@1:28
 def export [input] (let [x (repeat -1 "ab")] (json input))	ERROR:type_mismatch@1:28
+# `string-join` takes a string separator and a vector of strings; an item that is not a string is refused where building the plan reaches it.
+def export [input] (let [x (string-join 1 ["a"])] (json input))	ERROR:type_mismatch@1:41
+def export [input] (let [x (string-join "," ["a" 1])] (json input))	ERROR:type_mismatch@1:28
 # A program over the events, the keys of every object one per line, and its report: nothing retained by `events`, the state of the `scan-emit` capped.
 def key-lines [s event]\n  match event\n    case (key name) (transition s [(quoted name) "\\n"])\n    case _ (transition s [])\n\ndef export [input]\n  join ""\n    scan-emit [] key-lines (fn [s] []) (events input)	"export: events → scan-emit → join\n\nSource reads:          1\nProtocol:              JsonEvents/1 → Stream<Event> → Stream<Value> → Text\nSelection:             none; every event is delivered as an item\nDuplicate members:     preserved; the events are copied as they arrive, not mapped by key\nRetained state:        what the step returns, no deeper than max_depth, capped at max_metadata_bytes\nOutput order:          source order\nOrdering contract:     each item before its outputs\nContract verification: static\nExternal storage:      disabled\n\nGuarantee:\n  Memory is independent of the number of rows under the configured\n  depth, capture, metadata, scalar/key and output limits: the state the\n  step returns is capped at max_metadata_bytes. What one step computes\n  is the program's, bounded by the host's abort flag.\n\nQualification:\n  A later error can occur after earlier output has been written.\n"
 # keys takes a record.
