@@ -123,7 +123,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
 | `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
 | `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra |
-| `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (several sources linked into one namespace), `Program::{output, row_selector, explain, explain_json, sink}` |
+| `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
 | `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded, resolved and checked on first use |
 | `rs/src/bin/alchemy.rs` | `alchemy canon | format | check | explain | run` |
@@ -132,7 +132,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/tests/repeat_test.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
 | `rs/tests/cli_test.rs` | the built binary, run as a script runs it |
 | `rs/tests/run_test.rs` | the API end to end: the worked example both ways, the spec's streaming rows, the `json` echo, `records` |
-| `rs/tests/sources_test.rs` | `compile_sources`: a format's part linked with a program and run as one, every stage's failure naming the file it is in, and the linking's refusals |
+| `rs/tests/sources_test.rs` | `compile_sources`: a format's part linked with a program and run as one, a program linked under another name and fed to a render, every stage's failure naming the file it is in, and the linking's refusals |
 | `rs/tests/stdlib_test.rs` | the differential test: the interpreted library against the native path on every fixture and generated document |
 | `test/spec/reader.tsv` | shared fixtures: layout → canonical, and the reader's errors by code |
 | `test/spec/pipe.tsv` | shared fixtures: layout → canonical of the desugared program, and the desugaring errors |
@@ -182,7 +182,8 @@ hint.
 The later stages follow the same convention. `DSL_TYPE_ERROR` carries,
 from the resolver, `unknown_name`, `not_def`, `duplicate_def`,
 `reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; from the linker,
-`duplicate_file` (two sources given one name to `compile_sources`);
+`duplicate_file` (two sources given one name to `compile_sources`) and
+`no_export` (a source linked under another name that defines no `export`);
 from the checker,
 `arity`, `type_mismatch`, `protocol_mismatch`, `no_export`,
 `bad_output`; from the runtime, `duplicate_key` (a record with two

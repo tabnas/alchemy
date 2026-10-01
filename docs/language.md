@@ -1267,7 +1267,7 @@ let _ = Renderer::Json;
   most `MAX_EVAL_DEPTH` (1,000) levels of nesting, `recursion` past them.
   It runs on a thread of `STACK_BYTES` (64 MiB) whatever thread calls it,
   so those bounds hold in a debug build as in a release one.
-- `compile_sources(&[Source { file, text }, …])` compiles one program
+- `compile_sources(&[Source::new(file, text), …])` compiles one program
   from several sources linked into one namespace, as a host links a
   format's parts (libraries of definitions prefixed by the format's
   name, with no `export`) with the program that calls them. A
@@ -1280,7 +1280,15 @@ let _ = Renderer::Json;
   display writes as `(lines/render.alc:3:18)` and `to_json` as `file`,
   from every stage: the reader, the desugarer, the resolver, the checker
   (a render handed the wrong shape fails at the render's own line) and
-  the run. One source is `compile`, whose failures name no file.
+  the run. One source is `compile`, whose failures name no file. A
+  source whose `export` is not the program's is linked with
+  `Source::new(file, text).export_as("program-export")`: its `export`
+  is defined under that name instead, and every mention of `export` in
+  that source names it, so the program's `export`, in another source,
+  can call it. That is how a host composes a whole program's output
+  into a format's render, `def export [input] (yaml-render
+  (program-export input))`, in one plan under one set of limits; a
+  source linked so must define `export` (`no_export`, naming the file).
 - `Program::output()` is what the program produces (`Text`,
   `TableRows`, `JsonEvents`), so the host knows whether `--render`
   applies; `row_selector()` is the selector under which the source is
