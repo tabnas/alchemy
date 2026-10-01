@@ -1,0 +1,233 @@
+# alchemy grammar definition: the reader of the alchemy language.
+#
+# SINGLE SOURCE OF TRUTH for the grammar document, options and rules
+# together, so there is one definition of the language rather than two
+# halves that can drift. Every runtime embeds this file VERBATIM between
+# its `--- BEGIN/END EMBEDDED alchemy-grammar.jsonic ---` markers (Rust:
+# `GRAMMAR_TEXT` in rs/src/grammar.rs) and parses it once at run time.
+# Never hand-edit between the markers: edit this file and run
+# `node scripts/embed.js` (`make embed`).
+#
+# The text is JSON plus `#` line comments: every key and every string is
+# double-quoted, numbers are JSON numbers, and there are no trailing
+# commas. That is valid jsonic, and it is also what the strict JSON
+# grammar reads once comment lexing is on, which is how the Rust crate
+# reads it without a jsonic dependency (`tabnas_json` with
+# `options.comment.lex`). Keep it in that subset: an unquoted key or a
+# single-quoted string here parses in jsonic and fails in Rust. Numbers
+# arrive as doubles; a loader puts whole numbers back into integer form
+# (`b` is an integer field).
+#
+# The `@alchemy-*` names are the actions, conditions, error hooks and the
+# lex matcher each runtime registers on the instance BEFORE it installs
+# this document, which is what looks them up.
+#
+# The reader (design brief section 4.1, spec section 9.1) is a grammar
+# over the token stream the layout matcher (`@alchemy-layout`) produces:
+# `#IN`, `#DE` and `#NL` for layout, `#KW` for a keyword, `#TX` for a
+# symbol, `#ST`, `#NR` and `#VL` for strings, numbers and values, `(`
+# and `)` as `#OP`/`#CP`, `[` and `]` as `#OS`/`#CS`.
+#
+# Every repetition is a replace loop, never a push per item (AGENTS.md,
+# "The reader repeats by replacement"): the container pushes its first
+# item (`p`), the item's close replaces it with the next one in the same
+# frame (`r`), and the container's close runs once, after the last item.
+
+{
+  "options": {
+    "rule": { "start": "program" },
+    # The engine answers a literally empty source before any rule runs;
+    # an empty program is `[]`, as it is from the `program` rule for a
+    # source holding only blank and comment lines.
+    "lex": {
+      "empty": true,
+      "emptyResult": [],
+      "match": {
+        # Below the first built-in band (1e6): indentation and words are
+        # seen before the space, fixed and text matchers.
+        "alchemy": { "order": 100000, "make": "@alchemy-layout" }
+      }
+    },
+    # Parens and brackets are the only fixed tokens; the engine's JSON
+    # punctuation goes.
+    "fixed": {
+      "token": {
+        "#OB": null, "#CB": null, "#CL": null, "#CA": null,
+        "#OP": "(", "#CP": ")"
+      }
+    },
+    # Words are lexed by the layout matcher, whose boundaries are the
+    # symbol alphabet; the engine's text, number and value matchers would
+    # cut them differently.
+    "text": { "lex": false },
+    "number": { "lex": false },
+    "value": { "lex": false },
+    # Double-quoted strings with exactly the JSON escapes, as the json
+    # grammar configures them: unknown escapes refused, the engine's
+    # structural `\xHH` and `\u{...}` off, and the non-standard `\v`, `\'`
+    # and `` \` `` removed (a null entry deletes an escape; `""` would map
+    # it to the empty string).
+    "string": {
+      "chars": "\"",
+      "multiChars": "",
+      "allowUnknown": false,
+      "escapeStrict": true,
+      "escape": { "v": null, "'": null, "`": null }
+    },
+    # `;` to the end of the line, and nothing else.
+    "comment": {
+      "lex": true,
+      "def": {
+        "hash": null,
+        "slash": null,
+        "multi": null,
+        "semi": { "line": true, "start": ";", "lex": true, "eatline": false }
+      }
+    },
+    # This grammar's own codes. The first five are raised by the layout
+    # matcher; the rest are reserved for desugaring, which reports them
+    # through its failure with the code leading the message, so a fixture
+    # pins `ERROR:<code>` for either kind. `too_deep` is both: the
+    # reader's bound on nesting (256, MAX_NESTING), and the desugarer's on
+    # what its rewrites add. Each runtime holds its own raising sites'
+    # texts to these (rs: `the_desugaring_messages_match_the_document`,
+    # `the_too_deep_texts_name_the_bound`).
+    "error": {
+      "tab_indent": "tab in indentation",
+      "bad_indent": "unexpected indentation before: {src}",
+      "bad_dedent": "dedent to a level no block opened, before: {src}",
+      "unbalanced": "unbalanced delimiter: {src}",
+      "too_deep": "nesting deeper than 256 levels",
+      "empty_step": "a pipe step must be a symbol or a non-empty list",
+      "bad_def": "def takes a name and a value, or a name, [params] and a body",
+      "bad_let": "let takes one binding [name value] and one body",
+      "bad_if": "if takes a condition and exactly two branches",
+      "bad_match": "match takes a value and (case pattern body) clauses"
+    },
+    "hint": {
+      "tab_indent": "Indentation is spaces only, two per level. Replace the tab with spaces.",
+      "bad_indent": "A child line is exactly two spaces deeper than its parent, and the\nfirst line of a program is not indented.",
+      "bad_dedent": "A line may only return to the indentation of a line above it.",
+      "unbalanced": "Every ( and [ needs its ) or ], and nothing closes what was not\nopened. Inside delimiters, line breaks and indentation do not count.",
+      "too_deep": "A program nests at most 256 levels, counting a layout line, each\nindentation level and each open ( or [ as one; a pipe adds a level per\nstep. Split the form into definitions.",
+      "empty_step": "In pipe VALUE STEP..., each step is a symbol (called with the value)\nor a list (the value is appended as its last argument).",
+      "bad_def": "Write def NAME VALUE, or def NAME [PARAMS] BODY.",
+      "bad_let": "Write let [NAME VALUE] BODY.",
+      "bad_if": "Write if CONDITION THEN ELSE.",
+      "bad_match": "Write match VALUE (case PATTERN BODY)..."
+    }
+  },
+
+  "rule": {
+    # A program: layout lines until the source ends. The node is the array
+    # of finished lines. The program pushes the first line and the lines
+    # follow it in one frame (see `line`), so the close runs once, on the
+    # end of the source.
+    "program": {
+      "open": [
+        { "s": "#ZZ", "a": "@alchemy-array", "g": "alchemy" },
+        { "p": "line", "a": "@alchemy-array", "g": "alchemy" }
+      ],
+      "close": [
+        { "s": "#ZZ", "g": "alchemy" }
+      ]
+    },
+    # A layout line: inline forms, then what ends it. The line pushes its
+    # first form, and the forms follow it in one frame up to a layout
+    # token or the end of the source (see `form`). A block's `#IN` is
+    # taken here and the block pushed. `#NL` is the next line of this
+    # level, and so is whatever follows a block that did not also close
+    # this level: either way the line appends itself to the level's node
+    # and replaces itself with the next line (`r`). `#DE` and `#ZZ` end the
+    # level and are left (`b: 1`) for the block or program above. A layout
+    # token is always followed by a form (the layout matcher reads a
+    # line's indentation up to its first form, and a row with nothing else
+    # on it is blank), so `#NL` never stands right before `#DE` or `#ZZ`.
+    "line": {
+      "open": [
+        { "p": "form", "a": "@alchemy-array", "g": "alchemy" }
+      ],
+      "close": [
+        { "s": "#IN", "p": "block", "a": "@alchemy-children", "g": "alchemy" },
+        { "s": "#NL", "r": "line", "a": "@alchemy-line-end", "g": "alchemy" },
+        { "s": "#DE", "b": 1, "a": "@alchemy-line-end", "g": "alchemy" },
+        { "s": "#ZZ", "b": 1, "a": "@alchemy-line-end", "g": "alchemy" },
+        { "c": "@alchemy-has-children", "r": "line", "a": "@alchemy-line-end", "g": "alchemy" }
+      ]
+    },
+    # The children of a line, one per level: lines until the `#DE` that
+    # closes the level, or the end of the source. The block runs on its
+    # line's array, so each child line appends itself there, after the
+    # line's inline forms.
+    "block": {
+      "open": [
+        { "p": "line", "g": "alchemy" }
+      ],
+      "close": [
+        { "s": "#DE", "g": "alchemy" },
+        { "s": "#ZZ", "b": 1, "g": "alchemy" }
+      ]
+    },
+    # One form: an explicit list or vector, or an atom. A closer with
+    # nothing open, or the end of the source inside a delimiter, arrives
+    # here and is `unbalanced`.
+    #
+    # A form is an item of the sequence its parent reads: a line's inline
+    # forms, or the items of `( )` or `[ ]`. Its close appends it to the
+    # parent's node and then either ends the sequence, leaving the token
+    # that ends it (`b: 1`) for the parent, or goes on to the next item in
+    # this frame (`r`). What ends a sequence is the parent's: the closer
+    # for `paren` and `bracket`, a layout token or the end of the source
+    # for a line. The layout tokens only arrive outside delimiters, where
+    # the parent is a line; the end of the source inside a delimiter goes
+    # on to the next form, whose open reports it.
+    "form": {
+      "open": [
+        { "s": "#OP", "p": "paren", "a": "@alchemy-open-list", "g": "alchemy" },
+        { "s": "#OS", "p": "bracket", "a": "@alchemy-open-vector", "g": "alchemy" },
+        { "s": "#TX", "a": "@alchemy-atom", "g": "alchemy" },
+        { "s": "#KW", "a": "@alchemy-atom", "g": "alchemy" },
+        { "s": "#ST", "a": "@alchemy-atom", "g": "alchemy" },
+        { "s": "#NR", "a": "@alchemy-atom", "g": "alchemy" },
+        { "s": "#VL", "a": "@alchemy-atom", "g": "alchemy" },
+        { "s": "#CP", "e": "@alchemy-unbalanced", "g": "alchemy" },
+        { "s": "#CS", "e": "@alchemy-unbalanced", "g": "alchemy" },
+        { "s": "#ZZ", "e": "@alchemy-unbalanced", "g": "alchemy" }
+      ],
+      "close": [
+        { "s": "#CP", "c": "@alchemy-in-paren", "b": 1, "a": "@alchemy-item", "g": "alchemy" },
+        { "s": "#CS", "c": "@alchemy-in-bracket", "b": 1, "a": "@alchemy-item", "g": "alchemy" },
+        { "s": "#IN", "b": 1, "a": "@alchemy-item", "g": "alchemy" },
+        { "s": "#NL", "b": 1, "a": "@alchemy-item", "g": "alchemy" },
+        { "s": "#DE", "b": 1, "a": "@alchemy-item", "g": "alchemy" },
+        { "s": "#ZZ", "c": "@alchemy-in-line", "b": 1, "a": "@alchemy-item", "g": "alchemy" },
+        { "r": "form", "a": "@alchemy-item", "g": "alchemy" }
+      ]
+    },
+    # The items of `( ... )`, filled into the form's list in place: the
+    # list pushes its first item and the rest follow it in one frame (see
+    # `form`), so the close runs once, after the last item, and takes the
+    # closer. An empty list leaves its closer for the close phase.
+    "paren": {
+      "open": [
+        { "s": "#CP", "b": 1, "g": "alchemy" },
+        { "p": "form", "g": "alchemy" }
+      ],
+      "close": [
+        { "s": "#CP", "a": "@alchemy-close-seq", "g": "alchemy" }
+      ]
+    },
+    # The items of `[ ... ]`, likewise.
+    "bracket": {
+      "open": [
+        { "s": "#CS", "b": 1, "g": "alchemy" },
+        { "p": "form", "g": "alchemy" }
+      ],
+      "close": [
+        { "s": "#CS", "a": "@alchemy-close-seq", "g": "alchemy" }
+      ]
+    }
+  },
+
+  "ruleOrder": ["program", "line", "block", "form", "paren", "bracket"]
+}

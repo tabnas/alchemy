@@ -4,16 +4,20 @@
 //
 // What is specific to this crate is what a row's input becomes: the
 // canonical form of the parsed program (reader.tsv), or of the desugared
-// program (pipe.tsv), as a JSON string in the expected column.
+// program (pipe.tsv), as a JSON string in the expected column; the plan
+// report (check.tsv); or the bytes a run writes (run.tsv).
 
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
-use tabnas_alchemy::{canonical, compile, desugar, format, parse, same_program};
+use tabnas_alchemy::{canonical, compile, desugar, format, parse, same_program, Program, Renderer};
 use tabnas_support::{
-    is_error_expect, load_spec, load_spec_dir, parse_expect, Runner, SpecOptions, Value,
+    is_error_expect, load_spec, load_spec_dir, parse_expect, Failure, Row, Runner, SpecOptions,
+    Value,
 };
+use tabnas_transduce::{Code, Fail, Limits, Metrics, ParserSource, Prune, SourceMode};
 
 use common::{repo_root, spec_dir, text_value, to_failure};
 
@@ -26,11 +30,20 @@ fn every_fixture_has_a_runner() {
         .into_iter()
         .map(|spec| spec.file)
         .collect();
-    let expected: BTreeSet<String> = ["check.tsv", "pipe.tsv", "reader.tsv"]
+    let expected: BTreeSet<String> = ["check.tsv", "pipe.tsv", "reader.tsv", "run.tsv"]
         .into_iter()
         .map(str::to_string)
         .collect();
     assert_eq!(files, expected, "each fixture has a test in this file");
+    // And test/AGENTS.md, the fixtures' guide, describes each one.
+    let guide = std::fs::read_to_string(repo_root().join("test/AGENTS.md"))
+        .expect("test/AGENTS.md is readable");
+    for file in &files {
+        assert!(
+            guide.contains(&format!("[`{file}`](spec/{file})")),
+            "test/AGENTS.md does not describe {file}"
+        );
+    }
 }
 
 #[test]
@@ -64,6 +77,141 @@ fn check() {
             .map_err(|fail| to_failure(&fail))
     })
     .file(spec_dir().join("check.tsv"));
+}
+
+/// A program run over a JSON document: the bytes it writes, or the
+/// failure. See `test/AGENTS.md` for the columns.
+///
+/// Every row runs twice, with the standard compositions native and
+/// through the library's text (`with_native(false)`), and the two must
+/// agree to the byte, or on the failure's code and position: a row whose
+/// two paths differ fails whatever its expected cell says.
+#[test]
+fn run() {
+    Runner::new_with_row(|program, row| {
+        let doc = match row.unesc_named("doc") {
+            doc if doc.is_empty() => "null".to_string(),
+            doc => doc,
+        };
+        let render = match row.named("render") {
+            "" => None,
+            name => Some(
+                Renderer::named(name)
+                    .unwrap_or_else(|| panic!("{}: render is csv, json or empty", row.location())),
+            ),
+        };
+        let native = run_both(program, &doc, render, true);
+        let interpreted = run_both(program, &doc, render, false);
+        match (&native, &interpreted) {
+            (Ok(a), Ok(b)) if a == b => {}
+            (Err(a), Err(b)) if run_code(a) == run_code(b) && (a.row, a.column) == (b.row, b.column) => {}
+            _ => {
+                return Err(Failure::message(format!(
+                    "native and interpreted runs disagree:\n  native:      {native:?}\n  interpreted: {interpreted:?}"
+                )))
+            }
+        }
+        native
+            .map(text_value)
+            .map_err(|fail| run_failure(&fail))
+    })
+    .file(spec_dir().join("run.tsv"));
+}
+
+/// The columns a run row reads by name, so a renamed header fails here
+/// rather than reading empty cells.
+fn row_doc_columns_are_named(row: &Row) -> bool {
+    row.index_of("doc").is_some() && row.index_of("render").is_some()
+}
+
+#[test]
+fn run_fixture_has_its_columns() {
+    let spec =
+        load_spec(spec_dir().join("run.tsv"), &SpecOptions::default()).expect("run.tsv loads");
+    assert_eq!(*spec.rows[0].header, ["input", "expected", "doc", "render"]);
+    assert!(spec.rows.iter().all(row_doc_columns_are_named));
+}
+
+/// Compile `program` and run it over `doc`, as `alchemy run` does: on a
+/// thread of `STACK_BYTES`, the document read by the JSON grammar
+/// incrementally, pruned under the program's row selector when it has
+/// one, with the default limits.
+fn run_both(
+    program: &str,
+    doc: &str,
+    render: Option<Renderer>,
+    native: bool,
+) -> Result<String, Fail> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(tabnas_alchemy::STACK_BYTES)
+            .spawn_scoped(scope, || {
+                let mut compiled = compile(program, "run")?;
+                if !native {
+                    compiled = compiled.with_native(false)?;
+                }
+                drive(&compiled, doc, render)
+            })
+            .expect("the run thread starts")
+            .join()
+            .expect("the run thread finishes")
+    })
+}
+
+#[derive(Clone, Default)]
+struct Shared(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Shared {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn drive(program: &Program, doc: &str, render: Option<Renderer>) -> Result<String, Fail> {
+    let limits = Limits::default();
+    let metrics = Metrics::new();
+    let buffer = Shared::default();
+    let sink = program.sink(Box::new(buffer.clone()), render, &limits, metrics.clone())?;
+    let prune = match program.row_selector() {
+        Some(selector) => Prune::Under(selector.clone()),
+        None => Prune::Never,
+    };
+    let (outcome, _) = ParserSource::new(tabnas_json::make(), doc)
+        .grammar("json")
+        .mode(SourceMode::Incremental { prune })
+        .limits(limits)
+        .metrics(metrics)
+        .run_owned(sink);
+    outcome?;
+    let bytes = buffer.0.lock().unwrap().clone();
+    Ok(String::from_utf8(bytes).expect("the output is UTF-8"))
+}
+
+/// The code a run row pins: the finer code (the first word of the
+/// message) for this crate's own codes, which carry one, and the
+/// transduce or render code itself for every other failure, whose
+/// message is free text (`fail "a: b"` must not pin `a`).
+fn run_code(fail: &Fail) -> String {
+    match fail.code {
+        Code::DslParseError
+        | Code::DslTypeError
+        | Code::StreamReused
+        | Code::StreamabilityUnknown => common::fail_code(fail),
+        other => other.as_str().to_string(),
+    }
+}
+
+fn run_failure(fail: &Fail) -> Failure {
+    let mut failure = Failure::new(run_code(fail)).with_message(fail.to_string());
+    if let (Some(row), Some(col)) = (fail.row, fail.column) {
+        failure = failure.at(row as usize, col as usize);
+    }
+    failure
 }
 
 /// `format` prints a program the reader reads back to the same forms,

@@ -1,8 +1,11 @@
 //! The standard library: the natives ([`registry`]) and the definitions
 //! written in alchemy itself. The crate embeds copies under
 //! `rs/stdlib/*.alc`, because a crates.io package cannot contain the
-//! canonical `stdlib/*.alc` files above its package root. A unit test holds
-//! each packaged copy byte-for-byte to its canonical file.
+//! canonical `stdlib/*.alc` files above its package root; `make embed`
+//! (`scripts/embed.js`) writes them. A unit test holds each packaged copy
+//! byte-for-byte to its canonical file, and `tests/shared_sources_test.rs`
+//! holds the two directories to the same files and [`SOURCES`] to all of
+//! them.
 //!
 //! `table.alc` is the metadata-first table transducer (design document
 //! section 12.2: `public-column`, `table-step`, `table-finish`,
