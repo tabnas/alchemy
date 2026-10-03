@@ -40,6 +40,7 @@
 import { AbortFlag, Duplicates, Fail, Limits, utf8Bytes } from '@tabnas/transduce'
 
 import { Expr, SourceSpan, Sources, position as positionIn, sourceFile, span as spanOf } from './ast'
+import { isFail } from './fail'
 import { Resolved, fnForm, fnParams } from './resolve'
 import { Stdlib, fileOf, stdlib } from './stdlib'
 import { NativeImpl, implOf, truth } from './stdlib/natives'
@@ -318,10 +319,11 @@ export class Runtime {
     return this.sources.failAt(fail, at)
   }
 
-  // `failAt` for whatever was thrown: a `Fail` is positioned, anything else
-  // (a defect, not a program's failure) passes unchanged.
+  // `failAt` for whatever was thrown: a `Fail` is positioned, whichever
+  // copy of transduce made it (`isFail`); anything else (a defect, not a
+  // program's failure) passes unchanged.
   private positioned(err: unknown, at: SourceSpan): unknown {
-    return err instanceof Fail ? this.failAt(err, at) : err
+    return isFail(err) ? this.failAt(err, at) : err
   }
 
   // The definition `name` denotes in `scope`, with the scope it was found
