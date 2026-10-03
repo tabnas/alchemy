@@ -284,3 +284,4 @@ events a program hands to a taker of JSON events), and the writer
 enforces `max_output_bytes`, which also bounds a finite text and one
 item's text as they are built. Hosts that run programs they did not
 write set `max_output_bytes` and a timeout.
+> **Naming:** Always spell the project name `tabnas`, all lowercase, including in prose and headings. Never write `TabNAS`.

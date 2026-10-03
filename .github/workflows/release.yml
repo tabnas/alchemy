@@ -1,0 +1,31 @@
+# Rust crate release entry point for crates.io trusted publishing.
+#
+# A tag push publishes that exact tagged source. A manual dispatch repairs or
+# backfills an existing release tag. Authentication is GitHub OIDC; no registry
+# token is stored in this repository. The crates.io trusted publisher names
+# this file (release.yml), because it is the caller of crates-release.yml.
+name: release-crate
+
+on:
+  push:
+    tags:
+      - 'rs/v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'existing release tag, e.g. rs/v1.2.3'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  crates:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/crates-release.yml
+    with:
+      tag: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
