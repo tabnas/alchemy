@@ -25,6 +25,12 @@
 # ref pushed with GITHUB_TOKEN does not start another run, so "tag in A,
 # publish on the tag" would publish nothing, silently.
 #
+# They ARE split across jobs. publish-npm runs `npm i`, and with it the
+# lifecycle scripts of devDependencies resolved from the registry ("*",
+# unpinned), so it holds the OIDC credential and nothing that can write
+# the repository: its token is contents: read, and its checkout persists
+# no credential. The tag job installs nothing, and holds contents: write.
+#
 # ONE VERSION. ts/package.json is what this workflow reads, and it must
 # equal the VERSION consts in ts/src/alchemy.ts and go/alchemy.go and the
 # [package] version in rs/Cargo.toml: ts/test/version.test.ts and
@@ -96,13 +102,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # OIDC -> npm; cannot write refs
-      contents: write   # GITHUB_TOKEN -> tags; cannot publish
+      contents: read    # the checkout; the tag job writes the tags
     outputs:
-      clib-tag: ${{ steps.clib.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      missing: ${{ steps.tags.outputs.missing }}
+      anchor: ${{ steps.tags.outputs.anchor }}
     steps:
+      # persist-credentials: false, because `npm i` below runs the lifecycle
+      # scripts of registry-resolved devDependencies: nothing they run may
+      # find a credential that writes the repository (see the header).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0   # tags, for the already-released guard
+          persist-credentials: false
 
       # ADR-20: only a COMPONENT or a TOOL publishes. The repository's kind
       # is committed in .tabnas-kind (COMPONENT, TOOL, CONTENT or ADMIN), so
@@ -137,6 +149,19 @@ jobs:
           echo "::error::release must be dispatched from main (got ${{ github.ref }})"
           exit 1
 
+      # A pushed tag names the source it releases, so it must be the tag of
+      # the version that source declares. ts/v0.1.2 pushed at a 0.1.1
+      # commit would otherwise publish 0.1.1 and leave ts/v0.1.2 naming the
+      # wrong source for good.
+      - name: Refuse a pushed tag that is not this version's
+        if: github.event_name == 'push'
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          if [ "${GITHUB_REF_NAME#ts/v}" != "$V" ]; then
+            echo "::error::the pushed tag $GITHUB_REF_NAME is not ts/v$V, the tag of the version its ts/package.json declares"
+            exit 1
+          fi
+
       # Which tags this run still has to create. Fails closed only when
       # there is NOTHING left to do, which is the real "you forgot to
       # bump" signal; a run that has ts/v but is missing go/v is a
@@ -148,12 +173,16 @@ jobs:
           V="${{ steps.v.outputs.version }}"
           MISSING=""; ANCHOR=""
           for T in "ts/v$V" "go/v$V"; do
-            case "$T" in
-              go/*) [ "${{ inputs.go }}" = "true" ] || continue ;;
-            esac
             if C="$(git rev-parse -q --verify "refs/tags/$T^{commit}")"; then
               [ -n "$ANCHOR" ] || ANCHOR="$C"
             else
+              # go: false suppresses only the creation of a missing Go tag.
+              # An existing one still anchors the repair: skipping it would
+              # put ts/v on HEAD while the Release and the crate came from
+              # the commit go/v names.
+              case "$T" in
+                go/*) [ "${{ inputs.go }}" = "true" ] || continue ;;
+              esac
               MISSING="$MISSING $T"
             fi
           done
@@ -170,6 +199,23 @@ jobs:
           # because proxy.golang.org caches module versions immutably.
           HEAD_C="$(git rev-parse HEAD)"
           if [ -z "$ANCHOR" ]; then
+            # No tag records the release commit. If npm already has the
+            # version (a run that published and then lost its tag push, or
+            # the maintainer's first publish), npm's gitHead, the commit its
+            # tarball was built from, is the only record of it: tag HEAD only
+            # if it is that commit, or once main has moved on the tags would
+            # name a commit npm never served.
+            if npm view "@tabnas/alchemy@$V" version >/dev/null 2>&1; then
+              GH="$(npm view "@tabnas/alchemy@$V" gitHead 2>/dev/null || true)"
+              if [ -z "$GH" ]; then
+                echo "::error::$V is on npm, no tag names it, and npm records no gitHead for it, so nothing says which commit it was built from — tag that commit by hand, or bump the version"
+                exit 1
+              elif [ "$GH" != "$HEAD_C" ]; then
+                echo "::error::$V is on npm, built from $GH, and no tag names it; HEAD is $HEAD_C, so tagging it would name a commit npm never served — tag $GH by hand, or bump the version"
+                exit 1
+              fi
+              echo "$V is on npm, built from HEAD ($GH): tagging it"
+            fi
             ANCHOR="$HEAD_C"
           elif [ "$ANCHOR" != "$HEAD_C" ]; then
             if ! npm view "@tabnas/alchemy@$V" version >/dev/null 2>&1; then
@@ -199,6 +245,22 @@ jobs:
             npm publish --access public
           fi
 
+  # The tags, in a job of their own: the one job whose token can write
+  # refs, and it installs and runs nothing from the registry. Its checkout
+  # keeps the default persisted credential, which `git push` and
+  # `git ls-remote` below authenticate with.
+  tag:
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # GITHUB_TOKEN -> tags; cannot publish
+    outputs:
+      clib-tag: ${{ steps.clib.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0   # every tag, and the older commit a repair anchors to
+
       # After publishing, so a tag only ever exists for a release that
       # reached the registry.
       - name: Tag the release
@@ -209,13 +271,13 @@ jobs:
 
           # ONE atomic transaction, not a push per tag. Pushed separately,
           # ts/v could land and go/v fail on a transient error, leaving npm
-          # published, ts/v tagged and the Go module unreleased — and the
-          # guard above would then refuse every re-dispatch, so the
-          # half-release could never be repaired.
-          for T in ${{ steps.tags.outputs.missing }}; do
-            git tag "$T" "${{ steps.tags.outputs.anchor }}"
+          # published, ts/v tagged and the Go module unreleased — and
+          # publish-npm's tag guard would then refuse every re-dispatch, so
+          # the half-release could never be repaired.
+          for T in ${{ needs.publish-npm.outputs.missing }}; do
+            git tag "$T" "${{ needs.publish-npm.outputs.anchor }}"
           done
-          git push --atomic origin ${{ steps.tags.outputs.missing }}
+          git push --atomic origin ${{ needs.publish-npm.outputs.missing }}
 
       # ADR-19: hand the Go tag to the clib job. Read it from the REMOTE,
       # not from the step above: a push-path run tagged nothing itself, and
@@ -223,30 +285,42 @@ jobs:
       - name: Hand the Go tag to the C release
         id: clib
         run: |
-          T="go/v${{ steps.v.outputs.version }}"
-          if git ls-remote --exit-code --tags origin "refs/tags/$T" >/dev/null; then
-            echo "tag=$T" >> "$GITHUB_OUTPUT"
-          else
+          T="go/v${{ needs.publish-npm.outputs.version }}"
+          # The tag must name the commit this run released: the anchor on a
+          # dispatch, the pushed tag's commit on a push. A tag naming another
+          # commit (a go/v pushed somewhere else) would ship the rest of the
+          # release from a source npm never served, so it is handed to no
+          # job. An annotated tag is listed twice, the second time as $T^{}
+          # with its commit, so the last line is the commit either way.
+          WANT="${{ needs.publish-npm.outputs.anchor }}"
+          [ -n "$WANT" ] || WANT="$(git rev-parse HEAD)"
+          C="$(git ls-remote --tags origin "refs/tags/$T" "refs/tags/$T^{}" | tail -n1 | cut -f1)"
+          if [ -z "$C" ]; then
             echo "::notice::$T is not on the remote — no GitHub Release or C artifacts this run"
+          elif [ "$C" != "$WANT" ]; then
+            echo "::error::$T is at $C, but this run released $WANT, so nothing more is released from $T — leave it where it is and release the next patch with every tag on one commit"
+            exit 1
+          else
+            echo "tag=$T" >> "$GITHUB_OUTPUT"
           fi
 
   # The GitHub Release and the C artifacts (ADR-19; see the header).
   clib:
-    needs: publish-npm
-    if: ${{ needs.publish-npm.outputs.clib-tag != '' }}
+    needs: tag
+    if: ${{ needs.tag.outputs.clib-tag != '' }}
     permissions:
       contents: write   # GITHUB_TOKEN -> the Release and its assets
     uses: ./.github/workflows/clib-release.yml
     with:
-      tag: ${{ needs.publish-npm.outputs.clib-tag }}
+      tag: ${{ needs.tag.outputs.clib-tag }}
 
   # crates.io (ADR-21; see the header).
   crates:
-    needs: publish-npm
-    if: ${{ needs.publish-npm.outputs.clib-tag != '' }}
+    needs: tag
+    if: ${{ needs.tag.outputs.clib-tag != '' }}
     permissions:
       contents: read    # the tagged source
       id-token: write   # OIDC -> crates.io (a called job gets no more than this)
     uses: ./.github/workflows/crates-release.yml
     with:
-      tag: ${{ needs.publish-npm.outputs.clib-tag }}
+      tag: ${{ needs.tag.outputs.clib-tag }}
