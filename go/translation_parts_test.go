@@ -230,31 +230,43 @@ func grammarParser(t *testing.T, format string) *tabnas.Tabnas {
 	}
 }
 
-func conformanceMain(parts structuralParts, descriptor translationDescriptor) string {
-	if parts.lift != nil {
-		return fmt.Sprintf("def export [input]\n  %s (%s (events input))\n", parts.render.entry, parts.lift.entry)
+func conformanceMain(parts structuralParts, reads, writes string, lifted bool) (string, error) {
+	// The producer is structural fact: only the preferred shape may come
+	// from a lift; every other shape is the grammar's raw tree. The adapter
+	// is selected from the descriptor, so a false reads value type-fails.
+	source := "events input"
+	if lifted {
+		source = fmt.Sprintf("%s (events input)", parts.lift.entry)
 	}
-	if descriptor.Translate.Writes == "text" {
-		return "def conformance-text [input]\n" +
+	definitions := ""
+	adapted := ""
+	switch {
+	case reads == writes:
+		adapted = source
+	case reads == "tree" && writes == "records":
+		definitions = "def conformance-binding\n  record\n    entry :columns :infer\n" +
+			"    entry :rows (path each-index)\n\n"
+		adapted = fmt.Sprintf("table-from-json conformance-binding (%s)", source)
+	case reads == "records" && writes == "tree":
+		adapted = fmt.Sprintf("records (%s)", source)
+	case writes == "text":
+		definitions = "def conformance-text [input]\n" +
 			"  join \"\"\n" +
 			"    map\n" +
 			"      fn [event]\n" +
 			"        match event\n" +
 			"          case (scalar value) (scalar-text csv-options value)\n" +
 			"          case _ \"\"\n" +
-			"      events input\n\n" +
-			fmt.Sprintf("def export [input]\n  %s (conformance-text input)\n", parts.render.entry)
+			"      input\n\n"
+		adapted = fmt.Sprintf("conformance-text (%s)", source)
+	default:
+		return "", fmt.Errorf("no %s-to-%s conformance adapter", reads, writes)
 	}
-	if descriptor.Translate.Writes == "records" {
-		call := fmt.Sprintf("%s (table-from-json conformance-binding input)", parts.render.entry)
-		if parts.render.entry == "csv" {
-			call = "csv csv-options (table-from-json conformance-binding input)"
-		}
-		return "def conformance-binding\n  record\n    entry :columns :infer\n" +
-			"    entry :rows (path each-index)\n\n" +
-			fmt.Sprintf("def export [input]\n  %s\n", call)
+	call := fmt.Sprintf("%s (%s)", parts.render.entry, adapted)
+	if parts.render.entry == "csv" {
+		call = fmt.Sprintf("csv csv-options (%s)", adapted)
 	}
-	return fmt.Sprintf("def export [input]\n  %s (events input)\n", parts.render.entry)
+	return definitions + fmt.Sprintf("def export [input]\n  %s\n", call), nil
 }
 
 func conformanceEvents(t *testing.T, format, text string) []tt.Event {
@@ -267,12 +279,13 @@ func conformanceEvents(t *testing.T, format, text string) []tt.Event {
 }
 
 func TestTextShapeComposition(t *testing.T) {
-	descriptor := translationDescriptor{}
-	descriptor.Translate.Writes = "text"
 	parts := structuralParts{
 		render: localPart("textual-render", "def textual-render [input]\n  input\n"),
 	}
-	main := conformanceMain(parts, descriptor)
+	main, err := conformanceMain(parts, "tree", "text", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	program, fail := CompileSources([]Source{
 		{File: "conformance.alc", Text: main},
 		{File: "alchemy/render.alc", Text: parts.render.source},
@@ -326,27 +339,40 @@ func TestStructuralTranslationParts(t *testing.T) {
 			render := descriptor.Translate.Render
 			assertStructuralPart(t, format, "render", &render, parts.render)
 
-			sources := []Source{{File: format + "/conformance.alc", Text: conformanceMain(parts, descriptor)}}
-			for _, item := range []struct {
-				path *string
-				part *structuralPart
-			}{
-				{descriptor.Translate.Lift, parts.lift},
-				{&render, parts.render},
-			} {
-				if item.part == nil || item.part.source == "" {
-					continue
+			var program *Program
+			for index, readShape := range reads {
+				main, err := conformanceMain(parts, readShape, descriptor.Translate.Writes, index == 0 && parts.lift != nil)
+				if err != nil {
+					t.Fatalf("%s reads %s: %v", format, readShape, err)
 				}
-				sources = append(sources, Source{File: *item.path, Text: item.part.source})
-			}
-			program, fail := CompileSources(sources)
-			if fail != nil {
-				t.Fatal(fail)
-			}
-			for kind, part := range map[string]*structuralPart{"lift": parts.lift, "render": parts.render} {
-				if part != nil && part.source != "" && program.Resolved().Get(part.entry) == nil {
-					t.Fatalf("%s source does not define %s", kind, part.entry)
+				sources := []Source{{File: format + "/" + readShape + "-conformance.alc", Text: main}}
+				for _, item := range []struct {
+					path *string
+					part *structuralPart
+				}{
+					{descriptor.Translate.Lift, parts.lift},
+					{&render, parts.render},
+				} {
+					if item.part == nil || item.part.source == "" {
+						continue
+					}
+					sources = append(sources, Source{File: *item.path, Text: item.part.source})
 				}
+				compiled, fail := CompileSources(sources)
+				if fail != nil {
+					t.Fatalf("%s reads %s: %v", format, readShape, fail)
+				}
+				for kind, part := range map[string]*structuralPart{"lift": parts.lift, "render": parts.render} {
+					if part != nil && part.source != "" && compiled.Resolved().Get(part.entry) == nil {
+						t.Fatalf("%s source does not define %s", kind, part.entry)
+					}
+				}
+				if index == 0 {
+					program = compiled
+				}
+			}
+			if program == nil {
+				t.Fatal("no preferred read-shape program")
 			}
 
 			first := conformanceEvents(t, format, samples[format])

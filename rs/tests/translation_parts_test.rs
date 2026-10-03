@@ -64,17 +64,33 @@ fn assert_part(format: &str, kind: &str, declared: Option<&str>, part: Option<St
     }
 }
 
-fn conformance_main(parts: &StructuralParts, writes: &str) -> String {
+fn conformance_main(parts: &StructuralParts, reads: &str, writes: &str, lifted: bool) -> String {
     let render = parts.render.expect("the descriptor declares a render");
-    if let Some(lift) = parts.lift {
-        return format!(
-            "def export [input]\n  {} ({} (events input))\n",
-            render.entry, lift.entry
-        );
-    }
-    if writes == "text" {
-        return format!(
-            concat!(
+    // The producer is structural fact: only the preferred shape may come
+    // from a lift; every other shape is the grammar's raw tree. The adapter
+    // is selected from the descriptor, so a false reads value type-fails.
+    let source = if lifted {
+        format!(
+            "{} (events input)",
+            parts.lift.expect("a lifted read shape has a lift").entry
+        )
+    } else {
+        "events input".to_string()
+    };
+    let mut definitions = String::new();
+    let adapted = match (reads, writes) {
+        (reads, writes) if reads == writes => source,
+        ("tree", "records") => {
+            definitions.push_str(concat!(
+                "def conformance-binding\n  record\n",
+                "    entry :columns :infer\n",
+                "    entry :rows (path each-index)\n\n",
+            ));
+            format!("table-from-json conformance-binding ({source})")
+        }
+        ("records", "tree") => format!("records ({source})"),
+        (_, "text") => {
+            definitions.push_str(concat!(
                 "def conformance-text [input]\n",
                 "  join \"\"\n",
                 "    map\n",
@@ -82,33 +98,18 @@ fn conformance_main(parts: &StructuralParts, writes: &str) -> String {
                 "        match event\n",
                 "          case (scalar value) (scalar-text csv-options value)\n",
                 "          case _ \"\"\n",
-                "      events input\n\n",
-                "def export [input]\n  {} (conformance-text input)\n",
-            ),
-            render.entry
-        );
-    }
-    if writes == "records" {
-        let call = if render.entry == "csv" {
-            "csv csv-options (table-from-json conformance-binding input)".to_string()
-        } else {
-            format!(
-                "{} (table-from-json conformance-binding input)",
-                render.entry
-            )
-        };
-        return format!(
-            "{}{}\n",
-            concat!(
-                "def conformance-binding\n  record\n",
-                "    entry :columns :infer\n",
-                "    entry :rows (path each-index)\n\n",
-                "def export [input]\n  ",
-            ),
-            call
-        );
-    }
-    format!("def export [input]\n  {} (events input)\n", render.entry)
+                "      input\n\n",
+            ));
+            format!("conformance-text ({source})")
+        }
+        _ => panic!("no {reads}-to-{writes} conformance adapter"),
+    };
+    let call = if render.entry == "csv" {
+        format!("csv csv-options ({adapted})")
+    } else {
+        format!("{} ({adapted})", render.entry)
+    };
+    format!("{definitions}def export [input]\n  {call}\n")
 }
 
 fn grammar(format: &str) -> tabnas::Tabnas {
@@ -171,7 +172,7 @@ fn text_shape_composition_compiles() {
             source: Some("def textual-render [input]\n  input\n"),
         }),
     };
-    let main = conformance_main(&parts, "text");
+    let main = conformance_main(&parts, "tree", "text", false);
     let sources = [
         Source::new("conformance.alc", &main),
         Source::new(
@@ -245,35 +246,49 @@ fn structural_translation_parts_agree_with_their_descriptors_and_compile() {
         assert_part(format, "lift", lift_path, parts.lift);
         assert_part(format, "render", render_path, parts.render);
 
-        let main = conformance_main(&parts, writes);
-        let mut sources = vec![Source::new("conformance.alc", &main)];
-        for (path, part) in [(lift_path, parts.lift), (render_path, parts.render)] {
-            if let (
-                Some(path),
-                Some(StructuralPart {
-                    source: Some(source),
+        let mut preferred = None;
+        for (index, read_shape) in reads.iter().enumerate() {
+            let main = conformance_main(
+                &parts,
+                read_shape,
+                writes,
+                index == 0 && parts.lift.is_some(),
+            );
+            let file = format!("{format}/{read_shape}-conformance.alc");
+            let mut sources = vec![Source::new(&file, &main)];
+            for (path, part) in [(lift_path, parts.lift), (render_path, parts.render)] {
+                if let (
+                    Some(path),
+                    Some(StructuralPart {
+                        source: Some(source),
+                        ..
+                    }),
+                ) = (path, part)
+                {
+                    sources.push(Source::new(path, source));
+                }
+            }
+            let program = compile_sources(&sources).unwrap_or_else(|fail| {
+                panic!("{format} reads {read_shape}: translation sources do not compile: {fail}")
+            });
+            for (kind, part) in [("lift", parts.lift), ("render", parts.render)] {
+                if let Some(StructuralPart {
+                    entry,
+                    source: Some(_),
                     ..
-                }),
-            ) = (path, part)
-            {
-                sources.push(Source::new(path, source));
+                }) = part
+                {
+                    assert!(
+                        program.resolved().get(entry).is_some(),
+                        "{format} {kind} source does not define {entry}"
+                    );
+                }
+            }
+            if index == 0 {
+                preferred = Some(program);
             }
         }
-        let program = compile_sources(&sources)
-            .unwrap_or_else(|fail| panic!("{format} translation sources do not compile: {fail}"));
-        for (kind, part) in [("lift", parts.lift), ("render", parts.render)] {
-            if let Some(StructuralPart {
-                entry,
-                source: Some(_),
-                ..
-            }) = part
-            {
-                assert!(
-                    program.resolved().get(entry).is_some(),
-                    "{format} {kind} source does not define {entry}"
-                );
-            }
-        }
+        let program = preferred.expect("each format has a preferred read shape");
 
         let sample = samples
             .iter()

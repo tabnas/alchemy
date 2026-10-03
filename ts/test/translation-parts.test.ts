@@ -99,36 +99,53 @@ function assertPart(
   }
 }
 
-function compileParts(format: string, descriptor: Descriptor, parts: TranslationParts): Program {
+function compileParts(
+  format: string,
+  descriptor: Descriptor,
+  parts: TranslationParts,
+  reads: string,
+  lifted: boolean,
+): Program {
   const embedded: ReadonlyArray<readonly ['lift' | 'render', TranslationPart | undefined]> = [
     ['lift', parts.lift],
     ['render', parts.render],
   ]
   const render = parts.render as TranslationPart
-  let main: string
-  if (parts.lift) {
-    main = `def export [input]\n  ${render.entry} (${parts.lift.entry} (events input))\n`
-  } else if ('text' === descriptor.translate.writes) {
-    main = 'def conformance-text [input]\n' +
+  // The producer is structural fact: only the preferred shape may come
+  // from a lift; every other shape is the grammar's raw tree. The adapter
+  // is selected from the descriptor, so a false reads value type-fails.
+  const source = lifted
+    ? `${(parts.lift as TranslationPart).entry} (events input)`
+    : 'events input'
+  const writes = descriptor.translate.writes
+  let definitions = ''
+  let adapted: string
+  if (reads === writes) {
+    adapted = source
+  } else if ('tree' === reads && 'records' === writes) {
+    definitions = 'def conformance-binding\n  record\n    entry :columns :infer\n' +
+      '    entry :rows (path each-index)\n\n'
+    adapted = `table-from-json conformance-binding (${source})`
+  } else if ('records' === reads && 'tree' === writes) {
+    adapted = `records (${source})`
+  } else if ('text' === writes) {
+    definitions = 'def conformance-text [input]\n' +
       '  join ""\n' +
       '    map\n' +
       '      fn [event]\n' +
       '        match event\n' +
       '          case (scalar value) (scalar-text csv-options value)\n' +
       '          case _ ""\n' +
-      '      events input\n\n' +
-      `def export [input]\n  ${render.entry} (conformance-text input)\n`
-  } else if ('records' === descriptor.translate.writes) {
-    const call = 'csv' === render.entry
-      ? 'csv csv-options (table-from-json conformance-binding input)'
-      : `${render.entry} (table-from-json conformance-binding input)`
-    main = 'def conformance-binding\n  record\n    entry :columns :infer\n' +
-      '    entry :rows (path each-index)\n\n' +
-      `def export [input]\n  ${call}\n`
+      '      input\n\n'
+    adapted = `conformance-text (${source})`
   } else {
-    main = `def export [input]\n  ${render.entry} (events input)\n`
+    throw new Error(`${format} has no ${reads}-to-${writes} conformance adapter`)
   }
-  const sources: Source[] = [{ file: `${format}/conformance.alc`, text: main }]
+  const call = 'csv' === render.entry
+    ? `csv csv-options (${adapted})`
+    : `${render.entry} (${adapted})`
+  const main = `${definitions}def export [input]\n  ${call}\n`
+  const sources: Source[] = [{ file: `${format}/${reads}-conformance.alc`, text: main }]
   for (const [kind, part] of embedded) {
     if (undefined === part?.source) continue
     const file = descriptor.translate[kind]
@@ -163,7 +180,7 @@ describe('structural translation parts', () => {
         source: 'def textual-render [input]\n  input\n',
       },
     }
-    assert.ok(compileParts('textual', manifest, parts).resolved.get('textual-render'))
+    assert.ok(compileParts('textual', manifest, parts, 'tree', false).resolved.get('textual-render'))
   })
 
   for (const format of formats) {
@@ -181,7 +198,9 @@ describe('structural translation parts', () => {
       assert.ok(shapes.has(manifest.translate.writes), `${name} writes unknown shape`)
       assertPart(name, 'lift', manifest.translate.lift, parts.lift)
       assertPart(name, 'render', manifest.translate.render, parts.render)
-      const program = compileParts(name, manifest, parts)
+      const programs = reads.map((shape, index) =>
+        compileParts(name, manifest, parts, shape, 0 === index && undefined !== parts.lift))
+      const program = programs[0]
       const first = events(format.parser(), format.sample)
       assert.ok(first, `${name} does not parse its conformance sample`)
       const rendered = replayed(program, first)
