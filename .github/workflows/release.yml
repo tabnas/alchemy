@@ -28,4 +28,68 @@ jobs:
     uses: ./.github/workflows/crates-release.yml
     with:
       tag: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  npm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    steps:
+      - name: Refuse a dispatch from anywhere but main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::release must be dispatched from main (got $GITHUB_REF)"
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Validate the tagged npm package
+        id: package
+        working-directory: ts
+        run: |
+          case "$TAG" in
+            rs/v[0-9]*|ts/v[0-9]*|go/v[0-9]*) ;;
+            *) echo "::error::$TAG is not a release tag"; exit 1 ;;
+          esac
+          V="$(node -p "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          TAG_VERSION="${TAG#*/v}"
+          [ "$V" = "$TAG_VERSION" ] || {
+            echo "::error::$TAG names $TAG_VERSION but ts/package.json is $NAME@$V"
+            exit 1
+          }
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether npm publication is needed
+        id: decide
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VERSION is already on npm; nothing to publish"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and publish to npm with provenance
+        if: steps.decide.outputs.publish == 'true'
+        working-directory: ts
+        run: |
+          npm install -g npm@latest
+          npm ci
+          npm run build
+          npm publish --access public --provenance
 
