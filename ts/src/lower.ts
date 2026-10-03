@@ -78,6 +78,7 @@ import {
 
 import { SourceSpan } from './ast'
 import { csvDialect, isInferred } from './effects'
+import { isFail } from './fail'
 import type { Bounds, Runtime } from './interp'
 import { captureBudget, getField, numberText, truth } from './stdlib/natives'
 import { G, run } from './trampoline'
@@ -532,9 +533,10 @@ function retain(metrics: Metrics, bytes: number): void {
   metrics.retained_bytes_high = Math.max(metrics.retained_bytes_high, metrics.captured_bytes + bytes)
 }
 
-// `failAt` for whatever was thrown.
+// `failAt` for whatever was thrown: a `Fail` from any copy of transduce
+// (`isFail`), and nothing else.
 function positioned(rt: Runtime, err: unknown, at: SourceSpan): unknown {
-  return err instanceof Fail ? rt.failAt(err, at) : err
+  return isFail(err) ? rt.failAt(err, at) : err
 }
 
 // `scan-emit`: transduce's operator over the program's step and finish.

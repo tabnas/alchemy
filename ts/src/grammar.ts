@@ -53,6 +53,7 @@ import { make as makeJson } from '@tabnas/json'
 import { Fail } from '@tabnas/transduce'
 
 import { Expr, programFromValue, sourceFile } from './ast'
+import { isFail } from './fail'
 import { DE, IN, KW, MATCHER, NL, makeLayoutMatcher } from './lex'
 
 // The file name spans carry when a program is parsed from a string rather
@@ -574,7 +575,7 @@ function engineDetail(e: any): string {
 // engine's code leading the message, and the 1-based position when the
 // engine has one.
 export function failFrom(error: unknown): Fail {
-  if (error instanceof Fail) return error
+  if (isFail(error)) return error
   if (!(error instanceof TabnasError)) throw error
   const e: any = error
   const fail = new Fail('DSL_PARSE_ERROR', `${engineCode(e)}: ${engineDetail(e)}`)

@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import { SpecRow, isErrorExpect, loadSpec, loadSpecDir, makeRunner, parseExpect } from '@tabnas/support'
 import { make as makeJson } from '@tabnas/json'
 import { BytesWriter } from '@tabnas/render'
-import { Fail, Limits, Metrics, ParserSource, Prune, SourceMode } from '@tabnas/transduce'
+import { Limits, Metrics, ParserSource, Prune, SourceMode } from '@tabnas/transduce'
 
 import {
   Program,
@@ -33,6 +33,7 @@ import {
   rendererNamed,
   sameProgram,
 } from '../dist/alchemy'
+import { isFail } from '../dist/fail'
 
 import { REPO_ROOT, SPEC_DIR, failCode } from './common'
 
@@ -143,11 +144,13 @@ makeRunner({
     if (native.ok && interpreted.ok) {
       agree = native.text === interpreted.text
     } else if (!native.ok && !interpreted.ok) {
+      // Failures both, whichever copy of transduce made each (the native
+      // path's renderers are render's): one code, at one position.
       const a: any = native.fail
       const b: any = interpreted.fail
       agree =
-        a instanceof Fail &&
-        b instanceof Fail &&
+        isFail(a) &&
+        isFail(b) &&
         failCode(a) === failCode(b) &&
         a.row === b.row &&
         a.col === b.col

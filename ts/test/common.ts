@@ -8,7 +8,9 @@ import { join } from 'node:path'
 import { make as makeJson } from '@tabnas/json'
 import { BytesWriter } from '@tabnas/render'
 import { findSpecDir } from '@tabnas/support'
-import { EventRecorder, Fail, Limits, Metrics, ParserSource, Prune, SourceMode, replay } from '@tabnas/transduce'
+import { EventRecorder, Limits, Metrics, ParserSource, Prune, SourceMode, replay } from '@tabnas/transduce'
+
+import { isFail } from '../dist/fail'
 
 // The repository root: two levels above dist-test/.
 export const REPO_ROOT = join(__dirname, '..', '..')
@@ -21,9 +23,11 @@ export const SPEC_DIR = findSpecDir(__dirname)
 const OWN_CODES = ['DSL_PARSE_ERROR', 'DSL_TYPE_ERROR', 'STREAM_REUSED', 'STREAMABILITY_UNKNOWN']
 
 // The code a fixture pins for a failure: the finer code for this
-// package's own codes, the transduce code itself for any other.
+// package's own codes, the transduce code itself for any other. A failure
+// render made counts, whichever copy of transduce render resolves
+// (`isFail`).
 export function failCode(err: unknown): string | undefined {
-  if (!(err instanceof Fail)) return undefined
+  if (!isFail(err)) return undefined
   if (OWN_CODES.includes(err.code)) {
     const at = err.message.indexOf(': ')
     return -1 === at ? err.message : err.message.substring(0, at)
@@ -89,7 +93,7 @@ export function drive(
       .metrics(metrics)
       .run(sink)
   } catch (fail) {
-    if (fail instanceof Fail && metrics.output_bytes > 0 && !fail.committedOutput) fail.committed()
+    if (isFail(fail) && metrics.output_bytes > 0 && !fail.committedOutput) fail.committed()
     return { fail, out: writer.text() }
   }
   return { out: writer.text() }

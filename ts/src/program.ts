@@ -21,6 +21,7 @@ import { Expr, SourceSpan, Sources } from './ast'
 import { Checked, checkProgram, noExport } from './check'
 import { desugarProgram } from './desugar'
 import { explain, explainJson } from './effects'
+import { isFail } from './fail'
 import { parseFile } from './grammar'
 import { MAX_PLAN_STEPS, Runtime } from './interp'
 import { Lowering, Renderer } from './lower'
@@ -80,7 +81,7 @@ export function analyzeSources(sources: ReadonlyArray<Source>): Analyzed {
     // The reader and the desugarer see one file at a time, so the file is
     // added here; the stages after them position through `linked`.
     const inFile = (fail: unknown): unknown => {
-      if (fail instanceof Fail && linked.namesFiles()) fail.inFile(source.file)
+      if (isFail(fail) && linked.namesFiles()) fail.inFile(source.file)
       return fail
     }
     let own: Expr[]
