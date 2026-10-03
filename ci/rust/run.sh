@@ -12,12 +12,15 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 
-# Every sibling any crate in the graph takes by path: the ones this crate
-# names (transduce, render, and for tests support, debug, json, jsonl, yaml
-# and csv) and the ones those name in turn (transduce takes parser and
-# json; jsonl takes json; yaml and csv take jsonic). A dependency's
+# Every sibling any crate in the graph takes by path: the engine, runtime
+# libraries, support crates, and every grammar the structural translation
+# conformance test loads. INI also takes hoover. A dependency's
 # dev-dependencies are not built, so nothing else is needed.
-SIBLINGS="parser json jsonl jsonic yaml csv support debug transduce render"
+SIBLINGS="parser csv debug hoover ini json json5 jsonc jsonic jsonl markdown support toml transduce render xml yaml zon"
+
+# TypeScript-only additions needed by ci/polyglot/run.sh. The hosted workflow
+# clones the union; the Rust gate validates only SIBLINGS above.
+TS_SIBLINGS="bnf abnf feed railroad"
 
 for SIBLING in $SIBLINGS; do
   if [[ ! -f "$ROOT/../$SIBLING/rs/Cargo.toml" ]]; then

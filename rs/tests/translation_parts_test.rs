@@ -1,0 +1,311 @@
+// Fleet conformance for the package-local structural translation interface.
+// The macro reads every package's fields directly at its call site: that is
+// the compile-time contract without introducing a shared crate type.
+
+use std::sync::{Arc, Mutex};
+
+use serde_json::Value;
+use tabnas_alchemy::{compile_sources, Program, Source};
+use tabnas_transduce::{replay, Fail, Limits, Metrics, OwnedJsonEvent, ParserSource};
+
+#[derive(Clone, Copy)]
+struct StructuralPart {
+    entry: &'static str,
+    source: Option<&'static str>,
+}
+
+struct StructuralParts {
+    manifest: &'static str,
+    lift: Option<StructuralPart>,
+    render: Option<StructuralPart>,
+}
+
+macro_rules! structural_parts {
+    ($parts:expr) => {{
+        let parts = $parts.expect("the grammar exposes translation parts");
+        StructuralParts {
+            manifest: parts.manifest,
+            lift: parts.lift.map(|part| StructuralPart {
+                entry: part.entry,
+                source: part.source,
+            }),
+            render: parts.render.map(|part| StructuralPart {
+                entry: part.entry,
+                source: part.source,
+            }),
+        }
+    }};
+}
+
+fn assert_part(format: &str, kind: &str, declared: Option<&str>, part: Option<StructuralPart>) {
+    let Some(declared) = declared else {
+        assert!(part.is_none(), "{format} exposes an undeclared {kind}");
+        return;
+    };
+    let part = part.unwrap_or_else(|| panic!("{format} does not expose its declared {kind}"));
+    assert!(
+        !part.entry.is_empty(),
+        "{format} {kind} has no explicit entry"
+    );
+    if declared.ends_with(".alc") {
+        assert!(
+            part.source.is_some_and(|source| !source.is_empty()),
+            "{format} {kind} does not embed {declared}"
+        );
+    } else {
+        assert_eq!(
+            part.entry, declared,
+            "{format} {kind} does not name its builtin"
+        );
+        assert!(
+            part.source.is_none(),
+            "{format} builtin {kind} unexpectedly has source"
+        );
+    }
+}
+
+fn conformance_main(parts: &StructuralParts, reads: &str, writes: &str, lifted: bool) -> String {
+    let render = parts.render.expect("the descriptor declares a render");
+    // The producer is structural fact: only the preferred shape may come
+    // from a lift; every other shape is the grammar's raw tree. The adapter
+    // is selected from the descriptor, so a false reads value type-fails.
+    let source = if lifted {
+        format!(
+            "{} (events input)",
+            parts.lift.expect("a lifted read shape has a lift").entry
+        )
+    } else {
+        "events input".to_string()
+    };
+    let mut definitions = String::new();
+    let adapted = match (reads, writes) {
+        (reads, writes) if reads == writes => source,
+        ("tree", "records") => {
+            definitions.push_str(concat!(
+                "def conformance-binding\n  record\n",
+                "    entry :columns :infer\n",
+                "    entry :rows (path each-index)\n\n",
+            ));
+            format!("table-from-json conformance-binding ({source})")
+        }
+        ("records", "tree") => format!("records ({source})"),
+        (_, "text") => {
+            definitions.push_str(concat!(
+                "def conformance-text [input]\n",
+                "  join \"\"\n",
+                "    map\n",
+                "      fn [event]\n",
+                "        match event\n",
+                "          case (scalar value) (scalar-text csv-options value)\n",
+                "          case _ \"\"\n",
+                "      input\n\n",
+            ));
+            format!("conformance-text ({source})")
+        }
+        _ => panic!("no {reads}-to-{writes} conformance adapter"),
+    };
+    let call = if render.entry == "csv" {
+        format!("csv csv-options ({adapted})")
+    } else {
+        format!("{} ({adapted})", render.entry)
+    };
+    format!("{definitions}def export [input]\n  {call}\n")
+}
+
+fn grammar(format: &str) -> tabnas::Tabnas {
+    match format {
+        "csv" => tabnas_csv::make(),
+        "ini" => tabnas_ini::make(),
+        "json" => tabnas_json::make(),
+        "json5" => tabnas_json5::make(),
+        "jsonc" => tabnas_jsonc::make(),
+        "jsonic" => tabnas_jsonic::make(),
+        "jsonl" => tabnas_jsonl::make(),
+        "markdown" => tabnas_markdown::make(),
+        "toml" => tabnas_toml::make(),
+        "xml" => tabnas_xml::make(),
+        "yaml" => tabnas_yaml::make(),
+        "zon" => tabnas_zon::make(),
+        _ => panic!("no grammar for {format}"),
+    }
+}
+
+fn events(format: &str, text: &str) -> Result<Vec<OwnedJsonEvent>, Fail> {
+    let (outcome, events) = ParserSource::new(grammar(format), text).run_owned(Vec::new());
+    outcome.map(|_| events)
+}
+
+#[derive(Clone, Default)]
+struct Shared(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Shared {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("output lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn render(program: &Program, events: &[OwnedJsonEvent]) -> Result<String, Fail> {
+    let buffer = Shared::default();
+    let mut sink = program.sink(
+        Box::new(buffer.clone()),
+        None,
+        &Limits::default(),
+        Metrics::new(),
+    )?;
+    replay(events, &mut sink)?;
+    let bytes = buffer.0.lock().expect("output lock").clone();
+    Ok(String::from_utf8(bytes).expect("the render is UTF-8"))
+}
+
+#[test]
+fn text_shape_composition_compiles() {
+    let parts = StructuralParts {
+        manifest: "{}",
+        lift: None,
+        render: Some(StructuralPart {
+            entry: "textual-render",
+            source: Some("def textual-render [input]\n  input\n"),
+        }),
+    };
+    let main = conformance_main(&parts, "tree", "text", false);
+    let sources = [
+        Source::new("conformance.alc", &main),
+        Source::new(
+            "alchemy/render.alc",
+            parts.render.expect("render").source.expect("source"),
+        ),
+    ];
+    let program = compile_sources(&sources).expect("text composition compiles");
+    assert!(program.resolved().get("textual-render").is_some());
+}
+
+#[test]
+fn structural_translation_parts_agree_with_their_descriptors_and_compile() {
+    let samples = [
+        ("csv", "a,b\n1,x\n2,y\n"),
+        ("ini", "a=1\nb=x\n"),
+        ("json", "{\"a\":1,\"b\":[true,null]}\n"),
+        ("json5", "{a:1,b:['x',true]}\n"),
+        ("jsonc", "{\"a\":1,/* c */\"b\":true}\n"),
+        ("jsonic", "a:1,b:true"),
+        ("jsonl", "{\"a\":1}\n{\"a\":2}\n"),
+        ("markdown", "| a | b |\n| - | - |\n| 1 | x |\n"),
+        ("toml", "a = 1\nb = \"x\"\n"),
+        ("xml", "<a x=\"1\">text</a>"),
+        ("yaml", "a: 1\nb:\n  - x\n  - y\n"),
+        ("zon", ".{ .a = 1, .b = .{ true, false } }"),
+    ];
+    let formats = [
+        ("csv", structural_parts!(tabnas_csv::translate())),
+        ("ini", structural_parts!(tabnas_ini::translate())),
+        ("json", structural_parts!(tabnas_json::translate())),
+        ("json5", structural_parts!(tabnas_json5::translate())),
+        ("jsonc", structural_parts!(tabnas_jsonc::translate())),
+        ("jsonic", structural_parts!(tabnas_jsonic::translate())),
+        ("jsonl", structural_parts!(tabnas_jsonl::translate())),
+        ("markdown", structural_parts!(tabnas_markdown::translate())),
+        ("toml", structural_parts!(tabnas_toml::translate())),
+        ("xml", structural_parts!(tabnas_xml::translate())),
+        ("yaml", structural_parts!(tabnas_yaml::translate())),
+        ("zon", structural_parts!(tabnas_zon::translate())),
+    ];
+
+    for (format, parts) in formats {
+        let descriptor: Value =
+            serde_json::from_str(parts.manifest).expect("the embedded descriptor is JSON");
+        assert_eq!(descriptor["languageId"], format, "{format} languageId");
+        let translate = &descriptor["translate"];
+        let reads: Vec<&str> = match &translate["reads"] {
+            Value::String(shape) => vec![shape],
+            Value::Array(shapes) => shapes
+                .iter()
+                .map(|shape| shape.as_str().expect("each read shape is a string"))
+                .collect(),
+            value => panic!("{format} reads is {value}"),
+        };
+        assert!(!reads.is_empty(), "{format} declares no read shape");
+        assert!(
+            reads
+                .iter()
+                .all(|shape| matches!(*shape, "text" | "records" | "tree")),
+            "{format} reads {reads:?}"
+        );
+        let writes = translate["writes"].as_str().expect("writes is a string");
+        assert!(
+            matches!(writes, "text" | "records" | "tree"),
+            "{format} writes {writes}"
+        );
+
+        let lift_path = translate["lift"].as_str();
+        let render_path = translate["render"].as_str();
+        assert_part(format, "lift", lift_path, parts.lift);
+        assert_part(format, "render", render_path, parts.render);
+
+        let mut preferred = None;
+        for (index, read_shape) in reads.iter().enumerate() {
+            let main = conformance_main(
+                &parts,
+                read_shape,
+                writes,
+                index == 0 && parts.lift.is_some(),
+            );
+            let file = format!("{format}/{read_shape}-conformance.alc");
+            let mut sources = vec![Source::new(&file, &main)];
+            for (path, part) in [(lift_path, parts.lift), (render_path, parts.render)] {
+                if let (
+                    Some(path),
+                    Some(StructuralPart {
+                        source: Some(source),
+                        ..
+                    }),
+                ) = (path, part)
+                {
+                    sources.push(Source::new(path, source));
+                }
+            }
+            let program = compile_sources(&sources).unwrap_or_else(|fail| {
+                panic!("{format} reads {read_shape}: translation sources do not compile: {fail}")
+            });
+            for (kind, part) in [("lift", parts.lift), ("render", parts.render)] {
+                if let Some(StructuralPart {
+                    entry,
+                    source: Some(_),
+                    ..
+                }) = part
+                {
+                    assert!(
+                        program.resolved().get(entry).is_some(),
+                        "{format} {kind} source does not define {entry}"
+                    );
+                }
+            }
+            if index == 0 {
+                preferred = Some(program);
+            }
+        }
+        let program = preferred.expect("each format has a preferred read shape");
+
+        let sample = samples
+            .iter()
+            .find_map(|(name, text)| (*name == format).then_some(*text))
+            .expect("each format has a sample");
+        let first = events(format, sample)
+            .unwrap_or_else(|fail| panic!("{format} does not parse its sample: {fail}"));
+        let rendered = render(&program, &first)
+            .unwrap_or_else(|fail| panic!("{format} translation parts do not render: {fail}"));
+        let second = events(format, &rendered).unwrap_or_else(|fail| {
+            panic!("{format} does not parse its own render {rendered:?}: {fail}")
+        });
+        let rerendered = render(&program, &second)
+            .unwrap_or_else(|fail| panic!("{format} second render fails: {fail}"));
+        assert_eq!(
+            rerendered, rendered,
+            "{format} render is not round-trip stable"
+        );
+    }
+}

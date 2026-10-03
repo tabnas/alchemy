@@ -10,22 +10,28 @@ on:
     branches: [ '**' ]
     paths:
       - 'rs/**'
+      - 'go/**'
+      - 'ts/**'
       - 'test/spec/**'
       - 'stdlib/**'
       - 'alchemy-grammar.jsonic'
       - 'scripts/**'
       - 'docs/language.md'
       - 'ci/rust/**'
+      - 'ci/polyglot/**'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
       - 'rs/**'
+      - 'go/**'
+      - 'ts/**'
       - 'test/spec/**'
       - 'stdlib/**'
       - 'alchemy-grammar.jsonic'
       - 'scripts/**'
       - 'docs/language.md'
       - 'ci/rust/**'
+      - 'ci/polyglot/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -51,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH="${{ github.head_ref || github.ref_name }}"
-          SIBLINGS=$(sed -n 's/^SIBLINGS="\(.*\)"$/\1/p' alchemy/ci/rust/run.sh)
+          SIBLINGS=$(sed -n 's/^\(TS_\)\?SIBLINGS="\(.*\)"$/\2/p' alchemy/ci/rust/run.sh)
           n=0; total=$(echo "$SIBLINGS" | wc -w)
           for s in $SIBLINGS; do
             n=$((n+1))
@@ -69,5 +75,18 @@ jobs:
           rustup toolchain install "$MSRV" --profile minimal --component rustfmt,clippy
           rustup default "$MSRV"
 
-      - name: Gate
+      - name: Use Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24.x
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: 1.24.x
+
+      - name: Gate TypeScript and Go
+        run: alchemy/ci/polyglot/run.sh
+
+      - name: Gate Rust
         run: alchemy/ci/rust/run.sh

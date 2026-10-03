@@ -157,13 +157,21 @@ dependencies = [
  "serde_json",
  "tabnas-csv",
  "tabnas-debug",
+ "tabnas-ini",
  "tabnas-json",
+ "tabnas-json5",
+ "tabnas-jsonc",
+ "tabnas-jsonic",
  "tabnas-jsonl",
+ "tabnas-markdown",
  "tabnas-parser",
  "tabnas-render",
  "tabnas-support",
+ "tabnas-toml",
  "tabnas-transduce",
+ "tabnas-xml",
  "tabnas-yaml",
+ "tabnas-zon",
 ]
 
 [[package]]
@@ -188,11 +196,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "tabnas-hoover"
+version = "0.3.10"
+dependencies = [
+ "tabnas-parser",
+]
+
+[[package]]
+name = "tabnas-ini"
+version = "0.5.12"
+dependencies = [
+ "indexmap",
+ "serde_json",
+ "tabnas-hoover",
+ "tabnas-jsonic",
+ "tabnas-parser",
+]
+
+[[package]]
 name = "tabnas-json"
 version = "0.5.11"
 dependencies = [
  "regex",
  "serde_json",
+ "tabnas-parser",
+]
+
+[[package]]
+name = "tabnas-json5"
+version = "0.5.9"
+dependencies = [
+ "indexmap",
+ "regex",
+ "serde_json",
+ "tabnas-jsonic",
+ "tabnas-parser",
+]
+
+[[package]]
+name = "tabnas-jsonc"
+version = "0.5.8"
+dependencies = [
+ "serde_json",
+ "tabnas-jsonic",
  "tabnas-parser",
 ]
 
@@ -213,6 +259,16 @@ version = "0.1.10"
 dependencies = [
  "serde_json",
  "tabnas-json",
+ "tabnas-parser",
+]
+
+[[package]]
+name = "tabnas-markdown"
+version = "0.7.6"
+dependencies = [
+ "indexmap",
+ "regex",
+ "serde_json",
  "tabnas-parser",
 ]
 
@@ -242,6 +298,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tabnas-toml"
+version = "0.5.9"
+dependencies = [
+ "indexmap",
+ "regex",
+ "serde_json",
+ "tabnas-jsonic",
+ "tabnas-parser",
+]
+
+[[package]]
 name = "tabnas-transduce"
 version = "0.1.0"
 dependencies = [
@@ -253,11 +320,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "tabnas-xml"
+version = "0.7.10"
+dependencies = [
+ "indexmap",
+ "regex",
+ "serde_json",
+ "tabnas-jsonic",
+ "tabnas-parser",
+]
+
+[[package]]
 name = "tabnas-yaml"
 version = "0.5.13"
 dependencies = [
  "indexmap",
  "regex",
+ "serde_json",
+ "tabnas-jsonic",
+ "tabnas-parser",
+]
+
+[[package]]
+name = "tabnas-zon"
+version = "0.5.10"
+dependencies = [
+ "indexmap",
+ "serde",
  "serde_json",
  "tabnas-jsonic",
  "tabnas-parser",

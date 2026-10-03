@@ -1,5 +1,5 @@
-github.com/tabnas/csv/go v0.5.11 h1:Jo6naBD2w25S2wxkgfpCKI1VZFIgSzY9t77QCiwSQys=
-github.com/tabnas/csv/go v0.5.11/go.mod h1:y09J0hJTHDpjUTBRa7cbwCxveP/NYHceAC/AQIStyWQ=
+github.com/tabnas/csv/go v0.6.0 h1:4LT8o9Jodx3g3BoyiUIsI5n3sBMqX7a6PrNTT2aeCXY=
+github.com/tabnas/csv/go v0.6.0/go.mod h1:yiIGJDR8f8y+bOJh087SqhCURkMasyfQr0183G20RUs=
 github.com/tabnas/debug/go v0.3.9 h1:Lm1Vs1ELjrrOOA64ET5eBcaYBdHTokIEl2bqUfrCD44=
 github.com/tabnas/debug/go v0.3.9/go.mod h1:fFEa1W74l4EHMiXC8eO8GApkSzx3ci62ORC38YOw4nI=
 github.com/tabnas/feed/go v0.6.10 h1:5ECpqQ1s5Z+tW5w/pJc7jTbuU7FxwT730U7iNnT1d5Q=
@@ -20,15 +20,15 @@ github.com/tabnas/jsonl/go v0.1.10 h1:h7wm9+GydImpLYvYQJuMU8s1nH/jhHIoE3KvRDNFKc
 github.com/tabnas/jsonl/go v0.1.10/go.mod h1:DdFvaTEj1e9Natghw9UmoL/LBmaw6raJx2Mfj7qohuM=
 github.com/tabnas/markdown/go v0.7.6 h1:8AgfnWQtld7UWl5ptnMdslVnmuXFE2vgJrBRbkKvKR8=
 github.com/tabnas/markdown/go v0.7.6/go.mod h1:OAbvGEfh8OKJteuuYDMXgWZOhV/LOP1tVEqZHP4Tz+M=
-github.com/tabnas/parser/go v0.12.7 h1:CddVaQ7wIJmNqeRSRsZLObENwjefkhLs6ihCycOgjis=
-github.com/tabnas/parser/go v0.12.7/go.mod h1:WrlfEVyZ1QjEIowWiyEu3K1iHj7wxuPut5zoH9Trehk=
+github.com/tabnas/parser/go v0.12.8 h1:iruVgY+6BAKfSIahWBxnOphcv9Hr80WckS9driCnGZg=
+github.com/tabnas/parser/go v0.12.8/go.mod h1:WrlfEVyZ1QjEIowWiyEu3K1iHj7wxuPut5zoH9Trehk=
 github.com/tabnas/support/go v0.3.5 h1:BOjCXg7M+1DhNso2CTso6f/ED7n/q8IASVkrF5PDY9k=
 github.com/tabnas/support/go v0.3.5/go.mod h1:q+EGPO8fRFQAYDwRHFH4lafD5l5W/NCdY8vhN9IJOkY=
 github.com/tabnas/toml/go v0.5.9 h1:ktznmTEu9hTVVVMT9P9nceunOyc5vDxaYWZfht9wGPM=
 github.com/tabnas/toml/go v0.5.9/go.mod h1:tVzy5xp+mnwYoGi1JDJG7afHRob8jtDUT0EapXRUmx0=
 github.com/tabnas/xml/go v0.7.10 h1:pYMAb7Jh7QdZQ+UN/82BhbpXEx/SbMxyMI6F4iimd90=
 github.com/tabnas/xml/go v0.7.10/go.mod h1:wbv6jLqDVZxQtqOLb2YBSL74evYg0fbSKGFHMrX3eBg=
-github.com/tabnas/yaml/go v0.5.15 h1:V6h6BpjXe+GI4VYHkmPucPkYS3qeWirQKDkawy6Fu8Y=
-github.com/tabnas/yaml/go v0.5.15/go.mod h1:5xhnMAkDw/0GqsQPNyYykYWHUcWxaWM4fGVvRzij34U=
+github.com/tabnas/yaml/go v0.5.16 h1:JD1zebgA+dTPHNOS1njiHKFwTXOkb1PFnOSp9wxvq0s=
+github.com/tabnas/yaml/go v0.5.16/go.mod h1:NyOIJd22hc2quv/mBJExa1HCIo3Ja3yFtVXG7D4LD7E=
 github.com/tabnas/zon/go v0.5.10 h1:nlAr2fxZ5wQgDivM997lVGTzzuf9sRpPaxlgzoPUID4=
 github.com/tabnas/zon/go v0.5.10/go.mod h1:tqpu0FNN5TwTIdwjTSK0lpZWQlsZLPw6g/HRLOosyHk=

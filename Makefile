@@ -1,5 +1,5 @@
-# Build and test the Rust crate in rs/. (TypeScript and Go ports are not
-# started yet; their targets join here when they are.)
+# Build and test the Rust crate in rs/. The full gate below also runs the
+# TypeScript and Go structural-conformance suites against sibling checkouts.
 
 .PHONY: all build test clean bench gate embed
 
@@ -23,6 +23,7 @@ embed:
 
 # The full gate CI runs, with the lock discipline.
 gate:
+	ci/polyglot/run.sh
 	ci/rust/run.sh
 
 clean:
