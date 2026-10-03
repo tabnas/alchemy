@@ -89,7 +89,6 @@ jobs:
         working-directory: ts
         run: |
           npm install -g npm@latest
-          npm ci
+          npm install
           npm run build
           npm publish --access public --provenance
-

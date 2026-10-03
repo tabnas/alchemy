@@ -44,7 +44,11 @@ for package in $TS_PACKAGES; do
   elif [[ "$package" == "alchemy" ]]; then
     install_args+=("$FLEET_ROOT/transduce/ts" "$FLEET_ROOT/render/ts")
   fi
-  (cd "$package_dir" && npm install --ignore-scripts --no-save "${install_args[@]}")
+  if ((${#install_args[@]})); then
+    (cd "$package_dir" && npm install --ignore-scripts --no-save "${install_args[@]}")
+  else
+    (cd "$package_dir" && npm install --ignore-scripts --no-save)
+  fi
   link_siblings "$package_dir"
   echo "typescript: $package_i of $package_total ($((package_i * 100 / package_total))%) build $package"
   (cd "$package_dir" && npm run build --if-present)

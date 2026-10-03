@@ -36,7 +36,7 @@ cd "$ROOT/rs"
 # not, because a newer toolchain accepts what the MSRV rejects.
 MSRV=$(awk -F'"' '/^rust-version = /{print $2; exit}' Cargo.toml)
 CARGO=(cargo)
-if [[ -n "$MSRV" ]]; then
+if [[ -n "$MSRV" ]] && command -v rustup >/dev/null 2>&1; then
   # The INSTALLED toolchain's full name (`1.85.1-x86_64-...`), not the
   # `1.85` channel: `cargo +1.85` names a release channel, which rustup
   # would try to synchronize over the network even when 1.85.1 is already
@@ -48,6 +48,9 @@ if [[ -n "$MSRV" ]]; then
     echo "warning: MSRV $MSRV is not installed; running on $(rustc --version 2>/dev/null)" >&2
     echo "         install it with: rustup toolchain install $MSRV" >&2
   fi
+elif [[ -n "$MSRV" ]]; then
+  echo "warning: rustup is not installed; running on $(rustc --version 2>/dev/null)" >&2
+  echo "         install rustup and toolchain $MSRV to validate the MSRV locally" >&2
 fi
 
 # The lock's entry for THIS crate must match the manifest, before any cargo

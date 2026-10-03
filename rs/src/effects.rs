@@ -466,11 +466,10 @@ pub fn summarize(program: &Program) -> EffectSummary {
             // before it that selected (the events of a table's records)
             // keeps its own summary: the stages are read from the input
             // outward, and this one adds no selection to it.
-            Plan::Events { .. } => {
-                if selection == PASS_THROUGH {
-                    selection = "none; every event is delivered as an item".to_string();
-                }
+            Plan::Events { .. } if selection == PASS_THROUGH => {
+                selection = "none; every event is delivered as an item".to_string();
             }
+            Plan::Events { .. } => {}
             Plan::ScanEmit { init, step, .. } => {
                 confidence = Confidence::Conditional;
                 // The library's twin of `table-from-json` keeps the table's
