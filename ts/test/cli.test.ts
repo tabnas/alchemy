@@ -8,7 +8,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 import { SpawnSyncReturns, spawn, spawnSync } from 'node:child_process'
-import { accessSync, constants, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -54,9 +54,18 @@ const EXPORT = 'def export [input]\n  pipe input\n    table-from-json api-bindin
 describe('cli', () => {
   it('the bin is an executable script', () => {
     accessSync(BIN, constants.X_OK)
-    // Run as a script runs it, by its own interpreter line.
-    const out = spawnSync(BIN, ['canon', '-'], { input: 'a b' })
-    assert.equal(out.status, 0, out.stderr?.toString())
+    // Its interpreter line names node, which POSIX runs and npm reads to
+    // write the shim it installs for the command on Windows.
+    assert.equal(readFileSync(BIN, 'utf8').split(/\r?\n/)[0], '#!/usr/bin/env node')
+    // Run as a script runs it: by its own interpreter line, and on Windows,
+    // which runs executables only and reads no interpreter line, by node,
+    // as that shim runs it.
+    const out =
+      'win32' === process.platform
+        ? spawnSync(process.execPath, [BIN, 'canon', '-'], { input: 'a b' })
+        : spawnSync(BIN, ['canon', '-'], { input: 'a b' })
+    if (out.error) throw out.error
+    assert.equal(out.status, 0, out.stderr.toString())
     assert.equal(out.stdout.toString(), '(a b)\n')
   })
 

@@ -42,6 +42,7 @@ import { FdWriter } from '@tabnas/render'
 import { Fail, Limits, Metrics, ParserSource, Prune, SourceMode } from '@tabnas/transduce'
 
 import { canonical, format } from './ast'
+import { isFail } from './fail'
 import { parseFile } from './grammar'
 import { Renderer, rendererNamed } from './lower'
 import { Program, compile } from './program'
@@ -219,7 +220,7 @@ function execute(program: Program, input: string, render: Renderer | undefined, 
     // A failure the source found (bad JSON after the rows) knows nothing of
     // the output; the writer's count says whether bytes had reached
     // standard output.
-    if (err instanceof Fail && metrics.output_bytes > 0 && !err.committedOutput) err.committed()
+    if (isFail(err) && metrics.output_bytes > 0 && !err.committedOutput) err.committed()
     throw err
   }
 }
@@ -269,8 +270,8 @@ function command(args: ReadonlyArray<string>): string {
 }
 
 // The status of a defect of this package (anything thrown that is not a
-// `Fail`): Rust's for a panic, so a script never reads one as an input
-// failure.
+// `Fail`, from whichever copy of transduce: `isFail`): Rust's for a panic,
+// so a script never reads one as an input failure.
 const DEFECT = 101
 
 // Run one command line and answer its exit status.
@@ -279,7 +280,7 @@ export function main(args: ReadonlyArray<string>): number {
   try {
     text = command(args)
   } catch (err) {
-    const exit = err instanceof Exit ? err : err instanceof Fail ? Exit.of(err) : undefined
+    const exit = err instanceof Exit ? err : isFail(err) ? Exit.of(err) : undefined
     if (undefined === exit) {
       try {
         writeAll(2, `alchemy: internal error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`)
