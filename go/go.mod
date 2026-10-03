@@ -8,7 +8,7 @@ go 1.24.7
 // the sibling checkouts until they are.
 require (
 	github.com/tabnas/json/go v0.5.12
-	github.com/tabnas/parser/go v0.12.8
+	github.com/tabnas/parser/go v0.12.9
 	github.com/tabnas/render/go v0.1.1
 	github.com/tabnas/transduce/go v0.1.1
 )
