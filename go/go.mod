@@ -7,28 +7,28 @@ go 1.24.7
 // render's Go ports, not yet released, resolved through a go.work over
 // the sibling checkouts until they are.
 require (
-	github.com/tabnas/json/go v0.5.12
-	github.com/tabnas/parser/go v0.12.8
-	github.com/tabnas/render/go v0.1.1
-	github.com/tabnas/transduce/go v0.1.1
+	github.com/tabnas/json/go v0.5.13
+	github.com/tabnas/parser/go v0.12.9
+	github.com/tabnas/render/go v0.1.2
+	github.com/tabnas/transduce/go v0.1.2
 )
 
 // The grammars the tests read documents with, the debug model, and the
 // shared fixture runner.
 require (
-	github.com/tabnas/csv/go v0.6.1
-	github.com/tabnas/debug/go v0.3.9
-	github.com/tabnas/ini/go v0.5.13
-	github.com/tabnas/json5/go v0.5.10
-	github.com/tabnas/jsonc/go v0.5.9
-	github.com/tabnas/jsonic/go v0.7.3
-	github.com/tabnas/jsonl/go v0.1.11
-	github.com/tabnas/markdown/go v0.7.7
-	github.com/tabnas/support/go v0.3.5
-	github.com/tabnas/toml/go v0.5.10
-	github.com/tabnas/xml/go v0.7.11
-	github.com/tabnas/yaml/go v0.5.17
-	github.com/tabnas/zon/go v0.5.11
+	github.com/tabnas/csv/go v0.6.2
+	github.com/tabnas/debug/go v0.3.10
+	github.com/tabnas/ini/go v0.5.14
+	github.com/tabnas/json5/go v0.5.11
+	github.com/tabnas/jsonc/go v0.5.10
+	github.com/tabnas/jsonic/go v0.7.4
+	github.com/tabnas/jsonl/go v0.1.12
+	github.com/tabnas/markdown/go v0.7.8
+	github.com/tabnas/support/go v0.3.6
+	github.com/tabnas/toml/go v0.5.11
+	github.com/tabnas/xml/go v0.7.12
+	github.com/tabnas/yaml/go v0.5.18
+	github.com/tabnas/zon/go v0.5.12
 )
 
-require github.com/tabnas/hoover/go v0.3.10 // indirect
+require github.com/tabnas/hoover/go v0.3.11 // indirect
