@@ -25,6 +25,5 @@ describe('version', () => {
     const cargo = readFileSync(join(__dirname, '..', '..', 'rs', 'Cargo.toml'), 'utf8')
     const crate = /^version = "([^"]+)"/m.exec(cargo)?.[1]
     assert.equal(VERSION, crate)
-    assert.equal(VERSION, '0.1.2')
   })
 })
