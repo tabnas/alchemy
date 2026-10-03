@@ -9,7 +9,6 @@ package tabnasalchemy
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"testing"
 
@@ -235,6 +234,17 @@ func conformanceMain(parts structuralParts, descriptor translationDescriptor) st
 	if parts.lift != nil {
 		return fmt.Sprintf("def export [input]\n  %s (%s (events input))\n", parts.render.entry, parts.lift.entry)
 	}
+	if descriptor.Translate.Writes == "text" {
+		return "def conformance-text [input]\n" +
+			"  join \"\"\n" +
+			"    map\n" +
+			"      fn [event]\n" +
+			"        match event\n" +
+			"          case (scalar value) (scalar-text csv-options value)\n" +
+			"          case _ \"\"\n" +
+			"      events input\n\n" +
+			fmt.Sprintf("def export [input]\n  %s (conformance-text input)\n", parts.render.entry)
+	}
 	if descriptor.Translate.Writes == "records" {
 		call := fmt.Sprintf("%s (table-from-json conformance-binding input)", parts.render.entry)
 		if parts.render.entry == "csv" {
@@ -247,71 +257,36 @@ func conformanceMain(parts structuralParts, descriptor translationDescriptor) st
 	return fmt.Sprintf("def export [input]\n  %s (events input)\n", parts.render.entry)
 }
 
-// orderedTranslationValue gives schemas whose render is streaming the member
-// order their package contract defines. Go maps carry no order; the parser
-// value is otherwise unchanged, and OrderedMap is the engine's ordered object
-// representation used by the event source.
-func orderedTranslationValue(format string, value any) any {
-	switch value := value.(type) {
-	case []any:
-		out := make([]any, len(value))
-		for i, item := range value {
-			out[i] = orderedTranslationValue(format, item)
-		}
-		return out
-	case *tabnas.OrderedMap:
-		out := tabnas.NewOrderedMap()
-		for _, key := range value.Keys {
-			out.Set(key, orderedTranslationValue(format, value.Vals[key]))
-		}
-		return out
-	case map[string]any:
-		keys := make([]string, 0, len(value))
-		for key := range value {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		preferred := []string{}
-		switch format {
-		case "markdown":
-			preferred = []string{"type", "align", "depth", "value", "url", "title", "children"}
-		case "xml":
-			preferred = []string{"name", "localName", "attributes", "children"}
-		}
-		out := tabnas.NewOrderedMap()
-		placed := map[string]bool{}
-		for _, key := range preferred {
-			if item, ok := value[key]; ok {
-				out.Set(key, orderedTranslationValue(format, item))
-				placed[key] = true
-			}
-		}
-		for _, key := range keys {
-			if !placed[key] {
-				out.Set(key, orderedTranslationValue(format, value[key]))
-			}
-		}
-		return out
-	default:
-		return value
-	}
-}
-
 func conformanceEvents(t *testing.T, format, text string) []tt.Event {
 	t.Helper()
-	value, err := grammarParser(t, format).Parse(text)
-	if err != nil {
-		t.Fatalf("%s does not parse %q: %v", format, text, err)
-	}
 	var recorder tt.Recorder
-	if _, fail := (tt.ValueSource{Value: orderedTranslationValue(format, value)}).Run(&recorder); fail != nil {
-		t.Fatal(fail)
+	if _, fail := tt.NewParserSource(grammarParser(t, format), text).Run(&recorder); fail != nil {
+		t.Fatalf("%s does not parse %q: %v", format, text, fail)
 	}
 	return recorder.Events
 }
 
+func TestTextShapeComposition(t *testing.T) {
+	descriptor := translationDescriptor{}
+	descriptor.Translate.Writes = "text"
+	parts := structuralParts{
+		render: localPart("textual-render", "def textual-render [input]\n  input\n"),
+	}
+	main := conformanceMain(parts, descriptor)
+	program, fail := CompileSources([]Source{
+		{File: "conformance.alc", Text: main},
+		{File: "alchemy/render.alc", Text: parts.render.source},
+	})
+	if fail != nil {
+		t.Fatal(fail)
+	}
+	if program.Resolved().Get(parts.render.entry) == nil {
+		t.Fatalf("render source does not define %s", parts.render.entry)
+	}
+}
+
 func TestStructuralTranslationParts(t *testing.T) {
-	shapes := map[string]bool{"records": true, "tree": true}
+	shapes := map[string]bool{"text": true, "records": true, "tree": true}
 	samples := map[string]string{
 		"csv":      "a,b\n1,x\n2,y\n",
 		"ini":      "a=1\nb=x\n",

@@ -73,7 +73,7 @@ const formats: readonly Format[] = [
   { name: 'zon', parts: zon(), parser: () => withJsonic(Zon), sample: '.{ .a = 1, .b = .{ true, false } }' },
 ]
 
-const shapes = new Set(['records', 'tree'])
+const shapes = new Set(['text', 'records', 'tree'])
 
 function descriptor(parts: TranslationParts): Descriptor {
   return JSON.parse(parts.manifest) as Descriptor
@@ -108,6 +108,16 @@ function compileParts(format: string, descriptor: Descriptor, parts: Translation
   let main: string
   if (parts.lift) {
     main = `def export [input]\n  ${render.entry} (${parts.lift.entry} (events input))\n`
+  } else if ('text' === descriptor.translate.writes) {
+    main = 'def conformance-text [input]\n' +
+      '  join ""\n' +
+      '    map\n' +
+      '      fn [event]\n' +
+      '        match event\n' +
+      '          case (scalar value) (scalar-text csv-options value)\n' +
+      '          case _ ""\n' +
+      '      events input\n\n' +
+      `def export [input]\n  ${render.entry} (conformance-text input)\n`
   } else if ('records' === descriptor.translate.writes) {
     const call = 'csv' === render.entry
       ? 'csv csv-options (table-from-json conformance-binding input)'
@@ -137,6 +147,25 @@ function compileParts(format: string, descriptor: Descriptor, parts: Translation
 }
 
 describe('structural translation parts', () => {
+  it('composes a text-shaped render through the Text protocol', () => {
+    const manifest: Descriptor = {
+      languageId: 'textual',
+      translate: {
+        reads: 'tree',
+        writes: 'text',
+        render: 'alchemy/render.alc',
+      },
+    }
+    const parts: TranslationParts = {
+      manifest: JSON.stringify(manifest),
+      render: {
+        entry: 'textual-render',
+        source: 'def textual-render [input]\n  input\n',
+      },
+    }
+    assert.ok(compileParts('textual', manifest, parts).resolved.get('textual-render'))
+  })
+
   for (const format of formats) {
     const { name, parts: maybeParts } = format
     it(`${name} agrees with its descriptor and round trips through its parts`, () => {

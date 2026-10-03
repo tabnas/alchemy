@@ -72,6 +72,22 @@ fn conformance_main(parts: &StructuralParts, writes: &str) -> String {
             render.entry, lift.entry
         );
     }
+    if writes == "text" {
+        return format!(
+            concat!(
+                "def conformance-text [input]\n",
+                "  join \"\"\n",
+                "    map\n",
+                "      fn [event]\n",
+                "        match event\n",
+                "          case (scalar value) (scalar-text csv-options value)\n",
+                "          case _ \"\"\n",
+                "      events input\n\n",
+                "def export [input]\n  {} (conformance-text input)\n",
+            ),
+            render.entry
+        );
+    }
     if writes == "records" {
         let call = if render.entry == "csv" {
             "csv csv-options (table-from-json conformance-binding input)".to_string()
@@ -146,6 +162,28 @@ fn render(program: &Program, events: &[OwnedJsonEvent]) -> Result<String, Fail> 
 }
 
 #[test]
+fn text_shape_composition_compiles() {
+    let parts = StructuralParts {
+        manifest: "{}",
+        lift: None,
+        render: Some(StructuralPart {
+            entry: "textual-render",
+            source: Some("def textual-render [input]\n  input\n"),
+        }),
+    };
+    let main = conformance_main(&parts, "text");
+    let sources = [
+        Source::new("conformance.alc", &main),
+        Source::new(
+            "alchemy/render.alc",
+            parts.render.expect("render").source.expect("source"),
+        ),
+    ];
+    let program = compile_sources(&sources).expect("text composition compiles");
+    assert!(program.resolved().get("textual-render").is_some());
+}
+
+#[test]
 fn structural_translation_parts_agree_with_their_descriptors_and_compile() {
     let samples = [
         ("csv", "a,b\n1,x\n2,y\n"),
@@ -193,12 +231,12 @@ fn structural_translation_parts_agree_with_their_descriptors_and_compile() {
         assert!(
             reads
                 .iter()
-                .all(|shape| matches!(*shape, "records" | "tree")),
+                .all(|shape| matches!(*shape, "text" | "records" | "tree")),
             "{format} reads {reads:?}"
         );
         let writes = translate["writes"].as_str().expect("writes is a string");
         assert!(
-            matches!(writes, "records" | "tree"),
+            matches!(writes, "text" | "records" | "tree"),
             "{format} writes {writes}"
         );
 

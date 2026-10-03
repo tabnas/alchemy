@@ -18,6 +18,10 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 # dev-dependencies are not built, so nothing else is needed.
 SIBLINGS="parser csv debug hoover ini json json5 jsonc jsonic jsonl markdown support toml transduce render xml yaml zon"
 
+# TypeScript-only additions needed by ci/polyglot/run.sh. The hosted workflow
+# clones the union; the Rust gate validates only SIBLINGS above.
+TS_SIBLINGS="bnf abnf feed railroad"
+
 for SIBLING in $SIBLINGS; do
   if [[ ! -f "$ROOT/../$SIBLING/rs/Cargo.toml" ]]; then
     echo "no $SIBLING checkout at $ROOT/../$SIBLING/rs" >&2
