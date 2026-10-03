@@ -41,6 +41,14 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 tabnas-support = { path = "../../support/rs", features = ["serde_json"] }
 # The introspection plugin, for the debug-model test every grammar carries.
 tabnas-debug = { path = "../../debug/rs" }
+tabnas-ini = { path = "../../ini/rs" }
+tabnas-json5 = { path = "../../json5/rs" }
+tabnas-jsonc = { path = "../../jsonc/rs" }
+tabnas-jsonic = { path = "../../jsonic/rs" }
 tabnas-jsonl = { path = "../../jsonl/rs" }
+tabnas-markdown = { path = "../../markdown/rs" }
+tabnas-toml = { path = "../../toml/rs" }
+tabnas-xml = { path = "../../xml/rs" }
 tabnas-yaml = { path = "../../yaml/rs" }
 tabnas-csv = { path = "../../csv/rs" }
+tabnas-zon = { path = "../../zon/rs" }
