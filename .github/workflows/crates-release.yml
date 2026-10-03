@@ -1,3 +1,5 @@
+# Target: tabnas/alchemy -> .github/workflows/crates-release.yml
+#
 # crates.io publishing for this repository's Rust crate, rs/ (admin
 # ADR-21).
 #
@@ -28,7 +30,7 @@
 #
 # PUBLISHED FROM THE TAG, never from main, so the crate is built from
 # the commit that npm and the Go proxy serve. rs/Cargo.toml's version
-# must equal ts/package.json's, and the tag must be rs/v, ts/v or go/v of that
+# must equal ts/package.json's, and the tag must be ts/v or go/v of that
 # version. The kind is read at the workflow's own ref, not at the tag, so
 # a tag cut before .tabnas-kind existed can still be backfilled.
 #
@@ -64,13 +66,13 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "release tag, e.g. rs/v1.2.3"
+        description: "release tag, e.g. go/v1.2.3"
         required: true
         type: string
   workflow_dispatch:
     inputs:
       tag:
-        description: "existing release tag, e.g. rs/v1.2.3"
+        description: "existing release tag, e.g. go/v1.2.3 (ts/v1.2.3 where there is no Go module)"
         required: true
         type: string
 
@@ -118,8 +120,8 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           case "$TAG" in
-            rs/v[0-9]*|ts/v[0-9]*|go/v[0-9]*) echo "tag: $TAG" ;;
-            *) echo "::error::'$TAG' is not a release tag (rs/v<version>, ts/v<version> or go/v<version>)"; exit 1 ;;
+            ts/v[0-9]*|go/v[0-9]*) echo "tag: $TAG" ;;
+            *) echo "::error::'$TAG' is not a release tag (ts/v<version> or go/v<version>)"; exit 1 ;;
           esac
 
       # The source that ships is the release tag, never main. It is
@@ -163,8 +165,8 @@ jobs:
             echo "::error::rs/Cargo.toml says ${NAME:-<no name>} ${C:-<no version>}, ts/package.json says $V; they must be equal"
             exit 1
           fi
-          if [ "$TAG" != "rs/v$V" ] && [ "$TAG" != "ts/v$V" ] && [ "$TAG" != "go/v$V" ]; then
-            echo "::error::$TAG is not rs/v$V, ts/v$V or go/v$V, a release tag for the version it contains"
+          if [ "$TAG" != "ts/v$V" ] && [ "$TAG" != "go/v$V" ]; then
+            echo "::error::$TAG is neither ts/v$V nor go/v$V, the tags of the version it contains"
             exit 1
           fi
           [ -n "$RV" ] || { echo "::error::rs/Cargo.toml declares no rust-version, so there is no toolchain to publish with"; exit 1; }
@@ -419,4 +421,3 @@ jobs:
           done
           echo "::error::crates.io does not report $NAME $V after publishing (last answer $C)"
           exit 1
-
