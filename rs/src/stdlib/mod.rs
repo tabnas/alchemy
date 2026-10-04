@@ -26,12 +26,12 @@ pub mod registry;
 use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
-use tabnas_transduce::Fail;
 
 use crate::ast::{SourceSpan, Sources};
 use crate::desugar;
 use crate::grammar::parse_file;
 use crate::resolve::{resolve, Def, NameKind, Resolved};
+use crate::shared::Fail;
 
 use registry::Kind;
 
@@ -105,7 +105,7 @@ pub fn load() -> Result<Stdlib, Fail> {
         for (name, def) in &resolved.defs {
             if defs.insert(name.clone(), def.clone()).is_some() {
                 return Err(Fail::new(
-                    tabnas_transduce::Code::DslTypeError,
+                    crate::shared::Code::DslTypeError,
                     format!("duplicate_def: {name} is defined in two standard library files"),
                 ));
             }

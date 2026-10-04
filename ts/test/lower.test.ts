@@ -15,7 +15,6 @@ import {
   Renderer,
   Runtime,
   Sources,
-  compile,
   csvOptions,
   desugarProgram,
   outer,
@@ -25,14 +24,14 @@ import {
   value,
 } from '../dist/alchemy'
 
-import { EXPECTED_CSV, PROGRAM, RECORDS, thrown } from './common'
+import { EXPECTED_CSV, OPTIONS, PROGRAM, RECORDS, compile, thrown } from './common'
 
 const V = value
 
 function runtime(src: string, native: boolean): Runtime {
   const forms = desugarProgram(parseFile(src, 't.alc'), src)
   const sources = Sources.one('t.alc', src)
-  return new Runtime(resolve(forms, sources, outer), sources).withNative(native)
+  return new Runtime(resolve(forms, sources, outer), sources, OPTIONS).withNative(native)
 }
 
 // Run `src` over the JSON `input` through the json grammar's incremental

@@ -3,10 +3,24 @@
 This repository is **tabnas-alchemy**: a small, typed, functional
 streaming language in which both transducers and renderers are written,
 parsed by a **tabnas grammar plugin** like every other grammar in the
-fleet, and compiled onto [tabnas-transduce](https://github.com/tabnas/transduce)
-and [tabnas-render](https://github.com/tabnas/render).
+fleet, and lowered onto the routers and renderers its host passes in,
+which [tabnas-transduce](https://github.com/tabnas/transduce) and
+[tabnas-render](https://github.com/tabnas/render) implement.
 [aless](https://github.com/rjrodger/aless) runs alchemy programs against
-any format its parsers read. `CLAUDE.md` is a symlink to this file.
+any format its parsers read, and
+[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli) is the
+`alchemy` command. `CLAUDE.md` is a symlink to this file.
+
+**alchemy owns the shared types** that transduce and render build on: the
+event protocol (`JsonEvent`, `Sink`, the table protocol, `Fail` and its
+`Code`s, `Limits`, `Selector`, `Datum`), the captures and options its
+lowering hands to those packages, and the `Routers` and `Renderers`
+interfaces. They live in a unit that depends on nothing outside itself
+(`rs/src/shared/`, the crate with `default-features = false`;
+`go/shared`; `ts/src/shared/`, published as `@tabnas/alchemy/shared`), so
+transduce and render take them without taking the language. transduce
+implements `Routers`, render implements `Renderers`, and a host passes
+both to `compile`; the language imports neither package.
 
 ## Core principle: dependencies change only on explicit instruction
 
@@ -124,15 +138,15 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/effects.rs` | the effect summary and the `explain` report, as text and as JSON |
 | `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
 | `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
-| `rs/src/lower.rs` | plans to sinks: `Router`, `ScanEmit`, `TableFromJson`, the renderers, the text algebra, and the two adapters from an interpreted stream, `TaggedToTable` to table events and `TaggedToJson` to JSON events |
-| `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
+| `rs/src/shared/` | the shared types, moved from transduce and render: `event`, `sink`, `table`, `error` (`Fail`, `Code`), `limits`, `selector`, `datum`, the captures (`route`, `scan`, `matcher`), the text boundary and the renderers' options (`text`, `csv`, `json`), and `inject`: the `Routers` and `Renderers` traits |
+| `rs/src/lower.rs` | plans to sinks through the injected `Routers` (routes, `scan-emit`, `table-from-json`, guards) and `Renderers` (CSV, JSON, records, the text algebra), and the two adapters from an interpreted stream, `TaggedToTable` to table events and `TaggedToJson` to JSON events |
+| `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (each takes the host's `Routers` and `Renderers`; several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
 | `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded from the crate's copies in `rs/stdlib/`, resolved and checked on first use |
-| `rs/src/bin/alchemy.rs` | `alchemy canon | format | check | explain | run` |
 | `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner` (`run.tsv` both natively and interpreted), the layout round trip, the reference's examples |
 | `rs/tests/debug_model_test.rs` | the grammar composed with `tabnas-debug`, as every grammar carries |
 | `rs/tests/repeat_test.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
-| `rs/tests/cli_test.rs` | the built binary, run as a script runs it |
+| `rs/tests/lower_test.rs` | the lowering, the program API and the effects that need a real run, on transduce's routers and render's renderers (dev-dependencies) |
 | `rs/tests/run_test.rs` | the API end to end: the worked example both ways, the spec's streaming rows, the `json` echo, `records` |
 | `rs/tests/sources_test.rs` | `compile_sources`: a format's part linked with a program and run as one, a program linked under another name and fed to a render, every stage's failure naming the file it is in, and the linking's refusals |
 | `rs/tests/shared_sources_test.rs` | the embedded grammar is `alchemy-grammar.jsonic`, and `rs/stdlib/` is `stdlib/`, file for file |
@@ -193,7 +207,7 @@ runner, so a stale example fails the gate.
 
 ## Error codes
 
-This crate raises codes from `tabnas_transduce::Code`, the one shared set.
+This crate raises codes from its shared `Code` (`tabnas_alchemy::shared::Code`, which transduce and render re-export), the one shared set.
 Its own are `DSL_PARSE_ERROR` (the reader: a tab in indentation, a dedent
 to no level, an unterminated string or list, an invalid pipeline step) and
 `DSL_TYPE_ERROR` (an unknown name, a wrong argument type or count, a
@@ -232,7 +246,7 @@ definition that reaches itself; from the evaluator, nesting past
 the plan, so `duplicate_key`, `no_match` and the evaluator's
 `recursion` have rows where the plan's own evaluation meets them.
 `render_of_text` needs a renderer, which `check` never takes;
-`rs/tests/run_test.rs` and `rs/src/lower.rs` pin it. `duplicate_file`
+`rs/tests/run_test.rs` and `rs/tests/lower_test.rs` pin it. `duplicate_file`
 needs several sources, which `check` never takes;
 `rs/tests/sources_test.rs` pins it. Runtime failures
 carry the transduce and render codes unchanged, and a `fail "message"`
@@ -270,7 +284,7 @@ building the plan takes at most `MAX_PLAN_STEPS` (1,000,000) evaluation
 steps (`RESOURCE_LIMIT_EXCEEDED` naming `max_plan_steps`; a program of
 forty nested doublings asks for 2^40). Those bounds are only reached
 before the stack's end on a thread of `STACK_BYTES` (64 MiB): `compile`
-makes one, the `alchemy` command runs on one, and a host that pushes
+makes one, the `alchemy` command (alchemy-cli) runs on one, and a host that pushes
 events into a sink must run it on one. The work of one item is bounded
 by the host's abort flag (`Program::with_abort`), read every few
 evaluation steps. At run time every transduce limit applies as the

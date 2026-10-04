@@ -22,8 +22,7 @@
 // evaluator drives on its own stack (`./trampoline`), so a function that
 // maps itself is the evaluator's `recursion`, never JavaScript's stack.
 
-import { CaptureSpec, Fail, Limits, Selector, utf8Bytes } from '@tabnas/transduce'
-import { isJsonNumber, writeValue } from '@tabnas/render'
+import { CaptureSpec, Fail, Limits, Renderers, Selector, isJsonNumber, utf8Bytes } from '../shared'
 
 import { SourceSpan } from '../ast'
 import type { Runtime } from '../interp'
@@ -155,17 +154,18 @@ function quotedText(s: string): string {
 // ---------------------------------------------------------------------------
 
 // The shortest text that reads back as `value`, laid out as the render
-// package lays it out (`writeValue`): positional within the JavaScript
-// range, exponent form outside it. The two must agree byte for byte, which
-// the differential test checks on every number without a lexeme.
-export function shortestNumber(value: number): string {
-  return writeValue(value)
+// package lays it out (`writeValue`, from the renderers a host passes):
+// positional within the JavaScript range, exponent form outside it. The two
+// must agree byte for byte, which the differential test checks on every
+// number without a lexeme.
+export function shortestNumber(renderers: Renderers, value: number): string {
+  return renderers.writeValue(value)
 }
 
 // The text of a number as a renderer writes it, with the renderer's
 // checks: a lexeme that is not a JSON number is `INVALID_NUMBER`, a
 // non-finite value `TARGET_VALUE_UNREPRESENTABLE`.
-export function numberText(value: number, lexeme?: string): string {
+export function numberText(renderers: Renderers, value: number, lexeme?: string): string {
   if (undefined !== lexeme && !isJsonNumber(lexeme)) {
     throw new Fail('INVALID_NUMBER', `${quotedText(lexeme)} is not a JSON number`)
   }
@@ -176,7 +176,7 @@ export function numberText(value: number, lexeme?: string): string {
         : `${displayNumber(value)} has no representation as a number`
     throw new Fail('TARGET_VALUE_UNREPRESENTABLE', message)
   }
-  return undefined !== lexeme ? lexeme : shortestNumber(value)
+  return undefined !== lexeme ? lexeme : shortestNumber(renderers, value)
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +618,7 @@ function scalarText(rt: Runtime, a: ReadonlyArray<Val>): Val {
     case 'bool':
       return str(cell.value ? 'true' : 'false')
     case 'num':
-      return str(numberText(cell.value, cell.lexeme))
+      return str(numberText(rt.renderers, cell.value, cell.lexeme))
     case 'str':
       return cell
     case 'vector':

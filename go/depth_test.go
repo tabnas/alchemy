@@ -47,17 +47,17 @@ func chain(n int) string {
 func TestEvaluationMeetsItsBoundBeforeTheStacksEnd(t *testing.T) {
 	withRustStack(t)
 	// A function applied to itself, while the plan is built.
-	if _, f := Compile("def w [f] (f f)\ndef export [input]\n  let [x (w w)]\n    json input\n", "omega.alc"); !isRecursion(f) || f.Row != 1 || f.Column != 12 {
+	if _, f := Compile("def w [f] (f f)\ndef export [input]\n  let [x (w w)]\n    json input\n", "omega.alc", routers, renderers); !isRecursion(f) || f.Row != 1 || f.Column != 12 {
 		t.Errorf("%v", f)
 	}
 	// A chain of definitions each naming the next nests a level per form:
 	// within the bound it is a value, past it recursion.
 	inside := chain(MaxEvalDepth/2-20) + fmt.Sprintf("def export [input] (concat (scalar-text csv-options v%d) (json input))\n", MaxEvalDepth/2-20)
-	if _, f := Compile(inside, "inside.alc"); f != nil {
+	if _, f := Compile(inside, "inside.alc", routers, renderers); f != nil {
 		t.Errorf("inside the bound: %v", f)
 	}
 	past := chain(MaxEvalDepth) + fmt.Sprintf("def export [input] (let [x v%d] (json input))\n", MaxEvalDepth)
-	if _, f := Compile(past, "past.alc"); !isRecursion(f) {
+	if _, f := Compile(past, "past.alc", routers, renderers); !isRecursion(f) {
 		t.Errorf("past the bound: %v", f)
 	}
 	// A finite text whose concat-map applies a function that answers the
@@ -89,7 +89,7 @@ func TestADeepValueIsComparedPrintedAndMeasured(t *testing.T) {
 		t.Errorf("%.40q %v", out, f)
 	}
 	nomatch := chain(n) + fmt.Sprintf("def export [input] (concat (match v%d (case 1 \"one\")) (json input))\n", n)
-	if _, f := Compile(nomatch, "nomatch.alc"); f == nil || !strings.HasPrefix(f.Message, "no_match: no case matches a vector ([[[") {
+	if _, f := Compile(nomatch, "nomatch.alc", routers, renderers); f == nil || !strings.HasPrefix(f.Message, "no_match: no case matches a vector ([[[") {
 		t.Errorf("%v", f)
 	}
 	rt := runtimeOf(t, chain(n))

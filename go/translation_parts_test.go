@@ -289,7 +289,7 @@ func TestTextShapeComposition(t *testing.T) {
 	program, fail := CompileSources([]Source{
 		{File: "conformance.alc", Text: main},
 		{File: "alchemy/render.alc", Text: parts.render.source},
-	})
+	}, routers, renderers)
 	if fail != nil {
 		t.Fatal(fail)
 	}
@@ -358,7 +358,7 @@ func TestStructuralTranslationParts(t *testing.T) {
 					}
 					sources = append(sources, Source{File: *item.path, Text: item.part.source})
 				}
-				compiled, fail := CompileSources(sources)
+				compiled, fail := CompileSources(sources, routers, renderers)
 				if fail != nil {
 					t.Fatalf("%s reads %s: %v", format, readShape, fail)
 				}

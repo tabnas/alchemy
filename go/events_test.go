@@ -260,15 +260,15 @@ func TestTheNonFiniteNumbersAreWrittenInYamlsSpellings(t *testing.T) {
 // it in a function, is refused as any affine stream is.
 func TestEventsOverTheInputIsAffine(t *testing.T) {
 	twice := "def export [input]\n  concat\n    join \"\" (map (fn [e] \"a\") (events input))\n    join \"\" (map (fn [e] \"b\") (events input))\n"
-	if _, f := Compile(twice, "twice.alc"); f == nil || f.Code != CodeStreamReused || !strings.HasPrefix(f.Message, "reused: ") || f.Row != 4 || f.Column != 39 {
+	if _, f := Compile(twice, "twice.alc", routers, renderers); f == nil || f.Code != CodeStreamReused || !strings.HasPrefix(f.Message, "reused: ") || f.Row != 4 || f.Column != 39 {
 		t.Errorf("%v", f)
 	}
 	withJSON := "def export [input] (concat (json input) (join \"\" (map (fn [e] \"\") (events input))))"
-	if _, f := Compile(withJSON, "json.alc"); f == nil || f.Code != CodeStreamReused || !strings.HasPrefix(f.Message, "reused: ") {
+	if _, f := Compile(withJSON, "json.alc", routers, renderers); f == nil || f.Code != CodeStreamReused || !strings.HasPrefix(f.Message, "reused: ") {
 		t.Errorf("%v", f)
 	}
 	captured := "def export [input]\n  concat-map (fn [x] (join \"\" (map (fn [e] \"\") (events input)))) [1]\n"
-	if _, f := Compile(captured, "captured.alc"); f == nil || f.Code != CodeStreamReused || !strings.HasPrefix(f.Message, "captured: ") {
+	if _, f := Compile(captured, "captured.alc", routers, renderers); f == nil || f.Code != CodeStreamReused || !strings.HasPrefix(f.Message, "captured: ") {
 		t.Errorf("%v", f)
 	}
 	// The stream events yields is a stream of items: events, which json
@@ -280,7 +280,7 @@ func TestEventsOverTheInputIsAffine(t *testing.T) {
 		{"def export [input] (events (select (path each-index) input))", "protocol_mismatch"},
 		{"def export [input] (events input)", "bad_output"},
 	} {
-		if _, f := Compile(c.src, "bad.alc"); f == nil || f.Code != CodeDSLTypeError || !strings.HasPrefix(f.Message, c.finer+": ") {
+		if _, f := Compile(c.src, "bad.alc", routers, renderers); f == nil || f.Code != CodeDSLTypeError || !strings.HasPrefix(f.Message, c.finer+": ") {
 			t.Errorf("%s: %v", c.src, f)
 		}
 	}
@@ -374,7 +374,7 @@ func TestEventsAProgramBuildsFeedAnyTakerOfJSONEvents(t *testing.T) {
 		t.Errorf("%v %q", f, out)
 	}
 	// A stream of values is not a stream of events: the checker says so.
-	if _, f := Compile("def export [input] (json (select (path each-index) input))", "values.alc"); f == nil || !strings.HasPrefix(f.Message, "protocol_mismatch") {
+	if _, f := Compile("def export [input] (json (select (path each-index) input))", "values.alc", routers, renderers); f == nil || !strings.HasPrefix(f.Message, "protocol_mismatch") {
 		t.Errorf("%v", f)
 	}
 	// The source's limits hold on the events a program made: a document

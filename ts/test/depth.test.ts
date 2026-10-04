@@ -24,9 +24,9 @@ import assert from 'node:assert'
 
 import { Limits } from '@tabnas/transduce'
 
-import { MAX_APPLIED, MAX_EVAL_DEPTH, MAX_NESTING, analyze, canonical, compile, desugarProgram, format, parse } from '../dist/alchemy'
+import { MAX_APPLIED, MAX_EVAL_DEPTH, MAX_NESTING, analyze, canonical, desugarProgram, format, parse } from '../dist/alchemy'
 
-import { drive, err, finer, ok, thrown } from './common'
+import { compile, drive, err, finer, ok, thrown } from './common'
 
 // `levels` nested calls of `head` around `inner`.
 function nest(levels: number, head: string, inner: string): string {

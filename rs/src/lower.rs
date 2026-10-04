@@ -1,4 +1,6 @@
-//! Lowering: a [`Plan`] becomes a chain of transduce and render sinks.
+//! Lowering: a [`Plan`] becomes a chain of sinks, the routing stages made
+//! by the host's [`Routers`] and the rendering ones by its [`Renderers`]
+//! (transduce's and render's, which the host passes in).
 //!
 //! The evaluator answers a plan; the host has a `JsonEvents/1` producer
 //! and a text output. This module joins them. The chain is push-based and
@@ -9,48 +11,45 @@
 //! boundary:
 //!
 //! - **events** (`JsonEvents/1`): the host's input, a `records` stage
-//!   ([`RecordsToJson`]) over table events, or an adapter
+//!   ([`Renderers::records_to_json`]) over table events, or an adapter
 //!   ([`TaggedToJson`]) reading the tagged events an interpreted stream
 //!   yields, the reverse of `events`;
 //! - **table** (`TableRows/1`): the native table transducer
-//!   ([`TableFromJson`]) over events, or an adapter reading the tagged
-//!   `schema`, `row` and `table-end` values an interpreted stream yields;
-//! - **items** (a stream of values): [`Router`] over events for `route` and
-//!   `select`, [`EventsToItems`] for `events`, [`ScanEmit`] for
-//!   `scan-emit`, per-item stages for `map` and `filter`, and an adapter
-//!   turning native table events into the tagged values a program
-//!   pattern-matches;
-//! - **text**: [`CsvRenderer`] and [`JsonRenderer`] over their protocols,
-//!   `concat-map` and `join` over a stream of items, `replace-text` as
-//!   [`ReplaceText`], and `concat` around one live text as a frame that
-//!   writes its prefix before the first fragment and its suffix at the
-//!   flush.
+//!   ([`Routers::table_from_json`]) over events, or an adapter reading the
+//!   tagged `schema`, `row` and `table-end` values an interpreted stream
+//!   yields;
+//! - **items** (a stream of values): a router ([`Routers::router`]) over
+//!   events for `route` and `select`, [`EventsToItems`] for `events`, the
+//!   operator [`Routers::scan_emit`] answers for `scan-emit`, per-item
+//!   stages for `map` and `filter`, and an adapter turning native table
+//!   events into the tagged values a program pattern-matches;
+//! - **text**: the CSV and JSON renderers ([`Renderers::csv`],
+//!   [`Renderers::json`]) over their protocols, `concat-map` and `join`
+//!   over a stream of items, `replace-text` as [`Renderers::replace_text`],
+//!   and `concat` around one live text as a frame that writes its prefix
+//!   before the first fragment and its suffix at the flush.
 //!
 //! A text that does not reach the input is finite and is written whole
 //! wherever it lands ([`write_finite`]): a row of an interpreted CSV is
 //! rendered into a scratch string and written as one fragment, so a
 //! failure in the middle of a row leaves no half row behind, as the native
-//! renderer promises. Errors are transduce `Fail`s with the transduce and
-//! render codes unchanged; a stream given to a stage of another protocol
-//! is `DSL_TYPE_ERROR` with the `protocol_mismatch` finer code, the same
-//! word the checker uses when it can see it first.
+//! renderer promises. Errors are `Fail`s with the transduce and render
+//! codes unchanged; a stream given to a stage of another protocol is
+//! `DSL_TYPE_ERROR` with the `protocol_mismatch` finer code, the same word
+//! the checker uses when it can see it first.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use tabnas_render::{
-    CsvOptions, CsvRenderer, Join, JsonOptions, JsonRenderer, MissingText, Newline, RecordsToJson,
-    ReplaceText, TextOut,
-};
-use tabnas_transduce::limits::NODE_BYTES;
-use tabnas_transduce::{
-    BoundColumn, CaptureSpec, Cell, Code, Datum, Fail, Flow, Guarded, JsonEvent, Limits, Metrics,
-    Number, PublicColumn, RouteSink, Router, ScanEmit, Schema, Selected, Sink, TableBinding,
-    TableEvent, TableFromJson, TableSink, Transition,
-};
-
 use crate::ast::SourceSpan;
 use crate::interp::{Bounds, Runtime};
+use crate::shared::limits::NODE_BYTES;
+use crate::shared::{
+    BoundColumn, CaptureSpec, Cell, Code, CsvOptions, Datum, Fail, Flow, JoinOut, JsonEvent,
+    JsonOptions, Limits, Metrics, MissingText, Newline, Number, PublicColumn, Renderers, RouteSink,
+    Routers, ScanEmitter, ScanFinish, ScanOut, ScanStep, Schema, Selected, Sink, TableBinding,
+    TableEvent, TableSink, TextOut, Transition,
+};
 use crate::stdlib::registry::{capture_budget, get_field, number_text, truth};
 use crate::value::{selector_segments, type_error, Func, Plan, Protocol, Seq, Val};
 
@@ -291,8 +290,14 @@ pub fn brief(v: &Val) -> String {
 /// evaluation step and a level ([`Runtime::tick`], [`Runtime::enter`]), so
 /// the host's abort flag stops a text of exponentially many fragments, and
 /// a `concat-map` whose function answers a text that applies it again is
-/// the `recursion` failure rather than a stack overflow.
-pub fn write_finite(rt: &Runtime, v: &Val, out: &mut dyn TextOut) -> Result<(), Fail> {
+/// the `recursion` failure rather than a stack overflow. A `join` and a
+/// `replace-text` inside the text are the host's [`Renderers`]'.
+pub fn write_finite(
+    rt: &Runtime,
+    renderers: &dyn Renderers,
+    v: &Val,
+    out: &mut (dyn TextOut + Send),
+) -> Result<(), Fail> {
     rt.tick()?;
     let at = match v {
         Val::Text(plan) => match &**plan {
@@ -308,15 +313,15 @@ pub fn write_finite(rt: &Runtime, v: &Val, out: &mut dyn TextOut) -> Result<(), 
             Plan::Lit(s) => out.write_str(s),
             Plan::Concat { items, .. } => items
                 .iter()
-                .try_for_each(|item| write_finite(rt, item, out)),
+                .try_for_each(|item| write_finite(rt, renderers, item, out)),
             Plan::Join {
                 sep,
                 items: Seq::Vector(items),
             } => {
-                let mut join = Join::new(&mut *out, &**sep);
+                let mut join = renderers.join(Box::new(&mut *out), sep);
                 for item in items.iter() {
                     join.item_start()?;
-                    write_finite(rt, item, &mut join)?;
+                    write_finite(rt, renderers, item, &mut join)?;
                     join.item_end()?;
                 }
                 Ok(())
@@ -328,15 +333,15 @@ pub fn write_finite(rt: &Runtime, v: &Val, out: &mut dyn TextOut) -> Result<(), 
             } => {
                 for item in items.iter() {
                     let text = rt.apply(f, vec![item.clone()], at)?;
-                    write_finite(rt, &text, out)?;
+                    write_finite(rt, renderers, &text, out)?;
                 }
                 Ok(())
             }
             // Streamed through the replacer, as a live text is: it holds at
             // most the literal's length, never the text.
             Plan::Replace { from, to, source } => {
-                let mut replace = ReplaceText::new(Held(out), &**from, &**to);
-                write_finite(rt, source, &mut replace)?;
+                let mut replace = renderers.replace_text(Box::new(Held(out)), from, to);
+                write_finite(rt, renderers, source, &mut *replace)?;
                 replace.flush()
             }
             _ => Err(type_error(format!(
@@ -355,7 +360,7 @@ pub fn write_finite(rt: &Runtime, v: &Val, out: &mut dyn TextOut) -> Result<(), 
 /// written into the middle of a text (`replace-text` inside a `concat`)
 /// hands over what it holds at its own flush, and the text around it goes
 /// on.
-struct Held<'o>(&'o mut dyn TextOut);
+struct Held<'o>(&'o mut (dyn TextOut + Send));
 
 impl TextOut for Held<'_> {
     fn write_str(&mut self, s: &str) -> Result<(), Fail> {
@@ -485,8 +490,8 @@ impl Sink for EventsToItems {
 /// name)`, `(scalar value)`); anything else is `PROTOCOL_ORDER_ERROR`
 /// naming it. The sequence is the taker's to validate, as the source's own
 /// events are, and the stream's end is the events' `End`. The sink beneath
-/// is the source's guard ([`Guarded`]), so the source's limits hold on
-/// these events as on its own.
+/// is the source's guard ([`Routers::guarded`]), so the source's limits
+/// hold on these events as on its own.
 struct TaggedToJson {
     down: EventSink,
 }
@@ -527,13 +532,14 @@ impl ItemSink for TaggedToJson {
     }
 }
 
-type StepFn = Box<dyn FnMut(Val, Val) -> Result<Transition<Val, Val>, Fail> + Send>;
-type FinishFn = Box<dyn FnOnce(Val) -> Result<Vec<Val>, Fail> + Send>;
-type OutFn = Box<dyn FnMut(Val) -> Result<Flow, Fail> + Send>;
+type StepFn = ScanStep<Val>;
+type FinishFn = ScanFinish<Val>;
+type OutFn = ScanOut<Val>;
 
-/// `scan-emit`: transduce's operator over the program's step and finish.
+/// `scan-emit`: the host's operator ([`Routers::scan_emit`]) over the
+/// program's step and finish.
 struct ScanStage {
-    scan: ScanEmit<Val, Val, Val, StepFn, FinishFn, OutFn>,
+    scan: Box<dyn ScanEmitter<Val>>,
     /// Shared with the operator's output closure, so the end can reach it.
     down: Arc<Mutex<Items>>,
 }
@@ -560,14 +566,14 @@ fn locked<T>(_: std::sync::PoisonError<T>) -> Fail {
 
 impl ScanStage {
     fn new(
-        rt: Arc<Runtime>,
+        lowering: &Lowering<'_>,
         init: Val,
         step: Func,
         finish: Func,
         at: SourceSpan,
-        metrics: Arc<Metrics>,
         down: Items,
     ) -> Result<Self, Fail> {
+        let (rt, metrics) = (lowering.rt.clone(), lowering.metrics.clone());
         // The initial state is retained like any the step returns, and the
         // step measures only a state that changed: a step that hands the
         // same one back, or a source with no items, would never measure
@@ -630,7 +636,7 @@ impl ScanStage {
         let out_down = down.clone();
         let out_fn: OutFn = Box::new(move |o: Val| out_down.lock().map_err(locked)?.item(o));
         Ok(ScanStage {
-            scan: ScanEmit::new(init, step_fn, finish_fn, out_fn),
+            scan: lowering.routers.scan_emit(init, step_fn, finish_fn, out_fn),
             down,
         })
     }
@@ -954,6 +960,7 @@ fn check_delimiter(options: &Val) -> Result<(), Fail> {
 /// `concat-map` over a stream: each item's text, rendered whole.
 struct ConcatMapStage {
     rt: Arc<Runtime>,
+    renderers: Arc<dyn Renderers>,
     f: Func,
     at: SourceSpan,
     out: Out,
@@ -964,7 +971,7 @@ impl ItemSink for ConcatMapStage {
     fn item(&mut self, v: Val) -> Result<Flow, Fail> {
         let text = self.rt.apply(&self.f, vec![v], &self.at)?;
         self.scratch.text.clear();
-        write_finite(&self.rt, &text, &mut self.scratch)
+        write_finite(&self.rt, &*self.renderers, &text, &mut self.scratch)
             .map_err(|f| self.rt.fail_at(f, &self.at))?;
         self.out.write_str(&self.scratch.text)?;
         Ok(Flow::Continue)
@@ -979,14 +986,15 @@ impl ItemSink for ConcatMapStage {
 /// `join` over a stream: each item is one logical item of the join.
 struct JoinStage {
     rt: Arc<Runtime>,
-    join: Join<Out>,
+    renderers: Arc<dyn Renderers>,
+    join: Box<dyn JoinOut + Send>,
     scratch: Scratch,
 }
 
 impl ItemSink for JoinStage {
     fn item(&mut self, v: Val) -> Result<Flow, Fail> {
         self.scratch.text.clear();
-        write_finite(&self.rt, &v, &mut self.scratch)?;
+        write_finite(&self.rt, &*self.renderers, &v, &mut self.scratch)?;
         self.join.item_start()?;
         self.join.write_str(&self.scratch.text)?;
         self.join.item_end()?;
@@ -1004,6 +1012,7 @@ impl ItemSink for JoinStage {
 /// items after it at the flush, before the output beneath is flushed.
 struct Framed {
     rt: Arc<Runtime>,
+    renderers: Arc<dyn Renderers>,
     inner: Out,
     prefix: Option<Vec<Val>>,
     suffix: Option<Vec<Val>>,
@@ -1013,7 +1022,7 @@ impl Framed {
     fn start(&mut self) -> Result<(), Fail> {
         if let Some(prefix) = self.prefix.take() {
             for item in &prefix {
-                write_finite(&self.rt, item, &mut *self.inner)?;
+                write_finite(&self.rt, &*self.renderers, item, &mut *self.inner)?;
             }
         }
         Ok(())
@@ -1030,7 +1039,7 @@ impl TextOut for Framed {
         self.start()?;
         if let Some(suffix) = self.suffix.take() {
             for item in &suffix {
-                write_finite(&self.rt, item, &mut *self.inner)?;
+                write_finite(&self.rt, &*self.renderers, item, &mut *self.inner)?;
             }
         }
         self.inner.flush()
@@ -1045,6 +1054,7 @@ impl TextOut for Framed {
 /// text is written at the end.
 struct FiniteTextSink {
     rt: Arc<Runtime>,
+    renderers: Arc<dyn Renderers>,
     text: Val,
     out: Out,
 }
@@ -1052,7 +1062,7 @@ struct FiniteTextSink {
 impl Sink for FiniteTextSink {
     fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
         if ev == JsonEvent::End {
-            write_finite(&self.rt, &self.text, &mut *self.out)?;
+            write_finite(&self.rt, &*self.renderers, &self.text, &mut *self.out)?;
             self.out.flush()?;
         }
         Ok(Flow::Continue)
@@ -1063,20 +1073,31 @@ impl Sink for FiniteTextSink {
 // The lowering
 // ---------------------------------------------------------------------------
 
-/// Lowers plans for one run: the runtime the stages call back into, and
-/// the limits and metrics the transduce stages take.
+/// Lowers plans for one run: the runtime the stages call back into, the
+/// limits and metrics the transduce stages take, and the host's routers and
+/// renderers, which make every stage this module does not define.
 pub struct Lowering<'a> {
     rt: Arc<Runtime>,
     limits: &'a Limits,
     metrics: Arc<Metrics>,
+    routers: Arc<dyn Routers<Val>>,
+    renderers: Arc<dyn Renderers>,
 }
 
 impl<'a> Lowering<'a> {
-    pub fn new(rt: Arc<Runtime>, limits: &'a Limits, metrics: Arc<Metrics>) -> Self {
+    pub fn new(
+        rt: Arc<Runtime>,
+        limits: &'a Limits,
+        metrics: Arc<Metrics>,
+        routers: Arc<dyn Routers<Val>>,
+        renderers: Arc<dyn Renderers>,
+    ) -> Self {
         Lowering {
             rt,
             limits,
             metrics,
+            routers,
+            renderers,
         }
     }
 
@@ -1109,18 +1130,18 @@ impl<'a> Lowering<'a> {
                 });
                 match (protocol, render) {
                     (Protocol::JsonEvents, Renderer::Json) => {
-                        self.events(plan, Box::new(JsonRenderer::new(out, json_options())))
+                        self.events(plan, self.renderers.json(out, json_options()))
                     }
                     (Protocol::JsonEvents, Renderer::Csv) => Err(protocol_mismatch(
                         "csv renders table events; the program's result is JSON events (render it as json, or make a table of it with table-from-json)",
                     )),
                     (_, Renderer::Csv) => {
-                        let renderer = CsvRenderer::new(out, CsvOptions::default())?;
-                        self.table(plan, Box::new(renderer), false)
+                        let renderer = self.renderers.csv(out, CsvOptions::default())?;
+                        self.table(plan, renderer, false)
                     }
                     (_, Renderer::Json) => {
-                        let json = JsonRenderer::new(out, json_options());
-                        self.table(plan, Box::new(RecordsToJson::new(json)), false)
+                        let json = self.renderers.json(out, json_options());
+                        self.table(plan, self.renderers.records_to_json(json), false)
                     }
                 }
             }
@@ -1135,6 +1156,7 @@ impl<'a> Lowering<'a> {
         if !plan.is_live() {
             return Ok(Box::new(FiniteTextSink {
                 rt: self.rt.clone(),
+                renderers: self.renderers.clone(),
                 text: Val::Text(plan.clone()),
                 out,
             }));
@@ -1144,12 +1166,10 @@ impl<'a> Lowering<'a> {
                 let options = csv_options(options).ok_or_else(|| {
                     type_error("csv: the options record does not map to the renderer's dialect")
                 })?;
-                let renderer = CsvRenderer::new(out, options)?;
-                self.table(source, Box::new(renderer), false)
+                let renderer = self.renderers.csv(out, options)?;
+                self.table(source, renderer, false)
             }
-            Plan::Json { source } => {
-                self.events(source, Box::new(JsonRenderer::new(out, json_options())))
-            }
+            Plan::Json { source } => self.events(source, self.renderers.json(out, json_options())),
             Plan::ConcatMap {
                 f,
                 items: Seq::Stream(source),
@@ -1158,6 +1178,7 @@ impl<'a> Lowering<'a> {
                 source,
                 Box::new(ConcatMapStage {
                     rt: self.rt.clone(),
+                    renderers: self.renderers.clone(),
                     f: f.clone(),
                     at: at.clone(),
                     out,
@@ -1172,7 +1193,8 @@ impl<'a> Lowering<'a> {
                 source,
                 Box::new(JoinStage {
                     rt: self.rt.clone(),
-                    join: Join::new(out, &**sep),
+                    renderers: self.renderers.clone(),
+                    join: self.renderers.join(out, sep),
                     scratch: Scratch::new(self.limits),
                 }),
                 false,
@@ -1186,6 +1208,7 @@ impl<'a> Lowering<'a> {
                 };
                 let framed = Framed {
                     rt: self.rt.clone(),
+                    renderers: self.renderers.clone(),
                     inner: out,
                     prefix: Some(items[..live].to_vec()),
                     suffix: Some(items[live + 1..].to_vec()),
@@ -1196,7 +1219,7 @@ impl<'a> Lowering<'a> {
                 from,
                 to,
                 source: Val::Text(inner),
-            } => self.text(inner, Box::new(ReplaceText::new(out, &**from, &**to))),
+            } => self.text(inner, self.renderers.replace_text(out, from, to)),
             other => Err(type_error(format!(
                 "{} is not a text",
                 crate::value::plan_name(other)
@@ -1210,7 +1233,7 @@ impl<'a> Lowering<'a> {
             // `records` ends a table: after it the rows are JSON events,
             // of which a later table makes rows of its own.
             Plan::Records { source } => {
-                self.table(source, Box::new(RecordsToJson::new(sink)), false)
+                self.table(source, self.renderers.records_to_json(sink), false)
             }
             // A stream whose items may be events (`events` itself, or a
             // `scan-emit`, `map` or `filter` over anything): each item is
@@ -1228,14 +1251,10 @@ impl<'a> Lowering<'a> {
                 // is refused where it arrives, whatever the input held. The
                 // guard counts into metrics of its own: the source's count
                 // the source's events, and these are the program's.
-                let guarded = Guarded::new(sink, self.limits, self.rt.abort(), Metrics::new());
-                self.items(
-                    plan,
-                    Box::new(TaggedToJson {
-                        down: Box::new(guarded),
-                    }),
-                    false,
-                )
+                let guarded =
+                    self.routers
+                        .guarded(sink, self.limits, self.rt.abort(), Metrics::new());
+                self.items(plan, Box::new(TaggedToJson { down: guarded }), false)
             }
             // A stream that never yields events: `select`'s values,
             // `route`'s selections, a table's events as items.
@@ -1268,14 +1287,14 @@ impl<'a> Lowering<'a> {
                     metrics: self.metrics.clone(),
                     uncount: counted_later,
                 });
-                let transducer = TableFromJson::new(
+                let transducer = self.routers.table_from_json(
                     binding,
                     self.limits,
                     self.rt.duplicates(),
                     self.metrics.clone(),
                     table,
                 )?;
-                self.events(source, Box::new(transducer))
+                self.events(source, transducer)
             }
             Plan::Input | Plan::Records { .. } => Err(protocol_mismatch(
                 "table events were expected, not JSON events (table-from-json makes a table of them)",
@@ -1327,30 +1346,30 @@ impl<'a> Lowering<'a> {
                         spec
                     })
                     .collect();
-                let router = Router::new(
+                let router = self.routers.router(
                     specs,
                     self.limits,
                     self.rt.duplicates(),
                     self.metrics.clone(),
-                    RouteToItems {
+                    Box::new(RouteToItems {
                         down,
                         values_only: false,
-                    },
+                    }),
                 )?;
-                self.events(source, Box::new(router))
+                self.events(source, router)
             }
             Plan::Select { selector, source } => {
-                let router = Router::new(
+                let router = self.routers.router(
                     vec![CaptureSpec::materialize("selected", selector.clone())],
                     self.limits,
                     self.rt.duplicates(),
                     self.metrics.clone(),
-                    RouteToItems {
+                    Box::new(RouteToItems {
                         down,
                         values_only: true,
-                    },
+                    }),
                 )?;
-                self.events(source, Box::new(router))
+                self.events(source, router)
             }
             Plan::Events { source } => self.events(source, Box::new(EventsToItems { down })),
             Plan::ScanEmit {
@@ -1362,12 +1381,11 @@ impl<'a> Lowering<'a> {
             } => self.items(
                 source,
                 Box::new(ScanStage::new(
-                    self.rt.clone(),
+                    self,
                     init.clone(),
                     step.clone(),
                     finish.clone(),
                     at.clone(),
-                    self.metrics.clone(),
                     down,
                 )?),
                 counted_later,
@@ -1491,15 +1509,10 @@ fn bound_column(column: &Val) -> Result<BoundColumn, Fail> {
 pub(crate) mod tests {
     use super::*;
     use crate::ast::Sources;
+    use crate::program::Program;
     use crate::resolve::resolve;
+    use crate::shared::{AbortFlag, Duplicates};
     use crate::{desugar, parse_file, stdlib};
-    use tabnas_transduce::{ParserSource, Prune, SourceMode};
-
-    /// The spec's worked example, byte for byte as aless's fixture has it.
-    pub(crate) const RECORDS: &str = r#"{"response":{"metadata":{"fields":[{"title":"Identifier","path":["id"]},{"title":"Full name","path":["person","name"]},{"title":"Balance","path":["account","balance"]}]},"payload":{"deep":{"records":[{"id":123,"person":{"name":"Alice"},"account":{"balance":50.25}},{"account":{"balance":72},"person":{"name":"Bob"},"id":456}]}}}}"#;
-
-    pub(crate) const EXPECTED_CSV: &str =
-        "\"Identifier\",\"Full name\",\"Balance\"\r\n\"123\",\"Alice\",\"50.25\"\r\n\"456\",\"Bob\",\"72\"\r\n";
 
     /// The spec's program: sections 12.1 and 13.4.
     pub(crate) const PROGRAM: &str = "def column-from-meta [source]\n  record\n    entry :label (get \"title\" source)\n    entry :source\n      as-path\n        get \"path\" source\n\ndef api-binding\n  record\n    entry :columns\n      path \"response\" \"metadata\" \"fields\"\n    entry :rows\n      path \"response\" \"payload\" \"deep\" \"records\" each-index\n    entry :column column-from-meta\n\ndef api-table [input]\n  table-from-json api-binding input\n\ndef export [input]\n  pipe input\n    api-table\n    csv csv-options\n";
@@ -1512,207 +1525,106 @@ pub(crate) mod tests {
     }
 
     /// [`runtime`] with the host's abort flag handed to it.
-    pub(crate) fn runtime_with_abort(
-        src: &str,
-        abort: tabnas_transduce::AbortFlag,
-    ) -> Arc<Runtime> {
+    pub(crate) fn runtime_with_abort(src: &str, abort: AbortFlag) -> Arc<Runtime> {
         let forms = desugar::program(parse_file(src, "t.alc").unwrap(), src).unwrap();
         let sources = Sources::one("t.alc", src);
         let resolved = resolve(forms, &sources, &stdlib::outer).unwrap();
         Arc::new(Runtime::new(Arc::new(resolved), sources).with_abort(abort))
     }
 
-    /// A writer the test keeps a handle on after the sink took it.
-    #[derive(Clone, Default)]
-    pub(crate) struct Shared(pub Arc<Mutex<Vec<u8>>>);
+    /// The routers and renderers of the unit tests that compile a program
+    /// and never lower it: compiling builds the plan and keeps the two for
+    /// the sinks, and asks nothing of them. The real ones are transduce's
+    /// and render's, which a unit test here cannot take (they are built on
+    /// this crate's library, of which a unit test is a second copy), so the
+    /// tests that lower and run a program are in `tests/`. Every method is
+    /// unreachable.
+    pub(crate) struct Unlowered;
 
-    impl std::io::Write for Shared {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
+    const UNLOWERED: &str = "a unit test lowered a program; run it from tests/";
+
+    impl Routers<Val> for Unlowered {
+        fn router(
+            &self,
+            _: Vec<CaptureSpec>,
+            _: &Limits,
+            _: Duplicates,
+            _: Arc<Metrics>,
+            _: Box<dyn RouteSink + Send>,
+        ) -> Result<Box<dyn Sink + Send>, Fail> {
+            unreachable!("{UNLOWERED}")
         }
 
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+        fn table_from_json(
+            &self,
+            _: TableBinding,
+            _: &Limits,
+            _: Duplicates,
+            _: Arc<Metrics>,
+            _: Box<dyn TableSink + Send>,
+        ) -> Result<Box<dyn Sink + Send>, Fail> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn scan_emit(&self, _: Val, _: StepFn, _: FinishFn, _: OutFn) -> Box<dyn ScanEmitter<Val>> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn guarded(
+            &self,
+            _: Box<dyn Sink + Send>,
+            _: &Limits,
+            _: AbortFlag,
+            _: Arc<Metrics>,
+        ) -> Box<dyn Sink + Send> {
+            unreachable!("{UNLOWERED}")
         }
     }
 
-    /// Run `src` over the JSON `input` through the json grammar's
-    /// incremental events; the output bytes, or the failure.
-    pub(crate) fn run(
-        src: &str,
-        input: &str,
-        native: bool,
-        render: Option<Renderer>,
-    ) -> Result<String, Fail> {
-        let rt = runtime(src, native);
-        let result = rt.export()?;
-        let limits = Limits::default();
-        let metrics = Metrics::new();
-        let buffer = Shared::default();
-        let out: Out = Box::new(tabnas_render::WriteOut::new(buffer.clone()));
-        let sink = Lowering::new(rt, &limits, metrics.clone()).sink(&result, out, render)?;
-        let (outcome, _) = ParserSource::new(tabnas_json::make(), input)
-            .grammar("json")
-            .mode(SourceMode::Incremental {
-                prune: Prune::Never,
-            })
-            .limits(limits)
-            .metrics(metrics)
-            .run_owned(sink);
-        outcome?;
-        let bytes = buffer.0.lock().unwrap().clone();
-        Ok(String::from_utf8(bytes).expect("utf-8 output"))
+    impl Renderers for Unlowered {
+        fn json(&self, _: Out, _: JsonOptions) -> Box<dyn Sink + Send> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn csv(&self, _: Out, _: CsvOptions) -> Result<Box<dyn TableSink + Send>, Fail> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn records_to_json(&self, _: Box<dyn Sink + Send>) -> Box<dyn TableSink + Send> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn join<'a>(
+            &self,
+            _: Box<dyn TextOut + Send + 'a>,
+            _: &str,
+        ) -> Box<dyn JoinOut + Send + 'a> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn replace_text<'a>(
+            &self,
+            _: Box<dyn TextOut + Send + 'a>,
+            _: &str,
+            _: &str,
+        ) -> Box<dyn TextOut + Send + 'a> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn write_out(
+            &self,
+            _: Box<dyn std::io::Write + Send>,
+            _: &Limits,
+            _: Arc<Metrics>,
+        ) -> Box<dyn TextOut + Send> {
+            unreachable!("{UNLOWERED}")
+        }
     }
 
-    #[test]
-    fn the_worked_example_through_the_interpreted_library() {
-        assert_eq!(run(PROGRAM, RECORDS, false, None).unwrap(), EXPECTED_CSV);
-    }
-
-    #[test]
-    fn the_worked_example_through_the_native_path() {
-        assert_eq!(run(PROGRAM, RECORDS, true, None).unwrap(), EXPECTED_CSV);
-    }
-
-    #[test]
-    fn json_echoes_the_input_with_its_lexemes() {
-        let echo = "def export [input] (json input)";
-        assert_eq!(
-            run(echo, RECORDS, true, None).unwrap(),
-            format!("{RECORDS}\n")
-        );
-        assert_eq!(
-            run(echo, "[1.50, 1e2]", false, None).unwrap(),
-            "[1.50,1e2]\n"
-        );
-    }
-
-    #[test]
-    fn select_map_and_concat_map_stream_items() {
-        let src = "def export [input]\n  pipe input\n    select (path \"a\" each-index)\n    map (fn [x] (get :n x))\n    concat-map (fn [n] (concat (scalar-text csv-options n) \";\"))";
-        assert_eq!(
-            run(src, r#"{"a":[{"n":1},{"n":2.50}],"b":3}"#, false, None).unwrap(),
-            "1;2.50;"
-        );
-        let joined = "def export [input]\n  join \",\"\n    map (fn [x] (get :n x)) (select (path \"a\" each-index) input)";
-        assert_eq!(
-            run(
-                joined,
-                r#"{"a":[{"n":"x"},{"n":""},{"n":"y"}]}"#,
-                false,
-                None
-            )
-            .unwrap(),
-            "x,,y"
-        );
-        let framed = "def export [input]\n  concat\n    \"[\"\n    join \",\" (select (path each-index) input)\n    \"]\"\n    (text \"!\")";
-        assert_eq!(run(framed, r#"["a","b"]"#, false, None).unwrap(), "[a,b]!");
-        assert_eq!(run(framed, "[]", false, None).unwrap(), "[]!");
-        let filtered = "def export [input]\n  join \"|\"\n    filter (fn [x] (get :keep x)) (select (path each-index) input)";
-        assert_eq!(
-            run(
-                "def export [input]\n  concat-map (fn [x] (get :v x))\n    filter (fn [x] (get :keep x)) (select (path each-index) input)",
-                r#"[{"keep":true,"v":"a"},{"keep":false,"v":"b"},{"keep":true,"v":"c"}]"#,
-                false,
-                None
-            )
-            .unwrap(),
-            "ac"
-        );
-        let _ = filtered;
-    }
-
-    #[test]
-    fn replace_text_over_a_live_text_crosses_fragments() {
-        let src = "def export [input]\n  replace-text \"ab\" \"X\"\n    concat-map (fn [s] s) (select (path each-index) input)";
-        assert_eq!(
-            run(src, r#"["a","b","zab","a"]"#, false, None).unwrap(),
-            "XzXa"
-        );
-    }
-
-    #[test]
-    fn a_finite_text_result_is_written_at_the_end() {
-        assert_eq!(
-            run("def export [input] \"done\"", "1", false, None).unwrap(),
-            "done"
-        );
-    }
-
-    #[test]
-    fn a_stream_result_is_rendered_by_the_host() {
-        let table = "def export [input] (table-from-json api-binding input)\n".to_string()
-            + &PROGRAM.replace(
-                "def export [input]\n  pipe input\n    api-table\n    csv csv-options\n",
-                "",
-            );
-        assert_eq!(run(&table, RECORDS, true, None).unwrap(), EXPECTED_CSV);
-        assert_eq!(
-            run(&table, RECORDS, false, Some(Renderer::Csv)).unwrap(),
-            EXPECTED_CSV
-        );
-        let json = r#"[{"Identifier":123,"Full name":"Alice","Balance":50.25},{"Identifier":456,"Full name":"Bob","Balance":72}]"#;
-        assert_eq!(
-            run(&table, RECORDS, true, Some(Renderer::Json)).unwrap(),
-            format!("{json}\n")
-        );
-        assert_eq!(
-            run(&table, RECORDS, false, Some(Renderer::Json)).unwrap(),
-            format!("{json}\n")
-        );
-        let echo = "def export [input] input";
-        assert_eq!(run(echo, "[1]", true, None).unwrap(), "[1]\n");
-        let f = run(echo, "[1]", true, Some(Renderer::Csv)).unwrap_err();
-        assert!(f.message.starts_with("protocol_mismatch: "), "{f}");
-        let f = run(
-            "def export [input] (json input)",
-            "1",
-            true,
-            Some(Renderer::Json),
-        )
-        .unwrap_err();
-        assert!(f.message.starts_with("render_of_text: "), "{f}");
-    }
-
-    #[test]
-    fn records_of_a_table_round_trips_through_json() {
-        let src = PROGRAM.replace("    csv csv-options\n", "    records\n    json\n");
-        let json = r#"[{"Identifier":123,"Full name":"Alice","Balance":50.25},{"Identifier":456,"Full name":"Bob","Balance":72}]"#;
-        assert_eq!(run(&src, RECORDS, true, None).unwrap(), format!("{json}\n"));
-        assert_eq!(
-            run(&src, RECORDS, false, None).unwrap(),
-            format!("{json}\n")
-        );
-    }
-
-    #[test]
-    fn protocol_mismatches_are_named() {
-        let f = run(
-            "def export [input] (csv csv-options input)",
-            "1",
-            true,
-            None,
-        )
-        .unwrap_err();
-        assert_eq!(f.code, Code::DslTypeError);
-        assert!(f.message.starts_with("protocol_mismatch: "), "{f}");
-        let f = run(
-            "def export [input] (json (select (path each-index) input))",
-            "[1]",
-            true,
-            None,
-        )
-        .unwrap_err();
-        assert!(f.message.starts_with("protocol_mismatch: "), "{f}");
-        let f = run(
-            "def export [input] (concat-map (fn [x] x) input)",
-            "[1]",
-            true,
-            None,
-        )
-        .unwrap_err();
-        assert!(f.message.starts_with("protocol_mismatch: "), "{f}");
+    /// [`crate::compile`] with [`Unlowered`] routers and renderers, for a
+    /// test that reads what compiling decided and runs nothing.
+    pub(crate) fn compile(src: &str, file: &str) -> Result<Program, Fail> {
+        crate::compile(src, file, Arc::new(Unlowered), Arc::new(Unlowered))
     }
 
     #[test]

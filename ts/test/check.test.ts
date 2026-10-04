@@ -8,9 +8,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 
-import { SOURCES, analyze, analyzeSources, checkStdlibFile, compile, stdlib, stdlibSignature, types } from '../dist/alchemy'
+import { SOURCES, analyze, analyzeSources, checkStdlibFile, stdlib, stdlibSignature, types } from '../dist/alchemy'
 
-import { finer, thrown } from './common'
+import { compile, finer, thrown } from './common'
 
 const T = types
 

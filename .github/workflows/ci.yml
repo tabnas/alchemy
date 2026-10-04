@@ -28,10 +28,10 @@ jobs:
   # `alchemy run` reads its document through transduce's incremental
   # source, which that module builds only under the `tabnas_nodecell`
   # build tag; without it run refuses with STREAMABILITY_UNKNOWN before
-  # the document is read, and the run fixtures (go/spec_test.go), the
-  # command's own tests (go/cmd/alchemy) and the API tests that run a
-  # document skip (measured on 2026-10-03: 44 tests and fixture rows skip
-  # without the tag, 2 with it).
+  # the document is read, and the run fixtures (go/spec_test.go) and
+  # the API tests that run a document skip (measured on 2026-10-04, after
+  # the command moved to alchemy-cli: 36 tests and fixture rows skip
+  # without the tag, 1 with it).
   # The maintainer's decision is that the tag is on in CI, so this job
   # runs the suite once more with it: a caller-side job on the precedent
   # of support's go-adder, not a fork of the shared workflow, with the

@@ -17,11 +17,10 @@
 //! information as one object, for a host's `--explain`.
 
 use serde_json::{json, Value as Json};
-use tabnas_render::{CsvOptions, MissingText, Newline};
-use tabnas_transduce::{Duplicates, Selector};
 
 use crate::ast::Expr;
 use crate::program::{Output, Program};
+use crate::shared::{CsvOptions, Duplicates, MissingText, Newline, Selector};
 use crate::value::{Func, Plan, Scope, Seq, Val};
 
 /// What a stage keeps alive.
@@ -719,8 +718,7 @@ pub fn explain_json(program: &Program) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile;
-    use crate::lower::tests::PROGRAM;
+    use crate::lower::tests::{compile, PROGRAM};
 
     #[test]
     fn the_worked_example_reports_in_the_spec_layout() {
@@ -1032,55 +1030,6 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Protocol:              Text\n"), "{text}");
-    }
-
-    /// The CSV renderer is reported with the dialect it is built with: the
-    /// program's own options when its `csv` runs natively, the defaults when
-    /// the host renders a table; and what it reports is what it writes.
-    #[test]
-    fn a_custom_csv_dialect_is_reported_as_it_runs() {
-        let lf = PROGRAM.replace("    csv csv-options\n", "    csv lf\n")
-            + "\ndef lf (record (entry :delimiter \";\") (entry :newline \"\\n\") (entry :header false) (entry :null-text \"NULL\") (entry :missing \"-\"))\n";
-        let program = compile(&lf, "lf.alc").unwrap();
-        assert!(program.native());
-        let r = &explain_json(&program)["renderer"];
-        assert_eq!(r["name"], "csv");
-        assert_eq!(r["host"], false);
-        assert_eq!(r["newline"], "\n");
-        assert_eq!(r["header"], false);
-        assert_eq!(r["delimiter"], ";");
-        assert_eq!(r["null_text"], "NULL");
-        assert_eq!(r["missing"], "text");
-        assert_eq!(r["missing_text"], "-");
-        assert_eq!(
-            crate::lower::tests::run(&lf, crate::lower::tests::RECORDS, true, None).unwrap(),
-            "\"123\";\"Alice\";\"50.25\"\n\"456\";\"Bob\";\"72\"\n"
-        );
-        // The null and missing texts reach the output as reported: a
-        // record with a null name and no balance.
-        let sparse = crate::lower::tests::RECORDS.replace(
-            r#"{"account":{"balance":72},"person":{"name":"Bob"},"id":456}"#,
-            r#"{"person":{"name":null},"id":456}"#,
-        );
-        assert_ne!(sparse, crate::lower::tests::RECORDS);
-        assert_eq!(
-            crate::lower::tests::run(&lf, &sparse, true, None).unwrap(),
-            "\"123\";\"Alice\";\"50.25\"\n\"456\";\"NULL\";\"-\"\n"
-        );
-        // The default dialect, and the host's renderer, report the defaults.
-        let default = compile(PROGRAM, "export.alc").unwrap();
-        let host = compile(&PROGRAM.replace("    csv csv-options\n", ""), "host.alc").unwrap();
-        for (name, program, is_host) in [("default", default, false), ("host", host, true)] {
-            let r = &explain_json(&program)["renderer"];
-            assert_eq!(r["name"], "csv", "{name}");
-            assert_eq!(r["host"], is_host, "{name}");
-            assert_eq!(r["delimiter"], ",", "{name}");
-            assert_eq!(r["newline"], "\r\n", "{name}");
-            assert_eq!(r["header"], true, "{name}");
-            assert_eq!(r["null_text"], "", "{name}");
-            assert_eq!(r["missing"], "error", "{name}");
-            assert_eq!(r["missing_text"], Json::Null, "{name}");
-        }
     }
 
     #[test]

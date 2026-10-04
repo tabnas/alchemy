@@ -501,11 +501,11 @@ func TestAVectorMayHoldAFiniteTextAndNeverAStream(t *testing.T) {
 		"def export [input] (join \",\" [(json input)])",
 		"def export [input] (join \",\" (vector (json input)))",
 	} {
-		if _, f := Compile(src, "t.alc"); f == nil || f.Code != CodeDSLTypeError || !strings.Contains(f.Message, "cannot hold a live text") {
+		if _, f := Compile(src, "t.alc", routers, renderers); f == nil || f.Code != CodeDSLTypeError || !strings.Contains(f.Message, "cannot hold a live text") {
 			t.Errorf("%q: %v", src, f)
 		}
 	}
-	if p, f := Compile("def export [input] (concat (join \",\" [(text \"i\") \"j\"]) (json input))", "t.alc"); f != nil || p.Output() != OutputText {
+	if p, f := Compile("def export [input] (concat (join \",\" [(text \"i\") \"j\"]) (json input))", "t.alc", routers, renderers); f != nil || p.Output() != OutputText {
 		t.Errorf("%v", f)
 	}
 	for _, src := range []string{

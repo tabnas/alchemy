@@ -6,10 +6,14 @@
 // the failure's display, at every stage that positions one: the reader,
 // the desugarer, the resolver, the checker and the run.
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
-use tabnas_alchemy::{compile, compile_sources, Program, Source};
+use tabnas_alchemy::{Program, Source};
 use tabnas_transduce::{Code, Fail, Limits, Metrics, ParserSource, Prune, SourceMode};
+
+use common::{compile, compile_sources};
 
 /// A render part: definitions prefixed by the format's name, no `export`.
 const PART: &str = "; A part of the lines format: each item quoted, one to a line.

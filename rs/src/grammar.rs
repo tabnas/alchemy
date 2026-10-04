@@ -80,10 +80,10 @@ use std::sync::{Arc, OnceLock};
 use indexmap::IndexMap;
 use serde_json::json;
 use tabnas::{GrammarError, GrammarSpec, Rule, Tabnas, TabnasError, Token, Value};
-use tabnas_transduce::{Code, Fail};
 
 use crate::ast::Expr;
 use crate::lex;
+use crate::shared::{Code, Fail};
 
 /// The file name spans carry when a program is parsed from a string
 /// rather than a file.
@@ -695,7 +695,7 @@ pub fn parse_file(src: &str, file: &str) -> Result<Vec<Expr>, Fail> {
 /// use tabnas_alchemy::{canonical, parse};
 /// let program = parse("def export [input]\n  csv input")?;
 /// assert_eq!(canonical(&program), "(def export [input] (csv input))");
-/// # Ok::<(), tabnas_transduce::Fail>(())
+/// # Ok::<(), tabnas_alchemy::shared::Fail>(())
 /// ```
 pub fn parse(src: &str) -> Result<Vec<Expr>, Fail> {
     parse_file(src, UNNAMED)

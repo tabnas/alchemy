@@ -37,10 +37,11 @@
 // written, and a function applied to itself meets it as `recursion` in
 // Node's default stack, where the Rust crate needs a thread of 64 MiB.
 
-import { AbortFlag, Duplicates, Fail, Limits, utf8Bytes } from '@tabnas/transduce'
+import { AbortFlag, Duplicates, Fail, Limits, Renderers, Routers, utf8Bytes } from './shared'
 
 import { Expr, SourceSpan, Sources, position as positionIn, sourceFile, span as spanOf } from './ast'
 import { isFail } from './fail'
+import type { CompileOptions } from './program'
 import { Resolved, fnForm, fnParams } from './resolve'
 import { Stdlib, fileOf, stdlib } from './stdlib'
 import { NativeImpl, implOf, truth } from './stdlib/natives'
@@ -167,6 +168,12 @@ export class Runtime {
   readonly program: Resolved
   readonly sources: Sources
   readonly lib: Stdlib
+  // The stages the lowering builds (`Router`, `TableFromJson`, `ScanEmit`,
+  // `Guarded`): transduce's, passed in.
+  readonly routers: Routers
+  // The renderers and text stages the lowering builds, and the number
+  // layout the natives write: render's, passed in.
+  readonly renderers: Renderers
   private isNative = true
   private policy: Duplicates = 'reject'
   // The limits values a program builds are measured against (a cell's text
@@ -186,11 +193,19 @@ export class Runtime {
 
   // A runtime over a resolved program and its source texts (read only for
   // positions in diagnostics), with the fast paths on and duplicate members
-  // rejected.
-  constructor(program: Resolved, sources: Sources) {
+  // rejected, building its stages from the routers and renderers a host
+  // passes (`compile`'s options).
+  constructor(program: Resolved, sources: Sources, options: CompileOptions) {
+    if (null == options?.routers || null == options?.renderers) {
+      throw new TypeError(
+        "a program's runtime needs { routers, renderers }: @tabnas/transduce's routers and @tabnas/render's renderers",
+      )
+    }
     this.program = program
     this.sources = sources
     this.lib = stdlib()
+    this.routers = options.routers
+    this.renderers = options.renderers
   }
 
   // The limits the values a program builds are measured against.
@@ -320,8 +335,8 @@ export class Runtime {
   }
 
   // `failAt` for whatever was thrown: a `Fail` is positioned, whichever
-  // copy of transduce made it (`isFail`); anything else (a defect, not a
-  // program's failure) passes unchanged.
+  // copy of the shared unit made it (`isFail`); anything else (a defect,
+  // not a program's failure) passes unchanged.
   private positioned(err: unknown, at: SourceSpan): unknown {
     return isFail(err) ? this.failAt(err, at) : err
   }

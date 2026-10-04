@@ -148,20 +148,20 @@ func TestNumbersPrintAsTheRenderersPrintThem(t *testing.T) {
 		{1, "1"}, {50.25, "50.25"}, {1e20, "100000000000000000000"}, {1e21, "1e21"},
 		{1e-7, "1e-7"}, {math.Copysign(0, -1), "-0"},
 	} {
-		if got := shortestNumber(c.v); got != c.want {
+		if got := shortestNumber(renderers, c.v); got != c.want {
 			t.Errorf("%v: %q", c.v, got)
 		}
 	}
-	if s, f := numberText(1.5, "1.50", true); f != nil || s != "1.50" {
+	if s, f := numberText(renderers, 1.5, "1.50", true); f != nil || s != "1.50" {
 		t.Errorf("%q %v", s, f)
 	}
-	if _, f := numberText(1, "01", true); f == nil || f.Code != CodeInvalidNumber {
+	if _, f := numberText(renderers, 1, "01", true); f == nil || f.Code != CodeInvalidNumber {
 		t.Errorf("%v", f)
 	}
-	if _, f := numberText(math.Inf(1), "1e999", true); f == nil || f.Code != CodeTargetValueUnrepresentable {
+	if _, f := numberText(renderers, math.Inf(1), "1e999", true); f == nil || f.Code != CodeTargetValueUnrepresentable {
 		t.Errorf("%v", f)
 	}
-	if _, f := numberText(math.NaN(), "", false); f == nil || f.Code != CodeTargetValueUnrepresentable {
+	if _, f := numberText(renderers, math.NaN(), "", false); f == nil || f.Code != CodeTargetValueUnrepresentable {
 		t.Errorf("%v", f)
 	}
 }

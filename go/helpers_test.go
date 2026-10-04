@@ -17,7 +17,15 @@ import (
 
 	tabnasjson "github.com/tabnas/json/go"
 	tabnas "github.com/tabnas/parser/go"
+	tr "github.com/tabnas/render/go"
 	tt "github.com/tabnas/transduce/go"
+)
+
+// routers and renderers are the stages the tests run programs on, as a
+// host hands them in: transduce's and render's.
+var (
+	routers   = tt.Routers()
+	renderers = tr.Renderers()
 )
 
 // records is the spec's worked example: aless's

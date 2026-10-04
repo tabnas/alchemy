@@ -31,10 +31,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tabnas_transduce::{AbortFlag, Code, Datum, Duplicates, Fail, Limits};
-
 use crate::ast::{Expr, SourceSpan, Sources};
 use crate::resolve::{fn_form, fn_params, Resolved};
+use crate::shared::{AbortFlag, Code, Datum, Duplicates, Fail, Limits};
 use crate::stdlib::registry::{self, native, truth, Kind, Native};
 use crate::stdlib::{self, Stdlib};
 use crate::value::{type_error, Closure, Env, Func, Partial, Plan, Scope, Seq, Val};

@@ -5,13 +5,18 @@ package tabnasalchemy
 import (
 	"io"
 
-	tr "github.com/tabnas/render/go"
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // program.go: the API a host embeds (rs/src/program.rs): Compile a program
 // (or CompileSources, several files linked into one), ask it what it
 // produces, and take a Sink to push the source's events into.
+//
+// A program runs on stages it does not implement: the host hands Compile
+// transduce's Routers and render's Renderers (shared.Routers and
+// shared.Renderers, the interfaces this module declares and those two
+// implement), and every runtime the program makes builds its stages
+// through them.
 //
 // The host pushes transduce Events into the sink and one End; the sink
 // writes the output as it goes and flushes it at End. A failure comes back
@@ -28,9 +33,13 @@ type Program struct {
 	// output is what the checker decided from export's type.
 	output     Output
 	native     bool
-	duplicates tt.Duplicates
+	duplicates shared.Duplicates
 	// abort is the host's cancellation, handed to every sink's runtime.
-	abort *tt.AbortFlag
+	abort *shared.AbortFlag
+	// routers and renderers are the stages the program runs on, the
+	// host's, handed to every runtime it makes.
+	routers   shared.Routers
+	renderers shared.Renderers
 	// result is export applied to the input plan under the flags above.
 	result Val
 }
@@ -40,8 +49,12 @@ type Program struct {
 // which evaluates everything a stream does not defer, so a `fail` or a
 // `no_match` on that path is reported here, with its own code. Building
 // the plan is bounded by MaxPlanSteps and MaxEvalDepth.
-func Compile(src, file string) (*Program, *Fail) {
-	return CompileSources([]Source{{File: file, Text: src}})
+//
+// routers and renderers are the stages the program runs on: transduce's
+// Routers and render's Renderers. The plan is built with them (a number's
+// text is the renderer's), and every sink the program makes runs on them.
+func Compile(src, file string, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
+	return CompileSources([]Source{{File: file, Text: src}}, routers, renderers)
 }
 
 // CompileSources compiles a program from several sources linked into one
@@ -61,20 +74,24 @@ func Compile(src, file string) (*Program, *Fail) {
 // program's output into a format's render (`def export [input]
 // (yaml-render (program-export input))`, with the user's program linked
 // as `program-export`), in one plan under one set of limits.
-func CompileSources(sources []Source) (*Program, *Fail) {
+//
+// routers and renderers are the stages the program runs on, as for Compile.
+func CompileSources(sources []Source, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
 	a, f := AnalyzeSources(sources)
 	if f != nil {
 		return nil, f
 	}
-	return buildProgram(a.Resolved, a.Sources, a.Checked.Output, true, tt.Reject, tt.NewAbortFlag())
+	return buildProgram(a.Resolved, a.Sources, a.Checked.Output, true, shared.Reject, shared.NewAbortFlag(), routers, renderers)
 }
 
-func buildProgram(resolved *Resolved, sources *Sources, output Output, native bool, duplicates tt.Duplicates, abort *tt.AbortFlag) (*Program, *Fail) {
+func buildProgram(resolved *Resolved, sources *Sources, output Output, native bool, duplicates shared.Duplicates, abort *shared.AbortFlag, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
 	result, f := NewRuntime(resolved, sources).
 		WithNative(native).
 		WithDuplicates(duplicates).
 		WithFuel(MaxPlanSteps).
 		WithAbort(abort).
+		WithRouters(routers).
+		WithRenderers(renderers).
 		Export()
 	if f != nil {
 		return nil, f
@@ -86,6 +103,8 @@ func buildProgram(resolved *Resolved, sources *Sources, output Output, native bo
 		native:     native,
 		duplicates: duplicates,
 		abort:      abort,
+		routers:    routers,
+		renderers:  renderers,
 		result:     result,
 	}, nil
 }
@@ -94,13 +113,13 @@ func buildProgram(resolved *Resolved, sources *Sources, output Output, native bo
 // through the library's own definitions (false) or natively (true, the
 // default). The differential test runs both.
 func (p *Program) WithNative(native bool) (*Program, *Fail) {
-	return buildProgram(p.resolved, p.sources, p.output, native, p.duplicates, p.abort)
+	return buildProgram(p.resolved, p.sources, p.output, native, p.duplicates, p.abort, p.routers, p.renderers)
 }
 
 // WithDuplicates is the same program with another policy for repeated
 // member names in captured values; the default rejects them.
-func (p *Program) WithDuplicates(duplicates tt.Duplicates) (*Program, *Fail) {
-	return buildProgram(p.resolved, p.sources, p.output, p.native, duplicates, p.abort)
+func (p *Program) WithDuplicates(duplicates shared.Duplicates) (*Program, *Fail) {
+	return buildProgram(p.resolved, p.sources, p.output, p.native, duplicates, p.abort, p.routers, p.renderers)
 }
 
 // WithAbort is the same program with the host's cancellation: every sink
@@ -108,9 +127,9 @@ func (p *Program) WithDuplicates(duplicates tt.Duplicates) (*Program, *Fail) {
 // stops a long computation on one item with ABORTED rather than waiting
 // for the item to finish. The source takes the same flag
 // (ParserSource.Abort) to stop between events.
-func (p *Program) WithAbort(abort *tt.AbortFlag) *Program {
+func (p *Program) WithAbort(abort *shared.AbortFlag) *Program {
 	if abort == nil {
-		abort = tt.NewAbortFlag()
+		abort = shared.NewAbortFlag()
 	}
 	q := *p
 	q.abort = abort
@@ -121,7 +140,7 @@ func (p *Program) WithAbort(abort *tt.AbortFlag) *Program {
 func (p *Program) Native() bool { return p.native }
 
 // Duplicates is the policy for a member name repeated in a captured scope.
-func (p *Program) Duplicates() tt.Duplicates { return p.duplicates }
+func (p *Program) Duplicates() shared.Duplicates { return p.duplicates }
 
 // File is the file name the program was compiled under: the first, of
 // several.
@@ -163,10 +182,10 @@ func (p *Program) plan() *Plan {
 // time, when the plan makes one known: the table binding's :rows, a
 // select's selector, or the one multi-location capture of a route. A host
 // that streams a verified grammar prunes the parse under it.
-func (p *Program) RowSelector() (tt.Selector, bool) {
+func (p *Program) RowSelector() (shared.Selector, bool) {
 	plan := p.plan()
 	if plan == nil {
-		return tt.Selector{}, false
+		return shared.Selector{}, false
 	}
 	root := rootStage(plan)
 	switch root.Kind {
@@ -179,7 +198,7 @@ func (p *Program) RowSelector() (tt.Selector, bool) {
 	case PlanSelect:
 		return root.Selector, true
 	case PlanRoute:
-		var multi []tt.Selector
+		var multi []shared.Selector
 		for _, spec := range root.Specs {
 			if spec.Selector.IsMulti() {
 				multi = append(multi, spec.Selector)
@@ -192,7 +211,7 @@ func (p *Program) RowSelector() (tt.Selector, bool) {
 			return root.Specs[0].Selector, true
 		}
 	}
-	return tt.Selector{}, false
+	return shared.Selector{}, false
 }
 
 // rootStage is the stage that reads the input directly: the plan whose
@@ -337,7 +356,7 @@ func stageOf(p *Plan) Stage {
 		// them.
 		options, ok := csvOptions(p.Options)
 		if !ok {
-			options = tr.DefaultCSVOptions()
+			options = shared.DefaultCSVOptions()
 		}
 		s.Csv = csvProfile(options)
 	}
@@ -372,26 +391,28 @@ func (p *Program) ExplainJSON() *JSONObject { return p.Summary().JSON() }
 
 // Sink is the sink for one run: the host pushes the source's events into
 // it and one End, and the output reaches out through a coalescing writer
-// with limits.MaxOutputBytes enforced and OutputBytes counted in metrics
-// (a fresh set when nil). render chooses how a table or JSON-events result
-// is rendered (RenderCSV or RenderJSON; RenderDefault for the host's
-// default); a program that renders its own text takes none
-// (`render_of_text`).
-func (p *Program) Sink(out io.Writer, render Renderer, limits tt.Limits, metrics *tt.Metrics) (tt.Sink, *Fail) {
+// (the renderers' WriteOut) with limits.MaxOutputBytes enforced and
+// OutputBytes counted in metrics (a fresh set when nil). render chooses how
+// a table or JSON-events result is rendered (RenderCSV or RenderJSON;
+// RenderDefault for the host's default); a program that renders its own
+// text takes none (`render_of_text`).
+func (p *Program) Sink(out io.Writer, render Renderer, limits shared.Limits, metrics *shared.Metrics) (shared.Sink, *Fail) {
 	if metrics == nil {
-		metrics = tt.NewMetrics()
+		metrics = shared.NewMetrics()
 	}
-	w := tr.NewWriteOut(out).WithLimits(limits).WithMetrics(metrics)
+	w := p.renderers.WriteOut(out, limits, metrics)
 	return p.SinkOut(w, render, limits, metrics)
 }
 
 // SinkOut is Sink over any text output: for a host that has its own writer
 // stage, and for tests that read the text back.
-func (p *Program) SinkOut(out tr.TextOut, render Renderer, limits tt.Limits, metrics *tt.Metrics) (tt.Sink, *Fail) {
+func (p *Program) SinkOut(out shared.TextOut, render Renderer, limits shared.Limits, metrics *shared.Metrics) (shared.Sink, *Fail) {
 	rt := NewRuntime(p.resolved, p.sources).
 		WithNative(p.native).
 		WithDuplicates(p.duplicates).
 		WithLimits(limits).
-		WithAbort(p.abort)
+		WithAbort(p.abort).
+		WithRouters(p.routers).
+		WithRenderers(p.renderers)
 	return NewLowering(rt, limits, metrics).Sink(p.result, out, render)
 }

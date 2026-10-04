@@ -160,7 +160,7 @@ func TestSpecPipe(t *testing.T) {
 // fails with the resolver's, the checker's or the plan evaluation's code,
 // at the position it names.
 func checkRow(input string) (string, *Fail) {
-	program, f := Compile(input, "check")
+	program, f := Compile(input, "check", routers, renderers)
 	if f != nil {
 		return "", f
 	}
@@ -237,7 +237,7 @@ func (o runOutcome) agrees(other runOutcome) bool {
 // program's row selector when it has one, with the default limits; the
 // standard compositions native or through the library's text.
 func runBoth(program, doc string, render Renderer, native bool) runOutcome {
-	compiled, f := Compile(program, "run")
+	compiled, f := Compile(program, "run", routers, renderers)
 	if f == nil && !native {
 		compiled, f = compiled.WithNative(false)
 	}
@@ -280,7 +280,7 @@ func driveRun(program *Program, doc string, render Renderer, limits tt.Limits, m
 // Such a row runs in every build; any other needs the incremental source.
 func beforeTheSource(program string, render Renderer) bool {
 	for _, native := range []bool{true, false} {
-		compiled, f := Compile(program, "run")
+		compiled, f := Compile(program, "run", routers, renderers)
 		if f == nil && !native {
 			compiled, f = compiled.WithNative(false)
 		}

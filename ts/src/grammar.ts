@@ -50,11 +50,11 @@
 import { Tabnas, TabnasError } from '@tabnas/parser'
 import type { Rule, Context, Token, Plugin } from '@tabnas/parser'
 import { make as makeJson } from '@tabnas/json'
-import { Fail } from '@tabnas/transduce'
 
 import { Expr, programFromValue, sourceFile } from './ast'
 import { isFail } from './fail'
 import { DE, IN, KW, MATCHER, NL, makeLayoutMatcher } from './lex'
+import { Fail } from './shared'
 
 // The file name spans carry when a program is parsed from a string rather
 // than a file.

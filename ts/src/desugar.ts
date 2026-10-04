@@ -25,7 +25,7 @@
 // as each container is built. The walk recurses per level of what the
 // reader built, which MAX_NESTING bounds; a long pipe is a loop.
 
-import { Fail } from '@tabnas/transduce'
+import { Fail } from './shared'
 
 import { Expr, SourceSpan, MAX_NESTING, TOO_DEEP, position, symbolOf } from './ast'
 

@@ -267,7 +267,7 @@ func TestTheLibraryCsvValidatesWhatTheRendererValidates(t *testing.T) {
 		{"a column without a label", table(first(`[(record (entry :x "N"))]`, "[(get :n x)]"), "(fn [s] [table-end])"), errCode(CodeMissingValue)},
 		{"a label that is a record", table(first("[(record (entry :label (record)))]", "[(get :n x)]"), "(fn [s] [table-end])"), errCode(CodeInputInvalid)},
 	} {
-		program, f := Compile(c.src, "table.alc")
+		program, f := Compile(c.src, "table.alc", routers, renderers)
 		if f != nil {
 			t.Fatalf("%s: %v", c.name, f)
 		}

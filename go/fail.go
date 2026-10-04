@@ -5,48 +5,49 @@ package tabnasalchemy
 import (
 	"strings"
 
+	"github.com/tabnas/alchemy/go/shared"
 	tabnas "github.com/tabnas/parser/go"
-	tt "github.com/tabnas/transduce/go"
 )
 
 // fail.go: the failure type every stage returns.
 //
 // The Rust crate raises `tabnas_transduce::Fail` with codes from
 // `tabnas_transduce::Code`, the one set every renderer, transducer and
-// host shares. This port does the same with the Go port of transduce: the
-// names here are aliases of its types and constants, so a failure this
-// package returns is the one transduce's stages and render's renderers
-// return, and a host handles them alike.
+// host shares. This port declares that set in its shared package, which
+// the Go ports of transduce and render build on: the names here are
+// aliases of its types and constants, so a failure this package returns
+// is the one transduce's stages and render's renderers return, and a host
+// handles them alike.
 
-// Code is a stable failure code: transduce's.
-type Code = tt.Code
+// Code is a stable failure code: the shared set.
+type Code = shared.Code
 
-// Fail is a failure: transduce's. Row and Column are 1-based, 0 when the
-// failure names no position; File is the source the position is in, when
-// the program was compiled from several.
-type Fail = tt.Fail
+// Fail is a failure: the shared one. Row and Column are 1-based, 0 when
+// the failure names no position; File is the source the position is in,
+// when the program was compiled from several.
+type Fail = shared.Fail
 
-// The stable failure codes, transduce's.
+// The stable failure codes, the shared set.
 const (
-	CodeDSLParseError              = tt.CodeDSLParseError
-	CodeDSLTypeError               = tt.CodeDSLTypeError
-	CodeStreamReused               = tt.CodeStreamReused
-	CodeStreamabilityUnknown       = tt.CodeStreamabilityUnknown
-	CodeInputOrderViolation        = tt.CodeInputOrderViolation
-	CodeCaptureOverlapUnsupported  = tt.CodeCaptureOverlapUnsupported
-	CodeMissingValue               = tt.CodeMissingValue
-	CodeDuplicateMember            = tt.CodeDuplicateMember
-	CodeInvalidNumber              = tt.CodeInvalidNumber
-	CodeProtocolOrderError         = tt.CodeProtocolOrderError
-	CodeTargetValueUnrepresentable = tt.CodeTargetValueUnrepresentable
-	CodeResourceLimitExceeded      = tt.CodeResourceLimitExceeded
-	CodeInputInvalid               = tt.CodeInputInvalid
-	CodeOutputFailed               = tt.CodeOutputFailed
-	CodeAborted                    = tt.CodeAborted
+	CodeDSLParseError              = shared.CodeDSLParseError
+	CodeDSLTypeError               = shared.CodeDSLTypeError
+	CodeStreamReused               = shared.CodeStreamReused
+	CodeStreamabilityUnknown       = shared.CodeStreamabilityUnknown
+	CodeInputOrderViolation        = shared.CodeInputOrderViolation
+	CodeCaptureOverlapUnsupported  = shared.CodeCaptureOverlapUnsupported
+	CodeMissingValue               = shared.CodeMissingValue
+	CodeDuplicateMember            = shared.CodeDuplicateMember
+	CodeInvalidNumber              = shared.CodeInvalidNumber
+	CodeProtocolOrderError         = shared.CodeProtocolOrderError
+	CodeTargetValueUnrepresentable = shared.CodeTargetValueUnrepresentable
+	CodeResourceLimitExceeded      = shared.CodeResourceLimitExceeded
+	CodeInputInvalid               = shared.CodeInputInvalid
+	CodeOutputFailed               = shared.CodeOutputFailed
+	CodeAborted                    = shared.CodeAborted
 )
 
 // NewFail is a failure with a code and a message.
-func NewFail(code Code, message string) *Fail { return tt.NewFail(code, message) }
+func NewFail(code Code, message string) *Fail { return shared.NewFail(code, message) }
 
 // FinerCode is the code a failure of this package pins: the first word of
 // its message, before `: ` (`bad_dedent`, `type_mismatch`, `reused`), the

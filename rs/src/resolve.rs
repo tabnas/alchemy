@@ -25,9 +25,9 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use tabnas_transduce::{Code, Fail};
 
 use crate::ast::{Expr, SourceSpan, Sources};
+use crate::shared::{Code, Fail};
 
 /// What kind of thing a name outside the program denotes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

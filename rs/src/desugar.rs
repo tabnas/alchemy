@@ -22,7 +22,7 @@
 //! `bad_let`, `bad_if`, `bad_match`, `too_deep`), the same convention the
 //! reader's own failures follow, and they carry the row and column of the
 //! offending form. The source is passed in for that: a span holds byte
-//! offsets, and [`tabnas_transduce::Fail`] names positions.
+//! offsets, and [`crate::shared::Fail`] names positions.
 //!
 //! A rewrite can nest deeper than what it read: `def` wraps a body in a
 //! `fn`, and `pipe` nests the threaded value one level per step, so a flat
@@ -32,9 +32,8 @@
 //! reader holds still holds after desugaring, and a `pipe` fails at the
 //! step that passes it rather than after building the whole chain.
 
-use tabnas_transduce::{Code, Fail};
-
 use crate::ast::{Expr, SourceSpan, MAX_NESTING, TOO_DEEP};
+use crate::shared::{Code, Fail};
 
 /// The messages, by code, as the grammar document also declares them; a
 /// test in [`crate::grammar`] holds the two in step.

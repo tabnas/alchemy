@@ -2,6 +2,10 @@
 //! [`compile_sources`], several files linked into one), ask it what it
 //! produces, and take a [`Sink`] to push the source's events into.
 //!
+//! The host passes the [`Routers`] and the [`Renderers`] the program's
+//! stages are made with (transduce's and render's) to `compile`, and the
+//! program keeps them for every sink it makes.
+//!
 //! aless runs a pipeline on its parse thread, so everything here is
 //! `Send`: the program, the sink it builds, the values inside. The host
 //! pushes `JsonEvent`s into the sink and one `End`; the sink writes the
@@ -12,13 +16,13 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use tabnas_render::{TextOut, WriteOut};
-use tabnas_transduce::{AbortFlag, Code, Duplicates, Fail, Limits, Metrics, Selector, Sink};
-
 use crate::ast::{Expr, Sources};
 use crate::interp::{Runtime, MAX_PLAN_STEPS};
 use crate::lower::{EventSink, Lowering, Out};
 use crate::resolve::{resolve, Resolved};
+use crate::shared::{
+    AbortFlag, Code, Duplicates, Fail, Limits, Metrics, Renderers, Routers, Selector, Sink, TextOut,
+};
 use crate::value::{Plan, Protocol, Seq, Val};
 use crate::{desugar, parse_file, stdlib};
 
@@ -59,6 +63,15 @@ pub struct Program {
     abort: AbortFlag,
     /// `export` applied to the input plan under the flags above.
     result: Val,
+    /// The routers and renderers every sink's stages are made with.
+    injected: Injected,
+}
+
+/// The routers and renderers the host passed to [`compile`].
+#[derive(Clone)]
+struct Injected {
+    routers: Arc<dyn Routers<Val>>,
+    renderers: Arc<dyn Renderers>,
 }
 
 impl std::fmt::Debug for Program {
@@ -77,8 +90,18 @@ impl std::fmt::Debug for Program {
 /// `no_match` on that path is reported here, with its own code. The work
 /// runs on a thread of [`crate::STACK_BYTES`], and building the plan is
 /// bounded by [`MAX_PLAN_STEPS`] and [`crate::MAX_EVAL_DEPTH`].
-pub fn compile(src: &str, file: &str) -> Result<Program, Fail> {
-    compile_sources(&[Source::new(file, src)])
+///
+/// `routers` and `renderers` make the stages of every sink the program
+/// builds ([`Program::sink`]): transduce's (`tabnas_transduce::routers()`)
+/// and render's (`tabnas_render::renderers()`). Compiling asks nothing of
+/// them.
+pub fn compile(
+    src: &str,
+    file: &str,
+    routers: Arc<dyn Routers<Val>>,
+    renderers: Arc<dyn Renderers>,
+) -> Result<Program, Fail> {
+    compile_sources(&[Source::new(file, src)], routers, renderers)
 }
 
 /// One of the sources a program is compiled from: the file it is named
@@ -136,8 +159,14 @@ impl<'a> Source<'a> {
 /// (`def export [input] (yaml-render (program-export input))`, with the
 /// user's program linked as `program-export`), in one plan under one
 /// set of limits. The renamed source positions its failures in its own
-/// file as any source does.
-pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
+/// file as any source does. `routers` and `renderers` are as for
+/// [`compile`].
+pub fn compile_sources(
+    sources: &[Source<'_>],
+    routers: Arc<dyn Routers<Val>>,
+    renderers: Arc<dyn Renderers>,
+) -> Result<Program, Fail> {
+    let injected = Injected { routers, renderers };
     on_stack(|| {
         let mut named: Vec<(Arc<str>, Arc<str>)> = Vec::with_capacity(sources.len());
         for source in sources {
@@ -216,6 +245,7 @@ pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
             true,
             Duplicates::Reject,
             AbortFlag::new(),
+            injected.clone(),
         )
     })
 }
@@ -288,8 +318,13 @@ impl Program {
         native: bool,
         duplicates: Duplicates,
         abort: AbortFlag,
+        injected: Injected,
     ) -> Result<Program, Fail> {
-        on_stack(|| Program::build_here(resolved, sources, output, native, duplicates, abort))
+        on_stack(|| {
+            Program::build_here(
+                resolved, sources, output, native, duplicates, abort, injected,
+            )
+        })
     }
 
     fn build_here(
@@ -299,6 +334,7 @@ impl Program {
         native: bool,
         duplicates: Duplicates,
         abort: AbortFlag,
+        injected: Injected,
     ) -> Result<Program, Fail> {
         let result = Runtime::new(resolved.clone(), sources.clone())
             .with_native(native)
@@ -314,6 +350,7 @@ impl Program {
             duplicates,
             abort,
             result,
+            injected,
         })
     }
 
@@ -328,6 +365,7 @@ impl Program {
             native,
             self.duplicates,
             self.abort.clone(),
+            self.injected.clone(),
         )
     }
 
@@ -341,6 +379,7 @@ impl Program {
             self.native,
             duplicates,
             self.abort.clone(),
+            self.injected.clone(),
         )
     }
 
@@ -450,10 +489,11 @@ impl Program {
 
     /// The sink for one run: the host pushes the source's events into it
     /// and one `End`, and the output reaches `out` through a coalescing
-    /// writer with `limits.max_output_bytes` enforced and `output_bytes`
-    /// counted in `metrics`. `render` chooses how a table or JSON-events
-    /// result is rendered (CSV or JSON; `None` for the default); a
-    /// program that renders its own text takes none (`render_of_text`).
+    /// writer ([`Renderers::write_out`]) with `limits.max_output_bytes`
+    /// enforced and `output_bytes` counted in `metrics`. `render` chooses
+    /// how a table or JSON-events result is rendered (CSV or JSON; `None`
+    /// for the default); a program that renders its own text takes none
+    /// (`render_of_text`).
     pub fn sink(
         &self,
         out: Box<dyn Write + Send>,
@@ -461,10 +501,11 @@ impl Program {
         limits: &Limits,
         metrics: Arc<Metrics>,
     ) -> Result<Box<dyn Sink + Send>, Fail> {
-        let out = WriteOut::new(out)
-            .with_limits(limits)
-            .with_metrics(metrics.clone());
-        self.sink_out(Box::new(out), render, limits, metrics)
+        let out = self
+            .injected
+            .renderers
+            .write_out(out, limits, metrics.clone());
+        self.sink_out(out, render, limits, metrics)
     }
 
     /// [`Program::sink`] over any text output: for a host that has its own
@@ -484,7 +525,14 @@ impl Program {
                 .with_abort(self.abort.clone()),
         );
         let out: Out = out;
-        Lowering::new(rt, limits, metrics).sink(&self.result, out, render)
+        Lowering::new(
+            rt,
+            limits,
+            metrics,
+            self.injected.routers.clone(),
+            self.injected.renderers.clone(),
+        )
+        .sink(&self.result, out, render)
     }
 }
 
@@ -536,7 +584,7 @@ fn root_stage(plan: &Plan) -> &Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lower::tests::{PROGRAM, RECORDS};
+    use crate::lower::tests::{compile, PROGRAM};
 
     #[test]
     fn a_program_knows_its_output_and_row_selector() {
@@ -568,28 +616,10 @@ mod tests {
     }
 
     #[test]
-    fn the_sink_writes_through_a_write() {
-        let p = compile(PROGRAM, "t.alc").unwrap();
-        let buffer = crate::lower::tests::Shared::default();
-        let limits = Limits::default();
-        let mut sink = p
-            .sink(Box::new(buffer.clone()), None, &limits, Metrics::new())
-            .unwrap();
-        let datum = tabnas_transduce::Datum::from_json(&serde_json::from_str(RECORDS).unwrap());
-        tabnas_transduce::walk_datum(&datum, &mut sink).unwrap();
-        sink.event(tabnas_transduce::JsonEvent::End).unwrap();
-        let bytes = buffer.0.lock().unwrap().clone();
-        assert_eq!(
-            String::from_utf8(bytes).unwrap(),
-            crate::lower::tests::EXPECTED_CSV
-        );
-    }
-
-    #[test]
     fn compile_reports_reader_resolver_and_export_failures() {
         assert_eq!(
             compile("(a b", "t.alc").unwrap_err().code,
-            tabnas_transduce::Code::DslParseError
+            crate::shared::Code::DslParseError
         );
         let f = compile("def export [input] (nope input)", "t.alc").unwrap_err();
         assert!(f.message.starts_with("unknown_name: "), "{f}");

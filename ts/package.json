@@ -20,30 +20,28 @@
   },
   "scripts": {
     "embed": "node embed-grammar.js",
-    "build": "tsc --build src && tsc --build test",
+    "build": "tsc --build src",
     "watch": "tsc --build src test -w",
     "clean": "rm -rf node_modules dist dist-test package-lock.json",
     "reset": "npm run clean && npm i && npm run build && npm test",
-    "test": "npm run build && node --enable-source-maps --test \"dist-test/*.test.js\""
+    "test": "npm run build && tsc --build test && node --enable-source-maps --test \"dist-test/*.test.js\""
   },
   "files": [
     "dist",
     "src",
-    "bin",
     "README.md",
     "LICENSE"
   ],
   "exports": {
-    ".": "./dist/alchemy.js"
-  },
-  "bin": {
-    "alchemy": "bin/alchemy"
+    ".": "./dist/alchemy.js",
+    "./shared": {
+      "types": "./dist/shared/index.d.ts",
+      "default": "./dist/shared/index.js"
+    }
   },
   "peerDependencies": {
     "@tabnas/json": ">=0",
-    "@tabnas/parser": ">=0",
-    "@tabnas/render": ">=0",
-    "@tabnas/transduce": ">=0"
+    "@tabnas/parser": ">=0"
   },
   "devDependencies": {
     "@tabnas/csv": "*",

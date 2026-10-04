@@ -19,7 +19,7 @@
 // definitions, and the duplicate-member policy. Pass 2's `Program` is one;
 // until the evaluator exists, a test builds the plan by hand.
 
-import type { Duplicates } from '@tabnas/transduce'
+import type { Duplicates } from './shared'
 
 import { Expr, symbolOf } from './ast'
 import { Output } from './output'

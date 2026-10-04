@@ -22,9 +22,9 @@ import { Yaml } from '@tabnas/yaml'
 import { BytesWriter } from '@tabnas/render'
 import { Code, Ev, Limits, Metrics, replay } from '@tabnas/transduce'
 
-import { Program, compile, stdlib } from '../dist/alchemy'
+import { Program, stdlib } from '../dist/alchemy'
 
-import { EXPECTED_CSV, PROGRAM, RECORDS, events, replayed } from './common'
+import { EXPECTED_CSV, PROGRAM, RECORDS, compile, events, replayed } from './common'
 import { FIXTURES, METADATA, record, recordsCsv, recordsJson, recordsJsonl, recordsYaml } from './support'
 
 type Make = () => any

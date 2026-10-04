@@ -30,51 +30,47 @@
 // wherever it lands (`writeFinite`): a row of an interpreted CSV is
 // rendered into a scratch string and written as one fragment, so a failure
 // in the middle of a row leaves no half row behind, as the native renderer
-// promises. Errors are transduce `Fail`s with the transduce and render
+// promises. Errors are `Fail`s (`./shared`) with the transduce and render
 // codes unchanged; a stream given to a stage of another protocol is
 // `DSL_TYPE_ERROR` with the `protocol_mismatch` finer code, the same word
 // the checker uses when it can see it first.
+//
+// This module constructs no stage of either package itself: it builds them
+// through the routers and renderers the host passed to `compile`
+// (`Runtime.routers`, `Runtime.renderers`), which alchemy declares
+// (`Routers`, `Renderers`) and transduce and render implement.
 
-import {
-  CsvOptions,
-  CsvRenderer,
-  Join,
-  JsonOptions,
-  JsonRenderer,
-  MissingText,
-  RecordsToJson,
-  ReplaceText,
-  TextOut,
-  hasCommitted,
-} from '@tabnas/render'
 import {
   BoundColumn,
   CaptureSpec,
   Cell,
+  CsvOptions,
   Datum,
   Ev,
   Fail,
   Flow,
-  Guarded,
+  JoinOut,
   JsonEvent,
+  JsonOptions,
   Limits,
   Metrics,
+  MissingText,
   NODE_BYTES,
   PublicColumn,
+  Renderers,
   RouteSink,
-  Router,
-  ScanEmit,
+  Scan,
   Schema,
   Selected,
   Sink,
   TableBinding,
   TableEvent,
-  TableFromJson,
   TableSink,
+  TextOut,
   Transition,
   boundColumn,
   utf8Bytes,
-} from '@tabnas/transduce'
+} from './shared'
 
 import { SourceSpan } from './ast'
 import { csvDialect, isInferred } from './effects'
@@ -214,12 +210,12 @@ function cellVal(c: Cell): Val {
 // adapter reading a program's `schema` values by it, and `csv-table`
 // validates the library's schema by it, so a label is accepted or refused
 // alike whichever path renders it.
-function labelText(label: Val): string {
+function labelText(rt: Runtime, label: Val): string {
   switch (label.v) {
     case 'str':
       return label.value
     case 'num':
-      return numberText(label.value, label.lexeme)
+      return numberText(rt.renderers, label.value, label.lexeme)
     case 'bool':
       return label.value ? 'true' : 'false'
     default:
@@ -229,15 +225,16 @@ function labelText(label: Val): string {
 }
 
 // The label of a `schema` value's column: a record's `:label`.
-function label(column: Val): string {
+function label(rt: Runtime, column: Val): string {
   const l = field(column, 'label')
   if (undefined === l) throw Fail.protocol('a schema column is not a record')
-  return labelText(l)
+  return labelText(rt, l)
 }
 
 // The columns of a `schema` value, as the table protocol carries them: a
-// vector of column records, at most `max_columns` of them.
-function schemaColumns(fields: ReadonlyArray<Val>, limits: Limits): PublicColumn[] {
+// vector of column records, at most the runtime's `max_columns` of them.
+function schemaColumns(rt: Runtime, fields: ReadonlyArray<Val>): PublicColumn[] {
+  const limits = rt.limits
   const columns = fields[0]
   if ('vector' !== columns.v) throw Fail.protocol('schema takes a vector of columns')
   if (columns.items.length > limits.max_columns) {
@@ -247,7 +244,7 @@ function schemaColumns(fields: ReadonlyArray<Val>, limits: Limits): PublicColumn
       `the schema declares ${columns.items.length} columns, more than ${limits.max_columns}`,
     )
   }
-  return columns.items.map((c) => ({ label: label(c) }))
+  return columns.items.map((c) => ({ label: label(rt, c) }))
 }
 
 // The cells of a `row` value, as the table protocol carries them.
@@ -296,7 +293,7 @@ export function* writeFinite(rt: Runtime, v: Val, out: TextOut): G<void> {
       case 'join':
         if ('vector' !== plan.items.seq) break
         {
-          const join = new Join(out, plan.sep)
+          const join = rt.renderers.join(out, plan.sep)
           for (const item of plan.items.items) {
             join.itemStart()
             yield writeFinite(rt, item, join)
@@ -314,7 +311,7 @@ export function* writeFinite(rt: Runtime, v: Val, out: TextOut): G<void> {
       // Streamed through the replacer, as a live text is: it holds at most
       // the literal's length, never the text.
       case 'replace': {
-        const replace = new ReplaceText(new Held(out), plan.from, plan.to)
+        const replace = rt.renderers.replaceText(new Held(out, rt.renderers), plan.from, plan.to)
         yield writeFinite(rt, plan.source, replace)
         replace.flush()
         return
@@ -333,7 +330,10 @@ export function* writeFinite(rt: Runtime, v: Val, out: TextOut): G<void> {
 // hands over what it holds at its own flush, and the text around it goes
 // on.
 class Held implements TextOut {
-  constructor(private readonly inner: TextOut) {}
+  constructor(
+    private readonly inner: TextOut,
+    private readonly renderers: Renderers,
+  ) {}
 
   writeStr(s: string): void {
     this.inner.writeStr(s)
@@ -342,7 +342,7 @@ class Held implements TextOut {
   flush(): void {}
 
   hasCommitted(): boolean {
-    return hasCommitted(this.inner)
+    return this.renderers.hasCommitted(this.inner)
   }
 }
 
@@ -533,15 +533,15 @@ function retain(metrics: Metrics, bytes: number): void {
   metrics.retained_bytes_high = Math.max(metrics.retained_bytes_high, metrics.captured_bytes + bytes)
 }
 
-// `failAt` for whatever was thrown: a `Fail` from any copy of transduce
-// (`isFail`), and nothing else.
+// `failAt` for whatever was thrown: a `Fail` from any copy of the shared
+// unit (`isFail`), and nothing else.
 function positioned(rt: Runtime, err: unknown, at: SourceSpan): unknown {
   return isFail(err) ? rt.failAt(err, at) : err
 }
 
 // `scan-emit`: transduce's operator over the program's step and finish.
 class ScanStage implements ItemSink {
-  private readonly scan: ScanEmit<Val, Val, Val>
+  private readonly scan: Scan<Val>
 
   constructor(
     rt: Runtime,
@@ -586,7 +586,7 @@ class ScanStage implements ItemSink {
       if ('vector' === outputs.v) return outputs.items.slice()
       throw rt.failAt(typeError(`scan-emit: finish must answer a vector of outputs, not ${kindText(outputs)}`), at)
     }
-    this.scan = new ScanEmit<Val, Val, Val>(init, stepFn, finishFn, (o) => this.down.item(o))
+    this.scan = rt.routers.scanEmit<Val, Val, Val>(init, stepFn, finishFn, (o) => this.down.item(o))
   }
 
   item(v: Val): Flow {
@@ -720,7 +720,7 @@ class TaggedToTable implements ItemSink {
   item(v: Val): Flow {
     if ('tagged' !== v.v) throw Fail.protocol(`a table event was expected, not ${kindText(v)}`)
     if ('schema' === v.tag && 1 === v.fields.length) {
-      return this.table.tableEvent({ type: 'schema', columns: schemaColumns(v.fields, this.rt.limits) })
+      return this.table.tableEvent({ type: 'schema', columns: schemaColumns(this.rt, v.fields) })
     }
     if ('row' === v.tag && 1 === v.fields.length) {
       const cells = rowCells(this.rt, v.fields)
@@ -767,7 +767,7 @@ class CsvTableStage implements ItemSink {
   item(v: Val): Flow {
     if ('tagged' !== v.v) throw Fail.protocol(`a table event was expected, not ${kindText(v)}`)
     if ('schema' === v.tag && 1 === v.fields.length) {
-      const columns = schemaColumns(v.fields, this.rt.limits)
+      const columns = schemaColumns(this.rt, v.fields)
       if ('rows' === this.phase) throw Fail.protocol('a second schema')
       if ('done' === this.phase) throw Fail.protocol('a schema after the end')
       if (0 === columns.length) {
@@ -853,7 +853,7 @@ class ConcatMapStage implements ItemSink {
 // `join` over a stream: each item is one logical item of the join.
 class JoinStage implements ItemSink {
   private readonly scratch: Scratch
-  private readonly join: Join
+  private readonly join: JoinOut
 
   constructor(
     private readonly rt: Runtime,
@@ -861,7 +861,7 @@ class JoinStage implements ItemSink {
     sep: string,
     limits: Limits,
   ) {
-    this.join = new Join(out, sep)
+    this.join = rt.renderers.join(out, sep)
     this.scratch = new Scratch(limits)
   }
 
@@ -914,7 +914,7 @@ class Framed implements TextOut {
   }
 
   hasCommitted(): boolean {
-    return hasCommitted(this.inner)
+    return this.rt.renderers.hasCommitted(this.inner)
   }
 }
 
@@ -940,8 +940,9 @@ class FiniteTextSink implements Sink {
 // The lowering
 // ---------------------------------------------------------------------------
 
-// Lowers plans for one run: the runtime the stages call back into, and the
-// limits and metrics the transduce stages take.
+// Lowers plans for one run: the runtime the stages call back into, whose
+// routers and renderers they are built from, and the limits and metrics the
+// transduce stages take.
 export class Lowering {
   constructor(
     private readonly rt: Runtime,
@@ -969,14 +970,15 @@ export class Lowering {
         const plan = result.plan
         const proto = protocol(plan)
         const chosen: Renderer = render ?? ('JsonEvents' === proto ? 'json' : 'csv')
+        const renderers = this.rt.renderers
         if ('JsonEvents' === proto) {
-          if ('json' === chosen) return this.events(plan, new JsonRenderer(out, jsonOptions()))
+          if ('json' === chosen) return this.events(plan, renderers.json(out, jsonOptions()))
           throw protocolMismatch(
             'csv renders table events; the program\'s result is JSON events (render it as json, or make a table of it with table-from-json)',
           )
         }
-        if ('csv' === chosen) return this.table(plan, new CsvRenderer(out, CsvOptions.default()), false)
-        return this.table(plan, new RecordsToJson(new JsonRenderer(out, jsonOptions())), false)
+        if ('csv' === chosen) return this.table(plan, renderers.csv(out, CsvOptions.default()), false)
+        return this.table(plan, renderers.recordsToJson(renderers.json(out, jsonOptions())), false)
       }
       default:
         throw typeError(`export must answer a text or a stream, not ${kindText(result)}`)
@@ -991,10 +993,10 @@ export class Lowering {
         if (undefined === options) {
           throw typeError("csv: the options record does not map to the renderer's dialect")
         }
-        return this.table(plan.source, new CsvRenderer(out, options), false)
+        return this.table(plan.source, this.rt.renderers.csv(out, options), false)
       }
       case 'json':
-        return this.events(plan.source, new JsonRenderer(out, jsonOptions()))
+        return this.events(plan.source, this.rt.renderers.json(out, jsonOptions()))
       case 'concat-map':
         if ('stream' !== plan.items.seq) break
         return this.items(plan.items.plan, new ConcatMapStage(this.rt, plan.f, plan.at, out, this.limits), false)
@@ -1010,7 +1012,7 @@ export class Lowering {
       }
       case 'replace':
         if ('text' !== plan.source.v) break
-        return this.text(plan.source.plan, new ReplaceText(out, plan.from, plan.to))
+        return this.text(plan.source.plan, this.rt.renderers.replaceText(out, plan.from, plan.to))
       default:
         break
     }
@@ -1024,7 +1026,7 @@ export class Lowering {
       // `records` ends a table: after it the rows are JSON events, of which
       // a later table makes rows of its own.
       case 'records':
-        return this.table(plan.source, new RecordsToJson(sink), false)
+        return this.table(plan.source, this.rt.renderers.recordsToJson(sink), false)
       // A stream whose items may be events (`events` itself, or a
       // `scan-emit`, `map` or `filter` over anything): each item is turned
       // back into an event as the stream runs, the reverse of `events`, so
@@ -1041,7 +1043,7 @@ export class Lowering {
         // whatever the input held. The guard counts into metrics of its
         // own: the source's count the source's events, and these are the
         // program's.
-        const guarded = new Guarded(sink, this.limits, this.rt.abort, new Metrics())
+        const guarded = this.rt.routers.guarded(sink, this.limits, this.rt.abort, new Metrics())
         return this.items(plan, new TaggedToJson(guarded), false)
       }
       // A stream that never yields events: `select`'s values, `route`'s
@@ -1059,7 +1061,13 @@ export class Lowering {
       case 'table-from-json': {
         const binding = this.tableBinding(plan.binding, plan.at)
         const bounded = new CellBound(this.limits.max_scalar_bytes, table, this.metrics, countedLater)
-        const transducer = new TableFromJson(binding, this.limits, this.rt.duplicates, this.metrics, bounded)
+        const transducer = this.rt.routers.tableFromJson(
+          binding,
+          this.limits,
+          this.rt.duplicates,
+          this.metrics,
+          bounded,
+        )
         return this.events(plan.source, transducer)
       }
       case 'input':
@@ -1097,11 +1105,17 @@ export class Lowering {
           }
           return copy
         })
-        const router = new Router(specs, this.limits, this.rt.duplicates, this.metrics, new RouteToItems(down, false))
+        const router = this.rt.routers.router(
+          specs,
+          this.limits,
+          this.rt.duplicates,
+          this.metrics,
+          new RouteToItems(down, false),
+        )
         return this.events(plan.source, router)
       }
       case 'select': {
-        const router = new Router(
+        const router = this.rt.routers.router(
           [CaptureSpec.materialize('selected', plan.selector)],
           this.limits,
           this.rt.duplicates,
@@ -1162,7 +1176,7 @@ export class Lowering {
     }
     const rt = this.rt
     const mapper = (descriptor: Datum): BoundColumn =>
-      boundColumnOf(rt.applyNow(column.f, [fromDatum(descriptor)], at))
+      boundColumnOf(rt, rt.applyNow(column.f, [fromDatum(descriptor)], at))
     return { schema: Schema.fromMetadata(columns.selector, mapper), rows: rows.selector }
   }
 }
@@ -1171,8 +1185,8 @@ export class Lowering {
 // label is read as the library's `public-column` reads it (`get :label`, so
 // a column function that answers something other than a record fails as
 // `get` does) and taken by `labelText`, the policy every table shares.
-function boundColumnOf(column: Val): BoundColumn {
-  const text = labelText(getField('label', column))
+function boundColumnOf(rt: Runtime, column: Val): BoundColumn {
+  const text = labelText(rt, getField('label', column))
   const source = field(column, 'source')
   if (undefined === source || 'selector' !== source.v) {
     throw typeError('table-from-json: a column record must carry a :source selector')

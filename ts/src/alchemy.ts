@@ -10,7 +10,13 @@
 // sinks); `./effects` reads the plan for `explain`; `./program` is the API
 // a host embeds (`compile`, `compileSources`, `Program`). The natives are
 // listed in `./stdlib/registry` and implemented in `./stdlib/natives`.
-// `./cli` is the `alchemy` command (`bin/alchemy`).
+//
+// `./shared` holds the types alchemy, transduce and render share, and
+// `Routers` and `Renderers`, the stages the lowering builds: transduce and
+// render import it (`@tabnas/alchemy/shared`) and implement those two, and
+// a host passes their implementations to `compile` as `{ routers,
+// renderers }`. Alchemy imports neither package. The `alchemy` command is
+// `@tabnas/alchemy-cli`.
 //
 // The checker and the evaluator recurse on an explicit stack
 // (`./trampoline`), so MAX_NESTING, MAX_APPLIED and MAX_EVAL_DEPTH are
@@ -69,7 +75,7 @@ export { MAX_APPLIED, checkProgram, checkStdlibFile, noExport, stdlibSignature }
 export type { Checked } from './check'
 
 export { Program, analyze, analyzeSources, compile, compileSources } from './program'
-export type { Analyzed, Output, Source } from './program'
+export type { Analyzed, CompileOptions, Output, Source } from './program'
 
 export { MAX_EVAL_DEPTH, MAX_PLAN_STEPS, Runtime, arityError, partial } from './interp'
 export type { Bounds, Measure } from './interp'
@@ -89,7 +95,9 @@ export type { ItemSink, Renderer } from './lower'
 export { run, isWalk } from './trampoline'
 export type { G } from './trampoline'
 
-export { main as cli } from './cli'
+// Whether a thrown value is a `Fail`, from whichever copy of the shared unit
+// made it: what a host tells a failure from a defect by.
+export { isFail } from './fail'
 
 export {
   csvDialect,
@@ -134,3 +142,10 @@ export {
   unimplemented,
 } from './stdlib/natives'
 export type { NativeImpl } from './stdlib/natives'
+
+// The shared types (`./shared`, also `@tabnas/alchemy/shared`). Four names
+// are this package's own above and keep their meaning here: `jsonString`
+// (`./ast`), `isJsonNumber` (`./lex`), `numberText` (`./stdlib/natives`)
+// and `isFail` (`./fail`, which also sees a `Fail` from another copy of the
+// shared unit); the shared versions are in `@tabnas/alchemy/shared`.
+export * from './shared'

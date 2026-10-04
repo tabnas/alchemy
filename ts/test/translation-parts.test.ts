@@ -22,9 +22,9 @@ import { Xml, translate as xml } from '@tabnas/xml'
 import { Yaml, translate as yaml } from '@tabnas/yaml'
 import { Zon, translate as zon } from '@tabnas/zon'
 
-import { Program, Source, compileSources } from '../dist/alchemy'
+import { Program, Source } from '../dist/alchemy'
 
-import { events, replayed } from './common'
+import { compileSources, events, replayed } from './common'
 
 type TranslationPart = {
   readonly entry: string

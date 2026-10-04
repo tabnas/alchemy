@@ -2,11 +2,15 @@
 // The macro reads every package's fields directly at its call site: that is
 // the compile-time contract without introducing a shared crate type.
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
-use tabnas_alchemy::{compile_sources, Program, Source};
+use tabnas_alchemy::{Program, Source};
 use tabnas_transduce::{replay, Fail, Limits, Metrics, OwnedJsonEvent, ParserSource};
+
+use common::compile_sources;
 
 #[derive(Clone, Copy)]
 struct StructuralPart {

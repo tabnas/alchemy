@@ -6,14 +6,29 @@
 import { join } from 'node:path'
 
 import { make as makeJson } from '@tabnas/json'
-import { BytesWriter } from '@tabnas/render'
+import { BytesWriter, renderers } from '@tabnas/render'
 import { findSpecDir } from '@tabnas/support'
-import { EventRecorder, Limits, Metrics, ParserSource, Prune, SourceMode, replay } from '@tabnas/transduce'
+import { EventRecorder, Limits, Metrics, ParserSource, Prune, SourceMode, replay, routers } from '@tabnas/transduce'
 
+import * as alchemy from '../dist/alchemy'
 import { isFail } from '../dist/fail'
 
 // The repository root: two levels above dist-test/.
 export const REPO_ROOT = join(__dirname, '..', '..')
+
+// What a host passes `compile`: transduce's routers and render's renderers,
+// the stages a program's runtime builds a run from.
+export const OPTIONS: alchemy.CompileOptions = { routers, renderers }
+
+// `compile` as a host calls it, with `OPTIONS`.
+export function compile(src: string, file: string): alchemy.Program {
+  return alchemy.compile(src, file, OPTIONS)
+}
+
+// `compileSources` as a host calls it, with `OPTIONS`.
+export function compileSources(sources: ReadonlyArray<alchemy.Source>): alchemy.Program {
+  return alchemy.compileSources(sources, OPTIONS)
+}
 
 // test/spec, found as every runtime finds it.
 export const SPEC_DIR = findSpecDir(__dirname)

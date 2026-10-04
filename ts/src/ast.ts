@@ -21,7 +21,7 @@
 // lets the printers and the desugarer recurse per level: 256 levels is a
 // few hundred frames, far inside Node's default stack.
 
-import { Fail } from '@tabnas/transduce'
+import { Fail } from './shared'
 
 // The most levels a form may nest: a list or vector inside a list or
 // vector, this many times over. The reader counts a layout line, each

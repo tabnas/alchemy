@@ -18,7 +18,7 @@ const workedExample = "def column-from-meta [source]\n  record\n    entry :label
 // mustCompile is src compiled, or the test's end.
 func mustCompile(t testing.TB, src, file string) *Program {
 	t.Helper()
-	p, f := Compile(src, file)
+	p, f := Compile(src, file, routers, renderers)
 	if f != nil {
 		t.Fatalf("%s: %v", file, f)
 	}

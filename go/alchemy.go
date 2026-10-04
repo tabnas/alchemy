@@ -24,8 +24,12 @@
 // values (value.go), the evaluator and the natives' implementations
 // (interp.go, natives.go), the lowering of a plan onto transduce's and
 // render's Go ports (lower.go), and the API a host embeds, Compile,
-// CompileSources and Program (program.go). The `alchemy` command is
-// cmd/alchemy.
+// CompileSources and Program (program.go). The types this package shares
+// with transduce and render are declared in its shared package
+// (github.com/tabnas/alchemy/go/shared), which those two build on, and the
+// host hands Compile their implementations of the shared Routers and
+// Renderers, so this package depends on neither. The `alchemy` command is
+// in the alchemy-cli repository (github.com/tabnas/alchemy-cli/go).
 //
 // A program's sink takes any source's events. `alchemy run` reads its
 // document as the Rust command does, with the JSON grammar through
@@ -33,7 +37,7 @@
 // transduce's Go port builds only with the tabnas_nodecell tag; without
 // it the incremental source refuses (STREAMABILITY_UNKNOWN) before
 // reading, and the command reports that rather than read the document
-// some other way (see cmd/alchemy).
+// some other way (see alchemy-cli's cmd/alchemy).
 package tabnasalchemy
 
 import (
@@ -697,7 +701,7 @@ var (
 	defaultParser *tabnas.Tabnas
 )
 
-func shared() *tabnas.Tabnas {
+func sharedParser() *tabnas.Tabnas {
 	defaultOnce.Do(func() { defaultParser = Make() })
 	return defaultParser
 }
@@ -707,7 +711,7 @@ func shared() *tabnas.Tabnas {
 // use, and shared: a parse builds a fresh context, and the layout state
 // lives in that context.
 func ParseValue(src string) (any, error) {
-	v, err := shared().Parse(src)
+	v, err := sharedParser().Parse(src)
 	if err != nil {
 		return nil, err
 	}
