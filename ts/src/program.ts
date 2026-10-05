@@ -11,11 +11,28 @@
 // defer, bounded by MAX_PLAN_STEPS and MAX_EVAL_DEPTH. The host pushes
 // `JsonEvent`s into the sink a `Program` makes and one `end`; the sink
 // writes the output as it goes and flushes it at `end`. A failure is
-// thrown from the event call that found it, as a transduce `Fail` whose
+// thrown from the event call that found it, as a `Fail` (`./shared`) whose
 // `committedOutput` says whether bytes had already reached the writer.
+//
+// The stages a run is made of are transduce's and render's, and alchemy
+// imports neither: `compile` and `compileSources` take them as options,
+// `{ routers, renderers }`, implementations of the `Routers` and
+// `Renderers` alchemy declares, which `@tabnas/transduce` (`routers`) and
+// `@tabnas/render` (`renderers`) export.
 
-import { AbortFlag, Duplicates, Fail, Limits, Metrics, Selector, Sink } from '@tabnas/transduce'
-import { TextOut, WriteOut, Writer } from '@tabnas/render'
+import {
+  AbortFlag,
+  Duplicates,
+  Fail,
+  Limits,
+  Metrics,
+  Renderers,
+  Routers,
+  Selector,
+  Sink,
+  TextOut,
+  Writer,
+} from './shared'
 
 import { Expr, SourceSpan, Sources } from './ast'
 import { Checked, checkProgram, noExport } from './check'
@@ -33,6 +50,16 @@ import { Plan, Val, protocol as protocolOf } from './value'
 
 export type { Output } from './output'
 export type { Renderer } from './lower'
+
+// What `compile` and `compileSources` take besides the program: the
+// routers and renderers its stages are built from, which a host passes as
+// `{ routers, renderers }`, from `@tabnas/transduce` and `@tabnas/render`.
+// A `Program` keeps them for every sink it makes, and so do the programs
+// its `with` methods answer.
+export type CompileOptions = {
+  readonly routers: Routers
+  readonly renderers: Renderers
+}
 
 // One of the sources a program is compiled from: the file it is named by
 // in diagnostics, its text, and the name its own `export` is linked under
@@ -163,9 +190,10 @@ function renameSymbol(form: Expr, from: string, to: string): Expr {
 // path is reported here, with its own code. Building the plan is bounded by
 // MAX_PLAN_STEPS and MAX_EVAL_DEPTH, and runs on the evaluator's explicit
 // stack, so the bounds hold in Node's default stack. A failure is thrown
-// as a `Fail`.
-export function compile(src: string, file: string): Program {
-  return compileSources([{ file, text: src }])
+// as a `Fail`. The program's stages are built from `options`' routers and
+// renderers.
+export function compile(src: string, file: string, options: CompileOptions): Program {
+  return compileSources([{ file, text: src }], options)
 }
 
 // Compile a program from several sources linked into one namespace: a
@@ -178,9 +206,18 @@ export function compile(src: string, file: string): Program {
 // `compile`, which positions without a file. A source whose `export` is
 // not the program's is linked with `exportAs`: its `export` is defined
 // under that name instead, so that the program's `export` can call it.
-export function compileSources(sources: ReadonlyArray<Source>): Program {
+// The program's stages are built from `options`' routers and renderers.
+export function compileSources(sources: ReadonlyArray<Source>, options: CompileOptions): Program {
   const analyzed = analyzeSources(sources)
-  return Program.build(analyzed.resolved, analyzed.sources, analyzed.checked.output, true, 'reject', new AbortFlag())
+  return Program.build(
+    analyzed.resolved,
+    analyzed.sources,
+    analyzed.checked.output,
+    true,
+    'reject',
+    new AbortFlag(),
+    options,
+  )
 }
 
 // The stage that reads the input directly: the plan whose source is the
@@ -245,9 +282,12 @@ export class Program {
     // `export` applied to the input plan under the flags above: a text or
     // a stream.
     readonly result: Val,
+    // The routers and renderers every sink's stages are built from.
+    readonly options: CompileOptions,
   ) {}
 
-  // Build the plan of a checked program.
+  // Build the plan of a checked program, its stages to be built from
+  // `options`' routers and renderers.
   static build(
     resolved: Resolved,
     sources: Sources,
@@ -255,27 +295,28 @@ export class Program {
     native: boolean,
     duplicates: Duplicates,
     abort: AbortFlag,
+    options: CompileOptions,
   ): Program {
-    const rt = new Runtime(resolved, sources)
+    const rt = new Runtime(resolved, sources, options)
       .withNative(native)
       .withDuplicates(duplicates)
       .withFuel(MAX_PLAN_STEPS)
       .withAbort(abort)
     const result = run(rt.export())
-    return new Program(resolved, sources, output, native, duplicates, abort, result)
+    return new Program(resolved, sources, output, native, duplicates, abort, result, options)
   }
 
   // The same program with the standard compositions run through the
   // library's own definitions (`false`) or natively (`true`, the default).
   // The differential test runs both.
   withNative(native: boolean): Program {
-    return Program.build(this.resolved, this.sources, this.output, native, this.duplicates, this.abort)
+    return Program.build(this.resolved, this.sources, this.output, native, this.duplicates, this.abort, this.options)
   }
 
   // The same program with another policy for repeated member names in
   // captured values; the default rejects them.
   withDuplicates(duplicates: Duplicates): Program {
-    return Program.build(this.resolved, this.sources, this.output, this.native, duplicates, this.abort)
+    return Program.build(this.resolved, this.sources, this.output, this.native, duplicates, this.abort, this.options)
   }
 
   // The same program with the host's cancellation: every sink it makes
@@ -284,7 +325,16 @@ export class Program {
   // item to finish. The source takes the same flag (`ParserSource.abort`)
   // to stop between events.
   withAbort(abort: AbortFlag): Program {
-    return new Program(this.resolved, this.sources, this.output, this.native, this.duplicates, abort, this.result)
+    return new Program(
+      this.resolved,
+      this.sources,
+      this.output,
+      this.native,
+      this.duplicates,
+      abort,
+      this.result,
+      this.options,
+    )
   }
 
   // The file name the program was compiled under: the first, of several.
@@ -346,19 +396,20 @@ export class Program {
 
   // The sink for one run: the host pushes the source's events into it and
   // one `end`, and the output reaches `writer` through a coalescing writer
-  // with `limits.max_output_bytes` enforced and `output_bytes` counted in
-  // `metrics`. `render` chooses how a table or JSON-events result is
-  // rendered (CSV or JSON; undefined for the default); a program that
-  // renders its own text takes none (`render_of_text`).
+  // (the renderers' `writeOut`) with `limits.max_output_bytes` enforced and
+  // `output_bytes` counted in `metrics`. `render` chooses how a table or
+  // JSON-events result is rendered (CSV or JSON; undefined for the
+  // default); a program that renders its own text takes none
+  // (`render_of_text`).
   sink(writer: Writer, render?: Renderer, limits: Limits = Limits.default(), metrics: Metrics = new Metrics()): Sink {
-    const out = new WriteOut(writer).withLimits(limits).withMetrics(metrics)
+    const out = this.options.renderers.writeOut(writer).withLimits(limits).withMetrics(metrics)
     return this.sinkOut(out, render, limits, metrics)
   }
 
   // `sink` over any text output: for a host that has its own writer stage,
   // and for tests that read the text back.
   sinkOut(out: TextOut, render?: Renderer, limits: Limits = Limits.default(), metrics: Metrics = new Metrics()): Sink {
-    const rt = new Runtime(this.resolved, this.sources)
+    const rt = new Runtime(this.resolved, this.sources, this.options)
       .withNative(this.native)
       .withDuplicates(this.duplicates)
       .withLimits(limits)

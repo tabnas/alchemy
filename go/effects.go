@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // effects.go: the effect summary and the plan report (rs/src/effects.rs).
@@ -101,14 +101,14 @@ type Stage struct {
 }
 
 // Duplicates is the policy for a member name an object of the source
-// repeats: transduce's.
-type Duplicates = tt.Duplicates
+// repeats: the shared one, transduce's.
+type Duplicates = shared.Duplicates
 
 // The policies.
 const (
-	DuplicatesReject    = tt.Reject
-	DuplicatesLastWins  = tt.LastWins
-	DuplicatesFirstWins = tt.FirstWins
+	DuplicatesReject    = shared.Reject
+	DuplicatesLastWins  = shared.LastWins
+	DuplicatesFirstWins = shared.FirstWins
 )
 
 // PlanView is what the summary reads from a compiled program: the output

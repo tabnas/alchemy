@@ -185,7 +185,7 @@ func TestStringJoinBuildsOneStringFromSeveral(t *testing.T) {
 		t.Errorf("%q", out)
 	}
 	// A failure that names a key, built from the parts.
-	_, f := Compile("def export [input] (let [m (fail (string-join \" \" [\"no value under\" (quoted \"k\")]))] (json input))", "named.alc")
+	_, f := Compile("def export [input] (let [m (fail (string-join \" \" [\"no value under\" (quoted \"k\")]))] (json input))", "named.alc", routers, renderers)
 	if f == nil || f.Code != CodeInputInvalid || f.Message != "no value under \"k\"" {
 		t.Errorf("%v", f)
 	}
@@ -381,7 +381,7 @@ func doubling(levels int) string {
 func TestBuildingThePlanIsBounded(t *testing.T) {
 	d := strings.Repeat("(d ", 40) + "id" + strings.Repeat(")", 40)
 	expo := "def id [x] x\ndef d [g] (fn [x] (g (g x)))\ndef export [input]\n  let [y (" + d + " 1)]\n    json input\n"
-	if _, f := Compile(expo, "expo.alc"); f == nil || f.Code != CodeResourceLimitExceeded || f.Limit.Name != "max_plan_steps" {
+	if _, f := Compile(expo, "expo.alc", routers, renderers); f == nil || f.Code != CodeResourceLimitExceeded || f.Limit.Name != "max_plan_steps" {
 		t.Errorf("%v", f)
 	}
 	var wide strings.Builder
@@ -390,11 +390,11 @@ func TestBuildingThePlanIsBounded(t *testing.T) {
 		fmt.Fprintf(&wide, "def v%d (vector v%d v%d)\n", i, i-1, i-1)
 	}
 	wide.WriteString("def export [input] (concat (scalar-text csv-options v40) (json input))\n")
-	if _, f := Compile(wide.String(), "wide.alc"); f == nil || f.Code != CodeResourceLimitExceeded {
+	if _, f := Compile(wide.String(), "wide.alc", routers, renderers); f == nil || f.Code != CodeResourceLimitExceeded {
 		t.Errorf("%v", f)
 	}
 	omega := "def w [f] (f f)\ndef export [input]\n  let [x (w w)]\n    json input\n"
-	if _, f := Compile(omega, "omega.alc"); f == nil || f.Code != CodeStreamabilityUnknown || !strings.HasPrefix(f.Message, "recursion: ") || f.Row != 1 || f.Column != 12 {
+	if _, f := Compile(omega, "omega.alc", routers, renderers); f == nil || f.Code != CodeStreamabilityUnknown || !strings.HasPrefix(f.Message, "recursion: ") || f.Row != 1 || f.Column != 12 {
 		t.Errorf("%v", f)
 	}
 	start := time.Now()

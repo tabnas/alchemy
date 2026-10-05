@@ -27,7 +27,7 @@
 // MAX_APPLIED definitions deep; definitions are typed in dependency order,
 // so a chain of definitions does not nest the walk.
 
-import { Code, Fail } from '@tabnas/transduce'
+import { Code, Fail } from './shared'
 
 import { Expr, SourceSpan, Sources, canonicalForm, symbolOf } from './ast'
 import { Output } from './output'

@@ -1,9 +1,9 @@
 /* Copyright (c) 2026 tabnas, MIT License */
 
 // `isFail` (src/fail.ts): a failure is told from a defect by what every
-// copy of transduce gives its failures, so a `Fail` from a second copy, as
-// render makes them when an install gives render its own transduce, is a
-// failure here too, and nothing else is.
+// copy of the shared unit gives its failures, so a `Fail` from a second
+// copy, as render or transduce makes them when an install gives one of
+// them its own alchemy, is a failure here too, and nothing else is.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
@@ -11,19 +11,20 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, sep } from 'node:path'
 
 import { make as makeJson } from '@tabnas/json'
-import { Fail, isFail as instanceOfFail } from '@tabnas/transduce'
 
 import { failFrom } from '../dist/alchemy'
 import { isFail } from '../dist/fail'
+import { Fail, isFail as instanceOfFail } from '../dist/shared'
 
 import { REPO_ROOT, failCode, thrown } from './common'
 
-// A second copy of transduce: its files loaded again as modules of their
-// own, with a `Fail` class of their own, as a copy nested under render is.
-// The module cache is put back as it was, so nothing else loads it.
-function secondTransduce(): typeof import('@tabnas/transduce') {
-  const main = require.resolve('@tabnas/transduce')
-  const dir = dirname(dirname(main)) + sep
+// A second copy of the shared unit: its files loaded again as modules of
+// their own, with a `Fail` class of their own, as the shared unit of an
+// alchemy nested under render or transduce is. The module cache is put
+// back as it was, so nothing else loads it.
+function secondShared(): typeof import('../dist/shared') {
+  const main = require.resolve('../dist/shared')
+  const dir = dirname(main) + sep
   const loaded = () => Object.keys(require.cache).filter((file) => file.startsWith(dir))
   const saved = loaded().map((file) => [file, require.cache[file]] as const)
   for (const [file] of saved) delete require.cache[file]
@@ -36,17 +37,17 @@ function secondTransduce(): typeof import('@tabnas/transduce') {
 }
 
 describe('fail', () => {
-  it("a Fail is a failure, from this package's transduce or another copy", () => {
+  it("a Fail is a failure, from this package's shared unit or another copy", () => {
     assert.ok(isFail(new Fail('INPUT_INVALID', 'not JSON')))
     assert.ok(isFail(Fail.limit('max_output_bytes', 20, 'the output would exceed 20 bytes')))
-    const other = secondTransduce()
+    const other = secondShared()
     assert.notStrictEqual(other.Fail, Fail, 'the copy has a Fail class of its own')
     for (const fail of [
       new other.Fail('MISSING_VALUE', 'row 1 has no value for column "b"'),
       other.Fail.limit('max_output_bytes', 20, 'the output would exceed 20 bytes'),
       other.Fail.protocol('a row before the schema'),
     ]) {
-      // What `instanceof`, and transduce's own `isFail`, do not see.
+      // What `instanceof`, and the shared unit's own `isFail`, do not see.
       assert.ok(!(fail instanceof Fail), String(fail))
       assert.ok(!instanceOfFail(fail), String(fail))
       assert.ok(isFail(fail), String(fail))
@@ -79,18 +80,19 @@ describe('fail', () => {
   // The reader hands a failure back as it is, and the fixtures' runner
   // reads its code, whichever copy made it.
   it("another copy's failure keeps its code", () => {
-    const fail = new (secondTransduce().Fail)('MISSING_VALUE', 'row 1 has no value for column "b"')
+    const fail = new (secondShared().Fail)('MISSING_VALUE', 'row 1 has no value for column "b"')
     assert.strictEqual(failFrom(fail), fail)
     assert.equal(failCode(fail), 'MISSING_VALUE')
   })
 
-  // `instanceof Fail` passes while there is one copy of transduce and
+  // `instanceof Fail` passes while there is one copy of the shared unit and
   // misses the second, which only an install with two shows, so no source
-  // but src/fail.ts asks it.
+  // but src/fail.ts asks it. The shared unit itself is the exception: its
+  // own `isFail`, which transduce re-exports, asks `instanceof` by design.
   it('no source tells a failure by instanceof', () => {
     const src = join(REPO_ROOT, 'ts', 'src')
     const asking = readdirSync(src, { recursive: true, encoding: 'utf8' })
-      .filter((file) => file.endsWith('.ts') && 'fail.ts' !== file)
+      .filter((file) => file.endsWith('.ts') && 'fail.ts' !== file && !file.startsWith(`shared${sep}`))
       .filter((file) => /\binstanceof\s+Fail\b/.test(readFileSync(join(src, file), 'utf8')))
     assert.deepStrictEqual(asking, [])
   })

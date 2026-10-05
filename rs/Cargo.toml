@@ -4,7 +4,7 @@ version = "0.1.3"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Richard Rodger <http://richardrodger.com>"]
-description = "The alchemy grammar plugin and language for the tabnas parsing engine: declarative streaming transducers and renderers."
+description = "The alchemy grammar plugin and language for the tabnas parsing engine (declarative streaming transducers and renderers), and the types tabnas transducers and renderers share."
 license = "MIT"
 homepage = "https://tabnas.dev"
 documentation = "https://docs.rs/tabnas-alchemy"
@@ -18,24 +18,33 @@ categories = ["parsing", "compilers"]
 name = "tabnas_alchemy"
 path = "src/lib.rs"
 
-[[bin]]
-name = "alchemy"
-path = "src/bin/alchemy.rs"
+[features]
+# The language: the reader (a tabnas grammar plugin), the resolver, the
+# checker, the interpreter and the lowering. Without it the crate is the
+# `shared` unit alone, the types tabnas-transduce and tabnas-render build
+# on, and depends on nothing else in the fleet.
+default = ["language"]
+language = ["tabnas", "dep:tabnas-json"]
+# `Fail::from_tabnas` and `Datum::from_tabnas`, the shared types'
+# conversions from the engine's own error and value, for a crate that has
+# the engine (tabnas-transduce).
+tabnas = ["dep:tabnas"]
 
 [dependencies]
-# Sibling checkouts, the standard tabnas development model: the engine
-# the grammar plugin installs into, and the two crates the language's
-# streams and texts lower to.
-tabnas = { package = "tabnas-parser", path = "../../parser/rs" }
-tabnas-transduce = { path = "../../transduce/rs" }
-tabnas-render = { path = "../../render/rs" }
-# The JSON grammar the binary's `run` parses its input with (already in the
-# graph through transduce, which parses JSON Lines with it).
-tabnas-json = { path = "../../json/rs" }
+# Sibling checkouts, the standard tabnas development model, both for the
+# language alone: the engine the grammar plugin installs into, and the
+# JSON grammar the grammar document is read with.
+tabnas = { package = "tabnas-parser", path = "../../parser/rs", optional = true }
+tabnas-json = { path = "../../json/rs", optional = true }
 indexmap = "2"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 
 [dev-dependencies]
+# The routers and renderers a host passes in, for the tests in tests/ that
+# lower and run a program. Each is built on this crate's library, which a
+# unit test in src/ would be a second copy of, so no unit test uses them.
+tabnas-transduce = { path = "../../transduce/rs" }
+tabnas-render = { path = "../../render/rs" }
 # The shared fixture loader and runner, so test/spec/*.tsv means the same
 # thing here as in every other grammar repo.
 tabnas-support = { path = "../../support/rs", features = ["serde_json"] }

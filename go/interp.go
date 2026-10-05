@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // interp.go: the evaluator (rs/src/interp.rs; design brief section 4.4,
@@ -85,14 +85,19 @@ type Runtime struct {
 	sources    *Sources
 	stdlib     *Stdlib
 	native     bool
-	duplicates tt.Duplicates
+	duplicates shared.Duplicates
 	// limits are what the values a program builds are measured against (a
 	// cell's text under max_scalar_bytes, a scan-emit state under
 	// max_metadata_bytes and max_depth): the host's at run time, the
 	// defaults while Compile builds the plan.
-	limits tt.Limits
+	limits shared.Limits
 	// abort is the host's cancellation, read every abortEvery steps.
-	abort *tt.AbortFlag
+	abort *shared.AbortFlag
+	// routers and renderers are the transduce and render stages the
+	// lowering builds, and the renderer's number functions the natives
+	// call: the host's, handed in (WithRouters, WithRenderers).
+	routers   shared.Routers
+	renderers shared.Renderers
 	// fuel is the evaluation steps this runtime may take, when bounded
 	// (MaxPlanSteps while building a plan).
 	fuel    uint64
@@ -115,23 +120,25 @@ func arityError(what, wanted string, got int) *Fail {
 
 // NewRuntime is a runtime over a resolved program and its source texts
 // (read only for positions in diagnostics), with the fast paths on,
-// duplicate members rejected, and the default limits.
+// duplicate members rejected, and the default limits. The routers and the
+// renderers it runs on are the host's: WithRouters and WithRenderers set
+// them, before anything is evaluated.
 func NewRuntime(program *Resolved, sources *Sources) *Runtime {
 	return &Runtime{
 		program:    program,
 		sources:    sources,
 		stdlib:     StdlibLoaded(),
 		native:     true,
-		duplicates: tt.Reject,
-		limits:     tt.DefaultLimits(),
-		abort:      tt.NewAbortFlag(),
+		duplicates: shared.Reject,
+		limits:     shared.DefaultLimits(),
+		abort:      shared.NewAbortFlag(),
 		cache:      map[defKey]Val{},
 	}
 }
 
 // WithLimits sets the limits the values a program builds are measured
 // against.
-func (rt *Runtime) WithLimits(limits tt.Limits) *Runtime {
+func (rt *Runtime) WithLimits(limits shared.Limits) *Runtime {
 	rt.limits = limits
 	return rt
 }
@@ -139,9 +146,9 @@ func (rt *Runtime) WithLimits(limits tt.Limits) *Runtime {
 // WithAbort sets the host's cancellation: once it is set, the next
 // evaluation step that reads it fails with ABORTED, however long the
 // item's computation would have run.
-func (rt *Runtime) WithAbort(abort *tt.AbortFlag) *Runtime {
+func (rt *Runtime) WithAbort(abort *shared.AbortFlag) *Runtime {
 	if abort == nil {
-		abort = tt.NewAbortFlag()
+		abort = shared.NewAbortFlag()
 	}
 	rt.abort = abort
 	return rt
@@ -149,7 +156,28 @@ func (rt *Runtime) WithAbort(abort *tt.AbortFlag) *Runtime {
 
 // Abort is the abort flag the program's stages read between steps, for a
 // stage of the host's or of transduce's that polls it too.
-func (rt *Runtime) Abort() *tt.AbortFlag { return rt.abort }
+func (rt *Runtime) Abort() *shared.AbortFlag { return rt.abort }
+
+// WithRouters sets the transducer stages the lowering builds: transduce's
+// Routers.
+func (rt *Runtime) WithRouters(routers shared.Routers) *Runtime {
+	rt.routers = routers
+	return rt
+}
+
+// WithRenderers sets the renderers and text stages the lowering builds,
+// and the number functions the natives call: render's Renderers.
+func (rt *Runtime) WithRenderers(renderers shared.Renderers) *Runtime {
+	rt.renderers = renderers
+	return rt
+}
+
+// Routers are the transducer stages the lowering builds.
+func (rt *Runtime) Routers() shared.Routers { return rt.routers }
+
+// Renderers are the renderers and text stages the lowering builds, and the
+// number functions the natives call.
+func (rt *Runtime) Renderers() shared.Renderers { return rt.renderers }
 
 // WithFuel bounds the evaluation steps this runtime may take.
 func (rt *Runtime) WithFuel(fuel uint64) *Runtime {
@@ -167,7 +195,7 @@ func (rt *Runtime) WithNative(native bool) *Runtime {
 // WithDuplicates sets how a materialized capture treats a repeated member
 // name; the default rejects it (spec section 18.2, the strict mapping
 // profile).
-func (rt *Runtime) WithDuplicates(duplicates tt.Duplicates) *Runtime {
+func (rt *Runtime) WithDuplicates(duplicates shared.Duplicates) *Runtime {
 	rt.duplicates = duplicates
 	return rt
 }
@@ -176,13 +204,13 @@ func (rt *Runtime) WithDuplicates(duplicates tt.Duplicates) *Runtime {
 func (rt *Runtime) Native() bool { return rt.native }
 
 // Duplicates is the policy for a repeated member name.
-func (rt *Runtime) Duplicates() tt.Duplicates { return rt.duplicates }
+func (rt *Runtime) Duplicates() shared.Duplicates { return rt.duplicates }
 
 // Program is the resolved program.
 func (rt *Runtime) Program() *Resolved { return rt.program }
 
 // Limits are the limits the values a program builds are measured against.
-func (rt *Runtime) Limits() tt.Limits { return rt.limits }
+func (rt *Runtime) Limits() shared.Limits { return rt.limits }
 
 // Tick is one evaluation step: the fuel, and every abortEvery steps the
 // abort flag. Every form evaluated takes one, and so does every node a
@@ -191,12 +219,12 @@ func (rt *Runtime) Tick() *Fail {
 	rt.steps++
 	n := rt.steps
 	if rt.bounded && n > rt.fuel {
-		return tt.LimitFail("max_plan_steps", rt.fuel, fmt.Sprintf(
+		return shared.LimitFail("max_plan_steps", rt.fuel, fmt.Sprintf(
 			"building the plan took more than %d evaluation steps; a program that computes this much before it reads its input is refused",
 			rt.fuel))
 	}
 	if n%abortEvery == 0 && rt.abort.IsAborted() {
-		return tt.AbortedFail()
+		return shared.AbortedFail()
 	}
 	return nil
 }
@@ -755,7 +783,7 @@ func (rt *Runtime) Measure(v Val, bounds Bounds) (Measure, *Fail) {
 		}
 		depth := node.depth
 		if depth > bounds.MaxDepth {
-			return found, tt.LimitFail("max_depth", uint64(bounds.MaxDepth),
+			return found, shared.LimitFail("max_depth", uint64(bounds.MaxDepth),
 				fmt.Sprintf("%s nests more than %d levels deep", bounds.What, bounds.MaxDepth))
 		}
 		if depth > found.Depth {
@@ -854,7 +882,7 @@ func (rt *Runtime) Measure(v Val, bounds Bounds) (Measure, *Fail) {
 		}
 		found.Bytes = saturatingAdd(saturatingAdd(found.Bytes, bounds.NodeBytes), uint64(payload))
 		if found.Bytes > bounds.MaxBytes {
-			return found, tt.LimitFail(bounds.BytesLimit, bounds.MaxBytes,
+			return found, shared.LimitFail(bounds.BytesLimit, bounds.MaxBytes,
 				fmt.Sprintf("%s holds more than %d bytes", bounds.What, bounds.MaxBytes))
 		}
 	}
@@ -879,7 +907,7 @@ func saturatingAdd(a, b uint64) uint64 {
 func (rt *Runtime) jsonText(v Val) (string, *Fail) {
 	max := uint64(rt.limits.MaxScalarBytes)
 	tooLong := func() *Fail {
-		return tt.LimitFail("max_scalar_bytes", max, fmt.Sprintf("a cell's JSON text holds more than %d bytes", max))
+		return shared.LimitFail("max_scalar_bytes", max, fmt.Sprintf("a cell's JSON text holds more than %d bytes", max))
 	}
 	floor, f := rt.jsonTextFloor(v, max)
 	if f != nil {

@@ -32,7 +32,7 @@ func runtimeNamed(t testing.TB, src, file string) *Runtime {
 	if f != nil {
 		t.Fatalf("%q: %v", src, f)
 	}
-	return NewRuntime(resolved, sources)
+	return NewRuntime(resolved, sources).WithRouters(routers).WithRenderers(renderers)
 }
 
 // evalExpr evaluates the expression expr in the program src's scope.

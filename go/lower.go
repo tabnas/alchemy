@@ -8,12 +8,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	tr "github.com/tabnas/render/go"
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // lower.go: lowering (rs/src/lower.rs): a Plan becomes a chain of
-// transduce and render sinks.
+// transduce and render sinks, built through the Routers and Renderers the
+// host handed in (Runtime.Routers, Runtime.Renderers).
 //
 // The evaluator answers a plan; the host has a JsonEvents/1 producer and a
 // text output. This file joins them. The chain is push-based and
@@ -50,10 +50,10 @@ import (
 
 // ItemSink consumes a stream's items.
 type ItemSink interface {
-	Item(v Val) (tt.Flow, *Fail)
+	Item(v Val) (shared.Flow, *Fail)
 	// End is the stream's validated end: exactly once, after the last
 	// item.
-	End() (tt.Flow, *Fail)
+	End() (shared.Flow, *Fail)
 }
 
 // Renderer is how the host renders a stream result: CSV for table events
@@ -93,7 +93,7 @@ func (r Renderer) String() string {
 
 // jsonOptions are the options the `json` renderer and the `--render json`
 // echo use: compact, one document, a final newline.
-func jsonOptions() tr.JSONOptions { return tr.JSONOptions{Indent: 0, TrailingNewline: true} }
+func jsonOptions() shared.JSONOptions { return shared.JSONOptions{Indent: 0, TrailingNewline: true} }
 
 func protocolMismatch(message string) *Fail {
 	return NewFail(CodeDSLTypeError, "protocol_mismatch: "+message)
@@ -134,56 +134,56 @@ func isInferred(binding Val) bool {
 // every field has a value the renderer accepts: :delimiter one character,
 // :newline CRLF or LF, :header a boolean, :null-text a string, :missing
 // :error or a string. Any other record runs the library's own csv.
-func csvOptions(v Val) (tr.CSVOptions, bool) {
+func csvOptions(v Val) (shared.CSVOptions, bool) {
 	r, ok := v.(*RecordVal)
 	if !ok {
-		return tr.CSVOptions{}, false
+		return shared.CSVOptions{}, false
 	}
-	options := tr.DefaultCSVOptions()
+	options := shared.DefaultCSVOptions()
 	d, _ := r.Get("delimiter")
 	delimiter, ok := d.(StrVal)
 	if !ok || utf8.RuneCountInString(string(delimiter)) != 1 {
-		return tr.CSVOptions{}, false
+		return shared.CSVOptions{}, false
 	}
 	options.Delimiter, _ = utf8.DecodeRuneInString(string(delimiter))
 	n, _ := r.Get("newline")
 	switch n {
 	case StrVal("\r\n"):
-		options.Newline = tr.NewlineCRLF
+		options.Newline = shared.NewlineCRLF
 	case StrVal("\n"):
-		options.Newline = tr.NewlineLF
+		options.Newline = shared.NewlineLF
 	default:
-		return tr.CSVOptions{}, false
+		return shared.CSVOptions{}, false
 	}
 	h, _ := r.Get("header")
 	header, ok := h.(BoolVal)
 	if !ok {
-		return tr.CSVOptions{}, false
+		return shared.CSVOptions{}, false
 	}
 	options.Header = bool(header)
 	t, _ := r.Get("null-text")
 	nullText, ok := t.(StrVal)
 	if !ok {
-		return tr.CSVOptions{}, false
+		return shared.CSVOptions{}, false
 	}
 	options.NullText = string(nullText)
 	m, _ := r.Get("missing")
 	switch missing := m.(type) {
 	case KeywordVal:
 		if missing != "error" {
-			return tr.CSVOptions{}, false
+			return shared.CSVOptions{}, false
 		}
 		options.Missing = nil
 	case StrVal:
-		options.Missing = tr.MissingAs(string(missing))
+		options.Missing = shared.MissingAs(string(missing))
 	default:
-		return tr.CSVOptions{}, false
+		return shared.CSVOptions{}, false
 	}
 	return options, true
 }
 
 // csvProfile is a CSV dialect as the report prints it.
-func csvProfile(o tr.CSVOptions) CsvProfile {
+func csvProfile(o shared.CSVOptions) CsvProfile {
 	p := CsvProfile{Delimiter: o.Delimiter, Newline: o.Newline.String(), Header: o.Header, NullText: o.NullText, MissingIsError: o.Missing == nil}
 	if o.Missing != nil {
 		p.MissingText = *o.Missing
@@ -195,41 +195,41 @@ func csvProfile(o tr.CSVOptions) CsvProfile {
 // program produced: the scalars as themselves, `missing` as missing, a
 // vector or a record as its compact JSON text, as `scalar-text` writes it,
 // under the same max_scalar_bytes.
-func cell(rt *Runtime, v Val) (tt.Cell, *Fail) {
+func cell(rt *Runtime, v Val) (shared.Cell, *Fail) {
 	switch x := v.(type) {
 	case NullVal:
-		return tt.Cell{Kind: tt.CellNull}, nil
+		return shared.Cell{Kind: shared.CellNull}, nil
 	case BoolVal:
-		return tt.Cell{Kind: tt.CellBool, Bool: bool(x)}, nil
+		return shared.Cell{Kind: shared.CellBool, Bool: bool(x)}, nil
 	case NumVal:
-		return tt.Cell{Kind: tt.CellNumber, Value: x.Value, Lexeme: x.Lexeme, HasLexeme: x.HasLexeme}, nil
+		return shared.Cell{Kind: shared.CellNumber, Value: x.Value, Lexeme: x.Lexeme, HasLexeme: x.HasLexeme}, nil
 	case StrVal:
-		return tt.Cell{Kind: tt.CellString, Text: string(x)}, nil
+		return shared.Cell{Kind: shared.CellString, Text: string(x)}, nil
 	}
 	if IsMissing(v) {
-		return tt.Cell{Kind: tt.CellMissing}, nil
+		return shared.Cell{Kind: shared.CellMissing}, nil
 	}
 	switch v.(type) {
 	case *VectorVal, *RecordVal:
 		text, f := rt.jsonText(v)
 		if f != nil {
-			return tt.Cell{}, f
+			return shared.Cell{}, f
 		}
-		return tt.Cell{Kind: tt.CellString, Text: text}, nil
+		return shared.Cell{Kind: shared.CellString, Text: text}, nil
 	}
-	return tt.Cell{}, typeError("a cell must be a scalar, a vector or a record, not " + KindOf(v))
+	return shared.Cell{}, typeError("a cell must be a scalar, a vector or a record, not " + KindOf(v))
 }
 
 // cellVal is a cell as a program sees it.
-func cellVal(c *tt.Cell) Val {
+func cellVal(c *shared.Cell) Val {
 	switch c.Kind {
-	case tt.CellBool:
+	case shared.CellBool:
 		return BoolVal(c.Bool)
-	case tt.CellNumber:
+	case shared.CellNumber:
 		return NumVal{Value: c.Value, Lexeme: c.Lexeme, HasLexeme: c.HasLexeme}
-	case tt.CellString:
+	case shared.CellString:
 		return StrVal(c.Text)
-	case tt.CellMissing:
+	case shared.CellMissing:
 		return Missing()
 	}
 	return NullVal{}
@@ -242,58 +242,58 @@ func cellVal(c *tt.Cell) Val {
 // its columns by it, the adapter reading a program's schema values by it,
 // and csv-table validates the library's schema by it, so a label is
 // accepted or refused alike whichever path renders it.
-func labelText(label Val) (string, *Fail) {
+func labelText(renderers shared.Renderers, label Val) (string, *Fail) {
 	switch x := label.(type) {
 	case StrVal:
 		return string(x), nil
 	case NumVal:
-		return numberText(x.Value, x.Lexeme, x.HasLexeme)
+		return numberText(renderers, x.Value, x.Lexeme, x.HasLexeme)
 	case BoolVal:
 		return strconv.FormatBool(bool(x)), nil
 	}
 	if IsMissing(label) {
 		return "", NewFail(CodeMissingValue, "a column has no label")
 	}
-	return "", tt.InputFail("a column's label must be a string, a number or a boolean, not " + KindOf(label))
+	return "", shared.InputFail("a column's label must be a string, a number or a boolean, not " + KindOf(label))
 }
 
 // label is the label of a schema value's column: a record's :label.
-func label(column Val) (string, *Fail) {
+func label(renderers shared.Renderers, column Val) (string, *Fail) {
 	l, ok := Field(column, "label")
 	if !ok {
-		return "", tt.ProtocolFail("a schema column is not a record")
+		return "", shared.ProtocolFail("a schema column is not a record")
 	}
-	return labelText(l)
+	return labelText(renderers, l)
 }
 
 // schemaColumns are the columns of a schema value, as the table protocol
 // carries them: a vector of column records, at most max_columns of them.
-func schemaColumns(fields []Val, limits tt.Limits) ([]tt.PublicColumn, *Fail) {
+func schemaColumns(renderers shared.Renderers, fields []Val, limits shared.Limits) ([]shared.PublicColumn, *Fail) {
 	columns, ok := fields[0].(*VectorVal)
 	if !ok {
-		return nil, tt.ProtocolFail("schema takes a vector of columns")
+		return nil, shared.ProtocolFail("schema takes a vector of columns")
 	}
 	if len(columns.Items) > limits.MaxColumns {
-		return nil, tt.LimitFail("max_columns", uint64(limits.MaxColumns),
+		return nil, shared.LimitFail("max_columns", uint64(limits.MaxColumns),
 			fmt.Sprintf("the schema declares %d columns, more than %d", len(columns.Items), limits.MaxColumns))
 	}
-	out := make([]tt.PublicColumn, 0, len(columns.Items))
+	out := make([]shared.PublicColumn, 0, len(columns.Items))
 	for _, c := range columns.Items {
-		l, f := label(c)
+		l, f := label(renderers, c)
 		if f != nil {
 			return nil, f
 		}
-		out = append(out, tt.PublicColumn{Label: l})
+		out = append(out, shared.PublicColumn{Label: l})
 	}
 	return out, nil
 }
 
 // rowCells are the cells of a row value, as the table protocol carries
 // them, into cells.
-func rowCells(rt *Runtime, fields []Val, cells []tt.Cell) ([]tt.Cell, *Fail) {
+func rowCells(rt *Runtime, fields []Val, cells []shared.Cell) ([]shared.Cell, *Fail) {
 	values, ok := fields[0].(*VectorVal)
 	if !ok {
-		return cells, tt.ProtocolFail("row takes a vector of cells")
+		return cells, shared.ProtocolFail("row takes a vector of cells")
 	}
 	cells = cells[:0]
 	for _, v := range values.Items {
@@ -333,7 +333,7 @@ func brief(v Val) string {
 // the host's abort flag stops a text of exponentially many fragments, and
 // a concat-map whose function answers a text that applies it again is the
 // `recursion` failure rather than an unbounded recursion.
-func writeFinite(rt *Runtime, v Val, out tr.TextOut) *Fail {
+func writeFinite(rt *Runtime, v Val, out shared.TextOut) *Fail {
 	if f := rt.Tick(); f != nil {
 		return f
 	}
@@ -361,7 +361,7 @@ func writeFinite(rt *Runtime, v Val, out tr.TextOut) *Fail {
 			}
 			return nil
 		case p.Kind == PlanJoin && !p.Seq.IsStream():
-			join := tr.NewJoin[tr.TextOut](out, p.Sep)
+			join := rt.Renderers().Join(out, p.Sep)
 			for _, item := range p.Seq.Vector {
 				if f := join.ItemStart(); f != nil {
 					return f
@@ -388,7 +388,7 @@ func writeFinite(rt *Runtime, v Val, out tr.TextOut) *Fail {
 		// Streamed through the replacer, as a live text is: it holds at
 		// most the literal's length, never the text.
 		case p.Kind == PlanReplace:
-			replace := tr.NewReplaceText[tr.TextOut](held{out}, p.From, p.To)
+			replace := rt.Renderers().ReplaceText(held{out}, p.From, p.To)
 			if f := writeFinite(rt, p.Text, replace); f != nil {
 				return f
 			}
@@ -403,7 +403,7 @@ func writeFinite(rt *Runtime, v Val, out tr.TextOut) *Fail {
 // combinator written into the middle of a text (replace-text inside a
 // concat) hands over what it holds at its own flush, and the text around
 // it goes on.
-type held struct{ out tr.TextOut }
+type held struct{ out shared.TextOut }
 
 func (h held) WriteStr(s string) *Fail { return h.out.WriteStr(s) }
 func (h held) Flush() *Fail            { return nil }
@@ -420,13 +420,13 @@ type scratch struct {
 	max  *uint64
 }
 
-func newScratch(limits tt.Limits) *scratch { return &scratch{max: limits.MaxOutputBytes} }
+func newScratch(limits shared.Limits) *scratch { return &scratch{max: limits.MaxOutputBytes} }
 
 func (s *scratch) WriteStr(t string) *Fail {
 	if s.max != nil {
 		max := *s.max
 		if n := uint64(s.text.Len() + len(t)); n > max {
-			return tt.LimitFail("max_output_bytes", max,
+			return shared.LimitFail("max_output_bytes", max,
 				fmt.Sprintf("one item's text reached %d bytes; the output may not exceed %d", n, max))
 		}
 	}
@@ -450,7 +450,7 @@ type routeToItems struct {
 	valuesOnly bool
 }
 
-func (r *routeToItems) Selected(s tt.Selected) (tt.Flow, *Fail) {
+func (r *routeToItems) Selected(s shared.Selected) (shared.Flow, *Fail) {
 	value := Val(NullVal{})
 	if s.Value != nil {
 		value = FromDatum(s.Value)
@@ -461,7 +461,7 @@ func (r *routeToItems) Selected(s tt.Selected) (tt.Flow, *Fail) {
 	return r.down.Item(NewTagged("selected", KeywordVal(s.Tag), value))
 }
 
-func (r *routeToItems) End() (tt.Flow, *Fail) { return r.down.End() }
+func (r *routeToItems) End() (shared.Flow, *Fail) { return r.down.End() }
 
 // eventsToItems is `events`: every event of JsonEvents/1 as the tagged
 // value a program matches on, pushed down as it arrives, and End as the
@@ -471,31 +471,31 @@ type eventsToItems struct {
 	down ItemSink
 }
 
-func (e *eventsToItems) Event(ev tt.Event) (tt.Flow, *Fail) {
+func (e *eventsToItems) Event(ev shared.Event) (shared.Flow, *Fail) {
 	var item Val
 	switch ev.Kind {
-	case tt.ObjectStart:
+	case shared.ObjectStart:
 		item = NewTagged("object-start")
-	case tt.ObjectEnd:
+	case shared.ObjectEnd:
 		item = NewTagged("object-end")
-	case tt.ArrayStart:
+	case shared.ArrayStart:
 		item = NewTagged("array-start")
-	case tt.ArrayEnd:
+	case shared.ArrayEnd:
 		item = NewTagged("array-end")
-	case tt.Key:
+	case shared.Key:
 		item = NewTagged("key", StrVal(ev.Text))
-	case tt.Null:
+	case shared.Null:
 		item = NewTagged("scalar", NullVal{})
-	case tt.Bool:
+	case shared.Bool:
 		item = NewTagged("scalar", BoolVal(ev.Bool))
-	case tt.Number:
+	case shared.Number:
 		item = NewTagged("scalar", NumVal{Value: ev.Value, Lexeme: ev.Lexeme, HasLexeme: ev.HasLexeme})
-	case tt.String:
+	case shared.String:
 		item = NewTagged("scalar", StrVal(ev.Text))
-	case tt.End:
+	case shared.End:
 		return e.down.End()
 	default:
-		return tt.Continue, tt.ProtocolFail("an unknown event kind")
+		return shared.Continue, shared.ProtocolFail("an unknown event kind")
 	}
 	return e.down.Item(item)
 }
@@ -513,38 +513,38 @@ func (e *eventsToItems) Event(ev tt.Event) (tt.Flow, *Fail) {
 // source's guard (Guarded), so the source's limits hold on these events as
 // on its own.
 type taggedToJSON struct {
-	down tt.Sink
+	down shared.Sink
 }
 
-func (t *taggedToJSON) Item(v Val) (tt.Flow, *Fail) {
+func (t *taggedToJSON) Item(v Val) (shared.Flow, *Fail) {
 	tagged, ok := v.(*TaggedVal)
 	if !ok {
-		return tt.Continue, tt.ProtocolFail("an event was expected, not " + KindOf(v))
+		return shared.Continue, shared.ProtocolFail("an event was expected, not " + KindOf(v))
 	}
-	var ev tt.Event
+	var ev shared.Event
 	bad := false
 	switch {
 	case tagged.Tag == "object-start" && len(tagged.Fields) == 0:
-		ev = tt.EvObjectStart()
+		ev = shared.EvObjectStart()
 	case tagged.Tag == "object-end" && len(tagged.Fields) == 0:
-		ev = tt.EvObjectEnd()
+		ev = shared.EvObjectEnd()
 	case tagged.Tag == "array-start" && len(tagged.Fields) == 0:
-		ev = tt.EvArrayStart()
+		ev = shared.EvArrayStart()
 	case tagged.Tag == "array-end" && len(tagged.Fields) == 0:
-		ev = tt.EvArrayEnd()
+		ev = shared.EvArrayEnd()
 	case tagged.Tag == "key" && len(tagged.Fields) == 1:
 		name, ok := tagged.Fields[0].(StrVal)
-		ev, bad = tt.EvKey(string(name)), !ok
+		ev, bad = shared.EvKey(string(name)), !ok
 	case tagged.Tag == "scalar" && len(tagged.Fields) == 1:
 		switch x := tagged.Fields[0].(type) {
 		case NullVal:
-			ev = tt.EvNull()
+			ev = shared.EvNull()
 		case BoolVal:
-			ev = tt.EvBool(bool(x))
+			ev = shared.EvBool(bool(x))
 		case NumVal:
-			ev = tt.Event{Kind: tt.Number, Value: x.Value, Lexeme: x.Lexeme, HasLexeme: x.HasLexeme}
+			ev = shared.Event{Kind: shared.Number, Value: x.Value, Lexeme: x.Lexeme, HasLexeme: x.HasLexeme}
 		case StrVal:
-			ev = tt.EvString(string(x))
+			ev = shared.EvString(string(x))
 		default:
 			bad = true
 		}
@@ -552,21 +552,21 @@ func (t *taggedToJSON) Item(v Val) (tt.Flow, *Fail) {
 		bad = true
 	}
 	if bad {
-		return tt.Continue, tt.ProtocolFail("an event was expected, not " + brief(v))
+		return shared.Continue, shared.ProtocolFail("an event was expected, not " + brief(v))
 	}
 	return t.down.Event(ev)
 }
 
-func (t *taggedToJSON) End() (tt.Flow, *Fail) { return t.down.Event(tt.EvEnd()) }
+func (t *taggedToJSON) End() (shared.Flow, *Fail) { return t.down.Event(shared.EvEnd()) }
 
 // stateBounds are what a scan-emit state may hold: what a stage keeps from
 // row to row, as the native table keeps its bound columns, so
 // max_metadata_bytes in the transduce measure; and no deeper than a
 // captured value may be, max_depth, since a state that wraps itself once
 // per item would otherwise nest without bound.
-func stateBounds(limits tt.Limits) Bounds {
+func stateBounds(limits shared.Limits) Bounds {
 	return Bounds{
-		NodeBytes:  tt.NodeBytes,
+		NodeBytes:  shared.NodeBytes,
 		MaxBytes:   uint64(limits.MaxMetadataBytes),
 		BytesLimit: "max_metadata_bytes",
 		MaxDepth:   limits.MaxDepth,
@@ -588,13 +588,34 @@ func raiseHigh(high interface {
 }
 
 // scanStage is `scan-emit`: transduce's operator over the program's step
-// and finish.
+// and finish. The operator takes values of any type (Routers.ScanEmit), so
+// the state, the items and the outputs cross it as any and are read back
+// as the values they are.
 type scanStage struct {
-	scan *tt.ScanEmit[Val, Val, Val]
+	scan shared.ScanEmitter
 	down ItemSink
 }
 
-func newScanStage(rt *Runtime, init Val, step, finish Fn, at SourceSpan, metrics *tt.Metrics, down ItemSink) (*scanStage, *Fail) {
+// asVal is a value that crossed the scan operator as any.
+func asVal(v any) Val {
+	x, _ := v.(Val)
+	return x
+}
+
+// asAnys is values as the scan operator takes them: a fresh slice, nil
+// for none.
+func asAnys(items []Val) []any {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]any, len(items))
+	for i, v := range items {
+		out[i] = v
+	}
+	return out
+}
+
+func newScanStage(rt *Runtime, init Val, step, finish Fn, at SourceSpan, metrics *shared.Metrics, down ItemSink) (*scanStage, *Fail) {
 	// The initial state is retained like any the step returns, and the
 	// step measures only a state that changed: a step that hands the same
 	// one back, or a source with no items, would never measure it, so it
@@ -604,19 +625,20 @@ func newScanStage(rt *Runtime, init Val, step, finish Fn, at SourceSpan, metrics
 		return nil, rt.FailAt(f, at)
 	}
 	raiseHigh(&metrics.RetainedBytesHigh, metrics.CapturedBytes.Load()+size.Bytes)
-	stepFn := func(state, item Val) (tt.Transition[Val, Val], *Fail) {
+	stepFn := func(stateAny, itemAny any) (shared.Transition[any, any], *Fail) {
+		state, item := asVal(stateAny), asVal(itemAny)
 		before := state
 		t, f := rt.Apply(step, []Val{state, item}, at)
 		if f != nil {
-			return tt.Transition[Val, Val]{}, f
+			return shared.Transition[any, any]{}, f
 		}
 		tagged, ok := t.(*TaggedVal)
 		if !ok || tagged.Tag != "transition" || len(tagged.Fields) != 2 {
-			return tt.Transition[Val, Val]{}, rt.FailAt(typeError("scan-emit: the step must answer a transition, not "+KindOf(t)), at)
+			return shared.Transition[any, any]{}, rt.FailAt(typeError("scan-emit: the step must answer a transition, not "+KindOf(t)), at)
 		}
 		outputs, ok := tagged.Fields[1].(*VectorVal)
 		if !ok {
-			return tt.Transition[Val, Val]{}, rt.FailAt(typeError("scan-emit: a transition's outputs must be a vector"), at)
+			return shared.Transition[any, any]{}, rt.FailAt(typeError("scan-emit: a transition's outputs must be a vector"), at)
 		}
 		// The state is what this stage retains across items: measured
 		// when it changes, against the limits that bound what a stage
@@ -625,14 +647,14 @@ func newScanStage(rt *Runtime, init Val, step, finish Fn, at SourceSpan, metrics
 		if !Same(tagged.Fields[0], before) {
 			size, f := rt.Measure(tagged.Fields[0], stateBounds(rt.Limits()))
 			if f != nil {
-				return tt.Transition[Val, Val]{}, rt.FailAt(f, at)
+				return shared.Transition[any, any]{}, rt.FailAt(f, at)
 			}
 			raiseHigh(&metrics.RetainedBytesHigh, metrics.CapturedBytes.Load()+size.Bytes)
 		}
-		return tt.Transition[Val, Val]{State: tagged.Fields[0], Outputs: append([]Val(nil), outputs.Items...)}, nil
+		return shared.Transition[any, any]{State: tagged.Fields[0], Outputs: asAnys(outputs.Items)}, nil
 	}
-	finishFn := func(state Val) ([]Val, *Fail) {
-		v, f := rt.Apply(finish, []Val{state}, at)
+	finishFn := func(stateAny any) ([]any, *Fail) {
+		v, f := rt.Apply(finish, []Val{asVal(stateAny)}, at)
 		if f != nil {
 			return nil, f
 		}
@@ -640,21 +662,21 @@ func newScanStage(rt *Runtime, init Val, step, finish Fn, at SourceSpan, metrics
 		if !ok {
 			return nil, rt.FailAt(typeError("scan-emit: finish must answer a vector of outputs, not "+KindOf(v)), at)
 		}
-		return append([]Val(nil), outputs.Items...), nil
+		return asAnys(outputs.Items), nil
 	}
-	outFn := func(o Val) (tt.Flow, *Fail) { return down.Item(o) }
-	return &scanStage{scan: tt.NewScanEmit(init, stepFn, finishFn, outFn), down: down}, nil
+	outFn := func(o any) (shared.Flow, *Fail) { return down.Item(asVal(o)) }
+	return &scanStage{scan: rt.Routers().ScanEmit(init, stepFn, finishFn, outFn), down: down}, nil
 }
 
-func (s *scanStage) Item(v Val) (tt.Flow, *Fail) { return s.scan.Item(v) }
+func (s *scanStage) Item(v Val) (shared.Flow, *Fail) { return s.scan.Item(v) }
 
-func (s *scanStage) End() (tt.Flow, *Fail) {
+func (s *scanStage) End() (shared.Flow, *Fail) {
 	flow, f := s.scan.Finish()
 	if f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
-	if flow == tt.Stop {
-		return tt.Stop, nil
+	if flow == shared.Stop {
+		return shared.Stop, nil
 	}
 	return s.down.End()
 }
@@ -667,18 +689,18 @@ type mapStage struct {
 	down ItemSink
 }
 
-func (m *mapStage) Item(v Val) (tt.Flow, *Fail) {
+func (m *mapStage) Item(v Val) (shared.Flow, *Fail) {
 	mapped, f := m.rt.Apply(m.f, []Val{v}, m.at)
 	if f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
 	if IsLive(mapped) {
-		return tt.Continue, m.rt.FailAt(typeError("map: the function must answer a value per item, not a live stream"), m.at)
+		return shared.Continue, m.rt.FailAt(typeError("map: the function must answer a value per item, not a live stream"), m.at)
 	}
 	return m.down.Item(mapped)
 }
 
-func (m *mapStage) End() (tt.Flow, *Fail) { return m.down.End() }
+func (m *mapStage) End() (shared.Flow, *Fail) { return m.down.End() }
 
 // filterStage is `filter` over a stream.
 type filterStage struct {
@@ -688,22 +710,22 @@ type filterStage struct {
 	down ItemSink
 }
 
-func (s *filterStage) Item(v Val) (tt.Flow, *Fail) {
+func (s *filterStage) Item(v Val) (shared.Flow, *Fail) {
 	keep, f := s.rt.Apply(s.f, []Val{v}, s.at)
 	if f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
 	yes, f := truth("filter", keep)
 	if f != nil {
-		return tt.Continue, s.rt.FailAt(f, s.at)
+		return shared.Continue, s.rt.FailAt(f, s.at)
 	}
 	if yes {
 		return s.down.Item(v)
 	}
-	return tt.Continue, nil
+	return shared.Continue, nil
 }
 
-func (s *filterStage) End() (tt.Flow, *Fail) { return s.down.End() }
+func (s *filterStage) End() (shared.Flow, *Fail) { return s.down.End() }
 
 // tableToTagged turns native table events into the tagged values a
 // program matches on.
@@ -711,9 +733,9 @@ type tableToTagged struct {
 	down ItemSink
 }
 
-func (t *tableToTagged) TableEvent(ev tt.TableEvent) (tt.Flow, *Fail) {
+func (t *tableToTagged) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
 	switch ev.Kind {
-	case tt.TableSchema:
+	case shared.TableSchema:
 		columns := make([]Val, len(ev.Columns))
 		for i, c := range ev.Columns {
 			r := NewRecord()
@@ -721,7 +743,7 @@ func (t *tableToTagged) TableEvent(ev tt.TableEvent) (tt.Flow, *Fail) {
 			columns[i] = r
 		}
 		return t.down.Item(NewTagged("schema", Vector(columns...)))
-	case tt.TableRow:
+	case shared.TableRow:
 		cells := make([]Val, len(ev.Cells))
 		for i := range ev.Cells {
 			cells[i] = cellVal(&ev.Cells[i])
@@ -729,7 +751,7 @@ func (t *tableToTagged) TableEvent(ev tt.TableEvent) (tt.Flow, *Fail) {
 		return t.down.Item(NewTagged("row", Vector(cells...)))
 	}
 	flow, f := t.down.Item(NewTagged("table-end"))
-	if f != nil || flow == tt.Stop {
+	if f != nil || flow == shared.Stop {
 		return flow, f
 	}
 	return t.down.End()
@@ -750,19 +772,19 @@ func (t *tableToTagged) TableEvent(ev tt.TableEvent) (tt.Flow, *Fail) {
 // scan-emit, which counts nothing.
 type cellBound struct {
 	max     int
-	down    tt.TableSink
-	metrics *tt.Metrics
+	down    shared.TableSink
+	metrics *shared.Metrics
 	uncount bool
 }
 
-func (c *cellBound) TableEvent(ev tt.TableEvent) (tt.Flow, *Fail) {
-	if ev.Kind == tt.TableRow {
+func (c *cellBound) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
+	if ev.Kind == shared.TableRow {
 		if c.uncount {
 			c.metrics.Rows.Add(^uint64(0))
 		}
 		for i := range ev.Cells {
-			if ev.Cells[i].Kind == tt.CellString && len(ev.Cells[i].Text) > c.max {
-				return tt.Continue, tt.LimitFail("max_scalar_bytes", uint64(c.max),
+			if ev.Cells[i].Kind == shared.CellString && len(ev.Cells[i].Text) > c.max {
+				return shared.Continue, shared.LimitFail("max_scalar_bytes", uint64(c.max),
 					fmt.Sprintf("a cell's JSON text holds more than %d bytes", c.max))
 			}
 		}
@@ -781,49 +803,49 @@ func (c *cellBound) TableEvent(ev tt.TableEvent) (tt.Flow, *Fail) {
 // (Lowering.items).
 type taggedToTable struct {
 	rt        *Runtime
-	metrics   *tt.Metrics
+	metrics   *shared.Metrics
 	countRows bool
-	table     tt.TableSink
-	columns   []tt.PublicColumn
-	cells     []tt.Cell
+	table     shared.TableSink
+	columns   []shared.PublicColumn
+	cells     []shared.Cell
 	ended     bool
 }
 
-func (t *taggedToTable) Item(v Val) (tt.Flow, *Fail) {
+func (t *taggedToTable) Item(v Val) (shared.Flow, *Fail) {
 	tagged, ok := v.(*TaggedVal)
 	if !ok {
-		return tt.Continue, tt.ProtocolFail("a table event was expected, not " + KindOf(v))
+		return shared.Continue, shared.ProtocolFail("a table event was expected, not " + KindOf(v))
 	}
 	switch {
 	case tagged.Tag == "schema" && len(tagged.Fields) == 1:
-		columns, f := schemaColumns(tagged.Fields, t.rt.Limits())
+		columns, f := schemaColumns(t.rt.Renderers(), tagged.Fields, t.rt.Limits())
 		if f != nil {
-			return tt.Continue, f
+			return shared.Continue, f
 		}
 		t.columns = columns
-		return t.table.TableEvent(tt.TableEvent{Kind: tt.TableSchema, Columns: t.columns})
+		return t.table.TableEvent(shared.TableEvent{Kind: shared.TableSchema, Columns: t.columns})
 	case tagged.Tag == "row" && len(tagged.Fields) == 1:
 		cells, f := rowCells(t.rt, tagged.Fields, t.cells)
 		t.cells = cells
 		if f != nil {
-			return tt.Continue, f
+			return shared.Continue, f
 		}
 		if t.countRows {
 			t.metrics.Rows.Add(1)
 		}
-		return t.table.TableEvent(tt.TableEvent{Kind: tt.TableRow, Cells: t.cells})
+		return t.table.TableEvent(shared.TableEvent{Kind: shared.TableRow, Cells: t.cells})
 	case tagged.Tag == "table-end" && len(tagged.Fields) == 0:
 		t.ended = true
-		return t.table.TableEvent(tt.TableEvent{Kind: tt.TableEnd})
+		return t.table.TableEvent(shared.TableEvent{Kind: shared.TableEnd})
 	}
-	return tt.Continue, tt.ProtocolFail("a table event was expected, not " + brief(v))
+	return shared.Continue, shared.ProtocolFail("a table event was expected, not " + brief(v))
 }
 
-func (t *taggedToTable) End() (tt.Flow, *Fail) {
+func (t *taggedToTable) End() (shared.Flow, *Fail) {
 	if t.ended {
-		return tt.Continue, nil
+		return shared.Continue, nil
 	}
-	return tt.Continue, tt.ProtocolFail("the table events ended without table-end")
+	return shared.Continue, shared.ProtocolFail("the table events ended without table-end")
 }
 
 type phase uint8
@@ -845,7 +867,7 @@ const (
 // renderer's.
 type csvTableStage struct {
 	rt      *Runtime
-	metrics *tt.Metrics
+	metrics *shared.Metrics
 	// countRows is whether this stage counts the rows in metrics.Rows:
 	// when no later table stage does (Lowering.items).
 	countRows bool
@@ -853,28 +875,28 @@ type csvTableStage struct {
 	phase     phase
 	width     int
 	rows      uint64
-	cells     []tt.Cell
+	cells     []shared.Cell
 }
 
-func (c *csvTableStage) Item(v Val) (tt.Flow, *Fail) {
+func (c *csvTableStage) Item(v Val) (shared.Flow, *Fail) {
 	tagged, ok := v.(*TaggedVal)
 	if !ok {
-		return tt.Continue, tt.ProtocolFail("a table event was expected, not " + KindOf(v))
+		return shared.Continue, shared.ProtocolFail("a table event was expected, not " + KindOf(v))
 	}
 	switch {
 	case tagged.Tag == "schema" && len(tagged.Fields) == 1:
-		columns, f := schemaColumns(tagged.Fields, c.rt.Limits())
+		columns, f := schemaColumns(c.rt.Renderers(), tagged.Fields, c.rt.Limits())
 		if f != nil {
-			return tt.Continue, f
+			return shared.Continue, f
 		}
 		switch c.phase {
 		case phaseRows:
-			return tt.Continue, tt.ProtocolFail("a second schema")
+			return shared.Continue, shared.ProtocolFail("a second schema")
 		case phaseDone:
-			return tt.Continue, tt.ProtocolFail("a schema after the end")
+			return shared.Continue, shared.ProtocolFail("a schema after the end")
 		}
 		if len(columns) == 0 {
-			return tt.Continue, NewFail(CodeTargetValueUnrepresentable, "a table with no columns has no CSV form")
+			return shared.Continue, NewFail(CodeTargetValueUnrepresentable, "a table with no columns has no CSV form")
 		}
 		c.width = len(columns)
 		c.phase = phaseRows
@@ -882,16 +904,16 @@ func (c *csvTableStage) Item(v Val) (tt.Flow, *Fail) {
 		cells, f := rowCells(c.rt, tagged.Fields, c.cells)
 		c.cells = cells
 		if f != nil {
-			return tt.Continue, f
+			return shared.Continue, f
 		}
 		switch c.phase {
 		case phaseBeforeSchema:
-			return tt.Continue, tt.ProtocolFail("a row before the schema")
+			return shared.Continue, shared.ProtocolFail("a row before the schema")
 		case phaseDone:
-			return tt.Continue, tt.ProtocolFail("a row after the end")
+			return shared.Continue, shared.ProtocolFail("a row after the end")
 		}
 		if len(c.cells) != c.width {
-			return tt.Continue, tt.ProtocolFail(fmt.Sprintf("row %d has %d cells; the schema has %d columns",
+			return shared.Continue, shared.ProtocolFail(fmt.Sprintf("row %d has %d cells; the schema has %d columns",
 				c.rows+1, len(c.cells), c.width))
 		}
 		c.rows++
@@ -903,19 +925,19 @@ func (c *csvTableStage) Item(v Val) (tt.Flow, *Fail) {
 		case phaseRows:
 			c.phase = phaseDone
 		case phaseBeforeSchema:
-			return tt.Continue, tt.ProtocolFail("the end before the schema")
+			return shared.Continue, shared.ProtocolFail("the end before the schema")
 		default:
-			return tt.Continue, tt.ProtocolFail("a second end")
+			return shared.Continue, shared.ProtocolFail("a second end")
 		}
 	default:
-		return tt.Continue, tt.ProtocolFail("a table event was expected, not " + brief(v))
+		return shared.Continue, shared.ProtocolFail("a table event was expected, not " + brief(v))
 	}
 	return c.down.Item(v)
 }
 
-func (c *csvTableStage) End() (tt.Flow, *Fail) {
+func (c *csvTableStage) End() (shared.Flow, *Fail) {
 	if c.phase != phaseDone {
-		return tt.Continue, tt.ProtocolFail("the table events ended without table-end")
+		return shared.Continue, shared.ProtocolFail("the table events ended without table-end")
 	}
 	return c.down.End()
 }
@@ -943,62 +965,62 @@ type concatMapStage struct {
 	rt      *Runtime
 	f       Fn
 	at      SourceSpan
-	out     tr.TextOut
+	out     shared.TextOut
 	scratch *scratch
 }
 
-func (c *concatMapStage) Item(v Val) (tt.Flow, *Fail) {
+func (c *concatMapStage) Item(v Val) (shared.Flow, *Fail) {
 	text, f := c.rt.Apply(c.f, []Val{v}, c.at)
 	if f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
 	c.scratch.text.Reset()
 	if f := writeFinite(c.rt, text, c.scratch); f != nil {
-		return tt.Continue, c.rt.FailAt(f, c.at)
+		return shared.Continue, c.rt.FailAt(f, c.at)
 	}
 	if f := c.out.WriteStr(c.scratch.text.String()); f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
-	return tt.Continue, nil
+	return shared.Continue, nil
 }
 
-func (c *concatMapStage) End() (tt.Flow, *Fail) {
+func (c *concatMapStage) End() (shared.Flow, *Fail) {
 	if f := c.out.Flush(); f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
-	return tt.Continue, nil
+	return shared.Continue, nil
 }
 
 // joinStage is `join` over a stream: each item is one logical item of the
 // join.
 type joinStage struct {
 	rt      *Runtime
-	join    *tr.Join[tr.TextOut]
+	join    shared.JoinOut
 	scratch *scratch
 }
 
-func (j *joinStage) Item(v Val) (tt.Flow, *Fail) {
+func (j *joinStage) Item(v Val) (shared.Flow, *Fail) {
 	j.scratch.text.Reset()
 	if f := writeFinite(j.rt, v, j.scratch); f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
 	if f := j.join.ItemStart(); f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
 	if f := j.join.WriteStr(j.scratch.text.String()); f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
 	if f := j.join.ItemEnd(); f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
-	return tt.Continue, nil
+	return shared.Continue, nil
 }
 
-func (j *joinStage) End() (tt.Flow, *Fail) {
+func (j *joinStage) End() (shared.Flow, *Fail) {
 	if f := j.join.Flush(); f != nil {
-		return tt.Continue, f
+		return shared.Continue, f
 	}
-	return tt.Continue, nil
+	return shared.Continue, nil
 }
 
 // framed is `concat` around one live text: the finite items before it are
@@ -1007,7 +1029,7 @@ func (j *joinStage) End() (tt.Flow, *Fail) {
 // flushed.
 type framed struct {
 	rt     *Runtime
-	inner  tr.TextOut
+	inner  shared.TextOut
 	prefix []Val
 	suffix []Val
 	// started and finished say the prefix and the suffix are written.
@@ -1057,19 +1079,19 @@ func (fr *framed) HasCommitted() bool { return fr.inner.HasCommitted() }
 type finiteTextSink struct {
 	rt   *Runtime
 	text Val
-	out  tr.TextOut
+	out  shared.TextOut
 }
 
-func (s *finiteTextSink) Event(ev tt.Event) (tt.Flow, *Fail) {
-	if ev.Kind == tt.End {
+func (s *finiteTextSink) Event(ev shared.Event) (shared.Flow, *Fail) {
+	if ev.Kind == shared.End {
 		if f := writeFinite(s.rt, s.text, s.out); f != nil {
-			return tt.Continue, f
+			return shared.Continue, f
 		}
 		if f := s.out.Flush(); f != nil {
-			return tt.Continue, f
+			return shared.Continue, f
 		}
 	}
-	return tt.Continue, nil
+	return shared.Continue, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,22 +1102,22 @@ func (s *finiteTextSink) Event(ev tt.Event) (tt.Flow, *Fail) {
 // into, and the limits and metrics the transduce stages take.
 type Lowering struct {
 	rt      *Runtime
-	limits  tt.Limits
-	metrics *tt.Metrics
+	limits  shared.Limits
+	metrics *shared.Metrics
 }
 
 // NewLowering is a lowering over rt, under limits, counting into metrics
 // (a fresh set when nil).
-func NewLowering(rt *Runtime, limits tt.Limits, metrics *tt.Metrics) *Lowering {
+func NewLowering(rt *Runtime, limits shared.Limits, metrics *shared.Metrics) *Lowering {
 	if metrics == nil {
-		metrics = tt.NewMetrics()
+		metrics = shared.NewMetrics()
 	}
 	return &Lowering{rt: rt, limits: limits, metrics: metrics}
 }
 
 // Sink is the sink for a program's result over out. render is the host's
 // choice for a stream result; a text result takes none (`render_of_text`).
-func (l *Lowering) Sink(result Val, out tr.TextOut, render Renderer) (tt.Sink, *Fail) {
+func (l *Lowering) Sink(result Val, out shared.TextOut, render Renderer) (shared.Sink, *Fail) {
 	switch x := result.(type) {
 	// A string is a text where a text is expected (spec 10.4).
 	case StrVal:
@@ -1116,23 +1138,23 @@ func (l *Lowering) Sink(result Val, out tr.TextOut, render Renderer) (tt.Sink, *
 		}
 		switch {
 		case protocol == ProtocolJSONEvents && render == RenderJSON:
-			return l.events(x.Plan, tr.NewJSONRenderer[tr.TextOut](out, jsonOptions()))
+			return l.events(x.Plan, l.rt.Renderers().JSON(out, jsonOptions()))
 		case protocol == ProtocolJSONEvents:
 			return nil, protocolMismatch("csv renders table events; the program's result is JSON events (render it as json, or make a table of it with table-from-json)")
 		case render == RenderCSV:
-			renderer, f := tr.NewCSVRenderer[tr.TextOut](out, tr.DefaultCSVOptions())
+			renderer, f := l.rt.Renderers().CSV(out, shared.DefaultCSVOptions())
 			if f != nil {
 				return nil, f
 			}
 			return l.table(x.Plan, renderer, false)
 		}
-		json := tr.NewJSONRenderer[tr.TextOut](out, jsonOptions())
-		return l.table(x.Plan, tr.NewRecordsToJSON[tt.Sink](json), false)
+		json := l.rt.Renderers().JSON(out, jsonOptions())
+		return l.table(x.Plan, l.rt.Renderers().RecordsToJSON(json), false)
 	}
 	return nil, typeError("export must answer a text or a stream, not " + KindOf(result))
 }
 
-func (l *Lowering) text(p *Plan, out tr.TextOut) (tt.Sink, *Fail) {
+func (l *Lowering) text(p *Plan, out shared.TextOut) (shared.Sink, *Fail) {
 	if !p.IsLive() {
 		return &finiteTextSink{rt: l.rt, text: TextVal{Plan: p}, out: out}, nil
 	}
@@ -1142,17 +1164,17 @@ func (l *Lowering) text(p *Plan, out tr.TextOut) (tt.Sink, *Fail) {
 		if !ok {
 			return nil, typeError("csv: the options record does not map to the renderer's dialect")
 		}
-		renderer, f := tr.NewCSVRenderer[tr.TextOut](out, options)
+		renderer, f := l.rt.Renderers().CSV(out, options)
 		if f != nil {
 			return nil, f
 		}
 		return l.table(p.Source, renderer, false)
 	case p.Kind == PlanJSON:
-		return l.events(p.Source, tr.NewJSONRenderer[tr.TextOut](out, jsonOptions()))
+		return l.events(p.Source, l.rt.Renderers().JSON(out, jsonOptions()))
 	case p.Kind == PlanConcatMap && p.Seq.IsStream():
 		return l.items(p.Seq.Stream, &concatMapStage{rt: l.rt, f: p.F, at: p.At, out: out, scratch: newScratch(l.limits)}, false)
 	case p.Kind == PlanJoin && p.Seq.IsStream():
-		return l.items(p.Seq.Stream, &joinStage{rt: l.rt, join: tr.NewJoin[tr.TextOut](out, p.Sep), scratch: newScratch(l.limits)}, false)
+		return l.items(p.Seq.Stream, &joinStage{rt: l.rt, join: l.rt.Renderers().Join(out, p.Sep), scratch: newScratch(l.limits)}, false)
 	case p.Kind == PlanConcat:
 		inner, ok := p.Items[p.Live].(TextVal)
 		if !ok {
@@ -1167,20 +1189,20 @@ func (l *Lowering) text(p *Plan, out tr.TextOut) (tt.Sink, *Fail) {
 		return l.text(inner.Plan, fr)
 	case p.Kind == PlanReplace:
 		if inner, ok := p.Text.(TextVal); ok {
-			return l.text(inner.Plan, tr.NewReplaceText[tr.TextOut](out, p.From, p.To))
+			return l.text(inner.Plan, l.rt.Renderers().ReplaceText(out, p.From, p.To))
 		}
 	}
 	return nil, typeError(PlanName(p) + " is not a text")
 }
 
-func (l *Lowering) events(p *Plan, sink tt.Sink) (tt.Sink, *Fail) {
+func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 	switch p.Kind {
 	case PlanInput:
 		return sink, nil
 	// `records` ends a table: after it the rows are JSON events, of which
 	// a later table makes rows of its own.
 	case PlanRecords:
-		return l.table(p.Source, tr.NewRecordsToJSON[tt.Sink](sink), false)
+		return l.table(p.Source, l.rt.Renderers().RecordsToJSON(sink), false)
 	// A stream whose items may be events (`events` itself, or a
 	// `scan-emit`, `map` or `filter` over anything): each item is turned
 	// back into an event as the stream runs, the reverse of `events`, so a
@@ -1194,7 +1216,7 @@ func (l *Lowering) events(p *Plan, sink tt.Sink) (tt.Sink, *Fail) {
 		// whatever the input held. The guard counts into metrics of its
 		// own: the source's count the source's events, and these are the
 		// program's.
-		guarded := tt.NewGuarded(sink, l.limits, l.rt.Abort(), tt.NewMetrics())
+		guarded := l.rt.Routers().Guarded(sink, l.limits, l.rt.Abort(), shared.NewMetrics())
 		return l.items(p, &taggedToJSON{down: guarded}, false)
 	}
 	// A stream that never yields events: `select`'s values, `route`'s
@@ -1205,7 +1227,7 @@ func (l *Lowering) events(p *Plan, sink tt.Sink) (tt.Sink, *Fail) {
 // table is the sink for the table plan p yields, handing its events to
 // table. countedLater is as for Lowering.items: whether the rows table
 // receives are counted after it rather than here.
-func (l *Lowering) table(p *Plan, table tt.TableSink, countedLater bool) (tt.Sink, *Fail) {
+func (l *Lowering) table(p *Plan, table shared.TableSink, countedLater bool) (shared.Sink, *Fail) {
 	switch p.Kind {
 	case PlanTableFromJSON:
 		binding, f := l.tableBinding(p.Binding, p.At)
@@ -1213,7 +1235,7 @@ func (l *Lowering) table(p *Plan, table tt.TableSink, countedLater bool) (tt.Sin
 			return nil, f
 		}
 		bounded := &cellBound{max: l.limits.MaxScalarBytes, down: table, metrics: l.metrics, uncount: countedLater}
-		transducer, f := tt.NewTableFromJSON(binding, l.limits, l.rt.Duplicates(), l.metrics, bounded)
+		transducer, f := l.rt.Routers().TableFromJSON(binding, l.limits, l.rt.Duplicates(), l.metrics, bounded)
 		if f != nil {
 			return nil, f
 		}
@@ -1236,12 +1258,12 @@ func (l *Lowering) table(p *Plan, table tt.TableSink, countedLater bool) (tt.Sin
 // is; a table stage sets it for its own source; a text over items, and
 // `records`, clear it. The native table's rows that become items are never
 // its own to count: the library's table, a scan-emit, counts none.
-func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (tt.Sink, *Fail) {
+func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink, *Fail) {
 	switch p.Kind {
 	case PlanRoute:
 		// A capture bounded by a named limit takes the host's value for
 		// it: the plan was built under the defaults.
-		specs := make([]tt.CaptureSpec, len(p.Specs))
+		specs := make([]shared.CaptureSpec, len(p.Specs))
 		for i, spec := range p.Specs {
 			if spec.Budget != nil {
 				budget := *spec.Budget
@@ -1252,13 +1274,13 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (tt.Sink, *F
 			}
 			specs[i] = spec
 		}
-		router, f := tt.NewRouter(specs, l.limits, l.rt.Duplicates(), l.metrics, &routeToItems{down: down})
+		router, f := l.rt.Routers().Router(specs, l.limits, l.rt.Duplicates(), l.metrics, &routeToItems{down: down})
 		if f != nil {
 			return nil, f
 		}
 		return l.events(p.Source, router)
 	case PlanSelect:
-		router, f := tt.NewRouter([]tt.CaptureSpec{tt.MaterializeSpec("selected", p.Selector)},
+		router, f := l.rt.Routers().Router([]shared.CaptureSpec{shared.MaterializeSpec("selected", p.Selector)},
 			l.limits, l.rt.Duplicates(), l.metrics, &routeToItems{down: down, valuesOnly: true})
 		if f != nil {
 			return nil, f
@@ -1294,7 +1316,7 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (tt.Sink, *F
 // descriptor as the metadata completes; its record must carry a string
 // :label and a :source selector naming one location. An inferred binding
 // is the transducer's InferSchema: the first row's keys.
-func (l *Lowering) tableBinding(binding Val, at SourceSpan) (tt.TableBinding, *Fail) {
+func (l *Lowering) tableBinding(binding Val, at SourceSpan) (shared.TableBinding, *Fail) {
 	get := func(key string) Val {
 		v, ok := Field(binding, key)
 		if !ok {
@@ -1305,26 +1327,26 @@ func (l *Lowering) tableBinding(binding Val, at SourceSpan) (tt.TableBinding, *F
 	if isInferred(binding) {
 		rows, ok := get("rows").(*SelectorVal)
 		if !ok {
-			return tt.TableBinding{}, l.rt.FailAt(typeError("table-from-json: an inferred binding must carry a :rows selector"), at)
+			return shared.TableBinding{}, l.rt.FailAt(typeError("table-from-json: an inferred binding must carry a :rows selector"), at)
 		}
-		return tt.TableBinding{Schema: tt.InferSchema(), Rows: rows.Selector}, nil
+		return shared.TableBinding{Schema: shared.InferSchema(), Rows: rows.Selector}, nil
 	}
 	columns, ok1 := get("columns").(*SelectorVal)
 	rows, ok2 := get("rows").(*SelectorVal)
 	column, ok3 := get("column").(Fn)
 	if !ok1 || !ok2 || !ok3 {
-		return tt.TableBinding{}, l.rt.FailAt(typeError(
+		return shared.TableBinding{}, l.rt.FailAt(typeError(
 			"table-from-json: the binding must carry :columns and :rows selectors and a :column function"), at)
 	}
 	rt := l.rt
-	mapper := func(descriptor *tt.Datum) (tt.BoundColumn, *Fail) {
+	mapper := func(descriptor *shared.Datum) (shared.BoundColumn, *Fail) {
 		v, f := rt.Apply(column, []Val{FromDatum(descriptor)}, at)
 		if f != nil {
-			return tt.BoundColumn{}, f
+			return shared.BoundColumn{}, f
 		}
-		return boundColumn(v)
+		return boundColumn(rt.Renderers(), v)
 	}
-	return tt.TableBinding{Schema: tt.MetadataSchema(columns.Selector, mapper), Rows: rows.Selector}, nil
+	return shared.TableBinding{Schema: shared.MetadataSchema(columns.Selector, mapper), Rows: rows.Selector}, nil
 }
 
 // boundColumn is a column record (:label, :source) as the transducer binds
@@ -1332,23 +1354,23 @@ func (l *Lowering) tableBinding(binding Val, at SourceSpan) (tt.TableBinding, *F
 // :label`, so a column function that answers something other than a
 // record fails as `get` does) and taken by labelText, the policy every
 // table shares.
-func boundColumn(column Val) (tt.BoundColumn, *Fail) {
+func boundColumn(renderers shared.Renderers, column Val) (shared.BoundColumn, *Fail) {
 	l, f := getField("label", column)
 	if f != nil {
-		return tt.BoundColumn{}, f
+		return shared.BoundColumn{}, f
 	}
-	text, f := labelText(l)
+	text, f := labelText(renderers, l)
 	if f != nil {
-		return tt.BoundColumn{}, f
+		return shared.BoundColumn{}, f
 	}
 	source, _ := Field(column, "source")
 	s, ok := source.(*SelectorVal)
 	if !ok {
-		return tt.BoundColumn{}, typeError("table-from-json: a column record must carry a :source selector")
+		return shared.BoundColumn{}, typeError("table-from-json: a column record must carry a :source selector")
 	}
 	segments, ok := selectorSegments(s.Selector)
 	if !ok {
-		return tt.BoundColumn{}, typeError("table-from-json: a column's :source must name one location, not " + s.Selector.String())
+		return shared.BoundColumn{}, typeError("table-from-json: a column's :source must name one location, not " + s.Selector.String())
 	}
-	return tt.NewBoundColumn(text, segments), nil
+	return shared.NewBoundColumn(text, segments), nil
 }

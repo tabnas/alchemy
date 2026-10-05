@@ -3,9 +3,10 @@ module github.com/tabnas/alchemy/go
 go 1.24.7
 
 // The engine, the JSON grammar the grammar document and a run's input are
-// read with, and the protocols a program is lowered onto: transduce's and
-// render's Go ports, not yet released, resolved through a go.work over
-// the sibling checkouts until they are.
+// read with, and the implementations the tests run programs on:
+// transduce's Routers and render's Renderers (the package itself depends on
+// neither; a host hands them in), resolved through a go.work over the
+// sibling checkouts until releases of the two build on the shared package.
 require (
 	github.com/tabnas/json/go v0.5.13
 	github.com/tabnas/parser/go v0.12.9

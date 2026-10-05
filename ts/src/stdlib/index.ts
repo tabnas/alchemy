@@ -13,7 +13,7 @@
 // for that program, never for the library itself, whose definitions
 // resolve in their own scope.
 
-import { Fail } from '@tabnas/transduce'
+import { Fail } from '../shared'
 
 import { SourceSpan, Sources, symbolOf } from '../ast'
 import { checkStdlibFile } from '../check'

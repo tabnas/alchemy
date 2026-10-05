@@ -5,6 +5,7 @@
 // of every fixture against the walk's own rendering; and `records` of a
 // table round-tripping through JSON.
 
+mod common;
 #[path = "../../../transduce/rs/tests/support/mod.rs"]
 mod support;
 
@@ -13,11 +14,13 @@ use std::sync::{Arc, Mutex};
 
 use std::time::{Duration, Instant};
 
-use tabnas_alchemy::{compile, Output, Program, Renderer};
+use tabnas_alchemy::{Output, Program, Renderer};
 use tabnas_render::{JsonOptions, JsonRenderer, StringOut, WriteOut};
 use tabnas_transduce::{
     replay, AbortFlag, Code, Fail, Limits, Metrics, OwnedJsonEvent, ParserSource, Prune, SourceMode,
 };
+
+use common::compile;
 
 /// The spec's worked example: aless's `tests/fixtures/records.json`,
 /// byte for byte (329 bytes; the metadata before the rows; Bob's members

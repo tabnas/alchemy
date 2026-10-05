@@ -5,9 +5,35 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use tabnas_alchemy::shared::{Renderers, Routers};
+use tabnas_alchemy::value::Val;
+use tabnas_alchemy::{Program, Source};
 use tabnas_support::{find_spec_dir, Failure, Value};
 use tabnas_transduce::Fail;
+
+/// The routers a host passes alchemy: transduce's.
+pub fn routers() -> Arc<dyn Routers<Val>> {
+    Arc::new(tabnas_transduce::routers())
+}
+
+/// The renderers a host passes alchemy: render's.
+pub fn renderers() -> Arc<dyn Renderers> {
+    Arc::new(tabnas_render::renderers())
+}
+
+/// [`tabnas_alchemy::compile`] with transduce's routers and render's
+/// renderers, as a host compiles.
+pub fn compile(src: &str, file: &str) -> Result<Program, Fail> {
+    tabnas_alchemy::compile(src, file, routers(), renderers())
+}
+
+/// [`tabnas_alchemy::compile_sources`] with transduce's routers and
+/// render's renderers.
+pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
+    tabnas_alchemy::compile_sources(sources, routers(), renderers())
+}
 
 /// The repository root: the parent of `rs/`.
 pub fn repo_root() -> PathBuf {

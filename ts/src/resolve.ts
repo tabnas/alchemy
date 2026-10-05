@@ -22,7 +22,7 @@
 // The walk recurses per level of a form, which MAX_NESTING bounds; the
 // graph searches over definitions are iterative.
 
-import { Code, Fail } from '@tabnas/transduce'
+import { Code, Fail } from './shared'
 
 import { Expr, SourceSpan, Sources, symbolOf } from './ast'
 

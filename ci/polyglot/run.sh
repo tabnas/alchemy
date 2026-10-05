@@ -9,7 +9,10 @@ FLEET_ROOT=$(cd "$ROOT/.." && pwd)
 
 COMMON_SIBLINGS=$(sed -n 's/^SIBLINGS="\(.*\)"$/\1/p' "$ROOT/ci/rust/run.sh")
 TS_ONLY_SIBLINGS=$(sed -n 's/^TS_SIBLINGS="\(.*\)"$/\1/p' "$ROOT/ci/rust/run.sh")
-TS_PACKAGES="parser support bnf abnf railroad debug json jsonic hoover csv ini json5 jsonc jsonl markdown toml xml yaml zon feed transduce render alchemy"
+# alchemy builds before transduce and render, which build on its shared
+# types; its build compiles src only, and its tests, which run programs on
+# transduce's routers and render's renderers, run last.
+TS_PACKAGES="parser support bnf abnf railroad debug json jsonic hoover csv ini json5 jsonc jsonl markdown toml xml yaml zon feed alchemy transduce render"
 ALL_SIBLINGS="$COMMON_SIBLINGS $TS_ONLY_SIBLINGS"
 
 for sibling in $ALL_SIBLINGS; do
@@ -39,8 +42,10 @@ for package in $TS_PACKAGES; do
   package_dir="$FLEET_ROOT/$package/ts"
   echo "typescript: $package_i of $package_total ($((package_i * 100 / package_total))%) install $package"
   install_args=()
-  if [[ "$package" == "render" ]]; then
-    install_args+=("$FLEET_ROOT/transduce/ts")
+  if [[ "$package" == "transduce" ]]; then
+    install_args+=("$ROOT/ts")
+  elif [[ "$package" == "render" ]]; then
+    install_args+=("$ROOT/ts" "$FLEET_ROOT/transduce/ts")
   elif [[ "$package" == "alchemy" ]]; then
     install_args+=("$FLEET_ROOT/transduce/ts" "$FLEET_ROOT/render/ts")
   fi

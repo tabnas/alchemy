@@ -1242,14 +1242,23 @@ rest); 5 for `RESOURCE_LIMIT_EXCEEDED`; 3 for `OUTPUT_FAILED`; 6 for
 ## Embedding
 
 The crate's API is small and every part of it is `Send`, because a host
-runs a pipeline on the thread that parses:
+runs a pipeline on the thread that parses. A program is lowered onto the
+routers and renderers the host passes in, so the host composes three
+packages: alchemy, transduce (`routers()`) and render (`renderers()`).
+alchemy imports neither; both build on its shared types,
+`tabnas_alchemy::shared`.
 
 ```rust
 use std::sync::Arc;
+use tabnas_alchemy::shared::{JsonEvent, Limits, Metrics, Sink};
 use tabnas_alchemy::{compile, Output, Renderer};
-use tabnas_transduce::{JsonEvent, Limits, Metrics, Sink};
 
-let program = compile("def export [input] (json input)", "echo.alc")?;
+let program = compile(
+    "def export [input] (json input)",
+    "echo.alc",
+    Arc::new(tabnas_transduce::routers()),
+    Arc::new(tabnas_render::renderers()),
+)?;
 assert_eq!(program.output(), Output::Text);
 assert!(program.row_selector().is_none());
 let metrics = Metrics::new();
@@ -1258,10 +1267,15 @@ sink.event(JsonEvent::ArrayStart)?;
 sink.event(JsonEvent::ArrayEnd)?;
 sink.event(JsonEvent::End)?;
 let _ = Renderer::Json;
-# Ok::<(), tabnas_transduce::Fail>(())
+# Ok::<(), tabnas_alchemy::shared::Fail>(())
 ```
 
-- `compile(src, file)` parses, desugars, resolves and checks, then
+The TypeScript and Go ports take the same two implementations:
+`compile(src, file, { routers, renderers })` with `routers` from
+`@tabnas/transduce` and `renderers` from `@tabnas/render`, and
+`Compile(src, file, transduce.Routers(), render.Renderers())`.
+
+- `compile(src, file, routers, renderers)` parses, desugars, resolves and checks, then
   builds the plan: it applies `export` to the input's plan, which
   evaluates every value a stream does not defer (definitions, records,
   selectors, `let` values on `export`'s own path) and consumes nothing.
@@ -1276,7 +1290,7 @@ let _ = Renderer::Json;
   most `MAX_EVAL_DEPTH` (1,000) levels of nesting, `recursion` past them.
   It runs on a thread of `STACK_BYTES` (64 MiB) whatever thread calls it,
   so those bounds hold in a debug build as in a release one.
-- `compile_sources(&[Source::new(file, text), …])` compiles one program
+- `compile_sources(&[Source::new(file, text), …], routers, renderers)` compiles one program
   from several sources linked into one namespace, as a host links a
   format's parts (libraries of definitions prefixed by the format's
   name, with no `export`) with the program that calls them. A

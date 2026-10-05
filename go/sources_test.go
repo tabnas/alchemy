@@ -44,12 +44,12 @@ func sourcesOf(list ...[2]string) []Source {
 // linked is the program with the part second, as the design's diagnostics
 // test has it.
 func linked(partText string) (*Program, *Fail) {
-	return CompileSources(sourcesOf([2]string{mainFile, mainSrc}, [2]string{partFile, partText}))
+	return CompileSources(sourcesOf([2]string{mainFile, mainSrc}, [2]string{partFile, partText}), routers, renderers)
 }
 
 func mustLink(t testing.TB, sources []Source) *Program {
 	t.Helper()
-	p, f := CompileSources(sources)
+	p, f := CompileSources(sources, routers, renderers)
 	if f != nil {
 		t.Fatal(f)
 	}
@@ -154,7 +154,7 @@ func TestAFailureInTheSecondSourceNamesTheSecondFile(t *testing.T) {
 	// wrong shape fails at the render's file and line, not at the call.
 	csvPart := "def lines-render [items]\n  csv csv-options items\n"
 	events := "def export [input]\n  lines-render (events input)\n"
-	_, f = CompileSources(sourcesOf([2]string{mainFile, events}, [2]string{partFile, csvPart}))
+	_, f = CompileSources(sourcesOf([2]string{mainFile, events}, [2]string{partFile, csvPart}), routers, renderers)
 	if f == nil || f.Code != CodeDSLTypeError || !strings.HasPrefix(f.Message, "protocol_mismatch: ") || f.File != partFile || f.Row != 2 {
 		t.Errorf("%v", f)
 	}
@@ -213,16 +213,16 @@ func TestTheLinkingRefusesACollisionAndAProgramWithNoExport(t *testing.T) {
 	assertAt(t, f, partFile, row, col)
 
 	// Each source has its own name.
-	_, f = CompileSources(sourcesOf([2]string{mainFile, mainSrc}, [2]string{mainFile, part}))
+	_, f = CompileSources(sourcesOf([2]string{mainFile, mainSrc}, [2]string{mainFile, part}), routers, renderers)
 	if f == nil || f.Code != CodeDSLTypeError || !strings.HasPrefix(f.Message, "duplicate_file: main.alc ") || f.File != "" || f.Row != 0 {
 		t.Errorf("%v", f)
 	}
 
 	// A part alone is no program.
-	if _, f := CompileSources(sourcesOf([2]string{partFile, part})); f == nil || !strings.HasPrefix(f.Message, "no_export: ") {
+	if _, f := CompileSources(sourcesOf([2]string{partFile, part}), routers, renderers); f == nil || !strings.HasPrefix(f.Message, "no_export: ") {
 		t.Errorf("%v", f)
 	}
-	if _, f := CompileSources(nil); f == nil || !strings.HasPrefix(f.Message, "no_export: ") {
+	if _, f := CompileSources(nil, routers, renderers); f == nil || !strings.HasPrefix(f.Message, "no_export: ") {
 		t.Errorf("%v", f)
 	}
 }
@@ -231,8 +231,8 @@ func TestTheLinkingRefusesACollisionAndAProgramWithNoExport(t *testing.T) {
 // file, and display as they always have.
 func TestOneSourceNamesNoFile(t *testing.T) {
 	text := "def export [input]\n  csv csv-options (events input)\n"
-	_, f := CompileSources(sourcesOf([2]string{"one.alc", text}))
-	_, same := Compile(text, "one.alc")
+	_, f := CompileSources(sourcesOf([2]string{"one.alc", text}), routers, renderers)
+	_, same := Compile(text, "one.alc", routers, renderers)
 	if f == nil || same == nil || !reflect.DeepEqual(*f, *same) {
 		t.Fatalf("%v %v", f, same)
 	}

@@ -24,9 +24,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use tabnas_transduce::{CaptureSpec, Code, Datum, Fail, Segment, Selector, Step};
 
 use crate::ast::{Expr, SourceSpan};
+use crate::shared::{CaptureSpec, Code, Datum, Fail, Segment, Selector, Step};
 use crate::stdlib::registry::Native;
 
 /// The tag of the constant tagged value a `get` or `get-path` answers for

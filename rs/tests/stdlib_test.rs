@@ -6,6 +6,7 @@
 // the same code. The library text is the reference; the native path is
 // the optimization, and this is what makes it one.
 
+mod common;
 #[path = "../../../transduce/rs/tests/support/mod.rs"]
 mod support;
 
@@ -13,10 +14,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tabnas::Tabnas;
-use tabnas_alchemy::{compile, Program, Renderer};
+use tabnas_alchemy::stdlib::registry::shortest_number;
+use tabnas_alchemy::{Program, Renderer};
+use tabnas_render::{JsonOptions, JsonRenderer, StringOut};
 use tabnas_transduce::{
-    replay, Code, Fail, JsonEvent, Limits, Metrics, OwnedJsonEvent, ParserSource,
+    replay, Code, Fail, JsonEvent, Limits, Metrics, Number, OwnedJsonEvent, ParserSource, Sink,
 };
+
+use common::compile;
 
 /// The spec's program (sections 12.1 and 13.4).
 const PROGRAM: &str = "def column-from-meta [source]
@@ -979,5 +984,66 @@ fn a_stream_without_end_writes_nothing() {
         // And the End then completes it.
         sink.event(JsonEvent::End).unwrap();
         assert!(!buffer.0.lock().unwrap().is_empty(), "native={native}");
+    }
+}
+
+/// A number is read and written as the renderers read and write it: the
+/// library's `scalar-text` holds a lexeme to the JSON number grammar
+/// with the reader's own (`lex::is_json_number`), which accepts exactly
+/// what the renderers' (render's `is_json_number`) does, and writes a
+/// number without one as `shortest_number` lays it out, which is what
+/// render writes for one (its `number::write_value`). That is what lets
+/// the interpreted `csv` and the native renderer agree byte for byte.
+#[test]
+fn numbers_are_read_and_written_as_the_renderers_do() {
+    // Every text of up to five characters over what a JSON number is
+    // made of, and a character that is not.
+    let alphabet = ['0', '1', '9', '-', '+', '.', 'e', 'E', 'x'];
+    let mut texts = vec![String::new()];
+    let mut last = vec![String::new()];
+    for _ in 0..5 {
+        last = last
+            .iter()
+            .flat_map(|t| alphabet.iter().map(move |c| format!("{t}{c}")))
+            .collect();
+        texts.extend(last.iter().cloned());
+    }
+    let mut accepted = 0;
+    for text in &texts {
+        let ours = tabnas_alchemy::lex::is_json_number(text);
+        assert_eq!(ours, tabnas_render::is_json_number(text), "{text:?}");
+        accepted += usize::from(ours);
+    }
+    assert!(accepted > 1000, "{accepted} of {} accepted", texts.len());
+    // render's `write_value` is its own (`pub(crate)`), and its JSON
+    // renderer writes that function's text, and nothing else, for a
+    // document that is one number without a lexeme.
+    for value in [
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        50.25,
+        72.0,
+        1e-6,
+        1e-7,
+        1e20,
+        1e21,
+        -2.5e-8,
+        1.5e300,
+        123456789.0,
+        0.1 + 0.2,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        5e-324,
+    ] {
+        let mut json = JsonRenderer::new(StringOut::new(), JsonOptions::default());
+        json.event(JsonEvent::Number(Number::new(value))).unwrap();
+        json.event(JsonEvent::End).unwrap();
+        assert_eq!(
+            json.into_inner().into_string(),
+            shortest_number(value),
+            "{value:e}"
+        );
     }
 }

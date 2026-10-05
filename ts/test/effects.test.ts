@@ -16,9 +16,9 @@ import { join } from 'node:path'
 import { loadSpec, parseExpect } from '@tabnas/support'
 import { Selector } from '@tabnas/transduce'
 
-import { Plan, Val, analyze, compile, explain, explainJson, stdlib, summarize, summaryText, value } from '../dist/alchemy'
+import { Plan, Val, analyze, explain, explainJson, stdlib, summarize, summaryText, value } from '../dist/alchemy'
 
-import { PROGRAM, RECORDS, SPEC_DIR, ok } from './common'
+import { PROGRAM, RECORDS, SPEC_DIR, compile, ok } from './common'
 
 const V = value
 

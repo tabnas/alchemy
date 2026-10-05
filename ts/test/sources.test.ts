@@ -11,9 +11,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 
-import { Program, Source, compile, compileSources } from '../dist/alchemy'
+import { Program, Source } from '../dist/alchemy'
 
-import { drive, ok, thrown } from './common'
+import { compile, compileSources, drive, ok, thrown } from './common'
 
 // A render part: definitions prefixed by the format's name, no `export`.
 const PART =

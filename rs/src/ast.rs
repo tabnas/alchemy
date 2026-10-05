@@ -21,7 +21,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use tabnas::Value;
-use tabnas_transduce::{Code, Fail};
+
+use crate::shared::{Code, Fail};
 
 /// The most levels a form may nest: a list or vector inside a list or
 /// vector, this many times over.
@@ -33,7 +34,7 @@ use tabnas_transduce::{Code, Fail};
 /// a bound, a two-kilobyte program of nested parentheses took the process
 /// down with a stack overflow in the recursive stages after the parse,
 /// instead of failing as a `DSL_PARSE_ERROR`. 256 is the depth
-/// `tabnas_transduce::Limits` gives documents, and far past any program
+/// `shared::Limits` gives documents, and far past any program
 /// written by hand.
 pub const MAX_NESTING: usize = 256;
 
@@ -475,7 +476,7 @@ fn json_string(value: &str) -> String {
 /// use tabnas_alchemy::{canonical, parse};
 /// let program = parse("join \",\"\n  map csv-field values\n\n(newline)")?;
 /// assert_eq!(canonical(&program), "(join \",\" (map csv-field values))\n(newline)");
-/// # Ok::<(), tabnas_transduce::Fail>(())
+/// # Ok::<(), tabnas_alchemy::shared::Fail>(())
 /// ```
 pub fn canonical(program: &[Expr]) -> String {
     program
@@ -516,7 +517,7 @@ pub fn canonical(program: &[Expr]) -> String {
 ///     format(&program),
 ///     "def csv-row [values]\n  concat\n    join \",\"\n      map csv-field values\n    (newline)\n"
 /// );
-/// # Ok::<(), tabnas_transduce::Fail>(())
+/// # Ok::<(), tabnas_alchemy::shared::Fail>(())
 /// ```
 pub fn format(program: &[Expr]) -> String {
     let mut out = String::new();

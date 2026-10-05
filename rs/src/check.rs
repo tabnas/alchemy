@@ -41,11 +41,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use tabnas_transduce::{Code, Fail};
 
 use crate::ast::{Expr, SourceSpan, Sources};
 use crate::program::Output;
 use crate::resolve::{fn_form, Def, Resolved};
+use crate::shared::{Code, Fail};
 use crate::stdlib::registry::{native, Kind, Native};
 use crate::types::Type;
 
@@ -1706,17 +1706,18 @@ mod tests {
         );
         // A live text is refused where the vector is built, with its name.
         let f =
-            crate::compile("def export [input] (join \",\" [(json input)])", "t.alc").unwrap_err();
+            crate::lower::tests::compile("def export [input] (join \",\" [(json input)])", "t.alc")
+                .unwrap_err();
         assert_eq!(f.code, Code::DslTypeError);
         assert!(f.message.contains("cannot hold a live text"), "{f}");
-        let f = crate::compile(
+        let f = crate::lower::tests::compile(
             "def export [input] (join \",\" (vector (json input)))",
             "t.alc",
         )
         .unwrap_err();
         assert!(f.message.contains("cannot hold a live text"), "{f}");
         assert_eq!(
-            crate::compile(
+            crate::lower::tests::compile(
                 "def export [input] (concat (join \",\" [(text \"i\") \"j\"]) (json input))",
                 "t.alc"
             )

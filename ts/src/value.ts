@@ -21,7 +21,7 @@
 // the evaluation depth and the host's `max_depth`, not by JavaScript's
 // stack.
 
-import { CaptureSpec, Datum, Fail, Segment, Selector, jsonNumber, jsonString } from '@tabnas/transduce'
+import { CaptureSpec, Datum, Fail, Segment, Selector, jsonNumber, jsonString } from './shared'
 
 import { Expr, SourceSpan } from './ast'
 import { Native, arityExact } from './stdlib/registry'

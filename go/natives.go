@@ -9,8 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	tr "github.com/tabnas/render/go"
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // natives.go: the natives' implementations (rs/src/stdlib/registry.rs),
@@ -109,7 +108,7 @@ func init() {
 // Argument helpers
 // ---------------------------------------------------------------------------
 
-func inputInvalid(message string) *Fail { return tt.InputFail(message) }
+func inputInvalid(message string) *Fail { return shared.InputFail(message) }
 
 // isData is whether a value is data (what a document can hold), as
 // opposed to a function, a selector, a capture, a stream or a text.
@@ -142,11 +141,11 @@ func asFn(op, what string, v Val) (Fn, *Fail) {
 	return nil, typeError(fmt.Sprintf("%s: %s must be a function, not %s", op, what, KindOf(v)))
 }
 
-func asSelector(op, what string, v Val) (tt.Selector, *Fail) {
+func asSelector(op, what string, v Val) (shared.Selector, *Fail) {
 	if s, ok := v.(*SelectorVal); ok {
 		return s.Selector, nil
 	}
-	return tt.Selector{}, typeError(fmt.Sprintf("%s: %s must be a selector, not %s", op, what, KindOf(v)))
+	return shared.Selector{}, typeError(fmt.Sprintf("%s: %s must be a selector, not %s", op, what, KindOf(v)))
 }
 
 func asStream(op string, v Val) (*Plan, *Fail) {
@@ -222,14 +221,18 @@ func option(op string, options Val, key string) (Val, *Fail) {
 // as the render package lays it out: positional within the JavaScript
 // range, exponent form outside it. The two must agree byte for byte, which
 // the differential test checks on every number without a lexeme, so this
-// is render's own formatter.
-func shortestNumber(value float64) string { return tr.FormatValue(value) }
+// is render's own formatter, from the renderers the host handed in.
+func shortestNumber(renderers shared.Renderers, value float64) string {
+	return renderers.WriteValue(value)
+}
 
 // numberText is the text of a number as a renderer writes it, with the
 // renderer's checks: a lexeme that is not a JSON number is INVALID_NUMBER,
-// a non-finite value TARGET_VALUE_UNREPRESENTABLE.
-func numberText(value float64, lexeme string, hasLexeme bool) (string, *Fail) {
-	if hasLexeme && !tr.IsJSONNumber(lexeme) {
+// a non-finite value TARGET_VALUE_UNREPRESENTABLE. The lexeme is held to
+// IsJSONNumber, this package's own JSON number grammar, the one the
+// renderers hold a lexeme to.
+func numberText(renderers shared.Renderers, value float64, lexeme string, hasLexeme bool) (string, *Fail) {
+	if hasLexeme && !IsJSONNumber(lexeme) {
 		return "", NewFail(CodeInvalidNumber, strconv.Quote(lexeme)+" is not a JSON number")
 	}
 	if math.IsNaN(value) || math.IsInf(value, 0) {
@@ -242,7 +245,7 @@ func numberText(value float64, lexeme string, hasLexeme bool) (string, *Fail) {
 	if hasLexeme {
 		return lexeme, nil
 	}
-	return shortestNumber(value), nil
+	return shortestNumber(renderers, value), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +308,7 @@ func nAsPath(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	if !ok {
 		return nil, inputInvalid("as-path: a path must be an array of segments, not " + KindOf(a[0]))
 	}
-	selector := tt.Root()
+	selector := shared.Root()
 	for _, item := range items.Items {
 		if s, ok := item.(StrVal); ok {
 			selector = selector.Property(string(s))
@@ -567,7 +570,7 @@ func kindWord(v Val) (string, bool) {
 }
 
 func nPath(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
-	selector := tt.Root()
+	selector := shared.Root()
 	for _, item := range a {
 		switch x := item.(type) {
 		case StrVal:
@@ -587,15 +590,15 @@ func nPath(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 }
 
 func nRoot(_ *Runtime, _ []Val, _ SourceSpan) (Val, *Fail) {
-	return &SelectorVal{Selector: tt.Root()}, nil
+	return &SelectorVal{Selector: shared.Root()}, nil
 }
 
 func nEachIndex(_ *Runtime, _ []Val, _ SourceSpan) (Val, *Fail) {
-	return &SelectorVal{Selector: tt.Root().EachIndex()}, nil
+	return &SelectorVal{Selector: shared.Root().EachIndex()}, nil
 }
 
 func nEachMember(_ *Runtime, _ []Val, _ SourceSpan) (Val, *Fail) {
-	return &SelectorVal{Selector: tt.Root().EachMember()}, nil
+	return &SelectorVal{Selector: shared.Root().EachMember()}, nil
 }
 
 func nProperty(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
@@ -603,7 +606,7 @@ func nProperty(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	if f != nil {
 		return nil, f
 	}
-	return &SelectorVal{Selector: tt.Root().Property(name)}, nil
+	return &SelectorVal{Selector: shared.Root().Property(name)}, nil
 }
 
 func nIndex(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
@@ -611,7 +614,7 @@ func nIndex(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	if !ok {
 		return nil, typeError("index: the position must be a non-negative integer, not " + DebugString(a[0]))
 	}
-	return &SelectorVal{Selector: tt.Root().Index(i)}, nil
+	return &SelectorVal{Selector: shared.Root().Index(i)}, nil
 }
 
 func nCompose(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
@@ -633,7 +636,7 @@ var CaptureLimits = []string{"max_capture_bytes", "max_metadata_bytes", "max_rec
 
 // captureBudget is the bytes the host's limits give the capture limit
 // name.
-func captureBudget(limits tt.Limits, name string) (int, bool) {
+func captureBudget(limits shared.Limits, name string) (int, bool) {
 	switch name {
 	case "max_capture_bytes":
 		return limits.MaxCaptureBytes, true
@@ -654,7 +657,7 @@ func nCapture(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	if f != nil {
 		return nil, f
 	}
-	spec := tt.MaterializeSpec(tag, selector)
+	spec := shared.MaterializeSpec(tag, selector)
 	if len(a) > 2 {
 		limit, f := asKeyword("capture", "the limit", a[2])
 		if f != nil {
@@ -683,7 +686,7 @@ func nRoute(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	if !ok {
 		return nil, typeError("route: the captures must be a vector, not " + KindOf(a[0]))
 	}
-	specs := make([]tt.CaptureSpec, 0, len(items.Items))
+	specs := make([]shared.CaptureSpec, 0, len(items.Items))
 	for _, item := range items.Items {
 		c, ok := item.(*CaptureVal)
 		if !ok {
@@ -890,7 +893,7 @@ func nScalarText(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	case BoolVal:
 		return StrVal(strconv.FormatBool(bool(x))), nil
 	case NumVal:
-		s, f := numberText(x.Value, x.Lexeme, x.HasLexeme)
+		s, f := numberText(rt.Renderers(), x.Value, x.Lexeme, x.HasLexeme)
 		if f != nil {
 			return nil, f
 		}
@@ -986,7 +989,7 @@ func nQuoted(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	}
 	max := rt.Limits().MaxScalarBytes
 	if n := quotedLen(s); n > max {
-		return nil, tt.LimitFail("max_scalar_bytes", uint64(max),
+		return nil, shared.LimitFail("max_scalar_bytes", uint64(max),
 			fmt.Sprintf("quoted: the quoted form is %d bytes, more than %d", n, max))
 	}
 	return StrVal(quote(s)), nil
@@ -1019,7 +1022,7 @@ func nStringJoin(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	}
 	max := rt.Limits().MaxScalarBytes
 	if n > max {
-		return nil, tt.LimitFail("max_scalar_bytes", uint64(max),
+		return nil, shared.LimitFail("max_scalar_bytes", uint64(max),
 			fmt.Sprintf("string-join: the joined string is %d bytes, more than %d", n, max))
 	}
 	var b strings.Builder
@@ -1057,7 +1060,7 @@ func nRepeat(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	}
 	max := rt.Limits().MaxScalarBytes
 	if n.Value*float64(len(s)) > float64(max) {
-		return nil, tt.LimitFail("max_scalar_bytes", uint64(max),
+		return nil, shared.LimitFail("max_scalar_bytes", uint64(max),
 			fmt.Sprintf("repeat: %s times %d bytes is more than %d", floatText(n.Value), len(s), max))
 	}
 	// Within the limit, the count fits an int, or the string is empty.
@@ -1109,7 +1112,7 @@ func nSchema(rt *Runtime, a []Val, at SourceSpan) (Val, *Fail) {
 	if columns, ok := a[0].(*VectorVal); ok {
 		max := rt.Limits().MaxColumns
 		if len(columns.Items) > max {
-			return nil, tt.LimitFail("max_columns", uint64(max),
+			return nil, shared.LimitFail("max_columns", uint64(max),
 				fmt.Sprintf("the schema declares %d columns, more than %d", len(columns.Items), max))
 		}
 	}

@@ -17,9 +17,7 @@ import { Yaml } from '@tabnas/yaml'
 import { BytesWriter } from '@tabnas/render'
 import { Limits, Metrics, ParserSource } from '@tabnas/transduce'
 
-import { compile } from '../dist/alchemy'
-
-import { drive, ok, thrown } from './common'
+import { compile, drive, ok, thrown } from './common'
 
 // A YAML-like block renderer over the events. The state is the stack of
 // open containers, one marker each: `:object-open` and `:array-open` for a

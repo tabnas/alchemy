@@ -6,10 +6,14 @@
 // one keyword marker each, asserted byte for byte; then the affine rule
 // over `events`, and the plan report.
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
-use tabnas_alchemy::{compile, Output, Program};
+use tabnas_alchemy::{Output, Program};
 use tabnas_transduce::{Code, Fail, Limits, Metrics, ParserSource, Prune, SourceMode};
+
+use common::compile;
 
 /// A YAML-like block renderer over the events. The state is the stack of
 /// open containers, one marker each: `:object-open` and `:array-open` for

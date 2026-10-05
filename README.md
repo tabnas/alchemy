@@ -5,9 +5,15 @@ A small, typed, functional streaming language for the
 **transducers** (what a source contributes to an output model) and
 **renderers** (how that model becomes text) are written. Programs are
 layout S-expressions, parsed by a tabnas grammar plugin like every other
-grammar in the fleet, and compiled onto
-[tabnas-transduce](https://github.com/tabnas/transduce) and
-[tabnas-render](https://github.com/tabnas/render).
+grammar in the fleet, and lowered onto the routers and renderers the host
+passes in, which [tabnas-transduce](https://github.com/tabnas/transduce)
+and [tabnas-render](https://github.com/tabnas/render) implement.
+
+alchemy also holds the types those packages share: the event protocol
+(events, sinks, tables, `Fail` and its codes, limits, selectors, datums)
+and the `Routers` and `Renderers` interfaces a program is lowered through.
+They sit in a unit of their own that depends on nothing, so transduce and
+render build on them without taking the language.
 
 ```
 def api-binding
@@ -39,7 +45,8 @@ language and [`AGENTS.md`](AGENTS.md) for how the repository is worked on.
 
 | Path | What it is |
 |---|---|
-| [`rs/`](rs/) | the `tabnas-alchemy` crate (library `tabnas_alchemy`, binary `alchemy`) |
+| [`rs/`](rs/) | the `tabnas-alchemy` crate (library `tabnas_alchemy`); with `default-features = false` it is only the shared types, `tabnas_alchemy::shared` |
+| [`go/`](go/), [`ts/`](ts/) | the Go module and the npm package; the shared types are `go/shared` and `@tabnas/alchemy/shared` |
 | [`alchemy-grammar.jsonic`](alchemy-grammar.jsonic) | the grammar document, options and rules: the one source every runtime embeds (`make embed`) |
 | [`test/spec/`](test/spec/) | shared fixtures, run by the fleet's fixture runner: `reader.tsv` (layout to canonical), `pipe.tsv` (desugared), `check.tsv` (the checker's codes and the plan reports) and `run.tsv` (a program over a document: the bytes it writes, or the failure); [`test/AGENTS.md`](test/AGENTS.md) describes them |
 | [`docs/language.md`](docs/language.md) | the language reference; every example in it is a fixture row |
@@ -49,11 +56,13 @@ language and [`AGENTS.md`](AGENTS.md) for how the repository is worked on.
 The crate is the whole language: the reader (the grammar plugin, the
 syntax tree with spans, the canonical and layout printers, desugaring),
 the resolver and the checker (types, affine streams, protocols, strict
-mode), the planner (`explain`), the interpreter over `tabnas-transduce`
-and `tabnas-render` with the standard compositions run natively, the
-embedded standard library, and the `alchemy` command's `canon`,
-`format`, `check`, `explain` and `run`. The differential test proves the
-native paths and the library's own text produce the same bytes.
+mode), the planner (`explain`), the interpreter, which lowers a plan
+through the `Routers` and `Renderers` its host passes in and runs the
+standard compositions natively, and the embedded standard library. The
+differential test proves the native paths and the library's own text
+produce the same bytes. The `alchemy` command, which composes alchemy,
+transduce and render, is
+[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli).
 
 ## Build and test
 
@@ -65,12 +74,15 @@ make build
 make test
 ```
 
+With the `alchemy` command from
+[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli):
+
 ```bash
-rs/target/debug/alchemy canon export.alc            # fully parenthesized, one form per line
-rs/target/debug/alchemy format export.alc           # layout form
-rs/target/debug/alchemy check export.alc            # parses, desugars, resolves and checks; silent when it does
-rs/target/debug/alchemy explain export.alc          # the plan report
-rs/target/debug/alchemy run export.alc response.json   # the CSV, streamed to standard output
+alchemy canon export.alc            # fully parenthesized, one form per line
+alchemy format export.alc           # layout form
+alchemy check export.alc            # parses, desugars, resolves and checks; silent when it does
+alchemy explain export.alc          # the plan report
+alchemy run export.alc response.json   # the CSV, streamed to standard output
 ```
 
 The program above names `column-from-meta` as the spec writes it

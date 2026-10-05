@@ -65,13 +65,13 @@ func TestTheSinkWritesThroughAWriter(t *testing.T) {
 }
 
 func TestCompileReportsReaderResolverAndExportFailures(t *testing.T) {
-	if _, f := Compile("(a b", "t.alc"); f == nil || f.Code != CodeDSLParseError {
+	if _, f := Compile("(a b", "t.alc", routers, renderers); f == nil || f.Code != CodeDSLParseError {
 		t.Errorf("%v", f)
 	}
-	if _, f := Compile("def export [input] (nope input)", "t.alc"); f == nil || !strings.HasPrefix(f.Message, "unknown_name: ") {
+	if _, f := Compile("def export [input] (nope input)", "t.alc", routers, renderers); f == nil || !strings.HasPrefix(f.Message, "unknown_name: ") {
 		t.Errorf("%v", f)
 	}
-	if _, f := Compile("def x 1", "t.alc"); f == nil || !strings.HasPrefix(f.Message, "no_export: ") {
+	if _, f := Compile("def x 1", "t.alc", routers, renderers); f == nil || !strings.HasPrefix(f.Message, "no_export: ") {
 		t.Errorf("%v", f)
 	}
 }

@@ -26,7 +26,6 @@ import {
   Program,
   Renderer,
   canonical,
-  compile,
   desugarProgram,
   format,
   parse,
@@ -35,7 +34,7 @@ import {
 } from '../dist/alchemy'
 import { isFail } from '../dist/fail'
 
-import { REPO_ROOT, SPEC_DIR, failCode } from './common'
+import { REPO_ROOT, SPEC_DIR, compile, failCode } from './common'
 
 // The finer code a row pins, and the position the failure names.
 const runnerOptions = {

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // value.go: runtime values (rs/src/value.rs; design brief section 4.3,
@@ -78,12 +78,12 @@ type RecordVal struct {
 
 // SelectorVal is a selector.
 type SelectorVal struct {
-	Selector tt.Selector
+	Selector shared.Selector
 }
 
 // CaptureVal is a capture spec, what `capture` makes for a `route`.
 type CaptureVal struct {
-	Spec tt.CaptureSpec
+	Spec shared.CaptureSpec
 }
 
 // TaggedVal is a constructor's value: `schema`, `row`, `table-end`,
@@ -429,8 +429,8 @@ const (
 type Plan struct {
 	Kind     PlanKind
 	Source   *Plan
-	Specs    []tt.CaptureSpec
-	Selector tt.Selector
+	Specs    []shared.CaptureSpec
+	Selector shared.Selector
 	Init     Val
 	Step     Fn
 	Finish   Fn
@@ -652,21 +652,21 @@ func liveKind(v Val) string {
 
 // FromDatum is the value of a retained transduce value. Numbers keep their
 // lexemes.
-func FromDatum(d *tt.Datum) Val {
+func FromDatum(d *shared.Datum) Val {
 	switch d.Kind {
-	case tt.DatumBool:
+	case shared.DatumBool:
 		return BoolVal(d.Bool)
-	case tt.DatumNumber:
+	case shared.DatumNumber:
 		return NumVal{Value: d.Value, Lexeme: d.Lexeme, HasLexeme: d.HasLexeme}
-	case tt.DatumString:
+	case shared.DatumString:
 		return StrVal(d.Text)
-	case tt.DatumArray:
+	case shared.DatumArray:
 		items := make([]Val, len(d.Items))
 		for i := range d.Items {
 			items[i] = FromDatum(&d.Items[i])
 		}
 		return &VectorVal{Items: items}
-	case tt.DatumObject:
+	case shared.DatumObject:
 		r := &RecordVal{keys: make([]string, 0, len(d.Members)), vals: make([]Val, 0, len(d.Members))}
 		for i := range d.Members {
 			r.Set(d.Members[i].Key, FromDatum(&d.Members[i].Value))
@@ -679,43 +679,43 @@ func FromDatum(d *tt.Datum) Val {
 // ToDatum is the value as a retained transduce value: the data kinds
 // convert, a keyword becomes its name, `missing` becomes `null`, and a
 // function, a selector, a capture, a stream or a text has no data form.
-func ToDatum(v Val) (tt.Datum, *Fail) {
+func ToDatum(v Val) (shared.Datum, *Fail) {
 	switch x := v.(type) {
 	case NullVal:
-		return tt.NullDatum(), nil
+		return shared.NullDatum(), nil
 	case BoolVal:
-		return tt.BoolDatum(bool(x)), nil
+		return shared.BoolDatum(bool(x)), nil
 	case NumVal:
-		return tt.Datum{Kind: tt.DatumNumber, Value: x.Value, Lexeme: x.Lexeme, HasLexeme: x.HasLexeme}, nil
+		return shared.Datum{Kind: shared.DatumNumber, Value: x.Value, Lexeme: x.Lexeme, HasLexeme: x.HasLexeme}, nil
 	case StrVal:
-		return tt.StringDatum(string(x)), nil
+		return shared.StringDatum(string(x)), nil
 	case KeywordVal:
-		return tt.StringDatum(string(x)), nil
+		return shared.StringDatum(string(x)), nil
 	case *VectorVal:
-		items := make([]tt.Datum, len(x.Items))
+		items := make([]shared.Datum, len(x.Items))
 		for i, item := range x.Items {
 			d, f := ToDatum(item)
 			if f != nil {
-				return tt.Datum{}, f
+				return shared.Datum{}, f
 			}
 			items[i] = d
 		}
-		return tt.ArrayDatum(items...), nil
+		return shared.ArrayDatum(items...), nil
 	case *RecordVal:
-		members := make([]tt.Member, len(x.keys))
+		members := make([]shared.Member, len(x.keys))
 		for i, k := range x.keys {
 			d, f := ToDatum(x.vals[i])
 			if f != nil {
-				return tt.Datum{}, f
+				return shared.Datum{}, f
 			}
-			members[i] = tt.Member{Key: k, Value: d}
+			members[i] = shared.Member{Key: k, Value: d}
 		}
-		return tt.ObjectDatum(members...), nil
+		return shared.ObjectDatum(members...), nil
 	}
 	if IsMissing(v) {
-		return tt.NullDatum(), nil
+		return shared.NullDatum(), nil
 	}
-	return tt.Datum{}, typeError(KindOf(v) + " has no data form")
+	return shared.Datum{}, typeError(KindOf(v) + " has no data form")
 }
 
 // Field is the field key of a record, or `missing`; ok is false when v is
@@ -733,7 +733,7 @@ func Field(v Val, key string) (Val, bool) {
 
 // GetPath is the value at a concrete path below v, walking records by key
 // and vectors by index; `missing` where the path leaves the data.
-func GetPath(v Val, segments []tt.Segment) Val {
+func GetPath(v Val, segments []shared.Segment) Val {
 	here := v
 	for _, seg := range segments {
 		switch x := here.(type) {
@@ -770,15 +770,15 @@ func JSONText(v Val) (string, *Fail) {
 
 // selectorSegments is a selector that names one location, as segments;
 // false when it names many (each-index, each-member).
-func selectorSegments(s tt.Selector) ([]tt.Segment, bool) {
+func selectorSegments(s shared.Selector) ([]shared.Segment, bool) {
 	steps := s.Steps()
-	out := make([]tt.Segment, 0, len(steps))
+	out := make([]shared.Segment, 0, len(steps))
 	for _, step := range steps {
 		switch step.Kind {
-		case tt.StepProperty:
-			out = append(out, tt.KeySegment(step.Name))
-		case tt.StepIndex:
-			out = append(out, tt.IndexSegment(step.Index))
+		case shared.StepProperty:
+			out = append(out, shared.KeySegment(step.Name))
+		case shared.StepIndex:
+			out = append(out, shared.IndexSegment(step.Index))
 		default:
 			return nil, false
 		}
@@ -856,7 +856,7 @@ func Equal(a, b Val) bool {
 	return false
 }
 
-func captureEqual(a, b tt.CaptureSpec) bool {
+func captureEqual(a, b shared.CaptureSpec) bool {
 	if a.Tag != b.Tag || a.Mode != b.Mode || !a.Selector.Equal(b.Selector) {
 		return false
 	}

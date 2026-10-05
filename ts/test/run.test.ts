@@ -21,9 +21,9 @@ import { Yaml } from '@tabnas/yaml'
 import { BytesWriter, JsonRenderer, StringOut, WriteOut } from '@tabnas/render'
 import { AbortFlag, Limits, Metrics, ParserSource, replay } from '@tabnas/transduce'
 
-import { Program, compile } from '../dist/alchemy'
+import { Program } from '../dist/alchemy'
 
-import { EXPECTED_CSV, PROGRAM, RECORDS, drive, err, events, ok, thrown } from './common'
+import { EXPECTED_CSV, PROGRAM, RECORDS, compile, drive, err, events, ok, thrown } from './common'
 import { FIXTURES, METADATA, record, recordsJson } from './support'
 
 function both(): [Program, Program] {

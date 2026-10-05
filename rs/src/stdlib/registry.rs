@@ -18,11 +18,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
-use tabnas_render::is_json_number;
-use tabnas_transduce::{CaptureSpec, Code, Fail, Selector};
 
 use crate::ast::SourceSpan;
 use crate::interp::Runtime;
+use crate::lex::is_json_number;
+use crate::shared::{CaptureSpec, Code, Fail, Selector};
 use crate::value::{type_error, Func, Partial, Plan, Seq, Val, MISSING};
 
 /// How many arguments an operator takes.
@@ -640,7 +640,7 @@ pub const CAPTURE_LIMITS: &[&str] = &[
 ];
 
 /// The bytes the host's `limits` give the capture limit `name`.
-pub fn capture_budget(limits: &tabnas_transduce::Limits, name: &str) -> Option<usize> {
+pub fn capture_budget(limits: &crate::shared::Limits, name: &str) -> Option<usize> {
     match name {
         "max_capture_bytes" => Some(limits.max_capture_bytes),
         "max_metadata_bytes" => Some(limits.max_metadata_bytes),
@@ -1334,7 +1334,7 @@ mod tests {
         );
         // What the render crate writes for the same string, where both
         // escape: the two agree on JSON's own escapes.
-        let json = tabnas_transduce::Datum::String("q\" \\ \n \u{1f} é".into()).to_string();
+        let json = crate::shared::Datum::String("q\" \\ \n \u{1f} é".into()).to_string();
         assert_eq!(quote("q\" \\ \n \u{1f} é"), json);
         // The length counted before building is the length built.
         for s in [
@@ -1399,7 +1399,7 @@ mod tests {
             length(&rt, std::slice::from_ref(&long), &at).unwrap(),
             Val::num((8 * (LENGTH_CHUNK / 3)) as f64)
         );
-        let flag = tabnas_transduce::AbortFlag::new();
+        let flag = crate::shared::AbortFlag::new();
         let rt = crate::lower::tests::runtime_with_abort("", flag.clone());
         flag.abort();
         let huge = Val::str(&"k".repeat(LENGTH_CHUNK * 64));

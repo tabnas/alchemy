@@ -286,8 +286,8 @@ dependencies = [
 name = "tabnas-render"
 version = "0.1.2"
 dependencies = [
+ "tabnas-alchemy",
  "tabnas-parser",
- "tabnas-transduce",
 ]
 
 [[package]]
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "tabnas-toml"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "indexmap",
  "regex",
@@ -314,6 +314,7 @@ version = "0.1.2"
 dependencies = [
  "indexmap",
  "serde_json",
+ "tabnas-alchemy",
  "tabnas-csv",
  "tabnas-json",
  "tabnas-parser",
@@ -332,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "tabnas-yaml"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "indexmap",
  "regex",

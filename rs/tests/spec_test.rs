@@ -12,14 +12,14 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use tabnas_alchemy::{canonical, compile, desugar, format, parse, same_program, Program, Renderer};
+use tabnas_alchemy::{canonical, desugar, format, parse, same_program, Program, Renderer};
 use tabnas_support::{
     is_error_expect, load_spec, load_spec_dir, parse_expect, Failure, Row, Runner, SpecOptions,
     Value,
 };
 use tabnas_transduce::{Code, Fail, Limits, Metrics, ParserSource, Prune, SourceMode};
 
-use common::{repo_root, spec_dir, text_value, to_failure};
+use common::{compile, repo_root, spec_dir, text_value, to_failure};
 
 /// Every fixture the directory holds has a runner below; a new file added
 /// without one fails here rather than passing silently.
