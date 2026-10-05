@@ -53,7 +53,7 @@ import (
 
 // VERSION is this module's version. It MUST equal the version rs/Cargo.toml
 // declares; TestVersionMatchesTheCrate fails the build if they drift.
-const VERSION = "0.1.3"
+const VERSION = "0.2.0"
 
 // Unnamed is the file name spans carry when a program is parsed from a
 // string rather than a file.
