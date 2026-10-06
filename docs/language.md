@@ -1406,6 +1406,11 @@ it, so a failure over a large document does not carry the document.
 
 ## The command
 
+The `alchemy` command is
+[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli), which
+composes this package with transduce's routers and render's renderers, in
+TypeScript (`npm install -g @tabnas/alchemy-cli`), Go and Rust.
+
 ```text
 alchemy canon FILE       print the program in canonical form
 alchemy format FILE      print the program in layout form
