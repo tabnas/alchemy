@@ -4,8 +4,14 @@ The TypeScript implementation of Alchemy, the small transformation language
 for streaming structured data through the Tabnas parser and transducer stack.
 
 ```sh
-npm install @tabnas/alchemy @tabnas/transduce @tabnas/render
+npm install @tabnas/alchemy @tabnas/transduce @tabnas/render @tabnas/parser @tabnas/json
 ```
+
+`@tabnas/parser` (the engine) and `@tabnas/json` are optional peers: the
+language (`@tabnas/alchemy`) needs both, and the shared types
+(`@tabnas/alchemy/shared`, which transduce and render build on) need
+neither, so a package that takes only the shared types does not pull them
+in. Install them wherever a program is compiled.
 
 Alchemy compiles a program onto stages it declares and does not implement:
 `Routers` and `Renderers`. `@tabnas/transduce` exports `routers` and

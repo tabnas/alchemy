@@ -5,6 +5,13 @@
 // entry that loads this directory and nothing else. Nothing here imports
 // anything outside it.
 //
+// No class here has `private` or `protected` members or `#` fields.
+// TypeScript compares a class with any of those nominally, so two installed
+// copies of this package (one in an application, one under a dependency
+// that peers on it, or a linked checkout beside a registry copy, as the
+// fleet's CI builds them) would refuse each other's `AbortFlag`, `Sink` or
+// `Routers`. Without them the types compare by shape and the copies agree.
+//
 // - the source protocol `JsonEvent` (`JsonEvents/1`) and the push boundary
 //   `Sink`, with `Flow` and the recorders;
 // - the table protocol `TableEvent` (`TableRows/1`): `Cell`, `Schema`, the

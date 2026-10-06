@@ -68,5 +68,13 @@
     "type": "git",
     "url": "git://github.com/tabnas/alchemy.git",
     "directory": "ts"
+  },
+  "peerDependenciesMeta": {
+    "@tabnas/json": {
+      "optional": true
+    },
+    "@tabnas/parser": {
+      "optional": true
+    }
   }
 }

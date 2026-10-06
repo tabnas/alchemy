@@ -153,7 +153,7 @@ export class Metrics {
 // The source polls it between parse steps through the engine's parse
 // budget and stops with `ABORTED`; long loops in stages poll it too.
 export class AbortFlag {
-  private aborted = false
+  aborted = false
 
   abort(): void {
     this.aborted = true
