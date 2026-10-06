@@ -37,7 +37,7 @@ export class EventRecorder implements Sink {
 
 // A sink made of a function. A function that returns nothing continues.
 export class FnSink implements Sink {
-  private fn: (ev: JsonEvent) => Flow | void
+  fn: (ev: JsonEvent) => Flow | void
 
   constructor(fn: (ev: JsonEvent) => Flow | void) {
     this.fn = fn
@@ -89,8 +89,8 @@ type Open =
 // it has had, dropped when it closes.
 export class TreeContract<S extends Sink> implements Sink {
   readonly inner: S
-  private open: Open[] = []
-  private rootDone = false
+  open: Open[] = []
+  rootDone = false
 
   constructor(inner: S) {
     this.inner = inner
@@ -99,7 +99,7 @@ export class TreeContract<S extends Sink> implements Sink {
   // The path of the value due next: the open containers, each by the member
   // or element open in it, and in the innermost object its last key when
   // that member's value is due.
-  private path(): Path {
+  path(): Path {
     const segments: Segment[] = []
     const last = this.open.length - 1
     this.open.forEach((open, i) => {
@@ -115,7 +115,7 @@ export class TreeContract<S extends Sink> implements Sink {
     return new Path(segments)
   }
 
-  private notATree(what: string): Fail {
+  notATree(what: string): Fail {
     return new Fail(
       'STREAMABILITY_UNKNOWN',
       `the stream holds ${what}, which a tree's events never do, so it is not a tree's`,
@@ -123,7 +123,7 @@ export class TreeContract<S extends Sink> implements Sink {
   }
 
   // A value is complete: the next in its array is due, or the root is.
-  private closed(): void {
+  closed(): void {
     const top = this.open[this.open.length - 1]
     if (undefined === top) this.rootDone = true
     else if (top.array) top.next++

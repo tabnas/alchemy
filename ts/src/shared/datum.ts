@@ -262,12 +262,12 @@ type Frame =
 // a failure leaves `path` unset and the stage that placed the builder adds
 // it.
 export class DatumBuilder {
-  private stack: Frame[] = []
-  private done: Datum | undefined = undefined
-  private held = 0
-  private readonly limit: number
-  private readonly limitName: string
-  private readonly duplicates: Duplicates
+  stack: Frame[] = []
+  done: Datum | undefined = undefined
+  held = 0
+  readonly limit: number
+  readonly limitName: string
+  readonly duplicates: Duplicates
 
   // A builder whose limit failure names `limitName` (a `Limits` field).
   constructor(limit: number, limitName: string, duplicates: Duplicates) {
@@ -295,7 +295,7 @@ export class DatumBuilder {
     return done
   }
 
-  private charge(n: number): void {
+  charge(n: number): void {
     this.held += n
     if (this.held > this.limit) {
       throw Fail.limit(
@@ -306,7 +306,7 @@ export class DatumBuilder {
     }
   }
 
-  private place(value: Datum): void {
+  place(value: Datum): void {
     const top = this.stack[this.stack.length - 1]
     if (undefined === top) {
       this.done = value
