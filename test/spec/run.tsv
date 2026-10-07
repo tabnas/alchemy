@@ -34,16 +34,18 @@ def key-lines [s event]\n  match event\n    case (key name) (transition s [(quot
 def step [s event]\n  match event\n    case (scalar "secret") (transition s [(scalar "***")])\n    case _ (transition s [event])\n\ndef export [input]\n  json (scan-emit [] step (fn [s] []) (events input))	"{\"user\":\"ann\",\"pass\":\"***\",\"list\":[\"***\",1]}\n"	{"user":"ann","pass":"secret","list":["secret",1]}	
 # The text algebra: concat, replace-text, quoted, repeat, string-join.
 def export [input] (concat (replace-text "a" "o" (text "banana")) "|" (quoted "t\\tab") "|" (repeat 3 "ab") "|" (string-join "-" ["x" "y" "z"]) "\\n")	"bonono|\"t\\tab\"|ababab|x-y-z\n"	0	
-# Runtime failures: a record with a key twice, a match no case takes, a program's fail (INPUT_INVALID), each where a per-item function meets it.
+# Runtime failures: a record with a key twice, a match no case takes, a program's fail (INPUT_INVALID), a scan-emit step that answers no transition, each where a per-item function meets it.
 def export [input] (join "," (map (fn [x] (scalar-text csv-options (get :a (record (entry :a x) (entry :a x))))) (select (path each-index) input)))	ERROR:duplicate_key@1:76	[1]	
 def export [input] (join "," (map (fn [x] (match x (case 1 "one"))) (select (path each-index) input)))	ERROR:no_match@1:43	[1,2]	
 def export [input] (join "," (map (fn [x] (fail "bad item: not wanted")) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:43	[1]	
+def step [s x] (get :t x)\ndef fin [s] []\ndef export [input] (join "," (scan-emit null step fin (select (path each-index) input)))	ERROR:type_mismatch@3:30	[{"t":1}]	
 # The standard table's own refusals: no metadata (the library's fail), a row before the metadata, a missing cell.
 def column-from-meta [source]\n  record\n    entry :label (get "title" source)\n    entry :source\n      as-path\n        get "path" source\n\ndef api-binding\n  record\n    entry :columns\n      path "response" "metadata" "fields"\n    entry :rows\n      path "response" "payload" "deep" "records" each-index\n    entry :column column-from-meta\n\ndef api-table [input]\n  table-from-json api-binding input\n\ndef export [input]\n  pipe input\n    api-table\n    csv csv-options	ERROR:INPUT_INVALID	{"response":{"payload":{"deep":{"records":[]}}}}	
 def column-from-meta [source]\n  record\n    entry :label (get "title" source)\n    entry :source\n      as-path\n        get "path" source\n\ndef api-binding\n  record\n    entry :columns\n      path "response" "metadata" "fields"\n    entry :rows\n      path "response" "payload" "deep" "records" each-index\n    entry :column column-from-meta\n\ndef api-table [input]\n  table-from-json api-binding input\n\ndef export [input]\n  pipe input\n    api-table\n    csv csv-options	ERROR:INPUT_ORDER_VIOLATION	{"response":{"payload":{"deep":{"records":[{"id":1}]}},"metadata":{"fields":[{"title":"Id","path":["id"]}]}}}	
 def column-from-meta [source]\n  record\n    entry :label (get "title" source)\n    entry :source\n      as-path\n        get "path" source\n\ndef api-binding\n  record\n    entry :columns\n      path "response" "metadata" "fields"\n    entry :rows\n      path "response" "payload" "deep" "records" each-index\n    entry :column column-from-meta\n\ndef api-table [input]\n  table-from-json api-binding input\n\ndef export [input]\n  pipe input\n    api-table\n    csv csv-options	ERROR:MISSING_VALUE	{"response":{"metadata":{"fields":[{"title":"Id","path":["id"]},{"title":"X","path":["x"]}]},"payload":{"deep":{"records":[{"id":1}]}}}}	
-# A program that renders its own text takes no renderer; a document that is not JSON fails at the source.
+# A program that renders its own text takes no renderer, and csv renders no JSON events; a document that is not JSON fails at the source.
 def export [input] (json input)	ERROR:render_of_text	[1]	json
+def export [input] input	ERROR:protocol_mismatch	{"a":1}	csv
 def export [input] (json input)	ERROR:INPUT_INVALID@1:4	[1,	
 # A program that does not compile fails before the document is read, with the checker's code.
 def export [input] (csv csv-options input)	ERROR:protocol_mismatch@1:37	[]	

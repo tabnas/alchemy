@@ -1396,6 +1396,12 @@ repurposed; one may be added.
 | `STREAM_REUSED` | `reused`, `captured` |
 | `STREAMABILITY_UNKNOWN` | `recursion`, `dynamic`, `unknown_output` |
 
+Each of these finer codes but the engine's and the linker's
+`duplicate_file` is declared in the grammar document,
+`alchemy-grammar.jsonic`, with the text of its messages in
+`options.error` (a line per sentence, `{name}` for what a failure fills
+in) and a hint in `options.hint`.
+
 Runtime failures carry the transduce and render codes unchanged
 (`INPUT_ORDER_VIOLATION`, `MISSING_VALUE`, `RESOURCE_LIMIT_EXCEEDED` with
 the limit's name, `PROTOCOL_ORDER_ERROR`, ...); a `fail "message"` in a

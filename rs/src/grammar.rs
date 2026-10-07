@@ -202,13 +202,23 @@ pub const GRAMMAR_TEXT: &str = r##"
       }
     },
     # This grammar's own codes. The first five are raised by the layout
-    # matcher; the rest are reserved for desugaring, which reports them
-    # through its failure with the code leading the message, so a fixture
-    # pins `ERROR:<code>` for either kind. `too_deep` is both: the
+    # matcher; the next five are reserved for desugaring, which reports
+    # them through its failure with the code leading the message, so a
+    # fixture pins `ERROR:<code>` for either kind. `too_deep` is both: the
     # reader's bound on nesting (256, MAX_NESTING), and the desugarer's on
-    # what its rewrites add. Each runtime holds its own raising sites'
-    # texts to these (rs: `the_desugaring_messages_match_the_document`,
-    # `the_too_deep_texts_name_the_bound`).
+    # what its rewrites add. The resolver's, the checker's and the
+    # runtime's codes follow, declared here too and raised the same way:
+    # the code leads the message of a DSL_TYPE_ERROR, a STREAM_REUSED or a
+    # STREAMABILITY_UNKNOWN. A message is the text its raising sites write,
+    # each `{name}` standing for what a site fills in; a code raised in
+    # more than one sentence holds one per line. The texts are those a
+    # program compiled on its own can meet (AGENTS.md, "Error codes", names
+    # the few raised only otherwise). Each runtime holds its own raising
+    # sites' texts to these (rs: `the_desugaring_messages_match_the_document`,
+    # `the_too_deep_texts_name_the_bound`, and
+    # `the_raised_messages_match_the_document`, which reads every failure
+    # the shared fixtures meet, wants its code and text here, and wants
+    # every line here met by one).
     "error": {
       "tab_indent": "tab in indentation",
       "bad_indent": "unexpected indentation before: {src}",
@@ -219,7 +229,31 @@ pub const GRAMMAR_TEXT: &str = r##"
       "bad_def": "def takes a name and a value, or a name, [params] and a body",
       "bad_let": "let takes one binding [name value] and one body",
       "bad_if": "if takes a condition and exactly two branches",
-      "bad_match": "match takes a value and (case pattern body) clauses"
+      "bad_match": "match takes a value and (case pattern body) clauses",
+      # The resolver's.
+      "unknown_name": "{name} is not defined",
+      "not_def": "a top-level form must be a def",
+      "duplicate_def": "{name} is defined twice",
+      "reserved": "{name} is a special form and cannot be defined",
+      "bad_fn": "fn takes [params] of symbols and one body",
+      "misplaced_def": "def is only allowed at the top level",
+      "bad_pattern": "{name} is not a constructor; a list pattern is (constructor pattern...)\na list pattern is (constructor pattern...)",
+      # The resolver's and the evaluator's.
+      "recursion": "{name} reaches itself through {names}; strict mode refuses recursion\nevaluation nested past 1000 levels: a function applied to itself, or definitions or calls chained that deep; strict mode refuses recursion without a bound",
+      # The checker's, and the runtime's where a value read at run time meets the same refusal.
+      "arity": "{callee} takes {count} argument(s), got {given}\nthe pattern ({constructor} ...) takes {count} field(s), got {given}\n{what} takes a function of {count} argument(s), not {given}\npartial supplies {given} argument(s) to a function of {count}\nexport takes one parameter, the input, not {given}",
+      "type_mismatch": "{what} must be {expected}, not {actual}\n{what} must answer {expected}, not {actual}\n{what} was expected, not {actual}\n{native}: expected a string or a text, not {actual}\n{what} must name one location, not {selector}\n{what} cannot hold {item}; a stream is used once, where it is\n{what} cannot hold {item}; a stream or a text is used once, where it is\nthe state of scan-emit cannot be a {type}\n{callee} is a {type} and cannot be called\n{value} is not a function and cannot be called\nan empty list is not a call\nexport must be a fn [input]\npop: the vector is empty; there is no last item to remove\ntop: the vector is empty; there is no last item\n{native}: the options have no :{key}\nkind: {kind} cannot be asked; a stream or a text is used where it is, not inspected",
+      "protocol_mismatch": "{what} must be {expected}, not {actual}\n{what} must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events\ncsv renders table events; the program's result is JSON events (render it as json, or make a table of it with table-from-json)",
+      "no_export": "the program has no `def export [input]`",
+      "bad_output": "export answers a Stream<{item}>; render it as a text (join, concat-map), or make table events of it\nexport answers a {type}; it must answer a text, table events or JSON events",
+      "unknown_output": "the result of export cannot be typed; it must be a text, table events or JSON events",
+      "reused": "{name} is a stream and is used {count} times; a stream is consumed once",
+      "captured": "{name} is a stream and is captured by a fn; a function may run more than once, and a stream is consumed once",
+      "dynamic": "{what} must be a fn, a definition, a native or a partial of one, so the plan can be analyzed; strict mode refuses a function obtained at run time",
+      # The runtime's, where a value is built or a match is taken.
+      "duplicate_key": "record has two entries for :{key}",
+      "no_match": "no case matches {value}",
+      "render_of_text": "the program renders its own text; --render applies to a table or JSON events result"
     },
     "hint": {
       "tab_indent": "Indentation is spaces only, two per level. Replace the tab with spaces.",
@@ -231,7 +265,27 @@ pub const GRAMMAR_TEXT: &str = r##"
       "bad_def": "Write def NAME VALUE, or def NAME [PARAMS] BODY.",
       "bad_let": "Write let [NAME VALUE] BODY.",
       "bad_if": "Write if CONDITION THEN ELSE.",
-      "bad_match": "Write match VALUE (case PATTERN BODY)..."
+      "bad_match": "Write match VALUE (case PATTERN BODY)...",
+      "unknown_name": "A name is a definition of the program, a parameter or a binding in\nscope, or one of the library's. Define it, or correct its spelling.",
+      "not_def": "Each top-level form is a definition: def NAME VALUE, or def NAME\n[PARAMS] BODY. Put the expression inside one.",
+      "duplicate_def": "A program defines each name once. Rename or remove one of the\ndefinitions.",
+      "reserved": "def, fn, let, if, match, case and pipe are special forms. Choose\nanother name.",
+      "bad_fn": "Write fn [PARAMS] BODY: a vector of parameter names, then one body.",
+      "misplaced_def": "def defines a name at the top level only. Inside a body, bind a value\nwith let [NAME VALUE] BODY.",
+      "bad_pattern": "A list pattern is (CONSTRUCTOR PATTERN...), its head a constructor\nsuch as transition, key or scalar; any other pattern is a value, a\nname or _.",
+      "recursion": "Strict mode refuses recursion: a definition may not reach itself, and\nevaluation nests at most 1000 levels. Repeat over data with map,\nfilter, concat-map or scan-emit instead.",
+      "arity": "Give a function, a native, a constructor pattern or a partial exactly\nas many arguments as it takes, and a stream operator a function of as\nmany parameters as it passes; export takes one, the input.",
+      "type_mismatch": "A value of one type is given where another is wanted. The message\nnames the place, what it wants and what came.",
+      "protocol_mismatch": "A stream's protocol (JSON events, table events, a stream of items, a\ntext) must be the one its taker reads: select or route makes items of\nJSON events, table-from-json makes table events of them, and json or\ncsv renders them.",
+      "no_export": "A program answers through def export [input]: one function of the\ninput, whose result is the output.",
+      "bad_output": "export answers a text, table events or JSON events. Render a stream\nof items as a text (join, concat-map), or make table events of it.",
+      "unknown_output": "The type of export's result must be known when the program is\nchecked: a text, table events or JSON events, not a value read at run\ntime.",
+      "reused": "A stream is read once, so it is used in one place only. Take\neverything needed from it in that one pass (route captures several\nparts at once).",
+      "captured": "A fn may run more than once, and a stream is read once, so a fn cannot\nuse a stream from the scope around it. Pass what it needs as an\nargument instead.",
+      "dynamic": "Strict mode needs to know, when the program is checked, the function\na stream operator runs. Pass a fn, a definition, a native or a\npartial of one, not a function read from data.",
+      "duplicate_key": "A record holds each key once. Remove or rename the repeated entry.",
+      "no_match": "Add a case for the value, or end with (case _ BODY), which takes any\nvalue.",
+      "render_of_text": "A program that renders its own text takes no renderer. Leave --render\nout, or have export answer table events or JSON events."
     }
   },
 
