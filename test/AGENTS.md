@@ -56,6 +56,16 @@ The **code** is the contract, never the message. Which code a row pins:
   first word whatever the code; `run.tsv`'s runner makes the
   distinction, and a port's runners should make it for every file.)
 
+A row pins the code; the grammar document holds the message. Every
+finer code a row meets, the engine's aside, is declared in
+`../alchemy-grammar.jsonic`, `options.error` and `options.hint`, with
+the text its raising sites write (`{name}` for what a site fills in, a
+line per sentence), and each runtime's
+`the_raised_messages_match_the_document` runs every error row here and
+wants each failure's code declared there, its text a line of that code's
+entry, and every line met by some row. A row that meets a new failure,
+or a new sentence of a known one, comes with its line in the catalogue.
+
 A trailing `@<row>:<col>` also pins the 1-based position the failure
 names: the program's form, for the reader, the checker and a program's
 own runtime failures; the document's, for a document that is not JSON.
@@ -64,7 +74,10 @@ position where the failure has one to name. (The fleet's `ax-audit`
 counts any cell that is not a bare lower-case `ERROR:<code>` as a message
 row, so it reports these, and the upper-case transduce codes, as `MSG`.
 They are not: `@tabnas/support` reads `ERROR:<code>@<row>:<col>` as a
-code and a position, in every runtime.)
+code and a position, in every runtime. The fleet's code census,
+`ax-codes`, likewise counts a code as exercised only by a bare
+`ERROR:<code>` cell, so a code the rows pin only with a position has one
+bare row too, a case of its own; `check.tsv` groups most of them.)
 
 ## Who runs what
 

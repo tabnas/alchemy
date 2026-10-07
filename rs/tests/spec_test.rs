@@ -214,6 +214,195 @@ fn run_failure(fail: &Fail) -> Failure {
     failure
 }
 
+/// The failures a row's program meets, as the runners above meet them:
+/// the reader's (`reader.tsv`), the desugarer's (`pipe.tsv`), compile's
+/// (`check.tsv`), or a run's on both paths (`run.tsv`).
+fn row_failures(file: &str, row: &Row) -> Vec<Fail> {
+    let input = row.unesc(0);
+    match file {
+        "reader.tsv" => parse(&input).err().into_iter().collect(),
+        "pipe.tsv" => parse(&input)
+            .and_then(|program| desugar::program(program, &input))
+            .err()
+            .into_iter()
+            .collect(),
+        "check.tsv" => compile(&input, "check").err().into_iter().collect(),
+        _ => {
+            let doc = match row.unesc_named("doc") {
+                doc if doc.is_empty() => "null".to_string(),
+                doc => doc,
+            };
+            let render = match row.named("render") {
+                "" => None,
+                name => Renderer::named(name),
+            };
+            [true, false]
+                .into_iter()
+                .filter_map(|native| run_both(&input, &doc, render, native).err())
+                .collect()
+        }
+    }
+}
+
+/// The fixed parts of a template, between and around its `{name}`s.
+fn fixed_parts(line: &str) -> Vec<&str> {
+    let bytes = line.as_bytes();
+    let mut parts = Vec::new();
+    let (mut start, mut i) = (0, 0);
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let name = bytes[i + 1..]
+                .iter()
+                .take_while(|b| b.is_ascii_lowercase() || **b == b'_')
+                .count();
+            if name > 0 && bytes.get(i + 1 + name) == Some(&b'}') {
+                parts.push(&line[start..i]);
+                i += name + 2;
+                start = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    parts.push(&line[start..]);
+    parts
+}
+
+/// Whether `text` fills the template `line`: its fixed parts in order,
+/// each `{name}` any text, none included.
+fn fills(line: &str, text: &str) -> bool {
+    let parts = fixed_parts(line);
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if parts.len() == 1 {
+        return text == line;
+    }
+    if text.len() < first.len() + last.len() || !text.starts_with(first) || !text.ends_with(last) {
+        return false;
+    }
+    let end = text.len() - last.len();
+    let mut at = first.len();
+    for part in &parts[1..parts.len() - 1] {
+        match text[at..end].find(part) {
+            Some(found) => at += found + part.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+/// Whether `text` is an instance of the template `line`. The engine trims
+/// the messages it writes from a template, so a `{name}` that ends a line
+/// may take the space before it with it.
+fn instance_of(line: &str, text: &str) -> bool {
+    if fills(line, text) {
+        return true;
+    }
+    match (fixed_parts(line).last(), line.rfind('{')) {
+        (Some(&""), Some(open)) if line.ends_with('}') => fills(line[..open].trim_end(), text),
+        _ => false,
+    }
+}
+
+/// Every failure the shared fixtures meet is declared in the grammar
+/// document: the finer code that leads the message is a key of the
+/// installed `options.error`, the engine's and this grammar's, and the
+/// text after it is a line of that entry, each `{name}` standing for what
+/// the raising site fills in (a failure raised inside the standard
+/// library ends with its position there, ` (at stdlib/...)`, which is not
+/// part of the text). Each line of each code this grammar adds to the
+/// engine's is the most specific line some row meets, so the document
+/// holds no text nothing raises, and each of those codes has a hint. A
+/// raising site whose code or text drifts from the document fails here.
+#[test]
+fn the_raised_messages_match_the_document() {
+    let installed = tabnas_alchemy::make().config();
+    let engine = tabnas::Tabnas::new().config().error;
+    let mut met = BTreeSet::new();
+    let mut problems = Vec::new();
+    let mut failures = 0;
+    for spec in load_spec_dir(spec_dir(), &SpecOptions::default()).expect("the fixtures load") {
+        for row in &spec.rows {
+            if !is_error_expect(row.col(1)) {
+                continue;
+            }
+            for fail in row_failures(&spec.file, row) {
+                if !matches!(
+                    fail.code,
+                    Code::DslParseError
+                        | Code::DslTypeError
+                        | Code::StreamReused
+                        | Code::StreamabilityUnknown
+                ) {
+                    continue;
+                }
+                failures += 1;
+                let Some((code, text)) = fail.message.split_once(": ") else {
+                    problems.push(format!(
+                        "{}: {} has no finer code: {}",
+                        row.location(),
+                        fail.code.as_str(),
+                        fail.message
+                    ));
+                    continue;
+                };
+                let text = match text.rfind(" (at stdlib/") {
+                    Some(library) if text.ends_with(')') => &text[..library],
+                    _ => text,
+                };
+                let Some(entry) = installed.error.get(code) else {
+                    problems.push(format!(
+                        "{}: {code} is not declared in options.error",
+                        row.location()
+                    ));
+                    continue;
+                };
+                // The most specific line, the first of equals.
+                let fixed = |line: &str| fixed_parts(line).concat().len();
+                let mut best: Option<&str> = None;
+                for line in entry.split('\n').filter(|line| instance_of(line, text)) {
+                    if best.is_none_or(|known| fixed(line) > fixed(known)) {
+                        best = Some(line);
+                    }
+                }
+                match best {
+                    Some(line) => {
+                        met.insert(format!("{code}\n{line}"));
+                    }
+                    None => problems.push(format!(
+                        "{}: no line of options.error.{code} is {text:?}",
+                        row.location()
+                    )),
+                }
+            }
+        }
+    }
+    assert!(failures > 0, "the fixtures meet failures");
+    let own: BTreeMap<&String, &String> = installed
+        .error
+        .iter()
+        .filter(|(code, _)| !engine.contains_key(*code))
+        .collect();
+    assert!(!own.is_empty(), "the grammar declares codes of its own");
+    for (code, entry) in own {
+        if !installed.hint.contains_key(code) {
+            problems.push(format!("options.hint.{code} is not declared"));
+        }
+        for line in entry.split('\n') {
+            if !met.contains(&format!("{code}\n{line}")) {
+                problems.push(format!(
+                    "options.error.{code}: no fixture row meets {line:?}"
+                ));
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "{} problem(s):\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
+}
+
 /// `format` prints a program the reader reads back to the same forms,
 /// spans aside, for every program the fixtures parse. Failures are
 /// collected across every row so one report names them all.

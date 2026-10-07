@@ -35,7 +35,7 @@ export const SPEC_DIR = findSpecDir(__dirname)
 
 // The codes whose failures carry a finer code as the first word of the
 // message, before `: `.
-const OWN_CODES = ['DSL_PARSE_ERROR', 'DSL_TYPE_ERROR', 'STREAM_REUSED', 'STREAMABILITY_UNKNOWN']
+export const OWN_CODES = ['DSL_PARSE_ERROR', 'DSL_TYPE_ERROR', 'STREAM_REUSED', 'STREAMABILITY_UNKNOWN']
 
 // The code a fixture pins for a failure: the finer code for this
 // package's own codes, the transduce code itself for any other. A failure

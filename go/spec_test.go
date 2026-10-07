@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -359,6 +360,188 @@ func TestSpecRun(t *testing.T) {
 		})
 	}
 	t.Logf("run.tsv: %d rows run, %d skipped (no incremental adapter)", ran, skipped)
+}
+
+// rowFailures is what a row's program meets, as the runners above meet it:
+// the reader's (reader.tsv), the desugarer's (pipe.tsv), compile's
+// (check.tsv), or a run's on both paths (run.tsv). ran is false for a run
+// row this build cannot run: one that reads its document, in a build
+// without the incremental adapter.
+func rowFailures(t *testing.T, file string, row *support.Row) (fails []*Fail, ran bool) {
+	input := row.Unesc(0)
+	var f *Fail
+	switch file {
+	case "reader.tsv":
+		_, f = readerRow(input)
+	case "pipe.tsv":
+		_, f = pipeRow(input)
+	case "check.tsv":
+		_, f = checkRow(input)
+	default:
+		render := runRender(t, row)
+		if !tt.AdapterBuilt() && !beforeTheSource(input, render) {
+			return nil, false
+		}
+		for _, native := range []bool{true, false} {
+			if o := runBoth(input, runDoc(row), render, native); o.fail != nil {
+				fails = append(fails, o.fail)
+			}
+		}
+		return fails, true
+	}
+	if f != nil {
+		fails = append(fails, f)
+	}
+	return fails, true
+}
+
+// placeholder is a template's `{name}`; finalPlaceholder one that ends it,
+// with the space before it.
+var (
+	placeholder      = regexp.MustCompile(`\{[a-z_]+\}`)
+	finalPlaceholder = regexp.MustCompile(`\s*\{[a-z_]+\}$`)
+)
+
+// fills reports whether text fills the template line: its fixed parts in
+// order, each `{name}` any text, none included.
+func fills(line, text string) bool {
+	parts := placeholder.Split(line, -1)
+	if len(parts) == 1 {
+		return text == line
+	}
+	first, last := parts[0], parts[len(parts)-1]
+	if len(text) < len(first)+len(last) || !strings.HasPrefix(text, first) || !strings.HasSuffix(text, last) {
+		return false
+	}
+	end := len(text) - len(last)
+	at := len(first)
+	for _, part := range parts[1 : len(parts)-1] {
+		found := strings.Index(text[at:end], part)
+		if found < 0 {
+			return false
+		}
+		at += found + len(part)
+	}
+	return true
+}
+
+// instanceOf reports whether text is an instance of the template line. The
+// engine trims the messages it writes from a template, so a `{name}` that
+// ends a line may take the space before it with it.
+func instanceOf(line, text string) bool {
+	if fills(line, text) {
+		return true
+	}
+	bare := finalPlaceholder.ReplaceAllString(line, "")
+	return bare != line && fills(bare, text)
+}
+
+// fixedLength is the fixed text of a template: what a more specific line
+// has more of.
+func fixedLength(line string) int {
+	return len(placeholder.ReplaceAllString(line, ""))
+}
+
+// TestTheRaisedMessagesMatchTheDocument: every failure the shared fixtures
+// meet is declared in the grammar document (rs/tests/spec_test.rs,
+// the_raised_messages_match_the_document). The finer code that leads the
+// message is a key of the installed error messages, the engine's and this
+// grammar's, and the text after it is a line of that entry, each `{name}`
+// standing for what the raising site fills in (a failure raised inside the
+// standard library ends with its position there, ` (at stdlib/...)`, which
+// is not part of the text). Each line of each code the document declares is
+// the most specific line some row meets, so the document holds no text
+// nothing raises, and each of its codes has a hint. A raising site whose
+// code or text drifts from the document fails here.
+//
+// A build without the incremental adapter cannot run the run rows that
+// read their document; it checks the failures it meets, and leaves the
+// lines only those rows meet to a build with the adapter.
+func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
+	installed := Make().Config().ErrorMessages
+	doc, err := documentValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := doc["options"].(map[string]any)
+	declared := options["error"].(map[string]any)
+	hints := options["hint"].(map[string]any)
+	specs, err := support.LoadSpecDir(specDir(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	met := map[string]bool{}
+	failures, skipped := 0, 0
+	for _, spec := range specs {
+		for _, row := range spec.Rows {
+			if !support.IsErrorExpect(row.Col(1)) {
+				continue
+			}
+			fails, ran := rowFailures(t, spec.Name, row)
+			if !ran {
+				skipped++
+				continue
+			}
+			for _, f := range fails {
+				switch f.Code {
+				case CodeDSLParseError, CodeDSLTypeError, CodeStreamReused, CodeStreamabilityUnknown:
+				default:
+					continue
+				}
+				failures++
+				code, text, ok := strings.Cut(f.Message, ": ")
+				if !ok {
+					t.Errorf("%s: %s has no finer code: %s", row.Where(), f.Code, f.Message)
+					continue
+				}
+				if library := strings.LastIndex(text, " (at stdlib/"); library >= 0 && strings.HasSuffix(text, ")") {
+					text = text[:library]
+				}
+				entry, ok := installed[code]
+				if !ok {
+					t.Errorf("%s: %s is not declared in options.error", row.Where(), code)
+					continue
+				}
+				best := ""
+				found := false
+				for _, line := range strings.Split(entry, "\n") {
+					if instanceOf(line, text) && (!found || fixedLength(line) > fixedLength(best)) {
+						best, found = line, true
+					}
+				}
+				if !found {
+					t.Errorf("%s: no line of options.error.%s is %q", row.Where(), code, text)
+					continue
+				}
+				met[code+"\n"+best] = true
+			}
+		}
+	}
+	if failures == 0 {
+		t.Fatal("the fixtures meet no failures")
+	}
+	for code := range declared {
+		if _, ok := hints[code].(string); !ok {
+			t.Errorf("options.hint.%s is not declared", code)
+		}
+	}
+	if skipped > 0 {
+		t.Logf("%d run rows read their document, which this build cannot (build with -tags tabnas_nodecell); every line met is left to a build that can", skipped)
+		return
+	}
+	codes := make([]string, 0, len(declared))
+	for code := range declared {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	for _, code := range codes {
+		entry, _ := declared[code].(string)
+		for _, line := range strings.Split(entry, "\n") {
+			if !met[code+"\n"+line] {
+				t.Errorf("options.error.%s: no fixture row meets %q", code, line)
+			}
+		}
+	}
 }
 
 // TestFormatRoundTripsEveryFixtureRow: Format prints a program the reader

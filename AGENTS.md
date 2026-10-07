@@ -143,7 +143,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (each takes the host's `Routers` and `Renderers`; several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
 | `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded from the crate's copies in `rs/stdlib/`, resolved and checked on first use |
-| `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner` (`run.tsv` both natively and interpreted), the layout round trip, the reference's examples |
+| `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner` (`run.tsv` both natively and interpreted), the layout round trip, the reference's examples, and every failure the fixtures meet held to the grammar document's catalogue |
 | `rs/tests/debug_model_test.rs` | the grammar composed with `tabnas-debug`, as every grammar carries |
 | `rs/tests/repeat_test.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
 | `rs/tests/lower_test.rs` | the lowering, the program API and the effects that need a real run, on transduce's routers and render's renderers (dev-dependencies) |
@@ -252,6 +252,27 @@ needs several sources, which `check` never takes;
 carry the transduce and render codes unchanged, and a `fail "message"`
 in a program is `INPUT_INVALID` with the message and the form's
 position, from `check` too when the plan's evaluation reaches it.
+
+Every finer code of the later stages is declared in the grammar
+document too (the maintainer's ruling of 2026-10-07: alchemy declares
+every code its fixtures expect), in `options.error` and `options.hint`
+after the grammar's own. An entry's message is the text its raising
+sites write, each `{name}` standing for what a site fills in, and a code
+raised in more than one sentence holds one per line.
+`the_raised_messages_match_the_document` (`rs/tests/spec_test.rs`, and
+the same test in `ts/test/spec.test.ts` and `go/spec_test.go`) runs
+every error row of `test/spec/` and wants each failure's code declared,
+its text a line of that code's entry, and every line of every entry met
+by some row. A raising site whose code or text drifts fails there; a new
+failure's text goes into the catalogue with a row that meets it. What a
+program compiled on its own cannot meet is not declared: the linker's
+`duplicate_file`, and the linker's own sentences for `no_export` and
+`duplicate_def` (several sources, which no fixture compiles);
+`undeclared`, a library definition without a signature (a defect of the
+library); and Rust's `internal`, a poisoned definition cache. Nor are
+the texts of defensive checks no fixture reaches, such as the resolver's
+`a def names a symbol`, which the desugarer's `bad_def` always pre-empts,
+and the lowering's own checks of a plan the checker has already typed.
 
 ## Untrusted input
 

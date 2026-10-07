@@ -28,13 +28,15 @@ import {
   canonical,
   desugarProgram,
   format,
+  grammarDocument,
+  make as makeAlchemy,
   parse,
   rendererNamed,
   sameProgram,
 } from '../dist/alchemy'
 import { isFail } from '../dist/fail'
 
-import { REPO_ROOT, SPEC_DIR, compile, failCode } from './common'
+import { OWN_CODES, REPO_ROOT, SPEC_DIR, compile, failCode } from './common'
 
 // The finer code a row pins, and the position the failure names.
 const runnerOptions = {
@@ -165,6 +167,130 @@ makeRunner({
     throw native.fail
   },
 }).file(join(SPEC_DIR, 'run.tsv'))
+
+// The failures a row's program meets: the reader's (reader.tsv), the
+// desugarer's (pipe.tsv), compile's (check.tsv), or a run's, both paths
+// (run.tsv), as the runners above meet them.
+function rowFailures(file: string, input: string, row: SpecRow): unknown[] {
+  const met = (work: () => unknown): unknown[] => {
+    try {
+      work()
+      return []
+    } catch (fail) {
+      return [fail]
+    }
+  }
+  switch (file) {
+    case 'reader.tsv':
+      return met(() => parse(input))
+    case 'pipe.tsv':
+      return met(() => desugarProgram(parse(input), input))
+    case 'check.tsv':
+      return met(() => compile(input, 'check'))
+    default: {
+      const cell = row.unescNamed('doc')
+      const doc = '' === cell ? 'null' : cell
+      const name = row.named('render')
+      const render = '' === name ? undefined : rendererNamed(name)
+      return [true, false].flatMap((native) => met(() => runBoth(input, doc, render, native)))
+    }
+  }
+}
+
+// Whether `text` is an instance of the template `line`. The engine trims
+// the messages it writes from a template, so a `{name}` that ends a line
+// may take the space before it with it.
+function instanceOf(line: string, text: string): boolean {
+  if (fills(line, text)) return true
+  const bare = line.replace(/\s*\{[a-z_]+\}$/, '')
+  return bare !== line && fills(bare, text)
+}
+
+// Whether `text` fills the template `line`: its fixed parts in order, each
+// `{name}` any text, none included.
+function fills(line: string, text: string): boolean {
+  const parts = line.split(/\{[a-z_]+\}/)
+  if (1 === parts.length) return text === line
+  const first = parts[0]
+  const last = parts[parts.length - 1]
+  const end = text.length - last.length
+  if (end < first.length || !text.startsWith(first) || !text.endsWith(last)) return false
+  let at = first.length
+  for (const part of parts.slice(1, -1)) {
+    const found = text.indexOf(part, at)
+    if (-1 === found || found + part.length > end) return false
+    at = found + part.length
+  }
+  return true
+}
+
+// The fixed text of a template: what a more specific line has more of. A
+// failure meets the most specific line it is an instance of, the first of
+// equals.
+function fixedLength(line: string): number {
+  return line.replace(/\{[a-z_]+\}/g, '').length
+}
+
+// Every failure the shared fixtures meet is declared in the grammar
+// document (rs/tests/spec_test.rs, `the_raised_messages_match_the_document`):
+// the finer code that leads the message is a key of the installed
+// `options.error`, the engine's and this grammar's, and the text after it is
+// a line of that entry, each `{name}` standing for what the raising site
+// fills in (a failure raised inside the standard library ends with its
+// position there, ` (at stdlib/...)`, which is not part of the text). Each
+// line of each code the document declares is the most specific line some
+// row meets, so the document holds no text nothing raises, and each of its
+// codes has a hint. A raising site whose code or text drifts fails here.
+describe('the catalogue', () => {
+  it('the raised messages match the document', () => {
+    const catalogue: Record<string, string> = makeAlchemy().options.error
+    const document = grammarDocument()
+    const met = new Set<string>()
+    const problems: string[] = []
+    let failures = 0
+    for (const spec of loadSpecDir(SPEC_DIR)) {
+      for (const row of spec.rows) {
+        if (!isErrorExpect(row.col(1))) continue
+        const input = row.unesc(row.resolve(0))
+        for (const fail of rowFailures(spec.file, input, row)) {
+          if (!isFail(fail) || !OWN_CODES.includes(fail.code)) continue
+          failures++
+          const split = fail.message.indexOf(': ')
+          if (-1 === split) {
+            problems.push(`${row.where()}: ${fail.code} has no finer code: ${fail.message}`)
+            continue
+          }
+          const code = fail.message.substring(0, split)
+          let text = fail.message.substring(split + 2)
+          const library = text.lastIndexOf(' (at stdlib/')
+          if (-1 !== library && text.endsWith(')')) text = text.substring(0, library)
+          const entry = catalogue[code]
+          if ('string' !== typeof entry) {
+            problems.push(`${row.where()}: ${code} is not declared in options.error`)
+            continue
+          }
+          const lines = entry
+            .split('\n')
+            .filter((line) => instanceOf(line, text))
+            .sort((a, b) => fixedLength(b) - fixedLength(a))
+          if (0 === lines.length) {
+            problems.push(`${row.where()}: no line of options.error.${code} is ${JSON.stringify(text)}`)
+          } else {
+            met.add(code + '\n' + lines[0])
+          }
+        }
+      }
+    }
+    assert.ok(failures > 0, 'the fixtures meet failures')
+    for (const [code, entry] of Object.entries<string>(document.options.error)) {
+      if ('string' !== typeof document.options.hint[code]) problems.push(`options.hint.${code} is not declared`)
+      for (const line of entry.split('\n')) {
+        if (!met.has(code + '\n' + line)) problems.push(`options.error.${code}: no fixture row meets ${JSON.stringify(line)}`)
+      }
+    }
+    assert.deepStrictEqual(problems, [])
+  })
+})
 
 // `format` prints a program the reader reads back to the same forms, spans
 // aside, for every program the fixtures parse.

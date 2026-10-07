@@ -8,6 +8,7 @@ def if 1\ndef export [input] input	ERROR:reserved
 def f (fn x x)\ndef export [input] input	ERROR:bad_fn
 def export [input] (def y input)	ERROR:misplaced_def
 def export [input] (match input (case (map a) a))	ERROR:bad_pattern
+def export [input] (match 1 (case (1 2) 3))	ERROR:bad_pattern@1:35
 # Recursion is refused in strict mode, at the first definition on the cycle.
 def a [x] (b x)\ndef b [x] (a x)\ndef export [input] (a input)	ERROR:recursion@1:1
 # ... and a function applied to itself, which only evaluation can see: `check` builds the plan, and the evaluation depth ends it.
@@ -21,6 +22,10 @@ def export [input] (json [input])	ERROR:type_mismatch@1:27
 def export [input] (1 input)	ERROR:type_mismatch@1:21
 def export [input] (join "," [(json input)])	ERROR:type_mismatch@1:30
 def bad (map public-column [1])\ndef export [input] (json input)	ERROR:type_mismatch@1:28
+def export [input] (join "," (map (fn [a b] a) (select (path each-index) input)))	ERROR:arity@1:35
+def export [input] (let [f (partial (fn [a] a) 1 2)] (json input))	ERROR:arity@1:28
+def export [input] ()	ERROR:type_mismatch@1:20
+def step [s x] (transition s [])\ndef fin [s] []\ndef export [input] (join "," (scan-emit (text "a") step fin (select (path each-index) input)))	ERROR:type_mismatch@3:41
 # The runtime's, where building the plan reaches them: a record with a key twice, a match no case takes.
 def export [input] (concat (get :a (record (entry :a "1") (entry :a "2"))) (json input))	ERROR:duplicate_key@1:36
 def export [input] (concat (match 5 (case 1 "one")) (json input))	ERROR:no_match@1:28
@@ -29,6 +34,13 @@ def export [input] (table-from-json csv-options (json input))	ERROR:protocol_mis
 def export [input] (json (select (path each-index) input))	ERROR:protocol_mismatch@1:26
 def export [input] (map (fn [x] x) input)	ERROR:protocol_mismatch@1:36
 def export [input] (records input)	ERROR:protocol_mismatch@1:29
+# Values the checker lets through and the runtime refuses, where building the plan reaches them: a call of what is not a function, a condition that is not a boolean, a concat item that is not a text (each read with `get`, which the checker cannot type), options without the key asked for, the kind of a text, a path that names more than one location.
+def export [input] (let [x ((get :f (record (entry :f 1))) 1)] (json input))	ERROR:type_mismatch@1:29
+def export [input] (let [x (if (get :a (record (entry :a 1))) "y" "n")] (json input))	ERROR:type_mismatch@1:32
+def export [input] (concat (get :a (record (entry :a 1))) (json input))	ERROR:type_mismatch@1:20
+def export [input] (let [x (scalar-text (record) null)] (json input))	ERROR:type_mismatch@1:28
+def export [input] (let [x (map kind [(text "x")])] (json input))	ERROR:type_mismatch@1:28
+def export [input] (let [x (get-path (path each-index) (record))] (json input))	ERROR:type_mismatch@1:28
 # Streams are affine: used at most once in a scope, and never captured by a fn from the scope around it.
 def export [input] (concat (json input) (json input))	ERROR:reused@1:47
 def export [input]\n  let [s (select (path each-index) input)]\n    concat (join "," s) (join ";" s)	ERROR:reused@3:35
@@ -47,6 +59,15 @@ def export [a b] a	ERROR:arity
 def export [input] (select (path each-index) input)	ERROR:bad_output
 def export [input] 1	ERROR:bad_output
 def export [input] (get :x csv-options)	ERROR:unknown_output
+# One more case for each code the rows above pin only with a position, pinning the code alone: the fleet's code census (admin tasks/ax-codes.sh) counts a code as exercised only by a bare `ERROR:<code>` cell.
+def f [x] (g x)\ndef export [input] input	ERROR:unknown_name
+def export [input] input\ndef export [input] (json input)	ERROR:duplicate_def
+def a [x] (a x)\ndef export [input] (a input)	ERROR:recursion
+def r (record (entry :k 1) (entry :k 2))\ndef export [input] (let [x (get :k r)] (json input))	ERROR:duplicate_key
+def export [input] (let [x (match "a" (case "b" "c"))] (json input))	ERROR:no_match
+def export [input] (concat (join "," (select (path each-index) input)) (json input))	ERROR:reused
+def export [input] (join "," (map (fn [x] (json input)) [1]))	ERROR:captured
+def export [input] (join "," (map (get :f csv-options) (select (path each-index) input)))	ERROR:dynamic
 # A program that checks prints its plan report: the worked example (spec sections 12.1 and 13.4) and the JSON echo.
 def column-from-meta [source]\n  record\n    entry :label (get "title" source)\n    entry :source\n      as-path\n        get "path" source\n\ndef api-binding\n  record\n    entry :columns\n      path "response" "metadata" "fields"\n    entry :rows\n      path "response" "payload" "deep" "records" each-index\n    entry :column column-from-meta\n\ndef api-table [input]\n  table-from-json api-binding input\n\ndef export [input]\n  pipe input\n    api-table\n    csv csv-options	"export: api-table → csv\n\nSource reads:          1\nProtocol:              JsonEvents/1 → TableRows/1 → Text\nSelection:             shared prefix matcher, two capture routes\nDuplicate members:     rejected in captured scopes (DUPLICATE_MEMBER)\nRetained metadata:     .response.metadata.fields, capped at max_metadata_bytes\nRow capture:           one .response.payload.deep.records[*], capped at max_record_bytes\nOutput order:          schema first; cells in schema order\nOrdering contract:     metadata completes before first row begins\nContract verification: runtime\nCSV quoting:           always\nExternal storage:      disabled\n\nGuarantee:\n  Memory is independent of the number of rows under the configured\n  depth, metadata, record, scalar/key and output limits.\n\nQualification:\n  Valid JSON that violates the metadata-first contract is rejected.\n  A later error can occur after earlier output has been written.\n"
 def export [input]\n  json input	"export: json\n\nSource reads:          1\nProtocol:              JsonEvents/1 → Text\nSelection:             none; every event passes through\nDuplicate members:     preserved; the events are copied as they arrive, not mapped by key\nOutput order:          source order\nOrdering contract:     none\nContract verification: static\nJSON profile:          compact, one document, trailing newline\nExternal storage:      disabled\n\nGuarantee:\n  Memory is independent of the document's size under the configured\n  depth, scalar/key and output limits: nothing is retained beyond the\n  renderer's nesting stack.\n\nQualification:\n  A later error can occur after earlier output has been written.\n"
