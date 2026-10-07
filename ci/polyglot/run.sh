@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # TypeScript and Go gate for the structural translation interface. It builds
 # each TypeScript sibling before linking it into alchemy, and uses a temporary
-# Go workspace so unpublished modules resolve to the same sibling checkouts.
+# Go workspace so the Go modules resolve to the same sibling checkouts rather
+# than to their published versions.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
