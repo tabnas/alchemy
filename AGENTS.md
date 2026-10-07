@@ -280,15 +280,28 @@ JsonEvents` at the checker, `must be a keyword or a string, not a
 number` at run time). What a
 program compiled on its own cannot meet is not declared: the linker's
 `duplicate_file`, and the linker's own sentences for `no_export` and
-`duplicate_def` (several sources, which no fixture compiles);
-`undeclared`, a library definition without a signature (a defect of the
-library); and Rust's `internal`, a poisoned definition cache. Nor are
-the texts of defensive checks no fixture reaches, such as the lowering's
-own checks of a plan the checker has already typed. A later stage's
-check of what an earlier stage refuses first writes the earlier stage's
-code and text, so its text is declared with that stage's: the
-resolver's check of a `def`'s name is the desugarer's `bad_def`, and the
-evaluator's of `export` the checker's `export must be a fn [input]`.
+`duplicate_def` (several sources, which no fixture compiles); the
+library's defects (`undeclared`, a definition without a signature;
+`arity`'s `is declared with ... parameter(s) but takes ...`, a definition
+unlike its signature; `duplicate_def`'s `is defined in two standard
+library files`; Go's `has no implementation`); Rust's `internal`, a
+poisoned definition cache; and the shared `TreeContract`'s refusal, a
+host's utility no program reaches. Nor are the texts of defensive checks
+of what an earlier stage guarantees: the reader's output (`malformed
+reader output`, and the AST's own `too_deep`), a number lexeme that does
+not parse (the reader's are JSON numbers), a native the checker has no
+arm for (`is not callable here`), and the lowering's checks of plans
+only the evaluator builds (a `csv` plan whose options do not map, a
+table plan whose binding lacks its selectors, a transition whose outputs
+are not a vector, a `concat` holding a stream, a plan of the other kind
+where a text or a stream is read). The lowering's refusals that a
+function read from data, or definitions chained past `MAX_APPLIED`, can
+bring a program to are declared, each with a row in `run.tsv`, and so is
+the `concat` guard (`check.tsv`). A later stage's check of what an
+earlier stage refuses first writes the earlier stage's code and text, so
+its text is declared with that stage's: the resolver's check of a
+`def`'s name is the desugarer's `bad_def`, and the evaluator's of
+`export` the checker's `export must be a fn [input]`.
 
 ## Untrusted input
 
