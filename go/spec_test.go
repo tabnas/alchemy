@@ -451,7 +451,9 @@ func fixedLength(line string) int {
 // standard library ends with its position there, ` (at stdlib/...)`, which
 // is not part of the text). Each line of each code the document declares is
 // the most specific line some row meets, so the document holds no text
-// nothing raises, and each of its codes has a hint. A raising site whose
+// nothing raises, and each of its codes has a hint. A finer code comes
+// with the same code wherever it is raised (bad_let is a DSL_PARSE_ERROR
+// from the desugarer and from the resolver alike). A raising site whose
 // code or text drifts from the document fails here.
 //
 // A build without the incremental adapter cannot run the run rows that
@@ -471,6 +473,8 @@ func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	met := map[string]bool{}
+	// The codes each finer code is raised with: one, wherever it is raised.
+	raisedAs := map[string]map[Code]bool{}
 	failures, skipped := 0, 0
 	for _, spec := range specs {
 		for _, row := range spec.Rows {
@@ -494,6 +498,10 @@ func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 					t.Errorf("%s: %s has no finer code: %s", row.Where(), f.Code, f.Message)
 					continue
 				}
+				if raisedAs[code] == nil {
+					raisedAs[code] = map[Code]bool{}
+				}
+				raisedAs[code][f.Code] = true
 				if library := strings.LastIndex(text, " (at stdlib/"); library >= 0 && strings.HasSuffix(text, ")") {
 					text = text[:library]
 				}
@@ -519,6 +527,16 @@ func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 	}
 	if failures == 0 {
 		t.Fatal("the fixtures meet no failures")
+	}
+	for code, uppers := range raisedAs {
+		if len(uppers) > 1 {
+			names := make([]string, 0, len(uppers))
+			for upper := range uppers {
+				names = append(names, upper.String())
+			}
+			sort.Strings(names)
+			t.Errorf("%s is raised as %s; a finer code has one code", code, strings.Join(names, " and "))
+		}
 	}
 	for code := range declared {
 		if _, ok := hints[code].(string); !ok {

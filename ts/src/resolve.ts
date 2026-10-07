@@ -25,6 +25,7 @@
 import { Code, Fail } from './shared'
 
 import { Expr, SourceSpan, Sources, symbolOf } from './ast'
+import { shapeError } from './desugar'
 
 // What kind of thing a name outside the program denotes.
 export type NameKind =
@@ -83,6 +84,17 @@ function fail(code: Code, finer: string, message: string, sp: SourceSpan, source
 
 function typeFail(finer: string, message: string, sp: SourceSpan, sources: Sources): Fail {
   return fail('DSL_TYPE_ERROR', finer, message, sp, sources)
+}
+
+// A form whose shape the desugarer owns (`bad_def`, `bad_let`, `bad_if`,
+// `bad_match`), met here: the desugarer's own failure, a DSL_PARSE_ERROR
+// with its text, at `sp`. The desugarer checks the forms a program writes;
+// a `pipe` step's form grows by the threaded value after that check
+// (`pipe v let` is `(let v)`, `pipe v (if c a b)` is `(if c a b v)`), so
+// the shapes are held again here, by the same rules and with the same
+// codes.
+function shapeFail(finer: string, sp: SourceSpan, sources: Sources): Fail {
+  return sources.failAt(shapeError(finer), sp)
 }
 
 // A resolved program: its definitions and the references between them.
@@ -207,9 +219,9 @@ export function resolve(forms: Expr[], sources: Sources, outer: Outer): Resolved
     }
     const value = form.items[2]
     const nameForm = form.items[1]
-    if ('symbol' !== nameForm.kind) {
-      throw typeFail('not_def', 'a def names a symbol', nameForm.span, sources)
-    }
+    // The desugarer's `bad_def` always comes first; checked again as the
+    // desugarer checks it.
+    if ('symbol' !== nameForm.kind) throw shapeFail('bad_def', nameForm.span, sources)
     const name = nameForm.name
     if (SPECIAL_FORMS.includes(name)) {
       throw typeFail('reserved', `${name} is a special form and cannot be defined`, sp, sources)
@@ -303,15 +315,15 @@ class Walker {
         return
       }
       case 'let': {
-        // The desugarer checked the shape: `(let [name value] body)`.
+        // `(let [name value] body)`, as the desugarer has it.
         const binding = items[1]
-        const badLet = () =>
-          typeFail('bad_let', 'let takes one binding [name value] and one body', sp, this.sources)
-        if (undefined === binding || 'vector' !== binding.kind) throw badLet()
+        if (3 !== items.length || 'vector' !== binding.kind || 2 !== binding.items.length) {
+          throw shapeFail('bad_let', sp, this.sources)
+        }
         const name = symbolOf(binding.items[0])
         const value = binding.items[1]
         const body = items[2]
-        if (undefined === name || undefined === value || undefined === body) throw badLet()
+        if (undefined === name) throw shapeFail('bad_let', sp, this.sources)
         this.expr(value)
         this.locals.push(name)
         try {
@@ -322,21 +334,21 @@ class Walker {
         return
       }
       case 'if':
+        // A condition and exactly two branches, as the desugarer has it.
+        if (4 !== items.length) throw shapeFail('bad_if', sp, this.sources)
         for (const item of items.slice(1)) this.expr(item)
         return
       case 'match': {
+        // A value and `(case pattern body)` clauses, as the desugarer has
+        // it; a clause that is not one is named.
         const value = items[1]
-        if (undefined === value) {
-          throw typeFail('bad_match', 'match takes a value and (case pattern body) clauses', sp, this.sources)
-        }
+        if (undefined === value) throw shapeFail('bad_match', sp, this.sources)
         this.expr(value)
         for (const clause of items.slice(2)) {
-          if ('list' !== clause.kind) {
-            throw typeFail('bad_match', 'match takes (case pattern body) clauses', clause.span, this.sources)
-          }
+          if ('list' !== clause.kind) throw shapeFail('bad_match', clause.span, this.sources)
           const parts = clause.items
           if (3 !== parts.length || 'case' !== symbolOf(parts[0])) {
-            throw typeFail('bad_match', 'match takes (case pattern body) clauses', clause.span, this.sources)
+            throw shapeFail('bad_match', clause.span, this.sources)
           }
           const depth = this.locals.length
           const bound: string[] = []

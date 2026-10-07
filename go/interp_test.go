@@ -120,6 +120,35 @@ func TestLetIfAndMatchChoose(t *testing.T) {
 	}
 }
 
+// TestTheEvaluatorFailsAsTheStagesBeforeIt: the evaluator's own checks of
+// the let, if and match shapes, which the desugarer and the resolver always
+// meet first, fail as theirs do: the desugarer's finer code and text,
+// DSL_PARSE_ERROR. And a value called that is not a function is named as
+// the checker names it: the callee as written, and its kind.
+func TestTheEvaluatorFailsAsTheStagesBeforeIt(t *testing.T) {
+	rt := runtimeOf(t, "")
+	for _, c := range [][2]string{
+		{"(let [x 1])", "bad_let"},
+		{"(let [x 1 2] x)", "bad_let"},
+		{"(if true 1)", "bad_if"},
+		{"(match)", "bad_match"},
+	} {
+		// Read and not desugared, so the desugarer does not meet it.
+		forms, f := ParseFile(c[0], "e.alc")
+		if f != nil {
+			t.Fatalf("%q: %v", c[0], f)
+		}
+		_, f = rt.EvalProgramExpr(forms[0])
+		if f == nil || f.Code != CodeDSLParseError || f.Message != c[1]+": "+desugarMessage(c[1]) {
+			t.Errorf("%q: %v", c[0], f)
+		}
+	}
+	f := mustFail(t, "", "(get :f (record (entry :f 1))) 2")
+	if f.Code != CodeDSLTypeError || f.Message != "type_mismatch: (get :f (record (entry :f 1))) is a number and cannot be called" {
+		t.Errorf("%v", f)
+	}
+}
+
 // What a render needs beyond the stack: length and compare see a key past
 // a length, and number-class names a number's class.
 func TestTheRenderOperators(t *testing.T) {
@@ -263,7 +292,7 @@ func TestClosuresPartialsAndArity(t *testing.T) {
 	if f := mustFail(t, "", "get 1"); !strings.HasPrefix(f.Message, "arity: get takes 2") {
 		t.Errorf("%v", f)
 	}
-	if f := mustFail(t, "", "1 2"); !strings.Contains(f.Message, "not a function") {
+	if f := mustFail(t, "", "1 2"); f.Message != "type_mismatch: 1 is a number and cannot be called" {
 		t.Errorf("%v", f)
 	}
 }

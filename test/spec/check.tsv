@@ -9,6 +9,12 @@ def f (fn x x)\ndef export [input] input	ERROR:bad_fn
 def export [input] (def y input)	ERROR:misplaced_def
 def export [input] (match input (case (map a) a))	ERROR:bad_pattern
 def export [input] (match 1 (case (1 2) 3))	ERROR:bad_pattern@1:35
+# A let, if or match that a pipe builds, whose step the desugarer read before the threaded value lengthened it, is held to the desugarer's shapes by the resolver, and fails as the desugarer's does (the same code, a DSL_PARSE_ERROR): at the step, or at a clause that is not a case.
+def export [input] (pipe input let)	ERROR:bad_let@1:32
+def export [input] (pipe input (let [x 1] x))	ERROR:bad_let@1:32
+def export [input] (pipe input if)	ERROR:bad_if@1:32
+def export [input]\n  pipe input\n    if true "yes" "no"	ERROR:bad_if@3:5
+def export [input] (pipe input (match 1))	ERROR:bad_match@1:26
 # Recursion is refused in strict mode, at the first definition on the cycle.
 def a [x] (b x)\ndef b [x] (a x)\ndef export [input] (a input)	ERROR:recursion@1:1
 # ... and a function applied to itself, which only evaluation can see: `check` builds the plan, and the evaluation depth ends it.

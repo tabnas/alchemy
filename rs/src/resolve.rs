@@ -27,6 +27,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{Expr, SourceSpan, Sources};
+use crate::desugar;
 use crate::shared::{Code, Fail};
 
 /// What kind of thing a name outside the program denotes.
@@ -141,6 +142,17 @@ fn type_fail(
     fail(Code::DslTypeError, finer, message, span, sources)
 }
 
+/// A form whose shape the desugarer owns (`bad_def`, `bad_let`, `bad_if`,
+/// `bad_match`), met here: the desugarer's own failure, a
+/// `DSL_PARSE_ERROR` with its text, at `span`. The desugarer checks the
+/// forms a program writes; a `pipe` step's form grows by the threaded
+/// value after that check (`pipe v let` is `(let v)`, `pipe v (if c a b)`
+/// is `(if c a b v)`), so the shapes are held again here, by the same
+/// rules and with the same codes.
+fn shape_fail(finer: &str, span: &SourceSpan, sources: &Sources) -> Fail {
+    sources.fail_at(desugar::shape_error(finer), span)
+}
+
 /// Link a desugared program, whose forms may come from several sources:
 /// `sources` are their texts, which position a failure in the file its
 /// form was read from. `outer` answers the kind of a name bound outside
@@ -172,16 +184,11 @@ pub fn resolve(
         let value = items
             .pop()
             .unwrap_or_else(|| Expr::Null { span: span.clone() });
+        // The desugarer's `bad_def` always comes first; checked again as
+        // the desugarer checks it.
         let name = match &items[1] {
             Expr::Symbol { name, .. } => name.clone(),
-            other => {
-                return Err(type_fail(
-                    "not_def",
-                    "a def names a symbol",
-                    other.span(),
-                    sources,
-                ))
-            }
+            other => return Err(shape_fail("bad_def", other.span(), sources)),
         };
         if SPECIAL_FORMS.contains(&name.as_str()) {
             return Err(type_fail(
@@ -406,26 +413,18 @@ impl Walker<'_> {
                 r
             }
             Some("let") => {
-                // The desugarer checked the shape: `(let [name value] body)`.
-                let Some(Expr::Vector { items: binding, .. }) = items.get(1) else {
-                    return Err(type_fail(
-                        "bad_let",
-                        "let takes one binding [name value] and one body",
-                        span,
-                        self.sources,
-                    ));
+                // `(let [name value] body)`, as the desugarer has it.
+                let (Some(Expr::Vector { items: binding, .. }), Some(body), 3) =
+                    (items.get(1), items.get(2), items.len())
+                else {
+                    return Err(shape_fail("bad_let", span, self.sources));
                 };
-                let (Some(name), Some(value), Some(body)) = (
+                let (Some(name), Some(value), 2) = (
                     binding.first().and_then(Expr::symbol),
                     binding.get(1),
-                    items.get(2),
+                    binding.len(),
                 ) else {
-                    return Err(type_fail(
-                        "bad_let",
-                        "let takes one binding [name value] and one body",
-                        span,
-                        self.sources,
-                    ));
+                    return Err(shape_fail("bad_let", span, self.sources));
                 };
                 self.expr(value)?;
                 self.locals.push(Arc::from(name));
@@ -433,15 +432,19 @@ impl Walker<'_> {
                 self.locals.pop();
                 r
             }
-            Some("if") => items[1..].iter().try_for_each(|item| self.expr(item)),
+            Some("if") => {
+                // A condition and exactly two branches, as the desugarer
+                // has it.
+                if items.len() != 4 {
+                    return Err(shape_fail("bad_if", span, self.sources));
+                }
+                items[1..].iter().try_for_each(|item| self.expr(item))
+            }
             Some("match") => {
+                // A value and `(case pattern body)` clauses, as the
+                // desugarer has it; a clause that is not one is named.
                 let Some(value) = items.get(1) else {
-                    return Err(type_fail(
-                        "bad_match",
-                        "match takes a value and (case pattern body) clauses",
-                        span,
-                        self.sources,
-                    ));
+                    return Err(shape_fail("bad_match", span, self.sources));
                 };
                 self.expr(value)?;
                 for clause in &items[2..] {
@@ -450,20 +453,10 @@ impl Walker<'_> {
                         span: at,
                     } = clause
                     else {
-                        return Err(type_fail(
-                            "bad_match",
-                            "match takes (case pattern body) clauses",
-                            clause.span(),
-                            self.sources,
-                        ));
+                        return Err(shape_fail("bad_match", clause.span(), self.sources));
                     };
                     if parts.len() != 3 || parts[0].symbol() != Some("case") {
-                        return Err(type_fail(
-                            "bad_match",
-                            "match takes (case pattern body) clauses",
-                            at,
-                            self.sources,
-                        ));
+                        return Err(shape_fail("bad_match", at, self.sources));
                     }
                     let depth = self.locals.len();
                     let mut bound = Vec::new();
@@ -617,6 +610,31 @@ mod tests {
         assert_eq!(row, Some(1));
         assert_eq!(code("def a [x] (a x)").1, "recursion");
         assert_eq!(code("def a (fn [x] (b x))\ndef b [y] (a y)").1, "recursion");
+    }
+
+    /// A `let`, `if` or `match` that a `pipe` builds, whose step the
+    /// desugarer read before the threaded value lengthened it, is held to
+    /// the desugarer's shape here, and fails as the desugarer's would: its
+    /// finer code and text, `DSL_PARSE_ERROR`, at the step (a clause that
+    /// is not a `case`, at the clause).
+    #[test]
+    fn a_form_a_pipe_builds_is_held_to_the_desugarers_shape() {
+        for (src, finer, col) in [
+            ("def f [x] (pipe x let)", "bad_let", 19),
+            ("def f [x] (pipe x (let [y 1] y))", "bad_let", 19),
+            ("def f [x] (pipe x if)", "bad_if", 19),
+            ("def f [x] (pipe x (if true 1 2))", "bad_if", 19),
+            ("def f [x] (pipe x (match 1))", "bad_match", 17),
+        ] {
+            let f = resolved(src).expect_err(src);
+            assert_eq!(f.code, Code::DslParseError, "{src}: {f}");
+            assert_eq!(f.message, desugar::shape_error(finer).message, "{src}: {f}");
+            assert_eq!((f.row, f.column), (Some(1), Some(col)), "{src}: {f}");
+        }
+        // What a pipe builds in the shape passes: a match with no clause,
+        // and a clause threaded in as the last item.
+        resolved("def f [x] (pipe x match)").unwrap();
+        resolved("def f [x] (pipe (case 1 x) (match 1))").unwrap();
     }
 
     #[test]

@@ -91,6 +91,33 @@ impl Type {
         Type::func(vec![Type::Unknown; n], Type::Unknown)
     }
 
+    /// What a value of this type is, in the words the runtime names a
+    /// value's kind with (`Val::kind`): `a stream` for a stream or the
+    /// source, `a text`, `a number`, and so on; `data` for `Value`, which
+    /// is any of several (and for `Unknown` and `Never`, which every place
+    /// accepts, so no message names them). A message the checker and the
+    /// runtime both write (a value that cannot be held, a callee that
+    /// cannot be called) names the value this way at both stages.
+    pub fn kind_text(&self) -> &'static str {
+        match self {
+            Type::Null => "null",
+            Type::Bool => "a boolean",
+            Type::Number => "a number",
+            Type::String => "a string",
+            Type::Keyword => "a keyword",
+            Type::Value | Type::Unknown | Type::Never => "data",
+            Type::Vector(_) => "a vector",
+            Type::Record => "a record",
+            Type::Selector => "a selector",
+            Type::CaptureSpec => "a capture",
+            Type::Tagged(tag) if &**tag == "missing" => "missing",
+            Type::Tagged(_) | Type::TableEvent | Type::Event => "a tagged value",
+            Type::Fn(..) => "a function",
+            Type::Stream(_) | Type::JsonEvents => "a stream",
+            Type::Text => "a text",
+        }
+    }
+
     /// Whether a binding of this type is used at most once.
     pub fn is_affine(&self) -> bool {
         matches!(self, Type::Stream(_) | Type::JsonEvents | Type::Text)

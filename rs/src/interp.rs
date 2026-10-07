@@ -32,6 +32,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::ast::{Expr, SourceSpan, Sources};
+use crate::check::describe;
+use crate::desugar::shape_error;
 use crate::resolve::{fn_form, fn_params, Resolved};
 use crate::shared::{AbortFlag, Code, Datum, Duplicates, Fail, Limits};
 use crate::stdlib::registry::{self, native, truth, Kind, Native};
@@ -412,30 +414,21 @@ impl Runtime {
                     span: span.clone(),
                 }))))
             }
+            // The shapes of `let`, `if` and `match` are the desugarer's,
+            // held again by the resolver; a form that is not one fails as
+            // the desugarer's would.
             Some("let") if env.get("let").is_none() => {
                 let (Some(Expr::Vector { items: binding, .. }), Some(body), 3) =
                     (items.get(1), items.get(2), items.len())
                 else {
-                    return Err(self.fail_at(
-                        Fail::new(
-                            Code::DslTypeError,
-                            "bad_let: let takes one binding [name value] and one body",
-                        ),
-                        span,
-                    ));
+                    return Err(self.fail_at(shape_error("bad_let"), span));
                 };
                 let (Some(name), Some(value), 2) = (
                     binding.first().and_then(Expr::symbol),
                     binding.get(1),
                     binding.len(),
                 ) else {
-                    return Err(self.fail_at(
-                        Fail::new(
-                            Code::DslTypeError,
-                            "bad_let: let takes one binding [name value] and one body",
-                        ),
-                        span,
-                    ));
+                    return Err(self.fail_at(shape_error("bad_let"), span));
                 };
                 let value = self.eval(value, env, scope)?;
                 let inner = env.bind(Arc::from(name), value);
@@ -443,13 +436,7 @@ impl Runtime {
             }
             Some("if") if env.get("if").is_none() => {
                 if items.len() != 4 {
-                    return Err(self.fail_at(
-                        Fail::new(
-                            Code::DslTypeError,
-                            "bad_if: if takes a condition and exactly two branches",
-                        ),
-                        span,
-                    ));
+                    return Err(self.fail_at(shape_error("bad_if"), span));
                 }
                 let condition = self.eval(&items[1], env, scope)?;
                 let chosen =
@@ -462,13 +449,7 @@ impl Runtime {
             }
             Some("match") if env.get("match").is_none() => {
                 let Some(value) = items.get(1) else {
-                    return Err(self.fail_at(
-                        Fail::new(
-                            Code::DslTypeError,
-                            "bad_match: match takes a value and (case pattern body) clauses",
-                        ),
-                        span,
-                    ));
+                    return Err(self.fail_at(shape_error("bad_match"), span));
                 };
                 let value = self.eval(value, env, scope)?;
                 for clause in &items[2..] {
@@ -502,7 +483,8 @@ impl Runtime {
                 let Val::Fn(f) = f else {
                     return Err(self.fail_at(
                         type_error(format!(
-                            "{} is not a function and cannot be called",
+                            "{} is {} and cannot be called",
+                            describe(head),
                             f.kind()
                         )),
                         head.span(),
@@ -693,14 +675,11 @@ impl Runtime {
                 "no_export: the program has no `def export [input]`",
             ));
         };
+        // The checker refuses an export that is not written `def export
+        // [input] ...` before anything is evaluated, so the value here is
+        // a function; held again, with the checker's text.
         let Val::Fn(f) = &export else {
-            return Err(Fail::new(
-                Code::DslTypeError,
-                format!(
-                    "type_mismatch: export must be a fn [input], not {}",
-                    export.kind()
-                ),
-            ));
+            return Err(type_error("export must be a fn [input]"));
         };
         let at = self
             .program
@@ -1075,6 +1054,38 @@ mod tests {
         assert!(no.message.len() < 200, "{}", no.message.len());
     }
 
+    /// The evaluator's own checks of the `let`, `if` and `match` shapes,
+    /// which the desugarer and the resolver always meet first, fail as
+    /// theirs do: the desugarer's finer code and text, `DSL_PARSE_ERROR`.
+    /// And a value called that is not a function is named as the checker
+    /// names it: the callee as written, and its kind.
+    #[test]
+    fn the_evaluator_fails_as_the_stages_before_it() {
+        let rt = runtime("");
+        for (expr, finer) in [
+            ("(let [x 1])", "bad_let"),
+            ("(let [x 1 2] x)", "bad_let"),
+            ("(if true 1)", "bad_if"),
+            ("(match)", "bad_match"),
+        ] {
+            // Read and not desugared, so the desugarer does not meet it.
+            let form = &parse_file(expr, "e.alc").unwrap()[0];
+            let f = rt.eval_program_expr(form).unwrap_err();
+            assert_eq!(f.code, Code::DslParseError, "{expr}: {f}");
+            assert_eq!(
+                f.message,
+                desugar::shape_error(finer).message,
+                "{expr}: {f}"
+            );
+        }
+        let f = eval("", "(get :f (record (entry :f 1))) 2").unwrap_err();
+        assert_eq!(f.code, Code::DslTypeError, "{f}");
+        assert_eq!(
+            f.message,
+            "type_mismatch: (get :f (record (entry :f 1))) is a number and cannot be called"
+        );
+    }
+
     /// What a render needs beyond the stack: `length` and `compare` see a
     /// key past a length, and `number-class` names a number's class.
     #[test]
@@ -1255,7 +1266,10 @@ mod tests {
         let f = eval("", "get 1").unwrap_err();
         assert!(f.message.starts_with("arity: get takes 2"), "{f}");
         let f = eval("", "1 2").unwrap_err();
-        assert!(f.message.contains("not a function"), "{f}");
+        assert_eq!(
+            f.message, "type_mismatch: 1 is a number and cannot be called",
+            "{f}"
+        );
     }
 
     #[test]

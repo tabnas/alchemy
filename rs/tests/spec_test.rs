@@ -312,12 +312,15 @@ fn instance_of(line: &str, text: &str) -> bool {
 /// part of the text). Each line of each code this grammar adds to the
 /// engine's is the most specific line some row meets, so the document
 /// holds no text nothing raises, and each of those codes has a hint. A
+/// finer code travels with one code wherever it is raised (`bad_let` is a
+/// `DSL_PARSE_ERROR` from the desugarer and from the resolver alike). A
 /// raising site whose code or text drifts from the document fails here.
 #[test]
 fn the_raised_messages_match_the_document() {
     let installed = tabnas_alchemy::make().config();
     let engine = tabnas::Tabnas::new().config().error;
     let mut met = BTreeSet::new();
+    let mut codes: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
     let mut problems = Vec::new();
     let mut failures = 0;
     for spec in load_spec_dir(spec_dir(), &SpecOptions::default()).expect("the fixtures load") {
@@ -345,6 +348,10 @@ fn the_raised_messages_match_the_document() {
                     ));
                     continue;
                 };
+                codes
+                    .entry(code.to_string())
+                    .or_default()
+                    .insert(fail.code.as_str());
                 let text = match text.rfind(" (at stdlib/") {
                     Some(library) if text.ends_with(')') => &text[..library],
                     _ => text,
@@ -377,6 +384,14 @@ fn the_raised_messages_match_the_document() {
         }
     }
     assert!(failures > 0, "the fixtures meet failures");
+    for (code, uppers) in &codes {
+        if uppers.len() > 1 {
+            problems.push(format!(
+                "{code} is raised as {}; a finer code has one code",
+                uppers.iter().copied().collect::<Vec<_>>().join(" and ")
+            ));
+        }
+    }
     let own: BTreeMap<&String, &String> = installed
         .error
         .iter()

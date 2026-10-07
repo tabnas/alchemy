@@ -42,9 +42,19 @@ func desugarMessage(code string) string {
 	return "invalid form"
 }
 
+// shapeError is the failure of a form whose shape the desugarer owns
+// (bad_def, bad_let, bad_if, bad_match), not yet positioned: a
+// DSL_PARSE_ERROR with the desugarer's text, wherever the form is found.
+// The resolver meets one a `pipe` builds, since a step's form grows by the
+// threaded value after this pass read it; the checker and the evaluator
+// check the shapes again before reading a form.
+func shapeError(code string) *Fail {
+	return NewFail(CodeDSLParseError, code+": "+desugarMessage(code))
+}
+
 func desugarFail(code string, span SourceSpan, src string) *Fail {
 	row, col := span.Position(src)
-	return NewFail(CodeDSLParseError, code+": "+desugarMessage(code)).At(uint64(row), uint64(col))
+	return shapeError(code).At(uint64(row), uint64(col))
 }
 
 // Desugar desugars a whole program, form by form. src is the program's

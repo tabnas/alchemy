@@ -43,6 +43,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{Expr, SourceSpan, Sources};
+use crate::desugar;
 use crate::program::Output;
 use crate::resolve::{fn_form, Def, Resolved};
 use crate::shared::{Code, Fail};
@@ -149,6 +150,22 @@ impl Checker<'_> {
 
     fn type_error(&self, finer: &str, message: impl std::fmt::Display, span: &SourceSpan) -> Fail {
         self.fail(Code::DslTypeError, finer, message, span)
+    }
+
+    /// A vector refusing a stream or the source, named by its kind as the
+    /// runtime names what it refuses where a vector is built (a vector may
+    /// hold a text, which may be finite; the runtime refuses a live one):
+    /// one sentence for a vector literal, `vector` and `push`, at both
+    /// stages.
+    fn vector_cannot_hold(&self, held: &Type, span: &SourceSpan) -> Fail {
+        self.type_error(
+            "type_mismatch",
+            format!(
+                "a vector cannot hold {}; a stream is used once, where it is",
+                held.kind_text()
+            ),
+            span,
+        )
     }
 
     /// `type_mismatch` or `protocol_mismatch`, by what was wanted and what
@@ -533,13 +550,7 @@ impl Checker<'_> {
                 for i in items {
                     let t = self.infer(i, env)?;
                     if t.is_stream_or_source() {
-                        return Err(self.type_error(
-                            "type_mismatch",
-                            format!(
-                                "a vector cannot hold a {t}; a stream is used once, where it is"
-                            ),
-                            i.span(),
-                        ));
+                        return Err(self.vector_cannot_hold(&t, i.span()));
                     }
                     item = Type::join(&item, &t);
                 }
@@ -567,21 +578,16 @@ impl Checker<'_> {
                 self.fn_type(items, &params, env)
             }
             Some("let") if items.len() == 3 => {
+                // The resolver has held the shape; a form that is not one
+                // fails as the desugarer's would.
+                let bad_let = || self.sources.fail_at(desugar::shape_error("bad_let"), span);
                 let Expr::Vector { items: binding, .. } = &items[1] else {
-                    return Err(self.type_error(
-                        "bad_let",
-                        "let takes one binding [name value] and one body",
-                        span,
-                    ));
+                    return Err(bad_let());
                 };
                 let (Some(name), Some(value)) =
                     (binding.first().and_then(Expr::symbol), binding.get(1))
                 else {
-                    return Err(self.type_error(
-                        "bad_let",
-                        "let takes one binding [name value] and one body",
-                        span,
-                    ));
+                    return Err(bad_let());
                 };
                 let ty = self.infer(value, env)?;
                 if ty.is_affine() {
@@ -686,7 +692,11 @@ impl Checker<'_> {
             Type::Unknown | Type::Never => Ok(Type::Unknown),
             other => Err(self.type_error(
                 "type_mismatch",
-                format!("{} is a {other} and cannot be called", describe(head)),
+                format!(
+                    "{} is {} and cannot be called",
+                    describe(head),
+                    other.kind_text()
+                ),
                 head.span(),
             )),
         }
@@ -899,7 +909,7 @@ impl Checker<'_> {
                 if init.is_affine() {
                     return Err(self.type_error(
                         "type_mismatch",
-                        format!("the state of scan-emit cannot be a {init}"),
+                        format!("the state of scan-emit cannot be {}", init.kind_text()),
                         args[0].span(),
                     ));
                 }
@@ -962,8 +972,8 @@ impl Checker<'_> {
                 Err(this.type_error(
                     "type_mismatch",
                     format!(
-                        "{what} cannot hold a {}; a stream or a text is used once, where it is",
-                        t(i)
+                        "{what} cannot hold {}; a stream or a text is used once, where it is",
+                        t(i).kind_text()
                     ),
                     at(i),
                 ))
@@ -1019,7 +1029,7 @@ impl Checker<'_> {
                 let mut item = Never;
                 for i in 0..args.len() {
                     if t(i).is_stream_or_source() {
-                        no_stream(self, i, "a vector")?;
+                        return Err(self.vector_cannot_hold(t(i), at(i)));
                     }
                     item = Type::join(&item, t(i));
                 }
@@ -1027,7 +1037,7 @@ impl Checker<'_> {
             }
             "push" => {
                 if t(0).is_stream_or_source() {
-                    no_stream(self, 0, "a vector")?;
+                    return Err(self.vector_cannot_hold(t(0), at(0)));
                 }
                 self.expect("the vector of push", &Type::vector(Unknown), t(1), at(1))?;
                 Type::vector(match t(1) {
@@ -1288,8 +1298,9 @@ impl Checker<'_> {
     }
 }
 
-/// A head, for messages.
-fn describe(head: &Expr) -> String {
+/// A head, for messages: the checker's and the evaluator's, which name
+/// a callee the same way.
+pub(crate) fn describe(head: &Expr) -> String {
     match head {
         Expr::Symbol { name, .. } => name.clone(),
         other => crate::ast::canonical_form(other),

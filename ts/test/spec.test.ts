@@ -240,12 +240,16 @@ function fixedLength(line: string): number {
 // position there, ` (at stdlib/...)`, which is not part of the text). Each
 // line of each code the document declares is the most specific line some
 // row meets, so the document holds no text nothing raises, and each of its
-// codes has a hint. A raising site whose code or text drifts fails here.
+// codes has a hint. A finer code comes with the same code wherever it is
+// raised (`bad_let` is a DSL_PARSE_ERROR from the desugarer and from the
+// resolver alike). A raising site whose code or text drifts fails here.
 describe('the catalogue', () => {
   it('the raised messages match the document', () => {
     const catalogue: Record<string, string> = makeAlchemy().options.error
     const document = grammarDocument()
     const met = new Set<string>()
+    // The codes each finer code is raised with: one, wherever it is raised.
+    const raisedAs = new Map<string, Set<string>>()
     const problems: string[] = []
     let failures = 0
     for (const spec of loadSpecDir(SPEC_DIR)) {
@@ -261,6 +265,8 @@ describe('the catalogue', () => {
             continue
           }
           const code = fail.message.substring(0, split)
+          if (!raisedAs.has(code)) raisedAs.set(code, new Set())
+          raisedAs.get(code)?.add(fail.code)
           let text = fail.message.substring(split + 2)
           const library = text.lastIndexOf(' (at stdlib/')
           if (-1 !== library && text.endsWith(')')) text = text.substring(0, library)
@@ -282,6 +288,9 @@ describe('the catalogue', () => {
       }
     }
     assert.ok(failures > 0, 'the fixtures meet failures')
+    for (const [code, uppers] of raisedAs) {
+      if (uppers.size > 1) problems.push(`${code} is raised as ${[...uppers].sort().join(' and ')}; a finer code has one code`)
+    }
     for (const [code, entry] of Object.entries<string>(document.options.error)) {
       if ('string' !== typeof document.options.hint[code]) problems.push(`options.hint.${code} is not declared`)
       for (const line of entry.split('\n')) {
