@@ -439,9 +439,12 @@ func (rt *Runtime) list(items []*Expr, span SourceSpan, env Env, scope Scope) (V
 			return nil, rt.FailAt(NewFail(CodeDSLTypeError, "bad_fn: fn takes [params] of symbols and one body"), span)
 		}
 		return &Closure{Params: params, Body: body, Env: env, Scope: scope, Span: span}, nil
+	// The shapes of `let`, `if` and `match` are the desugarer's, held again
+	// by the resolver; a form that is not one fails as the desugarer's
+	// would.
 	case special && head == "let":
 		badLet := func() *Fail {
-			return rt.FailAt(NewFail(CodeDSLTypeError, "bad_let: let takes one binding [name value] and one body"), span)
+			return rt.FailAt(shapeError("bad_let"), span)
 		}
 		if len(items) != 3 || items[1].Kind != ExprVector {
 			return nil, badLet()
@@ -461,7 +464,7 @@ func (rt *Runtime) list(items []*Expr, span SourceSpan, env Env, scope Scope) (V
 		return rt.eval(items[2], env.Bind(name, value), scope)
 	case special && head == "if":
 		if len(items) != 4 {
-			return nil, rt.FailAt(NewFail(CodeDSLTypeError, "bad_if: if takes a condition and exactly two branches"), span)
+			return nil, rt.FailAt(shapeError("bad_if"), span)
 		}
 		condition, f := rt.eval(items[1], env, scope)
 		if f != nil {
@@ -477,7 +480,7 @@ func (rt *Runtime) list(items []*Expr, span SourceSpan, env Env, scope Scope) (V
 		return rt.eval(items[3], env, scope)
 	case special && head == "match":
 		if len(items) < 2 {
-			return nil, rt.FailAt(NewFail(CodeDSLTypeError, "bad_match: match takes a value and (case pattern body) clauses"), span)
+			return nil, rt.FailAt(shapeError("bad_match"), span)
 		}
 		value, f := rt.eval(items[1], env, scope)
 		if f != nil {
@@ -509,7 +512,7 @@ func (rt *Runtime) list(items []*Expr, span SourceSpan, env Env, scope Scope) (V
 	}
 	fn, ok := callee.(Fn)
 	if !ok {
-		return nil, rt.FailAt(typeError(KindOf(callee)+" is not a function and cannot be called"), items[0].Span)
+		return nil, rt.FailAt(typeError(describe(items[0])+" is "+KindOf(callee)+" and cannot be called"), items[0].Span)
 	}
 	args := make([]Val, 0, len(items)-1)
 	for _, item := range items[1:] {
@@ -554,7 +557,9 @@ func (rt *Runtime) Apply(fn Fn, args []Val, at SourceSpan) (Val, *Fail) {
 		all = append(all, args...)
 		return rt.Apply(c.F, all, at)
 	}
-	return nil, rt.FailAt(typeError(KindOf(fn)+" is not a function and cannot be called"), at)
+	// Closures, natives and partials are every function there is; the
+	// switch needs an end, in the evaluator's sentence for a callee.
+	return nil, rt.FailAt(typeError(fn.Describe()+" is "+KindOf(fn)+" and cannot be called"), at)
 }
 
 // fastPath is the native plan for a standard composition, when the
@@ -675,7 +680,10 @@ func (rt *Runtime) Export() (Val, *Fail) {
 	}
 	fn, ok := export.(Fn)
 	if !ok {
-		return nil, NewFail(CodeDSLTypeError, "type_mismatch: export must be a fn [input], not "+KindOf(export))
+		// The checker refuses an export that is not written `def export
+		// [input] ...` before anything is evaluated, so the value here is a
+		// function; held again, with the checker's text.
+		return nil, typeError("export must be a fn [input]")
 	}
 	at := SourceSpan{File: NewFile(rt.program.File)}
 	if def := rt.program.Get("export"); def != nil {

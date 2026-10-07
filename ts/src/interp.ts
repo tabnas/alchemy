@@ -40,6 +40,8 @@
 import { AbortFlag, Duplicates, Fail, Limits, Renderers, Routers, utf8Bytes } from './shared'
 
 import { Expr, SourceSpan, Sources, position as positionIn, sourceFile, span as spanOf } from './ast'
+import { describe } from './check'
+import { shapeError } from './desugar'
 import { isFail } from './fail'
 import type { CompileOptions } from './program'
 import { Resolved, fnForm, fnParams } from './resolve'
@@ -455,9 +457,11 @@ export class Runtime {
           closure: { params: form[0], body: form[1], env, scope, span: sp },
         })
       }
+      // The shapes of `let`, `if` and `match` are the desugarer's, held
+      // again by the resolver; a form that is not one fails as the
+      // desugarer's would.
       case 'let': {
-        const badLet = () =>
-          this.failAt(new Fail('DSL_TYPE_ERROR', 'bad_let: let takes one binding [name value] and one body'), sp)
+        const badLet = () => this.failAt(shapeError('bad_let'), sp)
         const binding = items[1]
         const body = items[2]
         if (3 !== items.length || undefined === binding || 'vector' !== binding.kind || undefined === body) {
@@ -472,12 +476,7 @@ export class Runtime {
         return yield this.eval(body, bind(env, name.name, bound), scope)
       }
       case 'if': {
-        if (4 !== items.length) {
-          throw this.failAt(
-            new Fail('DSL_TYPE_ERROR', 'bad_if: if takes a condition and exactly two branches'),
-            sp,
-          )
-        }
+        if (4 !== items.length) throw this.failAt(shapeError('bad_if'), sp)
         const condition: Val = yield this.eval(items[1], env, scope)
         let chosen: boolean
         try {
@@ -489,12 +488,7 @@ export class Runtime {
       }
       case 'match': {
         const subject = items[1]
-        if (undefined === subject) {
-          throw this.failAt(
-            new Fail('DSL_TYPE_ERROR', 'bad_match: match takes a value and (case pattern body) clauses'),
-            sp,
-          )
-        }
+        if (undefined === subject) throw this.failAt(shapeError('bad_match'), sp)
         const value: Val = yield this.eval(subject, env, scope)
         for (const clause of items.slice(2)) {
           if ('list' !== clause.kind) continue
@@ -510,7 +504,7 @@ export class Runtime {
       default: {
         const f: Val = yield this.eval(head, env, scope)
         if ('fn' !== f.v) {
-          throw this.failAt(typeError(`${kindText(f)} is not a function and cannot be called`), head.span)
+          throw this.failAt(typeError(`${describe(head)} is ${kindText(f)} and cannot be called`), head.span)
         }
         const args: Val[] = []
         for (let i = 1; i < items.length; i++) args.push(yield this.eval(items[i], env, scope))
@@ -651,7 +645,10 @@ export class Runtime {
       throw new Fail('DSL_TYPE_ERROR', 'no_export: the program has no `def export [input]`')
     }
     if ('fn' !== exp.v) {
-      throw new Fail('DSL_TYPE_ERROR', `type_mismatch: export must be a fn [input], not ${kindText(exp)}`)
+      // The checker refuses an export that is not written `def export
+      // [input] ...` before anything is evaluated, so the value here is a
+      // function; held again, with the checker's text.
+      throw typeError('export must be a fn [input]')
     }
     const def = this.program.get('export')
     const at = undefined !== def ? def.span : spanOf(sourceFile(this.program.file), 0, 0)

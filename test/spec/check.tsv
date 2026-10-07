@@ -9,6 +9,12 @@ def f (fn x x)\ndef export [input] input	ERROR:bad_fn
 def export [input] (def y input)	ERROR:misplaced_def
 def export [input] (match input (case (map a) a))	ERROR:bad_pattern
 def export [input] (match 1 (case (1 2) 3))	ERROR:bad_pattern@1:35
+# A let, if or match that a pipe builds, whose step the desugarer read before the threaded value lengthened it, is held to the desugarer's shapes by the resolver, and fails as the desugarer's does (the same code, a DSL_PARSE_ERROR): at the step, or at a clause that is not a case.
+def export [input] (pipe input let)	ERROR:bad_let@1:32
+def export [input] (pipe input (let [x 1] x))	ERROR:bad_let@1:32
+def export [input] (pipe input if)	ERROR:bad_if@1:32
+def export [input]\n  pipe input\n    if true "yes" "no"	ERROR:bad_if@3:5
+def export [input] (pipe input (match 1))	ERROR:bad_match@1:26
 # Recursion is refused in strict mode, at the first definition on the cycle.
 def a [x] (b x)\ndef b [x] (a x)\ndef export [input] (a input)	ERROR:recursion@1:1
 # ... and a function applied to itself, which only evaluation can see: `check` builds the plan, and the evaluation depth ends it.
@@ -34,13 +40,14 @@ def export [input] (table-from-json csv-options (json input))	ERROR:protocol_mis
 def export [input] (json (select (path each-index) input))	ERROR:protocol_mismatch@1:26
 def export [input] (map (fn [x] x) input)	ERROR:protocol_mismatch@1:36
 def export [input] (records input)	ERROR:protocol_mismatch@1:29
-# Values the checker lets through and the runtime refuses, where building the plan reaches them: a call of what is not a function, a condition that is not a boolean, a concat item that is not a text (each read with `get`, which the checker cannot type), options without the key asked for, the kind of a text, a path that names more than one location.
+# Values the checker lets through and the runtime refuses, where building the plan reaches them: a call of what is not a function, a condition that is not a boolean, a concat item that is not a text (each read with `get`, which the checker cannot type), options without the key asked for, the kind of a text, a path that names more than one location, a function where data is written (scalar-text of a vector that holds one).
 def export [input] (let [x ((get :f (record (entry :f 1))) 1)] (json input))	ERROR:type_mismatch@1:29
 def export [input] (let [x (if (get :a (record (entry :a 1))) "y" "n")] (json input))	ERROR:type_mismatch@1:32
 def export [input] (concat (get :a (record (entry :a 1))) (json input))	ERROR:type_mismatch@1:20
 def export [input] (let [x (scalar-text (record) null)] (json input))	ERROR:type_mismatch@1:28
 def export [input] (let [x (map kind [(text "x")])] (json input))	ERROR:type_mismatch@1:28
 def export [input] (let [x (get-path (path each-index) (record))] (json input))	ERROR:type_mismatch@1:28
+def r (record (entry :v [(fn [x] x)]))\ndef export [input] (let [t (scalar-text csv-options (get :v r))] (json input))	ERROR:type_mismatch@2:28
 # Streams are affine: used at most once in a scope, and never captured by a fn from the scope around it.
 def export [input] (concat (json input) (json input))	ERROR:reused@1:47
 def export [input]\n  let [s (select (path each-index) input)]\n    concat (join "," s) (join ";" s)	ERROR:reused@3:35
@@ -49,6 +56,8 @@ def export [input]\n  concat-map (fn [x] (json input)) (select (path each-index)
 def g [s] (concat-map (fn [x] (json s)) [1])\ndef export [input] (g input)	ERROR:captured@1:37
 def twice [s] (concat (json s) (json s))\ndef export [input] (twice input)	ERROR:reused@1:38
 def mk [s] (partial json s)\ndef export [input] (concat ((mk input)) "x")	ERROR:type_mismatch@1:26
+# Past MAX_APPLIED (32) definitions the checker types a body with its parameters unknown, and the runtime's guard holds instead: a chain of 33 hands the input to two jsons, and concat refuses the two live texts.
+def g0 [s] (concat (json s) (json s))\ndef g1 [s] (g0 s)\ndef g2 [s] (g1 s)\ndef g3 [s] (g2 s)\ndef g4 [s] (g3 s)\ndef g5 [s] (g4 s)\ndef g6 [s] (g5 s)\ndef g7 [s] (g6 s)\ndef g8 [s] (g7 s)\ndef g9 [s] (g8 s)\ndef g10 [s] (g9 s)\ndef g11 [s] (g10 s)\ndef g12 [s] (g11 s)\ndef g13 [s] (g12 s)\ndef g14 [s] (g13 s)\ndef g15 [s] (g14 s)\ndef g16 [s] (g15 s)\ndef g17 [s] (g16 s)\ndef g18 [s] (g17 s)\ndef g19 [s] (g18 s)\ndef g20 [s] (g19 s)\ndef g21 [s] (g20 s)\ndef g22 [s] (g21 s)\ndef g23 [s] (g22 s)\ndef g24 [s] (g23 s)\ndef g25 [s] (g24 s)\ndef g26 [s] (g25 s)\ndef g27 [s] (g26 s)\ndef g28 [s] (g27 s)\ndef g29 [s] (g28 s)\ndef g30 [s] (g29 s)\ndef g31 [s] (g30 s)\ndef g32 [s] (g31 s)\ndef export [input] (g32 input)	ERROR:reused@1:12
 # Strict mode: the function of a stream operator must be a fn, a definition, a native or a partial of one.
 def go [f input] (concat-map f (select (path each-index) input))\ndef export [input] (go text input)	ERROR:dynamic@1:30
 def export [input] (scan-emit null (get :f csv-options) (fn [s] []) (select (path each-index) input))	ERROR:dynamic@1:36

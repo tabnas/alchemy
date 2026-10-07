@@ -180,23 +180,30 @@ const grammarText = `
       }
     },
     # This grammar's own codes. The first five are raised by the layout
-    # matcher; the next five are reserved for desugaring, which reports
-    # them through its failure with the code leading the message, so a
-    # fixture pins ` + "`" + `ERROR:<code>` + "`" + ` for either kind. ` + "`" + `too_deep` + "`" + ` is both: the
+    # matcher; the next five are the desugarer's, which reports them
+    # through its failure with the code leading the message, so a fixture
+    # pins ` + "`" + `ERROR:<code>` + "`" + ` for either kind. ` + "`" + `too_deep` + "`" + ` is both: the
     # reader's bound on nesting (256, MAX_NESTING), and the desugarer's on
-    # what its rewrites add. The resolver's, the checker's and the
-    # runtime's codes follow, declared here too and raised the same way:
-    # the code leads the message of a DSL_TYPE_ERROR, a STREAM_REUSED or a
-    # STREAMABILITY_UNKNOWN. A message is the text its raising sites write,
-    # each ` + "`" + `{name}` + "`" + ` standing for what a site fills in; a code raised in
-    # more than one sentence holds one per line. The texts are those a
-    # program compiled on its own can meet (AGENTS.md, "Error codes", names
-    # the few raised only otherwise). Each runtime holds its own raising
-    # sites' texts to these (rs: ` + "`" + `the_desugaring_messages_match_the_document` + "`" + `,
+    # what its rewrites add. A form of the wrong shape is the desugarer's
+    # DSL_PARSE_ERROR, with its text, wherever it is found: the resolver
+    # holds a ` + "`" + `let` + "`" + `, ` + "`" + `if` + "`" + ` or ` + "`" + `match` + "`" + ` that a ` + "`" + `pipe` + "`" + ` builds to the same
+    # shapes (a step's form grows by the threaded value after the
+    # desugarer read it), and the later stages' own checks of the shapes
+    # fail the same way. The resolver's, the checker's and the runtime's
+    # codes follow, declared here too and raised the same way: the code
+    # leads the message of a DSL_TYPE_ERROR, a STREAM_REUSED or a
+    # STREAMABILITY_UNKNOWN. A finer code comes with the same code wherever
+    # it is raised. A message is the text its raising sites write, each
+    # ` + "`" + `{name}` + "`" + ` standing for what a site fills in; a code raised in more
+    # than one sentence holds one per line, and a situation two stages
+    # report is one sentence. The texts are those a program compiled on its
+    # own can meet (AGENTS.md, "Error codes", names the few raised only
+    # otherwise). Each runtime holds its own raising sites' texts to these
+    # (rs: ` + "`" + `the_desugaring_messages_match_the_document` + "`" + `,
     # ` + "`" + `the_too_deep_texts_name_the_bound` + "`" + `, and
     # ` + "`" + `the_raised_messages_match_the_document` + "`" + `, which reads every failure
-    # the shared fixtures meet, wants its code and text here, and wants
-    # every line here met by one).
+    # the shared fixtures meet, wants its code and text here and one code
+    # for each finer code, and wants every line here met by one).
     "error": {
       "tab_indent": "tab in indentation",
       "bad_indent": "unexpected indentation before: {src}",
@@ -218,14 +225,19 @@ const grammarText = `
       "bad_pattern": "{name} is not a constructor; a list pattern is (constructor pattern...)\na list pattern is (constructor pattern...)",
       # The resolver's and the evaluator's.
       "recursion": "{name} reaches itself through {names}; strict mode refuses recursion\nevaluation nested past 1000 levels: a function applied to itself, or definitions or calls chained that deep; strict mode refuses recursion without a bound",
-      # The checker's, and the runtime's where a value read at run time meets the same refusal.
+      # The checker's, and the runtime's where a value read at run time meets the same refusal, or
+      # where a function read from data, or definitions chained past MAX_APPLIED (32), hide a stream
+      # or a text from the checker (the evaluator's and the lowering's own guards).
+      # A value both stages describe is named by its kind (` + "`" + `{kind}` + "`" + `: ` + "`" + `a stream` + "`" + `, ` + "`" + `a text` + "`" + `,
+      # ` + "`" + `a number` + "`" + `), the runtime's words, onto which the checker's types map; a requirement
+      # (` + "`" + `{expected}` + "`" + `, ` + "`" + `{actual}` + "`" + `) is in each stage's words, a type at the checker.
       "arity": "{callee} takes {count} argument(s), got {given}\nthe pattern ({constructor} ...) takes {count} field(s), got {given}\n{what} takes a function of {count} argument(s), not {given}\npartial supplies {given} argument(s) to a function of {count}\nexport takes one parameter, the input, not {given}",
-      "type_mismatch": "{what} must be {expected}, not {actual}\n{what} must answer {expected}, not {actual}\n{what} was expected, not {actual}\n{native}: expected a string or a text, not {actual}\n{what} must name one location, not {selector}\n{what} cannot hold {item}; a stream is used once, where it is\n{what} cannot hold {item}; a stream or a text is used once, where it is\nthe state of scan-emit cannot be a {type}\n{callee} is a {type} and cannot be called\n{value} is not a function and cannot be called\nan empty list is not a call\nexport must be a fn [input]\npop: the vector is empty; there is no last item to remove\ntop: the vector is empty; there is no last item\n{native}: the options have no :{key}\nkind: {kind} cannot be asked; a stream or a text is used where it is, not inspected",
-      "protocol_mismatch": "{what} must be {expected}, not {actual}\n{what} must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events\ncsv renders table events; the program's result is JSON events (render it as json, or make a table of it with table-from-json)",
+      "type_mismatch": "{what} must be {expected}, not {actual}\n{what} must answer {expected}, not {actual}\n{what} was expected, not {actual}\n{native}: expected a string or a text, not {actual}\n{what} must name one location, not {selector}\n{what} cannot hold {kind}; a stream is used once, where it is\n{what} cannot hold {kind}; a stream or a text is used once, where it is\nthe state of scan-emit cannot be {kind}\n{callee} is {kind} and cannot be called\nan empty list is not a call\nexport must be a fn [input]\npop: the vector is empty; there is no last item to remove\ntop: the vector is empty; there is no last item\n{native}: the options have no :{key}\nkind: {kind} cannot be asked; a stream or a text is used where it is, not inspected\n{kind} has no data form\n{operator} is a live text and cannot be written as a value\ntable-from-json: a column record must carry a :source selector",
+      "protocol_mismatch": "{what} must be {expected}, not {actual}\n{what} must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events\ncsv renders table events; the program's result is JSON events (render it as json, or make a table of it with table-from-json)\n{operator} yields a stream of items where JSON events were expected\ntable events were expected, not JSON events (table-from-json makes a table of them)\nJSON events cannot be read item by item; select or route what the stream should yield, or read its events",
       "no_export": "the program has no ` + "`" + `def export [input]` + "`" + `",
       "bad_output": "export answers a Stream<{item}>; render it as a text (join, concat-map), or make table events of it\nexport answers a {type}; it must answer a text, table events or JSON events",
       "unknown_output": "the result of export cannot be typed; it must be a text, table events or JSON events",
-      "reused": "{name} is a stream and is used {count} times; a stream is consumed once",
+      "reused": "{name} is a stream and is used {count} times; a stream is consumed once\nconcat was given two live texts; the input is consumed once",
       "captured": "{name} is a stream and is captured by a fn; a function may run more than once, and a stream is consumed once",
       "dynamic": "{what} must be a fn, a definition, a native or a partial of one, so the plan can be analyzed; strict mode refuses a function obtained at run time",
       # The runtime's, where a value is built or a match is taken.

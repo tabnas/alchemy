@@ -10,6 +10,7 @@ import { renderers } from '@tabnas/render'
 import { AbortFlag, Datum, Selector, fromJSON, toText } from '@tabnas/transduce'
 
 import {
+  MESSAGES,
   Runtime,
   Sources,
   Val,
@@ -172,6 +173,29 @@ describe('evaluation', () => {
     assert.equal(evalFail('', 'match [1 "a" :k] (case 1 1)').message, 'no_match: no case matches [1 "a" :k]')
   })
 
+  // The evaluator's own checks of the `let`, `if` and `match` shapes, which
+  // the desugarer and the resolver always meet first, fail as theirs do:
+  // the desugarer's finer code and text, DSL_PARSE_ERROR. And a value
+  // called that is not a function is named as the checker names it: the
+  // callee as written, and its kind.
+  it('the evaluator fails as the stages before it', () => {
+    const rt = runtime('')
+    for (const [expr, code] of [
+      ['(let [x 1])', 'bad_let'],
+      ['(let [x 1 2] x)', 'bad_let'],
+      ['(if true 1)', 'bad_if'],
+      ['(match)', 'bad_match'],
+    ]) {
+      // Read and not desugared, so the desugarer does not meet it.
+      const f = thrown(() => rt.evalProgramExpr(parseFile(expr, 'e.alc')[0]))
+      assert.equal(f.code, 'DSL_PARSE_ERROR', `${expr}: ${f}`)
+      assert.equal(f.message, `${code}: ${MESSAGES.find(([known]) => known === code)?.[1]}`, `${expr}: ${f}`)
+    }
+    const f = evalFail('', '(get :f (record (entry :f 1))) 2')
+    assert.equal(f.code, 'DSL_TYPE_ERROR', String(f))
+    assert.equal(f.message, 'type_mismatch: (get :f (record (entry :f 1))) is a number and cannot be called')
+  })
+
   // What a render needs beyond the stack: `length` and `compare` see a key
   // past a length, and `number-class` names a number's class.
   it('the render operators', () => {
@@ -289,7 +313,7 @@ describe('evaluation', () => {
     f = evalFail('', 'get 1')
     assert.ok(f.message.startsWith('arity: get takes 2'), String(f))
     f = evalFail('', '1 2')
-    assert.match(f.message, /not a function/)
+    assert.equal(f.message, 'type_mismatch: 1 is a number and cannot be called')
     // A partial of a partial supplies its arguments in order.
     same(evalIn('def three [a b c] [a b c]', '(partial (partial three 1) 2) 3'), V.vectorVal([n(1), n(2), n(3)]))
   })

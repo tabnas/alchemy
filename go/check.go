@@ -175,6 +175,16 @@ func (c *checker) typeError(finer, message string, span SourceSpan) *Fail {
 	return c.fail(CodeDSLTypeError, finer, message, span)
 }
 
+// vectorCannotHold is a vector refusing a stream or the source, named by
+// its kind as the runtime names what it refuses where a vector is built (a
+// vector may hold a text, which may be finite; the runtime refuses a live
+// one): one sentence for a vector literal, `vector` and `push`, at both
+// stages.
+func (c *checker) vectorCannotHold(held Type, span SourceSpan) *Fail {
+	return c.typeError("type_mismatch",
+		"a vector cannot hold "+held.KindText()+"; a stream is used once, where it is", span)
+}
+
 // mismatch is `type_mismatch` or `protocol_mismatch`, by what was wanted
 // and what came.
 func (c *checker) mismatch(what string, expected, actual Type, span SourceSpan) *Fail {
@@ -614,8 +624,7 @@ func (c *checker) infer(expr *Expr, e *env) (Type, *Fail) {
 				return Type{}, f
 			}
 			if t.IsStreamOrSource() {
-				return Type{}, c.typeError("type_mismatch",
-					fmt.Sprintf("a vector cannot hold a %s; a stream is used once, where it is", t), i.Span)
+				return Type{}, c.vectorCannotHold(t, i.Span)
 			}
 			item = JoinTypes(item, t)
 		}
@@ -646,8 +655,10 @@ func (c *checker) list(items []*Expr, span SourceSpan, e *env) (Type, *Fail) {
 		}
 	case "let":
 		if len(items) == 3 {
+			// The resolver has held the shape; a form that is not one fails
+			// as the desugarer's would.
 			badLet := func() (Type, *Fail) {
-				return Type{}, c.typeError("bad_let", "let takes one binding [name value] and one body", span)
+				return Type{}, c.sources.FailAt(shapeError("bad_let"), span)
 			}
 			if items[1].Kind != ExprVector {
 				return badLet()
@@ -726,7 +737,8 @@ func (c *checker) list(items []*Expr, span SourceSpan, e *env) (Type, *Fail) {
 	return c.call(items, span, e)
 }
 
-// describe is a head, for messages.
+// describe is a head, for messages: the checker's and the evaluator's,
+// which name a callee the same way.
 func describe(head *Expr) string {
 	if name, ok := head.Symbol(); ok {
 		return name
@@ -785,7 +797,7 @@ func (c *checker) call(items []*Expr, span SourceSpan, e *env) (Type, *Fail) {
 		return Unknown, nil
 	}
 	return Type{}, c.typeError("type_mismatch",
-		fmt.Sprintf("%s is a %s and cannot be called", describe(head), fn), head.Span)
+		fmt.Sprintf("%s is %s and cannot be called", describe(head), fn.KindText()), head.Span)
 }
 
 func typesEqual(a, b []Type) bool {
@@ -971,7 +983,7 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 			return Type{}, f
 		}
 		if init.IsAffine() {
-			return Type{}, c.typeError("type_mismatch", fmt.Sprintf("the state of scan-emit cannot be a %s", init), args[0].Span)
+			return Type{}, c.typeError("type_mismatch", "the state of scan-emit cannot be "+init.KindText(), args[0].Span)
 		}
 		source, f := c.infer(args[3], e)
 		if f != nil {
@@ -1035,7 +1047,7 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 	noStream := func(i int, what string) *Fail {
 		if t(i).IsAffine() {
 			return c.typeError("type_mismatch",
-				fmt.Sprintf("%s cannot hold a %s; a stream or a text is used once, where it is", what, t(i)), at(i))
+				fmt.Sprintf("%s cannot hold %s; a stream or a text is used once, where it is", what, t(i).KindText()), at(i))
 		}
 		return nil
 	}
@@ -1097,9 +1109,7 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		item := Never
 		for i := range args {
 			if t(i).IsStreamOrSource() {
-				if f := noStream(i, "a vector"); f != nil {
-					return Type{}, f
-				}
+				return Type{}, c.vectorCannotHold(t(i), at(i))
 			}
 			item = JoinTypes(item, t(i))
 		}
@@ -1109,9 +1119,7 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return VectorOf(item), nil
 	case "push":
 		if t(0).IsStreamOrSource() {
-			if f := noStream(0, "a vector"); f != nil {
-				return Type{}, f
-			}
+			return Type{}, c.vectorCannotHold(t(0), at(0))
 		}
 		if f := c.expect("the vector of push", VectorOf(Unknown), t(1), at(1)); f != nil {
 			return Type{}, f

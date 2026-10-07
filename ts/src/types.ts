@@ -206,6 +206,52 @@ export function itemOf(ty: Type): Type | undefined {
   return 'Vector' === ty.t || 'Stream' === ty.t ? ty.item : undefined
 }
 
+// What a value of this type is, in the words the runtime names a value's
+// kind with (`kindText`): `a stream` for a stream or the source, `a text`,
+// `a number`, and so on; `data` for `Value`, which is any of several (and
+// for `Unknown` and `Never`, which every place accepts, so no message names
+// them). A message the checker and the runtime both write (a value that
+// cannot be held, a callee that cannot be called) names the value this way
+// at both stages.
+export function typeKindText(ty: Type): string {
+  switch (ty.t) {
+    case 'Null':
+      return 'null'
+    case 'Bool':
+      return 'a boolean'
+    case 'Number':
+      return 'a number'
+    case 'String':
+      return 'a string'
+    case 'Keyword':
+      return 'a keyword'
+    case 'Value':
+    case 'Unknown':
+    case 'Never':
+      return 'data'
+    case 'Vector':
+      return 'a vector'
+    case 'Record':
+      return 'a record'
+    case 'Selector':
+      return 'a selector'
+    case 'CaptureSpec':
+      return 'a capture'
+    case 'Tagged':
+      return 'missing' === ty.tag ? 'missing' : 'a tagged value'
+    case 'TableEvent':
+    case 'Event':
+      return 'a tagged value'
+    case 'Fn':
+      return 'a function'
+    case 'Stream':
+    case 'JsonEvents':
+      return 'a stream'
+    case 'Text':
+      return 'a text'
+  }
+}
+
 // The type as the messages print it.
 export function typeText(ty: Type): string {
   switch (ty.t) {

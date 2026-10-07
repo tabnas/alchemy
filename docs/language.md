@@ -361,6 +361,23 @@ match v
 (match v (case 1 "one") (case _ "other"))
 ```
 
+A `pipe` step gains the threaded value as its last item after the
+desugarer has read it, so a step that is one of these forms can come out
+of the wrong shape: `pipe input let` is `(let input)`, and the step below
+is `(if true "yes" "no" input)`, an `if` of three branches. The resolver
+holds the forms a `pipe` builds to the same shapes, and reports one that
+is not with the same code, at the step (or at a clause that is not a
+`case`).
+
+```alchemy
+def export [input]
+  pipe input
+    if true "yes" "no"
+```
+```check
+ERROR:bad_if@3:5
+```
+
 Desugaring is bottom-up, so a `pipe` inside a `let` inside a `def` is
 rewritten wherever it sits:
 
@@ -1391,7 +1408,7 @@ repurposed; one may be added.
 
 | Code | Finer codes |
 |---|---|
-| `DSL_PARSE_ERROR` | the reader's `tab_indent`, `bad_indent`, `bad_dedent`, `unbalanced`, `too_deep`; the desugarer's `empty_step`, `bad_def`, `bad_let`, `bad_if`, `bad_match`; the engine's `unterminated_string`, `unprintable`, `unexpected` |
+| `DSL_PARSE_ERROR` | the reader's `tab_indent`, `bad_indent`, `bad_dedent`, `unbalanced`, `too_deep`; the desugarer's `empty_step`, `bad_def`, `bad_let`, `bad_if`, `bad_match` (the last three from the resolver too, for a form a `pipe` builds); the engine's `unterminated_string`, `unprintable`, `unexpected` |
 | `DSL_TYPE_ERROR` | the resolver's `unknown_name`, `not_def`, `duplicate_def`, `reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; the linker's `duplicate_file`; the checker's `arity`, `type_mismatch`, `protocol_mismatch`, `no_export`, `bad_output`; the runtime's `duplicate_key`, `no_match`, `render_of_text` |
 | `STREAM_REUSED` | `reused`, `captured` |
 | `STREAMABILITY_UNKNOWN` | `recursion`, `dynamic`, `unknown_output` |
@@ -1400,7 +1417,11 @@ Each of these finer codes but the engine's and the linker's
 `duplicate_file` is declared in the grammar document,
 `alchemy-grammar.jsonic`, with the text of its messages in
 `options.error` (a line per sentence, `{name}` for what a failure fills
-in) and a hint in `options.hint`.
+in) and a hint in `options.hint`. A finer code always comes with the
+code of its row above, whichever stage raises it, and where the checker
+and the runtime meet the same situation they write the same sentence,
+naming a value as the runtime does, by its kind (`a vector cannot hold a
+stream`, `1 is a number and cannot be called`).
 
 Runtime failures carry the transduce and render codes unchanged
 (`INPUT_ORDER_VIOLATION`, `MISSING_VALUE`, `RESOURCE_LIMIT_EXCEEDED` with

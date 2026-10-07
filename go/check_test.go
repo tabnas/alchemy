@@ -117,6 +117,40 @@ func TestTheResolverFinerCodes(t *testing.T) {
 	}
 }
 
+// TestAFormAPipeBuildsIsHeldToTheDesugarersShape: a let, if or match that
+// a pipe builds, whose step the desugarer read before the threaded value
+// lengthened it, is held to the desugarer's shape here, and fails as the
+// desugarer's would: its finer code and text, DSL_PARSE_ERROR, at the step
+// (a clause that is not a case, at the clause).
+func TestAFormAPipeBuildsIsHeldToTheDesugarersShape(t *testing.T) {
+	for _, c := range []struct {
+		src, finer string
+		col        uint64
+	}{
+		{"def f [x] (pipe x let)", "bad_let", 19},
+		{"def f [x] (pipe x (let [y 1] y))", "bad_let", 19},
+		{"def f [x] (pipe x if)", "bad_if", 19},
+		{"def f [x] (pipe x (if true 1 2))", "bad_if", 19},
+		{"def f [x] (pipe x (match 1))", "bad_match", 17},
+	} {
+		_, f := resolved(t, c.src)
+		if f == nil {
+			t.Errorf("%q resolved", c.src)
+			continue
+		}
+		if f.Code != CodeDSLParseError || f.Message != c.finer+": "+desugarMessage(c.finer) || f.Row != 1 || f.Column != c.col {
+			t.Errorf("%q: %s %q at %d:%d", c.src, f.Code, f.Message, f.Row, f.Column)
+		}
+	}
+	// What a pipe builds in the shape passes: a match with no clause, and a
+	// clause threaded in as the last item.
+	for _, src := range []string{"def f [x] (pipe x match)", "def f [x] (pipe (case 1 x) (match 1))"} {
+		if _, f := resolved(t, src); f != nil {
+			t.Errorf("%q: %v", src, f)
+		}
+	}
+}
+
 func TestAProgramMayShadowALibraryName(t *testing.T) {
 	r, f := resolved(t, "def csv [x] x\ndef export [input] (csv input)")
 	if f != nil {

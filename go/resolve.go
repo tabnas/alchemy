@@ -143,6 +143,17 @@ func typeFail(finer, message string, span SourceSpan, sources *Sources) *Fail {
 	return resolveFail(CodeDSLTypeError, finer, message, span, sources)
 }
 
+// shapeFail is a form whose shape the desugarer owns (bad_def, bad_let,
+// bad_if, bad_match), met here: the desugarer's own failure, a
+// DSL_PARSE_ERROR with its text, at span. The desugarer checks the forms a
+// program writes; a `pipe` step's form grows by the threaded value after
+// that check (`pipe v let` is `(let v)`, `pipe v (if c a b)` is
+// `(if c a b v)`), so the shapes are held again here, by the same rules and
+// with the same codes.
+func shapeFail(finer string, span SourceSpan, sources *Sources) *Fail {
+	return sources.FailAt(shapeError(finer), span)
+}
+
 // Resolve links a desugared program, whose forms may come from several
 // sources: sources are their texts, which position a failure in the file
 // its form was read from. outer answers the kind of a name bound outside
@@ -156,9 +167,11 @@ func Resolve(forms []*Expr, sources *Sources, outer func(string) NameKind) (*Res
 			return nil, typeFail("not_def", "a top-level form must be a def", span, sources)
 		}
 		value := form.Items[2]
+		// The desugarer's bad_def always comes first; checked again as the
+		// desugarer checks it.
 		name, ok := form.Items[1].Symbol()
 		if !ok {
-			return nil, typeFail("not_def", "a def names a symbol", form.Items[1].Span, sources)
+			return nil, shapeFail("bad_def", form.Items[1].Span, sources)
 		}
 		if isSpecialForm(name) {
 			return nil, typeFail("reserved", name+" is a special form and cannot be defined", span, sources)
@@ -362,14 +375,14 @@ func (w *walker) list(items []*Expr, span SourceSpan) *Fail {
 		w.locals = w.locals[:depth]
 		return f
 	case "let":
-		// The desugarer checked the shape: `(let [name value] body)`.
-		if len(items) < 3 || items[1].Kind != ExprVector || len(items[1].Items) < 2 {
-			return typeFail("bad_let", "let takes one binding [name value] and one body", span, w.sources)
+		// `(let [name value] body)`, as the desugarer has it.
+		if len(items) != 3 || items[1].Kind != ExprVector || len(items[1].Items) != 2 {
+			return shapeFail("bad_let", span, w.sources)
 		}
 		binding := items[1].Items
 		name, ok := binding[0].Symbol()
 		if !ok {
-			return typeFail("bad_let", "let takes one binding [name value] and one body", span, w.sources)
+			return shapeFail("bad_let", span, w.sources)
 		}
 		if f := w.expr(binding[1]); f != nil {
 			return f
@@ -379,6 +392,10 @@ func (w *walker) list(items []*Expr, span SourceSpan) *Fail {
 		w.locals = w.locals[:len(w.locals)-1]
 		return f
 	case "if":
+		// A condition and exactly two branches, as the desugarer has it.
+		if len(items) != 4 {
+			return shapeFail("bad_if", span, w.sources)
+		}
 		for _, item := range items[1:] {
 			if f := w.expr(item); f != nil {
 				return f
@@ -386,19 +403,21 @@ func (w *walker) list(items []*Expr, span SourceSpan) *Fail {
 		}
 		return nil
 	case "match":
+		// A value and `(case pattern body)` clauses, as the desugarer has
+		// it; a clause that is not one is named.
 		if len(items) < 2 {
-			return typeFail("bad_match", "match takes a value and (case pattern body) clauses", span, w.sources)
+			return shapeFail("bad_match", span, w.sources)
 		}
 		if f := w.expr(items[1]); f != nil {
 			return f
 		}
 		for _, clause := range items[2:] {
 			if clause.Kind != ExprList {
-				return typeFail("bad_match", "match takes (case pattern body) clauses", clause.Span, w.sources)
+				return shapeFail("bad_match", clause.Span, w.sources)
 			}
 			parts := clause.Items
 			if len(parts) != 3 || !parts[0].IsSymbol("case") {
-				return typeFail("bad_match", "match takes (case pattern body) clauses", clause.Span, w.sources)
+				return shapeFail("bad_match", clause.Span, w.sources)
 			}
 			depth := len(w.locals)
 			var bound []string

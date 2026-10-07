@@ -99,6 +99,51 @@ func FuncOf(n int) Type {
 	return Func(params, Unknown)
 }
 
+// KindText is what a value of this type is, in the words the runtime names
+// a value's kind with (KindOf): "a stream" for a stream or the source,
+// "a text", "a number", and so on; "data" for Value, which is any of
+// several (and for Unknown and Never, which every place accepts, so no
+// message names them). A message the checker and the runtime both write (a
+// value that cannot be held, a callee that cannot be called) names the
+// value this way at both stages.
+func (t Type) KindText() string {
+	switch t.Kind {
+	case TNull:
+		return "null"
+	case TBool:
+		return "a boolean"
+	case TNumber:
+		return "a number"
+	case TString:
+		return "a string"
+	case TKeyword:
+		return "a keyword"
+	case TVector:
+		return "a vector"
+	case TRecord:
+		return "a record"
+	case TSelector:
+		return "a selector"
+	case TCaptureSpec:
+		return "a capture"
+	case TTagged:
+		if t.Tag == "missing" {
+			return "missing"
+		}
+		return "a tagged value"
+	case TTableEvent, TEvent:
+		return "a tagged value"
+	case TFn:
+		return "a function"
+	case TStream, TJsonEvents:
+		return "a stream"
+	case TText:
+		return "a text"
+	}
+	// TValue, TUnknown and TNever.
+	return "data"
+}
+
 // IsAffine is whether a binding of this type is used at most once.
 func (t Type) IsAffine() bool {
 	return t.Kind == TStream || t.Kind == TJsonEvents || t.Kind == TText

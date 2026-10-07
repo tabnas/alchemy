@@ -31,6 +31,7 @@ import { Code, Fail } from './shared'
 
 import { Expr, SourceSpan, Sources, canonicalForm, symbolOf } from './ast'
 import { Output } from './output'
+import { shapeError } from './desugar'
 import { Def, Resolved, fnForm } from './resolve'
 import { Native, arityAccepts, arityExact, arityText, native } from './stdlib/registry'
 import { G, run } from './trampoline'
@@ -65,6 +66,7 @@ import {
   tableEvents,
   tagged,
   typeEq,
+  typeKindText,
   typeText,
   typesEq,
   vectorOf,
@@ -155,8 +157,9 @@ function lookup(env: Env, name: string): Type | undefined {
 // what stops a second use.
 export const MAX_APPLIED = 32
 
-// A head, for messages.
-function describe(head: Expr): string {
+// A head, for messages: the checker's and the evaluator's, which name a
+// callee the same way.
+export function describe(head: Expr): string {
   return 'symbol' === head.kind ? head.name : canonicalForm(head)
 }
 
@@ -188,6 +191,18 @@ class Checker {
 
   typeError(finer: string, message: string, sp: SourceSpan): Fail {
     return this.fail('DSL_TYPE_ERROR', finer, message, sp)
+  }
+
+  // A vector refusing a stream or the source, named by its kind as the
+  // runtime names what it refuses where a vector is built (a vector may
+  // hold a text, which may be finite; the runtime refuses a live one): one
+  // sentence for a vector literal, `vector` and `push`, at both stages.
+  vectorCannotHold(held: Type, sp: SourceSpan): Fail {
+    return this.typeError(
+      'type_mismatch',
+      `a vector cannot hold ${typeKindText(held)}; a stream is used once, where it is`,
+      sp,
+    )
   }
 
   // `type_mismatch` or `protocol_mismatch`, by what was wanted and what
@@ -500,13 +515,7 @@ class Checker {
         let item = Never
         for (const i of expr.items) {
           const t = (yield this.infer(i, env))
-          if (isStreamOrSource(t)) {
-            throw this.typeError(
-              'type_mismatch',
-              `a vector cannot hold a ${typeText(t)}; a stream is used once, where it is`,
-              i.span,
-            )
-          }
+          if (isStreamOrSource(t)) throw this.vectorCannotHold(t, i.span)
           item = join(item, t)
         }
         return vectorOf('Never' === item.t ? Unknown : item)
@@ -528,8 +537,10 @@ class Checker {
       }
     }
     if ('let' === special && 3 === items.length) {
+      // The resolver has held the shape; a form that is not one fails as
+      // the desugarer's would.
       const binding = items[1]
-      const badLet = () => this.typeError('bad_let', 'let takes one binding [name value] and one body', sp)
+      const badLet = () => this.sources.failAt(shapeError('bad_let'), sp)
       if ('vector' !== binding.kind) throw badLet()
       const bname = symbolOf(binding.items[0])
       const value = binding.items[1]
@@ -607,11 +618,7 @@ class Checker {
       return f.result
     }
     if ('Unknown' === f.t || 'Never' === f.t) return Unknown
-    throw this.typeError(
-      'type_mismatch',
-      `${describe(head)} is a ${typeText(f)} and cannot be called`,
-      head.span,
-    )
+    throw this.typeError('type_mismatch', `${describe(head)} is ${typeKindText(f)} and cannot be called`, head.span)
   }
 
   // The type of a definition or a `fn` literal applied to arguments of
@@ -750,7 +757,7 @@ class Checker {
     if ('scan-emit' === name) {
       const init = (yield this.infer(args[0], env))
       if (isAffine(init)) {
-        throw this.typeError('type_mismatch', `the state of scan-emit cannot be a ${typeText(init)}`, args[0].span)
+        throw this.typeError('type_mismatch', `the state of scan-emit cannot be ${typeKindText(init)}`, args[0].span)
       }
       const source = (yield this.infer(args[3], env))
       const [item, streaming] = this.expectSeq('the stream of scan-emit', source, args[3].span)
@@ -780,7 +787,7 @@ class Checker {
       if (isAffine(t(i))) {
         throw this.typeError(
           'type_mismatch',
-          `${what} cannot hold a ${typeText(t(i))}; a stream or a text is used once, where it is`,
+          `${what} cannot hold ${typeKindText(t(i))}; a stream or a text is used once, where it is`,
           at(i),
         )
       }
@@ -820,13 +827,13 @@ class Checker {
       case 'vector': {
         let item = Never
         for (let i = 0; i < args.length; i++) {
-          if (isStreamOrSource(t(i))) noStream(i, 'a vector')
+          if (isStreamOrSource(t(i))) throw this.vectorCannotHold(t(i), at(i))
           item = join(item, t(i))
         }
         return vectorOf('Never' === item.t ? Unknown : item)
       }
       case 'push': {
-        if (isStreamOrSource(t(0))) noStream(0, 'a vector')
+        if (isStreamOrSource(t(0))) throw this.vectorCannotHold(t(0), at(0))
         this.expect('the vector of push', vectorOf(Unknown), t(1), at(1))
         const v = t(1)
         return vectorOf('Vector' === v.t ? join(v.item, t(0)) : Unknown)

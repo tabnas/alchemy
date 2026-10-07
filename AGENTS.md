@@ -225,7 +225,13 @@ message, before `: ` -- the grammar's own (`tab_indent`, `bad_indent`,
 `unprintable`, `unexpected`). That word is what a fixture pins as
 `ERROR:<code>`, so it is part of the contract too: never rename or
 repurpose one; add one when a new failure needs it, with its message and
-hint.
+hint. A finer code comes with the same code wherever it is raised: a form
+of the wrong shape is the desugarer's `DSL_PARSE_ERROR`, with its text,
+whichever stage finds it (the resolver holds a `let`, `if` or `match`
+that a `pipe` builds to the desugarer's shapes, since a step's form grows
+by the threaded value after the desugarer read it, and the checker's and
+the evaluator's own checks of the shapes fail the same way;
+`desugar::shape_error` is the one failure they share).
 
 The later stages follow the same convention. `DSL_TYPE_ERROR` carries,
 from the resolver, `unknown_name`, `not_def`, `duplicate_def`,
@@ -262,17 +268,40 @@ raised in more than one sentence holds one per line.
 `the_raised_messages_match_the_document` (`rs/tests/spec_test.rs`, and
 the same test in `ts/test/spec.test.ts` and `go/spec_test.go`) runs
 every error row of `test/spec/` and wants each failure's code declared,
-its text a line of that code's entry, and every line of every entry met
-by some row. A raising site whose code or text drifts fails there; a new
-failure's text goes into the catalogue with a row that meets it. What a
+its text a line of that code's entry, each finer code raised with one
+code, and every line of every entry met by some row. A raising site whose
+code or text drifts fails there; a new failure's text goes into the
+catalogue with a row that meets it. Where the checker and the runtime
+report the same situation they write one sentence, and a value both
+describe is named by its kind (`a stream`, `a number`), the runtime's
+words, which the checker's types map onto (`Type::kind_text`); a
+requirement stays in each stage's words (`must be TableEvents, not
+JsonEvents` at the checker, `must be a keyword or a string, not a
+number` at run time). What a
 program compiled on its own cannot meet is not declared: the linker's
 `duplicate_file`, and the linker's own sentences for `no_export` and
-`duplicate_def` (several sources, which no fixture compiles);
-`undeclared`, a library definition without a signature (a defect of the
-library); and Rust's `internal`, a poisoned definition cache. Nor are
-the texts of defensive checks no fixture reaches, such as the resolver's
-`a def names a symbol`, which the desugarer's `bad_def` always pre-empts,
-and the lowering's own checks of a plan the checker has already typed.
+`duplicate_def` (several sources, which no fixture compiles); the
+library's defects (`undeclared`, a definition without a signature;
+`arity`'s `is declared with ... parameter(s) but takes ...`, a definition
+unlike its signature; `duplicate_def`'s `is defined in two standard
+library files`; Go's `has no implementation`); Rust's `internal`, a
+poisoned definition cache; and the shared `TreeContract`'s refusal, a
+host's utility no program reaches. Nor are the texts of defensive checks
+of what an earlier stage guarantees: the reader's output (`malformed
+reader output`, and the AST's own `too_deep`), a number lexeme that does
+not parse (the reader's are JSON numbers), a native the checker has no
+arm for (`is not callable here`), and the lowering's checks of plans
+only the evaluator builds (a `csv` plan whose options do not map, a
+table plan whose binding lacks its selectors, a transition whose outputs
+are not a vector, a `concat` holding a stream, a plan of the other kind
+where a text or a stream is read). The lowering's refusals that a
+function read from data, or definitions chained past `MAX_APPLIED`, can
+bring a program to are declared, each with a row in `run.tsv`, and so is
+the `concat` guard (`check.tsv`). A later stage's check of what an
+earlier stage refuses first writes the earlier stage's code and text, so
+its text is declared with that stage's: the resolver's check of a
+`def`'s name is the desugarer's `bad_def`, and the evaluator's of
+`export` the checker's `export must be a fn [input]`.
 
 ## Untrusted input
 

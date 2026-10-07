@@ -44,9 +44,19 @@ function message(code: string): string {
   return MESSAGES.find(([known]) => known === code)?.[1] ?? 'invalid form'
 }
 
+// The failure of a form whose shape the desugarer owns (`bad_def`,
+// `bad_let`, `bad_if`, `bad_match`), not yet positioned: a
+// DSL_PARSE_ERROR with the desugarer's text, wherever the form is found.
+// The resolver meets one a `pipe` builds, since a step's form grows by the
+// threaded value after this pass read it; the checker and the evaluator
+// check the shapes again before reading a form.
+export function shapeError(code: string): Fail {
+  return new Fail('DSL_PARSE_ERROR', `${code}: ${message(code)}`)
+}
+
 function fail(code: string, sp: SourceSpan, src: string): Fail {
   const [row, col] = position(sp, src)
-  return new Fail('DSL_PARSE_ERROR', `${code}: ${message(code)}`).at(row, col)
+  return shapeError(code).at(row, col)
 }
 
 // Desugar a whole program, form by form. `src` is the program's source,

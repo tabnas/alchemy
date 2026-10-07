@@ -6,7 +6,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 
-import { NameKind, Sources, defParams, desugarProgram, parse, parseFile, resolve, types } from '../dist/alchemy'
+import { MESSAGES, NameKind, Sources, defParams, desugarProgram, parse, parseFile, resolve, types } from '../dist/alchemy'
 
 import { finer, thrown } from './common'
 
@@ -86,6 +86,30 @@ describe('resolve', () => {
     assert.equal(code('def a (fn [x] (b x))\ndef b [y] (a y)')[1], 'recursion')
     const fail = thrown(() => resolved('def a [x] (b x)\ndef b [x] (c x)\ndef c [x] (a x)'))
     assert.match(fail.message, /^recursion: a reaches itself through b, then c; strict mode refuses recursion$/)
+  })
+
+  // A `let`, `if` or `match` that a `pipe` builds, whose step the
+  // desugarer read before the threaded value lengthened it, is held to the
+  // desugarer's shape here, and fails as the desugarer's would: its finer
+  // code and text, DSL_PARSE_ERROR, at the step (a clause that is not a
+  // `case`, at the clause).
+  it('a form a pipe builds is held to the desugarer’s shape', () => {
+    for (const [src, code, col] of [
+      ['def f [x] (pipe x let)', 'bad_let', 19],
+      ['def f [x] (pipe x (let [y 1] y))', 'bad_let', 19],
+      ['def f [x] (pipe x if)', 'bad_if', 19],
+      ['def f [x] (pipe x (if true 1 2))', 'bad_if', 19],
+      ['def f [x] (pipe x (match 1))', 'bad_match', 17],
+    ] as const) {
+      const f = thrown(() => resolved(src))
+      assert.equal(f.code, 'DSL_PARSE_ERROR', `${src}: ${f}`)
+      assert.equal(f.message, `${code}: ${MESSAGES.find(([known]) => known === code)?.[1]}`, `${src}: ${f}`)
+      assert.deepStrictEqual([f.row, f.col], [1, col], `${src}: ${f}`)
+    }
+    // What a pipe builds in the shape passes: a match with no clause, and a
+    // clause threaded in as the last item.
+    resolved('def f [x] (pipe x match)')
+    resolved('def f [x] (pipe (case 1 x) (match 1))')
   })
 
   it('a program may shadow a library name', () => {

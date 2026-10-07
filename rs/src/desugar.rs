@@ -62,9 +62,19 @@ fn message(code: &str) -> &'static str {
         .map_or("invalid form", |(_, message)| message)
 }
 
+/// The failure of a form whose shape the desugarer owns (`bad_def`,
+/// `bad_let`, `bad_if`, `bad_match`), not yet positioned: a
+/// `DSL_PARSE_ERROR` with the desugarer's text, wherever the form is
+/// found. The resolver meets one a `pipe` builds, since a step's form
+/// grows by the threaded value after this pass read it; the checker and
+/// the evaluator check the shapes again before reading a form.
+pub(crate) fn shape_error(code: &str) -> Fail {
+    Fail::new(Code::DslParseError, format!("{code}: {}", message(code)))
+}
+
 fn fail(code: &str, span: &SourceSpan, src: &str) -> Fail {
     let (row, col) = span.position(src);
-    Fail::new(Code::DslParseError, format!("{code}: {}", message(code))).at(row as u64, col as u64)
+    shape_error(code).at(row as u64, col as u64)
 }
 
 /// Desugar a whole program, form by form. `src` is the program's source,

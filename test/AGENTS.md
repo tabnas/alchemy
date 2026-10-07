@@ -63,7 +63,9 @@ the text its raising sites write (`{name}` for what a site fills in, a
 line per sentence), and each runtime's
 `the_raised_messages_match_the_document` runs every error row here and
 wants each failure's code declared there, its text a line of that code's
-entry, and every line met by some row. A row that meets a new failure,
+entry, each finer code raised with one code (`bad_let` from the
+desugarer in `pipe.tsv` and from the resolver in `check.tsv` alike), and
+every line met by some row. A row that meets a new failure,
 or a new sentence of a known one, comes with its line in the catalogue.
 
 A trailing `@<row>:<col>` also pins the 1-based position the failure
