@@ -5,7 +5,8 @@
 #
 # The engine and the grammars are PATH DEPENDENCIES on sibling checkouts
 # (rs/Cargo.toml: `tabnas = { package = "tabnas-parser", path = "../../parser/rs" }` and the like).
-# None is published, so there is no registry version to fall back on.
+# Each is on crates.io, but the committed manifest names them by path
+# alone, so there is no registry version to fall back on.
 # Clone each repository named in SIBLINGS below next to this one before
 # running.
 set -euo pipefail
