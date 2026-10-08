@@ -72,14 +72,11 @@ A trailing `@<row>:<col>` also pins the 1-based position the failure
 names: the program's form, for the reader, the checker and a program's
 own runtime failures; the document's, for a document that is not JSON.
 It is a stronger contract than the code alone, not a message: keep a
-position where the failure has one to name. (The fleet's `ax-audit`
-counts any cell that is not a bare lower-case `ERROR:<code>` as a message
-row, so it reports these, and the upper-case transduce codes, as `MSG`.
-They are not: `@tabnas/support` reads `ERROR:<code>@<row>:<col>` as a
-code and a position, in every runtime. The fleet's code census,
-`ax-codes`, likewise counts a code as exercised only by a bare
-`ERROR:<code>` cell, so a code the rows pin only with a position has one
-bare row too, a case of its own; `check.tsv` groups most of them.)
+position where the failure has one to name. `@tabnas/support` reads
+`ERROR:<code>@<row>:<col>` as a code and a position, in every runtime,
+and so do the fleet's audits: admin's `ax-codes` counts a located cell
+as exercising its code, and `ax-audit` counts it as a code, not a
+message. A code pinned only with a position needs no bare row as well.
 
 ## Who runs what
 
