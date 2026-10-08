@@ -23,6 +23,7 @@
 // maps itself is the evaluator's `recursion`, never JavaScript's stack.
 
 import { CaptureSpec, Fail, Limits, Selector, isJsonNumber, utf8Bytes } from '../shared'
+import type { Renderers } from '../shared'
 
 import { SourceSpan } from '../ast'
 import type { Runtime } from '../interp'
@@ -168,7 +169,14 @@ const POSITIONAL_MAX = 1e21
 // argument gives them; only the layout is chosen here. The two must agree
 // byte for byte, which the differential test checks on every number without
 // a lexeme (alchemy-cli runs it, on render's renderers).
-export function shortestNumber(value: number): string {
+//
+// The form that takes the renderers first is the one 0.2.3 published,
+// kept so a caller of it still gets the right text; they are not consulted.
+export function shortestNumber(value: number): string
+/** @deprecated The renderers are not consulted: pass the value alone. */
+export function shortestNumber(renderers: Renderers, value: number): string
+export function shortestNumber(first: number | Renderers, second?: number): string {
+  const value = 'number' === typeof first ? first : (second as number)
   if (0 === value) return Object.is(value, -0) ? '-0' : '0'
   const neg = value < 0
   const magnitude = neg ? -value : value
@@ -195,8 +203,21 @@ export function shortestNumber(value: number): string {
 
 // The text of a number as a renderer writes it, with the renderer's
 // checks: a lexeme that is not a JSON number is `INVALID_NUMBER`, a
-// non-finite value `TARGET_VALUE_UNREPRESENTABLE`.
-export function numberText(value: number, lexeme?: string): string {
+// non-finite value `TARGET_VALUE_UNREPRESENTABLE`. As with
+// `shortestNumber`, the form that takes the renderers first is the one
+// 0.2.3 published, kept and not consulted.
+export function numberText(value: number, lexeme?: string): string
+/** @deprecated The renderers are not consulted: pass the value and lexeme alone. */
+export function numberText(renderers: Renderers, value: number, lexeme?: string): string
+export function numberText(
+  first: number | Renderers,
+  second?: number | string,
+  third?: string,
+): string {
+  const [value, lexeme] =
+    'number' === typeof first
+      ? [first, second as string | undefined]
+      : [second as number, third]
   if (undefined !== lexeme && !isJsonNumber(lexeme)) {
     throw new Fail('INVALID_NUMBER', `${quotedText(lexeme)} is not a JSON number`)
   }

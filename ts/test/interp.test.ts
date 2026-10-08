@@ -536,6 +536,14 @@ describe('natives', () => {
     assert.equal((thrown(() => numberText(1, '01')) as any).code, 'INVALID_NUMBER')
     assert.equal((thrown(() => numberText(Infinity, '1e999')) as any).code, 'TARGET_VALUE_UNREPRESENTABLE')
     assert.equal((thrown(() => numberText(NaN)) as any).code, 'TARGET_VALUE_UNREPRESENTABLE')
+    // The form 0.2.3 published, renderers first, still answers; the
+    // renderers are not consulted.
+    const unused = {} as any
+    assert.equal(shortestNumber(unused, 50.25), '50.25')
+    assert.equal(shortestNumber(unused, -0), '-0')
+    assert.equal(numberText(unused, 2.5), '2.5')
+    assert.equal(numberText(unused, 1.5, '1.50'), '1.50')
+    assert.equal((thrown(() => numberText(unused, 1, '01')) as any).code, 'INVALID_NUMBER')
   })
 
   it('a datum value keeps its member order', () => {
