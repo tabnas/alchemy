@@ -210,12 +210,12 @@ function cellVal(c: Cell): Val {
 // adapter reading a program's `schema` values by it, and `csv-table`
 // validates the library's schema by it, so a label is accepted or refused
 // alike whichever path renders it.
-function labelText(rt: Runtime, label: Val): string {
+function labelText(label: Val): string {
   switch (label.v) {
     case 'str':
       return label.value
     case 'num':
-      return numberText(rt.renderers, label.value, label.lexeme)
+      return numberText(label.value, label.lexeme)
     case 'bool':
       return label.value ? 'true' : 'false'
     default:
@@ -225,10 +225,10 @@ function labelText(rt: Runtime, label: Val): string {
 }
 
 // The label of a `schema` value's column: a record's `:label`.
-function label(rt: Runtime, column: Val): string {
+function label(column: Val): string {
   const l = field(column, 'label')
   if (undefined === l) throw Fail.protocol('a schema column is not a record')
-  return labelText(rt, l)
+  return labelText(l)
 }
 
 // The columns of a `schema` value, as the table protocol carries them: a
@@ -244,7 +244,7 @@ function schemaColumns(rt: Runtime, fields: ReadonlyArray<Val>): PublicColumn[] 
       `the schema declares ${columns.items.length} columns, more than ${limits.max_columns}`,
     )
   }
-  return columns.items.map((c) => ({ label: label(rt, c) }))
+  return columns.items.map((c) => ({ label: label(c) }))
 }
 
 // The cells of a `row` value, as the table protocol carries them.
@@ -1176,7 +1176,7 @@ export class Lowering {
     }
     const rt = this.rt
     const mapper = (descriptor: Datum): BoundColumn =>
-      boundColumnOf(rt, rt.applyNow(column.f, [fromDatum(descriptor)], at))
+      boundColumnOf(rt.applyNow(column.f, [fromDatum(descriptor)], at))
     return { schema: Schema.fromMetadata(columns.selector, mapper), rows: rows.selector }
   }
 }
@@ -1185,8 +1185,8 @@ export class Lowering {
 // label is read as the library's `public-column` reads it (`get :label`, so
 // a column function that answers something other than a record fails as
 // `get` does) and taken by `labelText`, the policy every table shares.
-function boundColumnOf(rt: Runtime, column: Val): BoundColumn {
-  const text = labelText(rt, getField('label', column))
+function boundColumnOf(column: Val): BoundColumn {
+  const text = labelText(getField('label', column))
   const source = field(column, 'source')
   if (undefined === source || 'selector' !== source.v) {
     throw typeError('table-from-json: a column record must carry a :source selector')

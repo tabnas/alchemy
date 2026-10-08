@@ -94,8 +94,9 @@ type Runtime struct {
 	// abort is the host's cancellation, read every abortEvery steps.
 	abort *shared.AbortFlag
 	// routers and renderers are the transduce and render stages the
-	// lowering builds, and the renderer's number functions the natives
-	// call: the host's, handed in (WithRouters, WithRenderers).
+	// lowering builds: the host's, handed in (WithRouters, WithRenderers).
+	// Evaluation never calls them (a number's text is shortestNumber's),
+	// so a runtime that only evaluates, as Compile's does, needs neither.
 	routers   shared.Routers
 	renderers shared.Renderers
 	// fuel is the evaluation steps this runtime may take, when bounded
@@ -122,7 +123,7 @@ func arityError(what, wanted string, got int) *Fail {
 // (read only for positions in diagnostics), with the fast paths on,
 // duplicate members rejected, and the default limits. The routers and the
 // renderers it runs on are the host's: WithRouters and WithRenderers set
-// them, before anything is evaluated.
+// them, before anything is lowered. Evaluating asks nothing of them.
 func NewRuntime(program *Resolved, sources *Sources) *Runtime {
 	return &Runtime{
 		program:    program,
@@ -165,8 +166,9 @@ func (rt *Runtime) WithRouters(routers shared.Routers) *Runtime {
 	return rt
 }
 
-// WithRenderers sets the renderers and text stages the lowering builds,
-// and the number functions the natives call: render's Renderers.
+// WithRenderers sets the renderers and text stages the lowering builds:
+// render's Renderers. The natives format a number themselves
+// (shortestNumber, render's layout byte for byte), so they call none.
 func (rt *Runtime) WithRenderers(renderers shared.Renderers) *Runtime {
 	rt.renderers = renderers
 	return rt
@@ -175,8 +177,7 @@ func (rt *Runtime) WithRenderers(renderers shared.Renderers) *Runtime {
 // Routers are the transducer stages the lowering builds.
 func (rt *Runtime) Routers() shared.Routers { return rt.routers }
 
-// Renderers are the renderers and text stages the lowering builds, and the
-// number functions the natives call.
+// Renderers are the renderers and text stages the lowering builds.
 func (rt *Runtime) Renderers() shared.Renderers { return rt.renderers }
 
 // WithFuel bounds the evaluation steps this runtime may take.

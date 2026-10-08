@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // runtimeOf is a runtime over src, named t.alc.
@@ -450,7 +450,7 @@ func TestTheFastPathsSwitch(t *testing.T) {
 // The host's abort flag is read every few evaluation steps, however the
 // steps are taken.
 func TestTheAbortFlagIsReadEveryFewSteps(t *testing.T) {
-	flag := tt.NewAbortFlag()
+	flag := shared.NewAbortFlag()
 	rt := runtimeOf(t, "").WithAbort(flag)
 	for i := 0; i < 2*abortEvery; i++ {
 		if f := rt.Tick(); f != nil {

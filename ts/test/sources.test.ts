@@ -7,13 +7,18 @@
 // failure in any source carries that source's file, row and column, in the
 // field and in the failure's display, at every stage that positions one:
 // the reader, the desugarer, the resolver, the checker and the run.
+//
+// The tests that run a linked program (and the run's own failure, in a
+// part and in a source linked under another name) need transduce's routers
+// and render's renderers, so they are alchemy-cli's, in its
+// ts/test/sources.test.ts; the front end's half is here.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 
 import { Program, Source } from '../dist/alchemy'
 
-import { compile, compileSources, drive, ok, thrown } from './common'
+import { compile, compileSources, thrown } from './common'
 
 // A render part: definitions prefixed by the format's name, no `export`.
 const PART =
@@ -60,41 +65,6 @@ function assertAt(fail: any, file: string, [row, col]: [number, number]): void {
 }
 
 describe('sources', () => {
-  // Two sources are one namespace: the program calls the part's
-  // definitions, in either order of the sources, and runs as the same
-  // texts in one file run.
-  it('linked sources run as one program', () => {
-    const input = '["a","b\\"c","d\\ne"]'
-    const expected = '"a"\n"b\\"c"\n"d\\ne"\n'
-    const mainFirst = linked(PART)
-    assert.equal(ok(mainFirst, input), expected)
-    const partFirst = compileSources(
-      sources([
-        [PART_FILE, PART],
-        [MAIN_FILE, MAIN],
-      ]),
-    )
-    assert.equal(ok(partFirst, input), expected)
-    const one = compile(`${MAIN}\n${PART}`, 'one.alc')
-    assert.equal(ok(one, input), expected)
-    // The program is named by its first source, and its plan is reported
-    // as one program's.
-    assert.equal(mainFirst.file(), MAIN_FILE)
-    assert.equal(partFirst.file(), PART_FILE)
-    assert.equal(mainFirst.explain(), one.explain())
-    // A part may call back into the program: the namespace is one.
-    const back =
-      'def lines-line [item]\n  concat (main-mark item) "\\n"\n\ndef lines-render [items]\n  concat-map lines-line items\n'
-    const main = `${MAIN}\ndef main-mark [s] (concat "* " s)\n`
-    const program = compileSources(
-      sources([
-        [MAIN_FILE, main],
-        [PART_FILE, back],
-      ]),
-    )
-    assert.equal(ok(program, '["x"]'), '* x\n')
-  })
-
   // Every stage that positions a failure positions one in the second
   // source by that source's own rows and columns, and names its file.
   it('a failure in the second source names the second file', () => {
@@ -146,21 +116,6 @@ describe('sources', () => {
     assert.equal(fail.row, 6, String(fail))
   })
 
-  // A failure the run meets in a part, from a `fail` in its definition, is
-  // the program's `INPUT_INVALID` at the part's file and position.
-  it('a run time failure in a part names the part', () => {
-    const strict =
-      'def lines-line [item]\n  match item\n    case "bad" (fail "a bad item")\n    case _ (concat (quoted item) "\\n")\n\ndef lines-render [items]\n  concat-map lines-line items\n'
-    const program = linked(strict)
-    assert.equal(ok(program, '["ok"]'), '"ok"\n')
-    const { fail } = drive(program, '["ok","bad"]')
-    assert.equal(fail.code, 'INPUT_INVALID', String(fail))
-    assert.equal(fail.message, 'a bad item', String(fail))
-    assertAt(fail, PART_FILE, at(strict, 3, '(fail'))
-    // The interpreted twin positions it the same way.
-    assertAt(drive(program.withNative(false), '["bad"]').fail, PART_FILE, at(strict, 3, '(fail'))
-  })
-
   // The linking's own refusals: a name defined in two sources, the one
   // file name given twice, and no `export` in any source.
   it('the linking refuses a collision and a program with no export', () => {
@@ -203,36 +158,5 @@ describe('sources', () => {
     assert.ok(undefined !== fail.row, String(fail))
     assert.equal(fail.toJSON().file, undefined, String(fail))
     assert.ok(String(fail).endsWith(`(${fail.row}:${fail.col})`), String(fail))
-  })
-
-  // A program linked under another name feeds a format's render: its
-  // `export` is the format's input, in one plan under one set of limits.
-  it('a program linked under another name feeds a render', () => {
-    const program = compileSources([
-      { file: 'program.alc', text: 'def export [input] (select (path each-index) input)\n', exportAs: 'program-export' },
-      { file: 'lines.alc', text: PART },
-      { file: 'main.alc', text: 'def export [input] (lines-render (program-export input))\n' },
-    ])
-    assert.equal(ok(program, '["a","b"]'), '"a"\n"b"\n')
-    assert.deepStrictEqual([...program.resolved.defs.keys()], [
-      'program-export',
-      'lines-line',
-      'lines-render',
-      'export',
-    ])
-    // A failure the run meets in the renamed source names its file.
-    const failing = compileSources([
-      {
-        file: 'program.alc',
-        text: 'def export [input] (map (fn [x] (fail "no")) (select (path each-index) input))\n',
-        exportAs: 'program-export',
-      },
-      { file: 'lines.alc', text: PART },
-      { file: 'main.alc', text: 'def export [input] (lines-render (program-export input))\n' },
-    ])
-    const { fail } = drive(failing, '["a"]')
-    assert.equal(fail.code, 'INPUT_INVALID', String(fail))
-    assert.equal(fail.file, 'program.alc', String(fail))
-    assert.deepStrictEqual([fail.row, fail.col], [1, 33])
   })
 })

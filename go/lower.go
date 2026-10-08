@@ -242,12 +242,12 @@ func cellVal(c *shared.Cell) Val {
 // its columns by it, the adapter reading a program's schema values by it,
 // and csv-table validates the library's schema by it, so a label is
 // accepted or refused alike whichever path renders it.
-func labelText(renderers shared.Renderers, label Val) (string, *Fail) {
+func labelText(label Val) (string, *Fail) {
 	switch x := label.(type) {
 	case StrVal:
 		return string(x), nil
 	case NumVal:
-		return numberText(renderers, x.Value, x.Lexeme, x.HasLexeme)
+		return numberText(x.Value, x.Lexeme, x.HasLexeme)
 	case BoolVal:
 		return strconv.FormatBool(bool(x)), nil
 	}
@@ -258,17 +258,17 @@ func labelText(renderers shared.Renderers, label Val) (string, *Fail) {
 }
 
 // label is the label of a schema value's column: a record's :label.
-func label(renderers shared.Renderers, column Val) (string, *Fail) {
+func label(column Val) (string, *Fail) {
 	l, ok := Field(column, "label")
 	if !ok {
 		return "", shared.ProtocolFail("a schema column is not a record")
 	}
-	return labelText(renderers, l)
+	return labelText(l)
 }
 
 // schemaColumns are the columns of a schema value, as the table protocol
 // carries them: a vector of column records, at most max_columns of them.
-func schemaColumns(renderers shared.Renderers, fields []Val, limits shared.Limits) ([]shared.PublicColumn, *Fail) {
+func schemaColumns(fields []Val, limits shared.Limits) ([]shared.PublicColumn, *Fail) {
 	columns, ok := fields[0].(*VectorVal)
 	if !ok {
 		return nil, shared.ProtocolFail("schema takes a vector of columns")
@@ -279,7 +279,7 @@ func schemaColumns(renderers shared.Renderers, fields []Val, limits shared.Limit
 	}
 	out := make([]shared.PublicColumn, 0, len(columns.Items))
 	for _, c := range columns.Items {
-		l, f := label(renderers, c)
+		l, f := label(c)
 		if f != nil {
 			return nil, f
 		}
@@ -818,7 +818,7 @@ func (t *taggedToTable) Item(v Val) (shared.Flow, *Fail) {
 	}
 	switch {
 	case tagged.Tag == "schema" && len(tagged.Fields) == 1:
-		columns, f := schemaColumns(t.rt.Renderers(), tagged.Fields, t.rt.Limits())
+		columns, f := schemaColumns(tagged.Fields, t.rt.Limits())
 		if f != nil {
 			return shared.Continue, f
 		}
@@ -885,7 +885,7 @@ func (c *csvTableStage) Item(v Val) (shared.Flow, *Fail) {
 	}
 	switch {
 	case tagged.Tag == "schema" && len(tagged.Fields) == 1:
-		columns, f := schemaColumns(c.rt.Renderers(), tagged.Fields, c.rt.Limits())
+		columns, f := schemaColumns(tagged.Fields, c.rt.Limits())
 		if f != nil {
 			return shared.Continue, f
 		}
@@ -1344,7 +1344,7 @@ func (l *Lowering) tableBinding(binding Val, at SourceSpan) (shared.TableBinding
 		if f != nil {
 			return shared.BoundColumn{}, f
 		}
-		return boundColumn(rt.Renderers(), v)
+		return boundColumn(v)
 	}
 	return shared.TableBinding{Schema: shared.MetadataSchema(columns.Selector, mapper), Rows: rows.Selector}, nil
 }
@@ -1354,12 +1354,12 @@ func (l *Lowering) tableBinding(binding Val, at SourceSpan) (shared.TableBinding
 // :label`, so a column function that answers something other than a
 // record fails as `get` does) and taken by labelText, the policy every
 // table shares.
-func boundColumn(renderers shared.Renderers, column Val) (shared.BoundColumn, *Fail) {
+func boundColumn(column Val) (shared.BoundColumn, *Fail) {
 	l, f := getField("label", column)
 	if f != nil {
 		return shared.BoundColumn{}, f
 	}
-	text, f := labelText(renderers, l)
+	text, f := labelText(l)
 	if f != nil {
 		return shared.BoundColumn{}, f
 	}

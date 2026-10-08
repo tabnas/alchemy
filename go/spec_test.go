@@ -8,14 +8,12 @@ package tabnasalchemy
 // the fleet's. What is specific to alchemy is what a row's input becomes:
 // the canonical form of the parsed program (reader.tsv), or of the
 // desugared program (pipe.tsv), as a JSON string in the expected column;
-// the plan report or the failure (check.tsv); or the bytes a run writes
-// (run.tsv).
+// or the plan report or the failure (check.tsv). The bytes a run writes
+// (run.tsv) need transduce's routers and render's renderers, which this
+// package does not depend on: alchemy-cli runs those rows (go/e2e).
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,9 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	tabnasjson "github.com/tabnas/json/go"
 	support "github.com/tabnas/support/go"
-	tt "github.com/tabnas/transduce/go"
 )
 
 func specDir(t testing.TB) string {
@@ -110,17 +106,24 @@ func pipeRow(input string) (string, *Fail) {
 	return Canonical(core), nil
 }
 
-// specRunners are the fixtures this package runs, each by a test below.
-var specRunners = map[string]bool{
-	"reader.tsv": true,
-	"pipe.tsv":   true,
-	"check.tsv":  true,
-	"run.tsv":    true,
+// specRunners are the fixtures, each named by the test that runs it. Every
+// one is this package's but run.tsv: its rows run a program over a
+// document, which needs transduce's routers and render's renderers, and
+// this package depends on neither, so alchemy-cli runs it, the composition
+// root that builds all three.
+var specRunners = map[string]string{
+	"reader.tsv": "TestSpecReader",
+	"pipe.tsv":   "TestSpecPipe",
+	"check.tsv":  "TestSpecCheck",
+	"run.tsv":    runByCLI,
 }
 
+// runByCLI is the runner of a fixture this package does not run.
+const runByCLI = "alchemy-cli's go/e2e TestSpecRun"
+
 // TestEveryFixtureHasARunner fails when a fixture is added without a
-// runner here, rather than passing silently; and test/AGENTS.md, the
-// fixtures' guide, describes each one.
+// runner, here or in alchemy-cli, rather than passing silently; and
+// test/AGENTS.md, the fixtures' guide, describes each one.
 func TestEveryFixtureHasARunner(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join(specDir(t), "*.tsv"))
 	if err != nil {
@@ -187,187 +190,10 @@ func runCode(f *Fail) string {
 	return f.Code.String()
 }
 
-// runRender is the renderer a run row names.
-func runRender(t testing.TB, row *support.Row) Renderer {
-	name := row.Named("render")
-	if name == "" {
-		return RenderDefault
-	}
-	render, ok := RendererNamed(name)
-	if !ok {
-		t.Fatalf("%s: render is csv, json or empty, not %q", row.Where(), name)
-	}
-	return render
-}
-
-// runDoc is the document a run row reads: an empty cell is null.
-func runDoc(row *support.Row) string {
-	if doc := row.UnescNamed("doc"); doc != "" {
-		return doc
-	}
-	return "null"
-}
-
-// runOutcome is one run of a row's program: the bytes it wrote, or the
-// failure.
-type runOutcome struct {
-	out  string
-	fail *Fail
-}
-
-func (o runOutcome) String() string {
-	if o.fail != nil {
-		return "Err(" + o.fail.Error() + ")"
-	}
-	return fmt.Sprintf("Ok(%q)", o.out)
-}
-
-func (o runOutcome) agrees(other runOutcome) bool {
-	switch {
-	case o.fail == nil && other.fail == nil:
-		return o.out == other.out
-	case o.fail != nil && other.fail != nil:
-		return runCode(o.fail) == runCode(other.fail) &&
-			o.fail.Row == other.fail.Row && o.fail.Column == other.fail.Column
-	}
-	return false
-}
-
-// runBoth compiles program and runs it over doc as `alchemy run` does: the
-// document read by the JSON grammar incrementally, pruned under the
-// program's row selector when it has one, with the default limits; the
-// standard compositions native or through the library's text.
-func runBoth(program, doc string, render Renderer, native bool) runOutcome {
-	compiled, f := Compile(program, "run", routers, renderers)
-	if f == nil && !native {
-		compiled, f = compiled.WithNative(false)
-	}
-	if f != nil {
-		return runOutcome{fail: f}
-	}
-	out, f := driveRun(compiled, doc, render, tt.DefaultLimits(), nil)
-	return runOutcome{out: out, fail: f}
-}
-
-// driveRun parses doc with the json grammar incrementally, pruned under
-// the program's row selector when it has one, and pushes its events
-// through the program's sink: the output, or the failure. metrics may be
-// nil.
-func driveRun(program *Program, doc string, render Renderer, limits tt.Limits, metrics *tt.Metrics) (string, *Fail) {
-	if metrics == nil {
-		metrics = tt.NewMetrics()
-	}
-	var buffer bytes.Buffer
-	sink, f := program.Sink(&buffer, render, limits, metrics)
-	if f != nil {
-		return "", f
-	}
-	prune := tt.Prune{}
-	if selector, ok := program.RowSelector(); ok {
-		prune = tt.PruneUnderSelector(selector)
-	}
-	_, f = tt.NewParserSource(tabnasjson.Make(), doc).
-		Grammar("json").
-		Mode(tt.IncrementalMode(prune)).
-		Limits(limits).
-		Metrics(metrics).
-		Run(sink)
-	return buffer.String(), f
-}
-
-// beforeTheSource is whether a row's run ends before its document is read:
-// its program fails to compile, natively or interpreted, or its sink
-// cannot be built (a renderer for a program that renders its own text).
-// Such a row runs in every build; any other needs the incremental source.
-func beforeTheSource(program string, render Renderer) bool {
-	for _, native := range []bool{true, false} {
-		compiled, f := Compile(program, "run", routers, renderers)
-		if f == nil && !native {
-			compiled, f = compiled.WithNative(false)
-		}
-		if f == nil {
-			_, f = compiled.Sink(io.Discard, render, tt.DefaultLimits(), nil)
-		}
-		if f != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// needsIncremental is the reason a test that reads a document as `alchemy
-// run` does is skipped in a build without the incremental adapter.
-const needsIncremental = "reads its document incrementally, as alchemy run does, and this build has no incremental adapter (build with -tags tabnas_nodecell)"
-
-// TestSpecRun runs run.tsv: a program run over a JSON document, the bytes
-// it writes or the failure. Every row runs twice, with the standard
-// compositions native and through the library's text, and the two must
-// agree to the byte, or on the failure's code and position: a row whose
-// two paths differ fails whatever its expected cell says.
-//
-// A run reads its document incrementally. A build without the adapter
-// (no tabnas_nodecell tag) runs the rows that end before the document is
-// read, and skips the rest by name, saying why.
-func TestSpecRun(t *testing.T) {
-	spec, err := support.LoadSpec(filepath.Join(specDir(t), "run.tsv"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(spec.Rows) == 0 {
-		t.Fatal("run.tsv holds no rows")
-	}
-	if got := strings.Join(spec.Rows[0].Header, " "); got != "input expected doc render" {
-		t.Fatalf("run.tsv's columns are %s", got)
-	}
-	r := support.Runner{
-		ParseRow: func(input string, row *support.Row) (any, error) {
-			doc, render := runDoc(row), runRender(t, row)
-			native := runBoth(input, doc, render, true)
-			interpreted := runBoth(input, doc, render, false)
-			if !native.agrees(interpreted) {
-				return nil, fmt.Errorf("native and interpreted runs disagree:\n  native:      %s\n  interpreted: %s", native, interpreted)
-			}
-			if native.fail != nil {
-				return nil, asErr(native.fail)
-			}
-			return native.out, nil
-		},
-		ErrorCode: func(err error) string {
-			if f, ok := failOf(err); ok {
-				return runCode(f)
-			}
-			return err.Error()
-		},
-		ErrorPos: func(err error) (int, int, bool) {
-			if f, ok := failOf(err); ok && f.Row > 0 {
-				return int(f.Row), int(f.Column), true
-			}
-			return 0, 0, false
-		},
-	}
-	ran, skipped := 0, 0
-	for _, row := range spec.Rows {
-		input := row.Unesc(0)
-		t.Run(fmt.Sprintf("row %d", row.Line), func(t *testing.T) {
-			if !tt.AdapterBuilt() && !beforeTheSource(input, runRender(t, row)) {
-				skipped++
-				t.Skip(row.Where() + ": " + needsIncremental)
-			}
-			ran++
-			if err := r.CheckRow(row, input, row.Col(1)); err != nil {
-				t.Error(err)
-			}
-		})
-	}
-	t.Logf("run.tsv: %d rows run, %d skipped (no incremental adapter)", ran, skipped)
-}
-
 // rowFailures is what a row's program meets, as the runners above meet it:
-// the reader's (reader.tsv), the desugarer's (pipe.tsv), compile's
-// (check.tsv), or a run's on both paths (run.tsv). ran is false for a run
-// row this build cannot run: one that reads its document, in a build
-// without the incremental adapter.
-func rowFailures(t *testing.T, file string, row *support.Row) (fails []*Fail, ran bool) {
+// the reader's (reader.tsv), the desugarer's (pipe.tsv) or compile's
+// (check.tsv).
+func rowFailures(file string, row *support.Row) []*Fail {
 	input := row.Unesc(0)
 	var f *Fail
 	switch file {
@@ -377,22 +203,11 @@ func rowFailures(t *testing.T, file string, row *support.Row) (fails []*Fail, ra
 		_, f = pipeRow(input)
 	case "check.tsv":
 		_, f = checkRow(input)
-	default:
-		render := runRender(t, row)
-		if !tt.AdapterBuilt() && !beforeTheSource(input, render) {
-			return nil, false
-		}
-		for _, native := range []bool{true, false} {
-			if o := runBoth(input, runDoc(row), render, native); o.fail != nil {
-				fails = append(fails, o.fail)
-			}
-		}
-		return fails, true
 	}
-	if f != nil {
-		fails = append(fails, f)
+	if f == nil {
+		return nil
 	}
-	return fails, true
+	return []*Fail{f}
 }
 
 // placeholder is a template's `{name}`; finalPlaceholder one that ends it,
@@ -436,29 +251,26 @@ func instanceOf(line, text string) bool {
 	return bare != line && fills(bare, text)
 }
 
-// fixedLength is the fixed text of a template: what a more specific line
-// has more of.
-func fixedLength(line string) int {
-	return len(placeholder.ReplaceAllString(line, ""))
-}
-
-// TestTheRaisedMessagesMatchTheDocument: every failure the shared fixtures
-// meet is declared in the grammar document (rs/tests/spec_test.rs,
-// the_raised_messages_match_the_document). The finer code that leads the
-// message is a key of the installed error messages, the engine's and this
-// grammar's, and the text after it is a line of that entry, each `{name}`
-// standing for what the raising site fills in (a failure raised inside the
-// standard library ends with its position there, ` (at stdlib/...)`, which
-// is not part of the text). Each line of each code the document declares is
-// the most specific line some row meets, so the document holds no text
-// nothing raises, and each of its codes has a hint. A finer code comes
-// with the same code wherever it is raised (bad_let is a DSL_PARSE_ERROR
-// from the desugarer and from the resolver alike). A raising site whose
-// code or text drifts from the document fails here.
+// TestTheRaisedMessagesMatchTheDocument: every failure the fixtures this
+// package runs meet is declared in the grammar document
+// (rs/tests/spec_test.rs, the_raised_messages_match_the_document). The
+// finer code that leads the message is a key of the installed error
+// messages, the engine's and this grammar's, and the text after it is a
+// line of that entry, each `{name}` standing for what the raising site
+// fills in (a failure raised inside the standard library ends with its
+// position there, ` (at stdlib/...)`, which is not part of the text). Each
+// of the document's codes has a hint. A finer code comes with the same
+// code wherever it is raised (bad_let is a DSL_PARSE_ERROR from the
+// desugarer and from the resolver alike). A raising site whose code or
+// text drifts from the document fails here.
 //
-// A build without the incremental adapter cannot run the run rows that
-// read their document; it checks the failures it meets, and leaves the
-// lines only those rows meet to a build with the adapter.
+// The rows are reader.tsv's, pipe.tsv's and check.tsv's. run.tsv's run
+// programs over documents, on transduce's routers and render's renderers,
+// which this package does not depend on: alchemy-cli's copy of this test
+// (go/e2e/spec_test.go) reads every error row of all four files, and holds
+// the document to the clause that needs them all: each line of each code
+// the document declares is the most specific line some row meets, so the
+// document holds no text nothing raises.
 func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 	installed := Make().Config().ErrorMessages
 	doc, err := documentValue()
@@ -472,21 +284,18 @@ func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	met := map[string]bool{}
 	// The codes each finer code is raised with: one, wherever it is raised.
 	raisedAs := map[string]map[Code]bool{}
-	failures, skipped := 0, 0
+	failures := 0
 	for _, spec := range specs {
+		if specRunners[spec.Name] == runByCLI {
+			continue
+		}
 		for _, row := range spec.Rows {
 			if !support.IsErrorExpect(row.Col(1)) {
 				continue
 			}
-			fails, ran := rowFailures(t, spec.Name, row)
-			if !ran {
-				skipped++
-				continue
-			}
-			for _, f := range fails {
+			for _, f := range rowFailures(spec.Name, row) {
 				switch f.Code {
 				case CodeDSLParseError, CodeDSLTypeError, CodeStreamReused, CodeStreamabilityUnknown:
 				default:
@@ -510,18 +319,16 @@ func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 					t.Errorf("%s: %s is not declared in options.error", row.Where(), code)
 					continue
 				}
-				best := ""
 				found := false
 				for _, line := range strings.Split(entry, "\n") {
-					if instanceOf(line, text) && (!found || fixedLength(line) > fixedLength(best)) {
-						best, found = line, true
+					if instanceOf(line, text) {
+						found = true
+						break
 					}
 				}
 				if !found {
 					t.Errorf("%s: no line of options.error.%s is %q", row.Where(), code, text)
-					continue
 				}
-				met[code+"\n"+best] = true
 			}
 		}
 	}
@@ -541,23 +348,6 @@ func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 	for code := range declared {
 		if _, ok := hints[code].(string); !ok {
 			t.Errorf("options.hint.%s is not declared", code)
-		}
-	}
-	if skipped > 0 {
-		t.Logf("%d run rows read their document, which this build cannot (build with -tags tabnas_nodecell); every line met is left to a build that can", skipped)
-		return
-	}
-	codes := make([]string, 0, len(declared))
-	for code := range declared {
-		codes = append(codes, code)
-	}
-	sort.Strings(codes)
-	for _, code := range codes {
-		entry, _ := declared[code].(string)
-		for _, line := range strings.Split(entry, "\n") {
-			if !met[code+"\n"+line] {
-				t.Errorf("options.error.%s: no fixture row meets %q", code, line)
-			}
 		}
 	}
 }

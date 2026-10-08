@@ -4,25 +4,43 @@
 //
 // What is specific to this crate is what a row's input becomes: the
 // canonical form of the parsed program (reader.tsv), or of the desugared
-// program (pipe.tsv), as a JSON string in the expected column; the plan
-// report (check.tsv); or the bytes a run writes (run.tsv).
+// program (pipe.tsv), as a JSON string in the expected column; or the plan
+// report (check.tsv). The fourth fixture, run.tsv, holds the bytes a run
+// writes: running needs the routers and renderers a host passes in,
+// transduce's and render's, which this crate does not depend on, so
+// tabnas-alchemy-cli runs it against this checkout (see
+// `every_fixture_has_a_runner`).
 
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
 
-use tabnas_alchemy::{canonical, desugar, format, parse, same_program, Program, Renderer};
+use tabnas_alchemy::shared::{Code, Fail};
+use tabnas_alchemy::{canonical, desugar, format, parse, same_program};
 use tabnas_support::{
-    is_error_expect, load_spec, load_spec_dir, parse_expect, Failure, Row, Runner, SpecOptions,
-    Value,
+    is_error_expect, load_spec, load_spec_dir, parse_expect, Row, Runner, SpecOptions, Value,
 };
-use tabnas_transduce::{Code, Fail, Limits, Metrics, ParserSource, Prune, SourceMode};
 
 use common::{compile, repo_root, spec_dir, text_value, to_failure};
 
-/// Every fixture the directory holds has a runner below; a new file added
-/// without one fails here rather than passing silently.
+/// The fixtures this file runs, each with its runner below.
+const RUN_HERE: [&str; 3] = ["check.tsv", "pipe.tsv", "reader.tsv"];
+
+/// The fixtures another repository runs, and why. A run.tsv row compiles a
+/// program and runs it over a JSON document, which needs real routers and
+/// renderers: transduce's and render's, which depend on this crate's
+/// shared types, so this crate cannot depend on them. tabnas-alchemy-cli,
+/// the composition root that depends on all three, runs every row (its
+/// rs/tests/spec_test.rs, against this checkout as a sibling).
+const RUN_ELSEWHERE: [(&str, &str); 1] = [(
+    "run.tsv",
+    "run by tabnas-alchemy-cli: a run needs transduce's routers and render's renderers",
+)];
+
+/// Every fixture the directory holds has a runner: one below, or, for the
+/// files [`RUN_ELSEWHERE`] names, tabnas-alchemy-cli's, for the reason it
+/// gives. A new file added without one fails here rather than passing
+/// silently.
 #[test]
 fn every_fixture_has_a_runner() {
     let files: BTreeSet<String> = load_spec_dir(spec_dir(), &SpecOptions::default())
@@ -30,11 +48,15 @@ fn every_fixture_has_a_runner() {
         .into_iter()
         .map(|spec| spec.file)
         .collect();
-    let expected: BTreeSet<String> = ["check.tsv", "pipe.tsv", "reader.tsv", "run.tsv"]
+    let expected: BTreeSet<String> = RUN_HERE
         .into_iter()
+        .chain(RUN_ELSEWHERE.into_iter().map(|(file, _)| file))
         .map(str::to_string)
         .collect();
-    assert_eq!(files, expected, "each fixture has a test in this file");
+    assert_eq!(
+        files, expected,
+        "each fixture has a test in this file, or is run elsewhere: {RUN_ELSEWHERE:?}"
+    );
     // And test/AGENTS.md, the fixtures' guide, describes each one.
     let guide = std::fs::read_to_string(repo_root().join("test/AGENTS.md"))
         .expect("test/AGENTS.md is readable");
@@ -79,47 +101,9 @@ fn check() {
     .file(spec_dir().join("check.tsv"));
 }
 
-/// A program run over a JSON document: the bytes it writes, or the
-/// failure. See `test/AGENTS.md` for the columns.
-///
-/// Every row runs twice, with the standard compositions native and
-/// through the library's text (`with_native(false)`), and the two must
-/// agree to the byte, or on the failure's code and position: a row whose
-/// two paths differ fails whatever its expected cell says.
-#[test]
-fn run() {
-    Runner::new_with_row(|program, row| {
-        let doc = match row.unesc_named("doc") {
-            doc if doc.is_empty() => "null".to_string(),
-            doc => doc,
-        };
-        let render = match row.named("render") {
-            "" => None,
-            name => Some(
-                Renderer::named(name)
-                    .unwrap_or_else(|| panic!("{}: render is csv, json or empty", row.location())),
-            ),
-        };
-        let native = run_both(program, &doc, render, true);
-        let interpreted = run_both(program, &doc, render, false);
-        match (&native, &interpreted) {
-            (Ok(a), Ok(b)) if a == b => {}
-            (Err(a), Err(b)) if run_code(a) == run_code(b) && (a.row, a.column) == (b.row, b.column) => {}
-            _ => {
-                return Err(Failure::message(format!(
-                    "native and interpreted runs disagree:\n  native:      {native:?}\n  interpreted: {interpreted:?}"
-                )))
-            }
-        }
-        native
-            .map(text_value)
-            .map_err(|fail| run_failure(&fail))
-    })
-    .file(spec_dir().join("run.tsv"));
-}
-
-/// The columns a run row reads by name, so a renamed header fails here
-/// rather than reading empty cells.
+/// The columns a run row reads by name (tabnas-alchemy-cli's runner reads
+/// `doc` and `render`), so a renamed header fails here, where run.tsv is
+/// kept, rather than reading empty cells there.
 fn row_doc_columns_are_named(row: &Row) -> bool {
     row.index_of("doc").is_some() && row.index_of("render").is_some()
 }
@@ -132,91 +116,9 @@ fn run_fixture_has_its_columns() {
     assert!(spec.rows.iter().all(row_doc_columns_are_named));
 }
 
-/// Compile `program` and run it over `doc`, as `alchemy run` does: on a
-/// thread of `STACK_BYTES`, the document read by the JSON grammar
-/// incrementally, pruned under the program's row selector when it has
-/// one, with the default limits.
-fn run_both(
-    program: &str,
-    doc: &str,
-    render: Option<Renderer>,
-    native: bool,
-) -> Result<String, Fail> {
-    std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(tabnas_alchemy::STACK_BYTES)
-            .spawn_scoped(scope, || {
-                let mut compiled = compile(program, "run")?;
-                if !native {
-                    compiled = compiled.with_native(false)?;
-                }
-                drive(&compiled, doc, render)
-            })
-            .expect("the run thread starts")
-            .join()
-            .expect("the run thread finishes")
-    })
-}
-
-#[derive(Clone, Default)]
-struct Shared(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Shared {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-fn drive(program: &Program, doc: &str, render: Option<Renderer>) -> Result<String, Fail> {
-    let limits = Limits::default();
-    let metrics = Metrics::new();
-    let buffer = Shared::default();
-    let sink = program.sink(Box::new(buffer.clone()), render, &limits, metrics.clone())?;
-    let prune = match program.row_selector() {
-        Some(selector) => Prune::Under(selector.clone()),
-        None => Prune::Never,
-    };
-    let (outcome, _) = ParserSource::new(tabnas_json::make(), doc)
-        .grammar("json")
-        .mode(SourceMode::Incremental { prune })
-        .limits(limits)
-        .metrics(metrics)
-        .run_owned(sink);
-    outcome?;
-    let bytes = buffer.0.lock().unwrap().clone();
-    Ok(String::from_utf8(bytes).expect("the output is UTF-8"))
-}
-
-/// The code a run row pins: the finer code (the first word of the
-/// message) for this crate's own codes, which carry one, and the
-/// transduce or render code itself for every other failure, whose
-/// message is free text (`fail "a: b"` must not pin `a`).
-fn run_code(fail: &Fail) -> String {
-    match fail.code {
-        Code::DslParseError
-        | Code::DslTypeError
-        | Code::StreamReused
-        | Code::StreamabilityUnknown => common::fail_code(fail),
-        other => other.as_str().to_string(),
-    }
-}
-
-fn run_failure(fail: &Fail) -> Failure {
-    let mut failure = Failure::new(run_code(fail)).with_message(fail.to_string());
-    if let (Some(row), Some(col)) = (fail.row, fail.column) {
-        failure = failure.at(row as usize, col as usize);
-    }
-    failure
-}
-
 /// The failures a row's program meets, as the runners above meet them:
-/// the reader's (`reader.tsv`), the desugarer's (`pipe.tsv`), compile's
-/// (`check.tsv`), or a run's on both paths (`run.tsv`).
+/// the reader's (`reader.tsv`), the desugarer's (`pipe.tsv`) or compile's
+/// (`check.tsv`).
 fn row_failures(file: &str, row: &Row) -> Vec<Fail> {
     let input = row.unesc(0);
     match file {
@@ -227,20 +129,7 @@ fn row_failures(file: &str, row: &Row) -> Vec<Fail> {
             .into_iter()
             .collect(),
         "check.tsv" => compile(&input, "check").err().into_iter().collect(),
-        _ => {
-            let doc = match row.unesc_named("doc") {
-                doc if doc.is_empty() => "null".to_string(),
-                doc => doc,
-            };
-            let render = match row.named("render") {
-                "" => None,
-                name => Renderer::named(name),
-            };
-            [true, false]
-                .into_iter()
-                .filter_map(|native| run_both(&input, &doc, render, native).err())
-                .collect()
-        }
+        other => panic!("{other} has no runner in this file"),
     }
 }
 
@@ -303,27 +192,32 @@ fn instance_of(line: &str, text: &str) -> bool {
     }
 }
 
-/// Every failure the shared fixtures meet is declared in the grammar
-/// document: the finer code that leads the message is a key of the
-/// installed `options.error`, the engine's and this grammar's, and the
-/// text after it is a line of that entry, each `{name}` standing for what
-/// the raising site fills in (a failure raised inside the standard
-/// library ends with its position there, ` (at stdlib/...)`, which is not
-/// part of the text). Each line of each code this grammar adds to the
-/// engine's is the most specific line some row meets, so the document
-/// holds no text nothing raises, and each of those codes has a hint. A
-/// finer code travels with one code wherever it is raised (`bad_let` is a
-/// `DSL_PARSE_ERROR` from the desugarer and from the resolver alike). A
-/// raising site whose code or text drifts from the document fails here.
+/// Every failure the shared fixtures this file runs meet (reader.tsv,
+/// pipe.tsv and check.tsv) is declared in the grammar document: the finer
+/// code that leads the message is a key of the installed `options.error`,
+/// the engine's and this grammar's, and the text after it is a line of
+/// that entry, each `{name}` standing for what the raising site fills in
+/// (a failure raised inside the standard library ends with its position
+/// there, ` (at stdlib/...)`, which is not part of the text). Each code
+/// this grammar adds to the engine's has a hint. A finer code travels with
+/// one code wherever it is raised (`bad_let` is a `DSL_PARSE_ERROR` from
+/// the desugarer and from the resolver alike). A raising site whose code or
+/// text drifts from the document fails here.
+///
+/// That each line of each code this grammar adds is met by some row, so
+/// the document holds no text nothing raises, needs run.tsv's rows as
+/// well: tabnas-alchemy-cli's copy of this test runs every error row of
+/// all four fixtures, these checks and that one.
 #[test]
 fn the_raised_messages_match_the_document() {
     let installed = tabnas_alchemy::make().config();
     let engine = tabnas::Tabnas::new().config().error;
-    let mut met = BTreeSet::new();
     let mut codes: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
     let mut problems = Vec::new();
     let mut failures = 0;
-    for spec in load_spec_dir(spec_dir(), &SpecOptions::default()).expect("the fixtures load") {
+    for file in RUN_HERE {
+        let spec =
+            load_spec(spec_dir().join(file), &SpecOptions::default()).expect("the fixture loads");
         for row in &spec.rows {
             if !is_error_expect(row.col(1)) {
                 continue;
@@ -363,22 +257,11 @@ fn the_raised_messages_match_the_document() {
                     ));
                     continue;
                 };
-                // The most specific line, the first of equals.
-                let fixed = |line: &str| fixed_parts(line).concat().len();
-                let mut best: Option<&str> = None;
-                for line in entry.split('\n').filter(|line| instance_of(line, text)) {
-                    if best.is_none_or(|known| fixed(line) > fixed(known)) {
-                        best = Some(line);
-                    }
-                }
-                match best {
-                    Some(line) => {
-                        met.insert(format!("{code}\n{line}"));
-                    }
-                    None => problems.push(format!(
+                if !entry.split('\n').any(|line| instance_of(line, text)) {
+                    problems.push(format!(
                         "{}: no line of options.error.{code} is {text:?}",
                         row.location()
-                    )),
+                    ));
                 }
             }
         }
@@ -398,16 +281,9 @@ fn the_raised_messages_match_the_document() {
         .filter(|(code, _)| !engine.contains_key(*code))
         .collect();
     assert!(!own.is_empty(), "the grammar declares codes of its own");
-    for (code, entry) in own {
-        if !installed.hint.contains_key(code) {
+    for code in own.keys() {
+        if !installed.hint.contains_key(*code) {
             problems.push(format!("options.hint.{code} is not declared"));
-        }
-        for line in entry.split('\n') {
-            if !met.contains(&format!("{code}\n{line}")) {
-                problems.push(format!(
-                    "options.error.{code}: no fixture row meets {line:?}"
-                ));
-            }
         }
     }
     assert!(

@@ -7,11 +7,11 @@ package tabnasalchemy
 import (
 	"testing"
 
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 func TestADatumRoundTripsWithItsLexemes(t *testing.T) {
-	d, err := tt.DatumFromJSON(`{"a": [1, "x", null, true], "b": {"c": 2.5}}`)
+	d, err := shared.DatumFromJSON(`{"a": [1, "x", null, true], "b": {"c": 2.5}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestADatumRoundTripsWithItsLexemes(t *testing.T) {
 	if f != nil || !back.Equal(d) {
 		t.Fatalf("%v %v", back, f)
 	}
-	big := tt.NumberDatumLexeme(1.5, "1.50")
+	big := shared.NumberDatumLexeme(1.5, "1.50")
 	if text, f := JSONText(FromDatum(&big)); f != nil || text != "1.50" {
 		t.Errorf("%q %v", text, f)
 	}
@@ -30,19 +30,19 @@ func TestADatumRoundTripsWithItsLexemes(t *testing.T) {
 }
 
 func TestGetPathWalksRecordsAndVectorsAndAnswersMissing(t *testing.T) {
-	d, err := tt.DatumFromJSON(`{"a": [{"b": 1}]}`)
+	d, err := shared.DatumFromJSON(`{"a": [{"b": 1}]}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	v := FromDatum(&d)
-	p := []tt.Segment{tt.KeySegment("a"), tt.IndexSegment(0), tt.KeySegment("b")}
+	p := []shared.Segment{shared.KeySegment("a"), shared.IndexSegment(0), shared.KeySegment("b")}
 	if got := GetPath(v, p); !Equal(got, Num(1)) {
 		t.Errorf("%s", DebugString(got))
 	}
-	if !IsMissing(GetPath(v, []tt.Segment{tt.KeySegment("z")})) {
+	if !IsMissing(GetPath(v, []shared.Segment{shared.KeySegment("z")})) {
 		t.Error("an absent key is not missing")
 	}
-	if !IsMissing(GetPath(v, []tt.Segment{tt.IndexSegment(0)})) {
+	if !IsMissing(GetPath(v, []shared.Segment{shared.IndexSegment(0)})) {
 		t.Error("an index into a record is not missing")
 	}
 	if got := GetPath(v, nil); !Equal(got, v) {
@@ -89,12 +89,12 @@ func TestLivenessFollowsTheInput(t *testing.T) {
 }
 
 func TestSelectorSegmentsNameOneLocationOnly(t *testing.T) {
-	one := tt.Root().Property("a").Index(2)
+	one := shared.Root().Property("a").Index(2)
 	segments, ok := selectorSegments(one)
-	if !ok || len(segments) != 2 || segments[0] != tt.KeySegment("a") || segments[1] != tt.IndexSegment(2) {
+	if !ok || len(segments) != 2 || segments[0] != shared.KeySegment("a") || segments[1] != shared.IndexSegment(2) {
 		t.Errorf("%v %v", segments, ok)
 	}
-	if _, ok := selectorSegments(tt.Root().EachIndex()); ok {
+	if _, ok := selectorSegments(shared.Root().EachIndex()); ok {
 		t.Error("each-index names one location")
 	}
 }

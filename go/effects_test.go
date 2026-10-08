@@ -3,13 +3,13 @@
 package tabnasalchemy
 
 // effects_test.go: the plan report, text and JSON, over the plans the
-// programs build (rs/src/effects.rs's tests).
+// programs build (rs/src/effects.rs's tests). The report that is held to
+// what the run writes (a custom CSV dialect) runs a program, and so is
+// alchemy-cli's (go/e2e/effects_test.go).
 
 import (
 	"strings"
 	"testing"
-
-	tt "github.com/tabnas/transduce/go"
 )
 
 // workedExample is the spec's program (sections 12.1 and 13.4).
@@ -312,48 +312,6 @@ func TestATextOfItsOwnReadsTheInputOnlyToValidateIt(t *testing.T) {
 	built := mustCompile(t, `def export [input] (replace-text "a" "b" (concat "x" "a"))`, "built.alc").Explain()
 	if !strings.HasPrefix(built, "export: concat → replace-text\n") || !strings.Contains(built, "Protocol:              Text\n") {
 		t.Errorf("%s", built)
-	}
-}
-
-// The CSV renderer is reported with the dialect it is built with: the
-// program's own options when its csv runs natively, the defaults when the
-// host renders a table; and what it reports is what it writes.
-func TestACustomCsvDialectIsReportedAsItRuns(t *testing.T) {
-	lf := strings.Replace(workedExample, "    csv csv-options\n", "    csv lf\n", 1) +
-		"\ndef lf (record (entry :delimiter \";\") (entry :newline \"\\n\") (entry :header false) (entry :null-text \"NULL\") (entry :missing \"-\"))\n"
-	program := mustCompile(t, lf, "lf.alc")
-	if !program.Native() {
-		t.Fatal("not native")
-	}
-	if got := jsonMember(t, program.ExplainJSON(), "renderer"); got != `{"name":"csv","quoting":"always","delimiter":";","newline":"\n","header":false,"null_text":"NULL","missing":"text","missing_text":"-","host":false}` {
-		t.Errorf("%s", got)
-	}
-	if out, f := replayRun(t, program, records, RenderDefault, tt.DefaultLimits(), nil); f != nil || out != "\"123\";\"Alice\";\"50.25\"\n\"456\";\"Bob\";\"72\"\n" {
-		t.Errorf("%q %v", out, f)
-	}
-	// The null and missing texts reach the output as reported: a record
-	// with a null name and no balance.
-	sparse := strings.Replace(records, `{"account":{"balance":72},"person":{"name":"Bob"},"id":456}`, `{"person":{"name":null},"id":456}`, 1)
-	if sparse == records {
-		t.Fatal("the document did not change")
-	}
-	if out, f := replayRun(t, program, sparse, RenderDefault, tt.DefaultLimits(), nil); f != nil || out != "\"123\";\"Alice\";\"50.25\"\n\"456\";\"NULL\";\"-\"\n" {
-		t.Errorf("%q %v", out, f)
-	}
-	// The default dialect, and the host's renderer, report the defaults.
-	for _, c := range []struct {
-		name string
-		src  string
-		host string
-	}{
-		{"default", workedExample, "false"},
-		{"host", strings.Replace(workedExample, "    csv csv-options\n", "", 1), "true"},
-	} {
-		got := jsonMember(t, mustCompile(t, c.src, c.name+".alc").ExplainJSON(), "renderer")
-		want := `{"name":"csv","quoting":"always","delimiter":",","newline":"\r\n","header":true,"null_text":"","missing":"error","missing_text":null,"host":` + c.host + `}`
-		if got != want {
-			t.Errorf("%s: %s", c.name, got)
-		}
 	}
 }
 

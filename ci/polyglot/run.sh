@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# TypeScript and Go gate for the structural translation interface. It builds
-# each TypeScript sibling before linking it into alchemy, and uses a temporary
-# Go workspace so the Go modules resolve to the same sibling checkouts rather
-# than to their published versions.
+# TypeScript and Go gate. It builds each TypeScript sibling before linking it
+# into alchemy, and uses a temporary Go workspace so the Go modules resolve to
+# the same sibling checkouts rather than to their published versions. The
+# tests that run programs on transduce and render are alchemy-cli's, which
+# .github/workflows/downstream.yml runs against this checkout.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -10,10 +11,8 @@ FLEET_ROOT=$(cd "$ROOT/.." && pwd)
 
 COMMON_SIBLINGS=$(sed -n 's/^SIBLINGS="\(.*\)"$/\1/p' "$ROOT/ci/rust/run.sh")
 TS_ONLY_SIBLINGS=$(sed -n 's/^TS_SIBLINGS="\(.*\)"$/\1/p' "$ROOT/ci/rust/run.sh")
-# alchemy builds before transduce and render, which build on its shared
-# types; its build compiles src only, and its tests, which run programs on
-# transduce's routers and render's renderers, run last.
-TS_PACKAGES="parser support bnf abnf railroad debug json jsonic hoover csv ini json5 jsonc jsonl markdown toml xml yaml zon feed alchemy transduce render"
+# Dependencies first: debug builds on bnf, abnf and railroad, and alchemy last.
+TS_PACKAGES="parser support bnf abnf railroad debug json alchemy"
 ALL_SIBLINGS="$COMMON_SIBLINGS $TS_ONLY_SIBLINGS"
 
 for sibling in $ALL_SIBLINGS; do
@@ -42,19 +41,7 @@ for package in $TS_PACKAGES; do
   package_i=$((package_i + 1))
   package_dir="$FLEET_ROOT/$package/ts"
   echo "typescript: $package_i of $package_total ($((package_i * 100 / package_total))%) install $package"
-  install_args=()
-  if [[ "$package" == "transduce" ]]; then
-    install_args+=("$ROOT/ts")
-  elif [[ "$package" == "render" ]]; then
-    install_args+=("$ROOT/ts" "$FLEET_ROOT/transduce/ts")
-  elif [[ "$package" == "alchemy" ]]; then
-    install_args+=("$FLEET_ROOT/transduce/ts" "$FLEET_ROOT/render/ts")
-  fi
-  if ((${#install_args[@]})); then
-    (cd "$package_dir" && npm install --ignore-scripts --no-save "${install_args[@]}")
-  else
-    (cd "$package_dir" && npm install --ignore-scripts --no-save)
-  fi
+  (cd "$package_dir" && npm install --ignore-scripts --no-save)
   link_siblings "$package_dir"
   echo "typescript: $package_i of $package_total ($((package_i * 100 / package_total))%) build $package"
   (cd "$package_dir" && npm run build --if-present)

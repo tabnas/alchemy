@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // TestEveryNativeHasAnImplementation: the registry's table (registry.go)
@@ -45,11 +45,12 @@ func TestQuotedIsTheJSONStringFormWithTheC1ControlsEscaped(t *testing.T) {
 			t.Errorf("%q: %q, want %q", c.in, got, c.want)
 		}
 	}
-	// What transduce writes for the same string, where both escape: the
-	// two agree on JSON's own escapes.
+	// What a retained value writes for the same string (the shared
+	// Datum, which transduce's captures hold), where both escape: the two
+	// agree on JSON's own escapes.
 	s := "q\" \\ \n \x1f é"
-	if json := tt.StringDatum(s).String(); quote(s) != json {
-		t.Errorf("%q, transduce %q", quote(s), json)
+	if json := shared.StringDatum(s).String(); quote(s) != json {
+		t.Errorf("%q, the shared Datum %q", quote(s), json)
 	}
 	// The length counted before building is the length built.
 	for _, s := range []string{"", "plain", "q\" \\ \n \x1f é", "del\u007f pad\u0080 日本 🚀"} {
@@ -131,7 +132,7 @@ func TestLengthCountsCharactersInStepsTheAbortFlagReads(t *testing.T) {
 	if f != nil || !Equal(v, Num(float64(8*(lengthChunk/3)))) {
 		t.Errorf("%v %v", v, f)
 	}
-	flag := tt.NewAbortFlag()
+	flag := shared.NewAbortFlag()
 	rt := runtimeOf(t, "").WithAbort(flag)
 	flag.Abort()
 	huge := StrVal(strings.Repeat("k", lengthChunk*64))
@@ -140,6 +141,14 @@ func TestLengthCountsCharactersInStepsTheAbortFlagReads(t *testing.T) {
 	}
 }
 
+// A number without a lexeme is written as the renderers write it, by this
+// package's own copy of render's formatter (shortestNumber): the shortest
+// digits that read back, positional within [1e-6, 1e21), exponent form
+// outside it with no '+' and no leading zeros. The first six are the Rust
+// crate's cases (shortest_number, rs/src/stdlib/registry.rs); the rest
+// hold the layout at its edges. alchemy-cli's differential test
+// (go/e2e/differential_test.go) holds the copy to render's own on real
+// documents.
 func TestNumbersPrintAsTheRenderersPrintThem(t *testing.T) {
 	for _, c := range []struct {
 		v    float64
@@ -147,21 +156,39 @@ func TestNumbersPrintAsTheRenderersPrintThem(t *testing.T) {
 	}{
 		{1, "1"}, {50.25, "50.25"}, {1e20, "100000000000000000000"}, {1e21, "1e21"},
 		{1e-7, "1e-7"}, {math.Copysign(0, -1), "-0"},
+		// Zero, and the negatives of the cases above.
+		{0, "0"}, {-1, "-1"}, {-50.25, "-50.25"}, {-1e20, "-100000000000000000000"},
+		{-1e21, "-1e21"}, {-1e-7, "-1e-7"},
+		// Positional: fractions, integers, the shortest digits.
+		{0.1, "0.1"}, {100, "100"}, {12345.678, "12345.678"}, {0.000123, "0.000123"},
+		{1.2345678901234568e20, "123456789012345680000"}, {9.999999999999999e20, "999999999999999900000"},
+		// The lower edge: 1e-6 is positional, anything smaller is not.
+		{1e-6, "0.000001"}, {1.5e-6, "0.0000015"}, {-1e-6, "-0.000001"}, {9.99e-7, "9.99e-7"},
+		// Exponent form: large and small exponents, with and without a
+		// fraction, down to the subnormals.
+		{1.5e21, "1.5e21"}, {1e100, "1e100"}, {-1e300, "-1e300"}, {1.7976931348623157e308, "1.7976931348623157e308"},
+		{-1.25e-10, "-1.25e-10"}, {2.2250738585072014e-308, "2.2250738585072014e-308"}, {5e-324, "5e-324"},
+		// No finite text: "", as render's FormatValue answers.
+		{math.Inf(1), ""}, {math.Inf(-1), ""}, {math.NaN(), ""},
 	} {
-		if got := shortestNumber(renderers, c.v); got != c.want {
-			t.Errorf("%v: %q", c.v, got)
+		if got := shortestNumber(c.v); got != c.want {
+			t.Errorf("%v: %q, want %q", c.v, got, c.want)
 		}
 	}
-	if s, f := numberText(renderers, 1.5, "1.50", true); f != nil || s != "1.50" {
+	if s, f := numberText(1.5, "1.50", true); f != nil || s != "1.50" {
 		t.Errorf("%q %v", s, f)
 	}
-	if _, f := numberText(renderers, 1, "01", true); f == nil || f.Code != CodeInvalidNumber {
+	if _, f := numberText(1, "01", true); f == nil || f.Code != CodeInvalidNumber {
 		t.Errorf("%v", f)
 	}
-	if _, f := numberText(renderers, math.Inf(1), "1e999", true); f == nil || f.Code != CodeTargetValueUnrepresentable {
+	if _, f := numberText(math.Inf(1), "1e999", true); f == nil || f.Code != CodeTargetValueUnrepresentable {
 		t.Errorf("%v", f)
 	}
-	if _, f := numberText(renderers, math.NaN(), "", false); f == nil || f.Code != CodeTargetValueUnrepresentable {
+	if _, f := numberText(math.NaN(), "", false); f == nil || f.Code != CodeTargetValueUnrepresentable {
 		t.Errorf("%v", f)
+	}
+	// Without a lexeme, numberText is shortestNumber's text.
+	if s, f := numberText(-1e-7, "", false); f != nil || s != "-1e-7" {
+		t.Errorf("%q %v", s, f)
 	}
 }

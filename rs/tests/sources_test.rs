@@ -1,17 +1,17 @@
 // `compile_sources`: several sources linked into one program, as a host
 // links a format's parts (libraries of definitions prefixed by the
-// format's name, with no `export`) with the program that calls them. The
-// program runs as the same text in one file runs; a failure in any
-// source carries that source's file, row and column, in the field and in
-// the failure's display, at every stage that positions one: the reader,
-// the desugarer, the resolver, the checker and the run.
+// format's name, with no `export`) with the program that calls them. A
+// failure in any source carries that source's file, row and column, in
+// the field and in the failure's display, at every stage compiling
+// positions one: the reader, the desugarer, the resolver and the checker;
+// and the linking refuses what it cannot link. Linked programs run, and a
+// run's failure in a part, are in tabnas-alchemy-cli's sources_test.rs,
+// since running needs transduce's routers and render's renderers.
 
 mod common;
 
-use std::sync::{Arc, Mutex};
-
+use tabnas_alchemy::shared::{Code, Fail};
 use tabnas_alchemy::{Program, Source};
-use tabnas_transduce::{Code, Fail, Limits, Metrics, ParserSource, Prune, SourceMode};
 
 use common::{compile, compile_sources};
 
@@ -44,54 +44,6 @@ fn linked(part: &str) -> Result<Program, Fail> {
     compile_sources(&sources(&[(MAIN_FILE, MAIN), (PART_FILE, part)]))
 }
 
-#[derive(Clone, Default)]
-struct Shared(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Shared {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Parse `text` with the json grammar incrementally, pruned under the
-/// program's row selector when it has one, and push its events into the
-/// program's sink.
-fn drive(program: &Program, text: &str) -> (Result<(), Fail>, String) {
-    let limits = Limits::default();
-    let metrics = Metrics::new();
-    let buffer = Shared::default();
-    let sink = match program.sink(Box::new(buffer.clone()), None, &limits, metrics.clone()) {
-        Ok(sink) => sink,
-        Err(f) => return (Err(f), String::new()),
-    };
-    let prune = match program.row_selector() {
-        Some(selector) => Prune::Under(selector.clone()),
-        None => Prune::Never,
-    };
-    let (outcome, _) = ParserSource::new(tabnas_json::make(), text)
-        .grammar("json")
-        .mode(SourceMode::Incremental { prune })
-        .limits(limits)
-        .metrics(metrics)
-        .run_owned(sink);
-    let bytes = buffer.0.lock().unwrap().clone();
-    (
-        outcome.map(|_| ()),
-        String::from_utf8(bytes).expect("utf-8 output"),
-    )
-}
-
-fn render(program: &Program, text: &str) -> String {
-    let (outcome, out) = drive(program, text);
-    outcome.unwrap_or_else(|f| panic!("{text}: {f}"));
-    out
-}
-
 /// The 1-based row and column of `needle` on the 1-based `row` of `text`,
 /// as a failure carries them.
 fn at(text: &str, row: usize, needle: &str) -> (Option<u64>, Option<u64>) {
@@ -114,31 +66,6 @@ fn assert_at(fail: &Fail, file: &str, (row, column): (Option<u64>, Option<u64>))
         "{fail} does not end {shown}"
     );
     assert_eq!(fail.to_json()["file"], file, "{fail}");
-}
-
-/// Two sources are one namespace: the program calls the part's
-/// definitions, in either order of the sources, and runs as the same
-/// texts in one file run.
-#[test]
-fn linked_sources_run_as_one_program() {
-    let input = r#"["a","b\"c","d\ne"]"#;
-    let expected = "\"a\"\n\"b\\\"c\"\n\"d\\ne\"\n";
-    let main_first = linked(PART).unwrap();
-    assert_eq!(render(&main_first, input), expected);
-    let part_first = compile_sources(&sources(&[(PART_FILE, PART), (MAIN_FILE, MAIN)])).unwrap();
-    assert_eq!(render(&part_first, input), expected);
-    let one = compile(&format!("{MAIN}\n{PART}"), "one.alc").unwrap();
-    assert_eq!(render(&one, input), expected);
-    // The program is named by its first source, and its plan is reported
-    // as one program's.
-    assert_eq!(main_first.file(), MAIN_FILE);
-    assert_eq!(part_first.file(), PART_FILE);
-    assert_eq!(main_first.explain(), one.explain());
-    // A part may call back into the program: the namespace is one.
-    let back = "def lines-line [item]\n  concat (main-mark item) \"\\n\"\n\ndef lines-render [items]\n  concat-map lines-line items\n";
-    let main = format!("{MAIN}\ndef main-mark [s] (concat \"* \" s)\n");
-    let program = compile_sources(&sources(&[(MAIN_FILE, &main), (PART_FILE, back)])).unwrap();
-    assert_eq!(render(&program, r#"["x"]"#), "* x\n");
 }
 
 /// Every stage that positions a failure positions one in the second
@@ -187,23 +114,6 @@ fn a_failure_in_the_second_source_names_the_second_file() {
     assert!(fail.message.starts_with("empty_step: "), "{fail}");
     assert_eq!(fail.file.as_deref(), Some(PART_FILE), "{fail}");
     assert_eq!(fail.row, Some(6), "{fail}");
-}
-
-/// A failure the run meets in a part, from a `fail` in its definition, is
-/// the program's `INPUT_INVALID` at the part's file and position.
-#[test]
-fn a_run_time_failure_in_a_part_names_the_part() {
-    let strict = "def lines-line [item]\n  match item\n    case \"bad\" (fail \"a bad item\")\n    case _ (concat (quoted item) \"\\n\")\n\ndef lines-render [items]\n  concat-map lines-line items\n";
-    let program = linked(strict).unwrap();
-    assert_eq!(render(&program, r#"["ok"]"#), "\"ok\"\n");
-    let (outcome, _) = drive(&program, r#"["ok","bad"]"#);
-    let fail = outcome.unwrap_err();
-    assert_eq!(fail.code, Code::InputInvalid, "{fail}");
-    assert_eq!(fail.message, "a bad item", "{fail}");
-    assert_at(&fail, PART_FILE, at(strict, 3, "(fail"));
-    // The interpreted twin positions it the same way.
-    let (outcome, _) = drive(&program.with_native(false).unwrap(), r#"["bad"]"#);
-    assert_at(&outcome.unwrap_err(), PART_FILE, at(strict, 3, "(fail"));
 }
 
 /// The linking's own refusals: a name defined in two sources, the one

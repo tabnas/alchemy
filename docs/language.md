@@ -764,9 +764,9 @@ The rest of the library is written in alchemy, embedded from
 signatures as it loads. The blocks below are those files' text, word for
 word (`rs/tests/spec_test.rs` holds the two together), and they are the
 reference: the runtime runs `table-from-json` and `csv` natively when
-their arguments have the standard shapes, and `rs/tests/stdlib_test.rs`
-proves the native path and this text produce the same bytes, or fail
-with the same code.
+their arguments have the standard shapes, and alchemy-cli's
+`rs/tests/stdlib_test.rs` proves the native path and this text produce
+the same bytes, or fail with the same code.
 
 They are the spec's definitions (sections 12.2, 13.1 and 13.2) with
 four differences. The spec writes a `let` as a line `let columns` over
@@ -1006,7 +1006,8 @@ The native path substitutes transduce's `TableFromJson` for
 dialect (`:delimiter` one character, `:newline` CRLF or LF, `:header` a
 boolean, `:null-text` a string, `:missing` `:error` or a string); any
 other options run the text above. The two paths agree on more than the
-standard shapes, and `rs/tests/stdlib_test.rs` pins each agreement:
+standard shapes, and alchemy-cli's `rs/tests/stdlib_test.rs` pins each
+agreement:
 
 - **the protocol**: a stream that has rows before its schema, a second
   schema, a row wider or narrower than the schema, no `table-end` or a
@@ -1099,7 +1100,8 @@ block form say, is a `scan-emit` over them whose state is the stack of
 open containers, one keyword marker each, kept with `push`, `pop`, `top`
 and `count`, its indentation `repeat`ed from the stack's height and its
 strings `quoted`; a step answers several items for one event, and
-`join ""` writes them (`rs/tests/events_test.rs` holds one). The
+`join ""` writes them (alchemy-cli's `rs/tests/events_test.rs` holds
+one). The
 smallest such program, the keys of every object one per line, and its
 report: `events` retains nothing, and the state is the stage's own:
 

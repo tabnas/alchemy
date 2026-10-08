@@ -62,7 +62,10 @@ standard compositions natively, and the embedded standard library. The
 differential test proves the native paths and the library's own text
 produce the same bytes. The `alchemy` command, which composes alchemy,
 transduce and render, is
-[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli).
+[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli), and so are
+the tests that run programs, the differential test among them: alchemy
+depends on neither transduce nor render, and its CI runs alchemy-cli's
+gates against each change.
 
 ## Build and test
 

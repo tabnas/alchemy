@@ -5,12 +5,13 @@
 // is the Rust half). What is specific to this package is what a row's
 // input becomes: the canonical form of the parsed program (reader.tsv),
 // or of the desugared program (pipe.tsv), as a JSON string; the plan
-// report (check.tsv); the bytes a run writes (run.tsv).
+// report (check.tsv).
 //
-// Every row of every file runs. run.tsv runs each row twice, with the
-// standard compositions native and through the library's text
-// (`withNative(false)`), and a row whose two paths differ in a byte, a
-// code or a position fails whatever its expected cell says.
+// Every row of reader.tsv, pipe.tsv and check.tsv runs here. run.tsv's
+// rows are the bytes a run writes, which needs transduce's routers and
+// render's renderers, and this package depends on neither: alchemy-cli
+// runs them (its ts/test/spec.test.ts), each row twice, native and through
+// the library's text, with the catalogue's coverage over all four files.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
@@ -18,20 +19,14 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { SpecRow, isErrorExpect, loadSpec, loadSpecDir, makeRunner, parseExpect } from '@tabnas/support'
-import { make as makeJson } from '@tabnas/json'
-import { BytesWriter } from '@tabnas/render'
-import { Limits, Metrics, ParserSource, Prune, SourceMode } from '@tabnas/transduce'
 
 import {
-  Program,
-  Renderer,
   canonical,
   desugarProgram,
   format,
   grammarDocument,
   make as makeAlchemy,
   parse,
-  rendererNamed,
   sameProgram,
 } from '../dist/alchemy'
 import { isFail } from '../dist/fail'
@@ -44,14 +39,26 @@ const runnerOptions = {
   errorPos: (err: any) => ({ row: err?.row, col: err?.col }),
 }
 
+// The fixtures this file runs, each with a runner below.
+const RUN_HERE = ['check.tsv', 'pipe.tsv', 'reader.tsv']
+
+// The fixtures another repository runs, and why: a row of these needs
+// stages this package does not depend on.
+const RUN_ELSEWHERE: Record<string, string> = {
+  'run.tsv':
+    "alchemy-cli runs it (ts/test/spec.test.ts there): every row runs a program over a document, on transduce's routers and render's renderers, and alchemy depends on neither",
+}
+
 describe('fixtures', () => {
-  // Every fixture the directory holds has a runner below; a new file added
-  // without one fails here rather than passing silently.
+  // Every fixture the directory holds has a runner, below or in the
+  // repository RUN_ELSEWHERE names; a new file added without one fails here
+  // rather than passing silently.
   it('every fixture has a runner', () => {
     const files = loadSpecDir(SPEC_DIR)
       .map((spec) => spec.file)
       .sort()
     assert.deepStrictEqual(files, ['check.tsv', 'pipe.tsv', 'reader.tsv', 'run.tsv'])
+    assert.deepStrictEqual([...RUN_HERE, ...Object.keys(RUN_ELSEWHERE)].sort(), files)
     // And test/AGENTS.md, the fixtures' guide, describes each one.
     const guide = readFileSync(join(REPO_ROOT, 'test', 'AGENTS.md'), 'utf8')
     for (const file of files) {
@@ -59,8 +66,9 @@ describe('fixtures', () => {
     }
   })
 
-  // The columns a run row reads by name, so a renamed header fails here
-  // rather than reading empty cells.
+  // The columns a run row is read by, by name (alchemy-cli's runner reads
+  // them), so a renamed header fails here, beside the file, rather than
+  // reading empty cells there.
   it('run.tsv has its columns', () => {
     const spec = loadSpec(join(SPEC_DIR, 'run.tsv'))
     assert.deepStrictEqual(spec.header, ['input', 'expected', 'doc', 'render'])
@@ -86,92 +94,10 @@ makeRunner({
   parse: (input: string) => compile(input, 'check').explain(),
 }).file(join(SPEC_DIR, 'check.tsv'))
 
-// Compile `program` and run it over `doc`, as `alchemy run` does: the
-// document read by the JSON grammar incrementally, pruned under the
-// program's row selector when it has one, with the default limits.
-function runBoth(program: string, doc: string, render: Renderer | undefined, native: boolean): string {
-  let compiled = compile(program, 'run')
-  if (!native) compiled = compiled.withNative(false)
-  return drive(compiled, doc, render)
-}
-
-function drive(program: Program, doc: string, render: Renderer | undefined): string {
-  const limits = Limits.default()
-  const metrics = new Metrics()
-  const writer = new BytesWriter()
-  const sink = program.sink(writer, render, limits, metrics)
-  const selector = program.rowSelector()
-  const prune = undefined === selector ? Prune.never() : Prune.under(selector)
-  new ParserSource(makeJson(), doc)
-    .grammar('json')
-    .mode(SourceMode.incremental(prune))
-    .limits(limits)
-    .metrics(metrics)
-    .run(sink)
-  return writer.text()
-}
-
-type Outcome = { ok: true; text: string } | { ok: false; fail: unknown }
-
-function outcome(work: () => string): Outcome {
-  try {
-    return { ok: true, text: work() }
-  } catch (fail) {
-    return { ok: false, fail }
-  }
-}
-
-function shown(o: Outcome): string {
-  return o.ok ? JSON.stringify(o.text) : String(o.fail)
-}
-
-// A program run over a JSON document: the bytes it writes, or the failure.
-// See test/AGENTS.md for the columns. Both paths, compared before the
-// expected cell is.
-makeRunner({
-  ...runnerOptions,
-  parse: (program: string, row: SpecRow) => {
-    const cell = row.unescNamed('doc')
-    const doc = '' === cell ? 'null' : cell
-    const name = row.named('render')
-    let render: Renderer | undefined
-    if ('' !== name) {
-      render = rendererNamed(name)
-      if (undefined === render) throw new Error(`${row.where()}: render is csv, json or empty`)
-    }
-    const native = outcome(() => runBoth(program, doc, render, true))
-    const interpreted = outcome(() => runBoth(program, doc, render, false))
-    let agree: boolean
-    if (native.ok && interpreted.ok) {
-      agree = native.text === interpreted.text
-    } else if (!native.ok && !interpreted.ok) {
-      // Failures both, whichever copy of transduce made each (the native
-      // path's renderers are render's): one code, at one position.
-      const a: any = native.fail
-      const b: any = interpreted.fail
-      agree =
-        isFail(a) &&
-        isFail(b) &&
-        failCode(a) === failCode(b) &&
-        a.row === b.row &&
-        a.col === b.col
-    } else {
-      agree = false
-    }
-    if (!agree) {
-      throw new Error(
-        `native and interpreted runs disagree:\n  native:      ${shown(native)}\n  interpreted: ${shown(interpreted)}`,
-      )
-    }
-    if (native.ok) return native.text
-    throw native.fail
-  },
-}).file(join(SPEC_DIR, 'run.tsv'))
-
 // The failures a row's program meets: the reader's (reader.tsv), the
-// desugarer's (pipe.tsv), compile's (check.tsv), or a run's, both paths
-// (run.tsv), as the runners above meet them.
-function rowFailures(file: string, input: string, row: SpecRow): unknown[] {
+// desugarer's (pipe.tsv) or compile's (check.tsv), as the runners above
+// meet them.
+function rowFailures(file: string, input: string): unknown[] {
   const met = (work: () => unknown): unknown[] => {
     try {
       work()
@@ -187,13 +113,8 @@ function rowFailures(file: string, input: string, row: SpecRow): unknown[] {
       return met(() => desugarProgram(parse(input), input))
     case 'check.tsv':
       return met(() => compile(input, 'check'))
-    default: {
-      const cell = row.unescNamed('doc')
-      const doc = '' === cell ? 'null' : cell
-      const name = row.named('render')
-      const render = '' === name ? undefined : rendererNamed(name)
-      return [true, false].flatMap((native) => met(() => runBoth(input, doc, render, native)))
-    }
+    default:
+      throw new Error(`${file} is not a fixture this file runs`)
   }
 }
 
@@ -224,39 +145,37 @@ function fills(line: string, text: string): boolean {
   return true
 }
 
-// The fixed text of a template: what a more specific line has more of. A
-// failure meets the most specific line it is an instance of, the first of
-// equals.
-function fixedLength(line: string): number {
-  return line.replace(/\{[a-z_]+\}/g, '').length
-}
-
-// Every failure the shared fixtures meet is declared in the grammar
-// document (rs/tests/spec_test.rs, `the_raised_messages_match_the_document`):
-// the finer code that leads the message is a key of the installed
-// `options.error`, the engine's and this grammar's, and the text after it is
-// a line of that entry, each `{name}` standing for what the raising site
-// fills in (a failure raised inside the standard library ends with its
-// position there, ` (at stdlib/...)`, which is not part of the text). Each
-// line of each code the document declares is the most specific line some
-// row meets, so the document holds no text nothing raises, and each of its
-// codes has a hint. A finer code comes with the same code wherever it is
-// raised (`bad_let` is a DSL_PARSE_ERROR from the desugarer and from the
-// resolver alike). A raising site whose code or text drifts fails here.
+// Every failure the fixtures this file runs meet is declared in the
+// grammar document (rs/tests/spec_test.rs,
+// `the_raised_messages_match_the_document`): the finer code that leads the
+// message is a key of the installed `options.error`, the engine's and this
+// grammar's, and the text after it is a line of that entry, each `{name}`
+// standing for what the raising site fills in (a failure raised inside the
+// standard library ends with its position there, ` (at stdlib/...)`, which
+// is not part of the text). Each of the document's codes has a hint. A
+// finer code comes with the same code wherever it is raised (`bad_let` is a
+// DSL_PARSE_ERROR from the desugarer and from the resolver alike). A
+// raising site whose code or text drifts fails here.
+//
+// That each line of each code the document declares is the most specific
+// line some row meets, so the document holds no text nothing raises, needs
+// run.tsv's rows too: alchemy-cli's copy of this test (its
+// ts/test/spec.test.ts) runs the error rows of all four files and holds
+// that clause.
 describe('the catalogue', () => {
   it('the raised messages match the document', () => {
     const catalogue: Record<string, string> = makeAlchemy().options.error
     const document = grammarDocument()
-    const met = new Set<string>()
     // The codes each finer code is raised with: one, wherever it is raised.
     const raisedAs = new Map<string, Set<string>>()
     const problems: string[] = []
     let failures = 0
     for (const spec of loadSpecDir(SPEC_DIR)) {
+      if (!RUN_HERE.includes(spec.file)) continue
       for (const row of spec.rows) {
         if (!isErrorExpect(row.col(1))) continue
         const input = row.unesc(row.resolve(0))
-        for (const fail of rowFailures(spec.file, input, row)) {
+        for (const fail of rowFailures(spec.file, input)) {
           if (!isFail(fail) || !OWN_CODES.includes(fail.code)) continue
           failures++
           const split = fail.message.indexOf(': ')
@@ -275,14 +194,8 @@ describe('the catalogue', () => {
             problems.push(`${row.where()}: ${code} is not declared in options.error`)
             continue
           }
-          const lines = entry
-            .split('\n')
-            .filter((line) => instanceOf(line, text))
-            .sort((a, b) => fixedLength(b) - fixedLength(a))
-          if (0 === lines.length) {
+          if (!entry.split('\n').some((line) => instanceOf(line, text))) {
             problems.push(`${row.where()}: no line of options.error.${code} is ${JSON.stringify(text)}`)
-          } else {
-            met.add(code + '\n' + lines[0])
           }
         }
       }
@@ -291,11 +204,8 @@ describe('the catalogue', () => {
     for (const [code, uppers] of raisedAs) {
       if (uppers.size > 1) problems.push(`${code} is raised as ${[...uppers].sort().join(' and ')}; a finer code has one code`)
     }
-    for (const [code, entry] of Object.entries<string>(document.options.error)) {
+    for (const code of Object.keys(document.options.error)) {
       if ('string' !== typeof document.options.hint[code]) problems.push(`options.hint.${code} is not declared`)
-      for (const line of entry.split('\n')) {
-        if (!met.has(code + '\n' + line)) problems.push(`options.error.${code}: no fixture row meets ${JSON.stringify(line)}`)
-      }
     }
     assert.deepStrictEqual(problems, [])
   })

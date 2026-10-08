@@ -11,79 +11,11 @@ on:
 
 jobs:
   # deps names every tabnas repository the ts/ and go/ trees depend on,
-  # dependency first, transduce and render last. hoover is there although
-  # nothing here imports it: ini's Go package does (go/go.mod records it as
-  # indirect), and with it cloned the workspace holds every module a test
-  # loads, so it resolves no version from the proxy (alchemy requires
-  # render's and transduce's unreleased v0.1.1 until their release runs tag
-  # them).
+  # dependency first. alchemy depends on neither transduce nor render (the
+  # maintainer's ruling of 2026-10-08): the tests that run programs on
+  # them, and the `tabnas_nodecell` build tag those need, are in
+  # tabnas/alchemy-cli, which downstream.yml runs against this checkout.
   ci:
     uses: tabnas/.github/.github/workflows/polyglot-ci.yml@main
     with:
-      deps: "parser support debug json hoover jsonic csv json5 jsonc jsonl markdown toml xml yaml zon ini transduce render"
-
-  # The shared workflow runs `go test ./...` with no build tags and takes
-  # none as an input (its inputs are deps, build-order, run-ts, run-go,
-  # node-version and go-version).
-  # `alchemy run` reads its document through transduce's incremental
-  # source, which that module builds only under the `tabnas_nodecell`
-  # build tag; without it run refuses with STREAMABILITY_UNKNOWN before
-  # the document is read, and the run fixtures (go/spec_test.go) and
-  # the API tests that run a document skip (measured on 2026-10-04, after
-  # the command moved to alchemy-cli: 36 tests and fixture rows skip
-  # without the tag, 1 with it).
-  # The maintainer's decision is that the tag is on in CI, so this job
-  # runs the suite once more with it: a caller-side job on the precedent
-  # of support's go-adder, not a fork of the shared workflow, with the
-  # same checkout, sibling clones and go.work its go job builds. When
-  # polyglot-ci.yml gains a build-tags input this job becomes that input
-  # (admin#97).
-  go-nodecell:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          path: alchemy
-
-      # cache: false, as in support's job: setup-go looks for go.mod in
-      # $GITHUB_WORKSPACE, non-recursively, and the checkout is one level
-      # down, so the cache step would warn on every run.
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version: "1.24"
-          cache: false
-
-      # The same siblings the shared go job clones (the deps input above).
-      - name: Clone tabnas dependencies
-        shell: bash
-        run: |
-          set -e
-          for dep in parser support debug json hoover jsonic csv json5 jsonc jsonl markdown toml xml yaml zon ini transduce render; do
-            git clone --depth 1 "https://github.com/tabnas/$dep.git" "$dep"
-          done
-
-      # Mirrors the shared workflow's go job: a workspace over every module
-      # in the tree, so the suite runs against sibling source.
-      - name: Set up go workspace
-        shell: bash
-        run: |
-          set -e
-          go work init
-          for gm in $(find . -name go.mod -not -path '*/vendor/*' -not -path '*/node_modules/*'); do
-            go work use "$(dirname "$gm")"
-          done
-
-      - name: Build with the tag
-        working-directory: alchemy/go
-        run: go build -tags tabnas_nodecell ./...
-
-      - name: Vet and test with the tag
-        working-directory: alchemy/go
-        run: |
-          go vet -tags tabnas_nodecell ./...
-          go test -tags tabnas_nodecell -v ./...
+      deps: "parser support debug json"

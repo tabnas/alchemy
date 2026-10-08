@@ -13,15 +13,19 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 
-# Every sibling any crate in the graph takes by path: the engine, runtime
-# libraries, support crates, and every grammar the structural translation
-# conformance test loads. INI also takes hoover. A dependency's
-# dev-dependencies are not built, so nothing else is needed.
-SIBLINGS="parser csv debug hoover ini json json5 jsonc jsonic jsonl markdown support toml transduce render xml yaml zon"
+# Every sibling any crate in the graph takes by path: the engine and the
+# JSON grammar (the grammar document is read with it), the fixture runner,
+# and the debug plugin the debug-model test composes. A dependency's
+# dev-dependencies are not built, so nothing else is needed. transduce and
+# render are not here: the tests that run programs on them are
+# alchemy-cli's, which .github/workflows/downstream.yml runs against this
+# checkout.
+SIBLINGS="parser json support debug"
 
-# TypeScript-only additions needed by ci/polyglot/run.sh. The hosted workflow
-# clones the union; the Rust gate validates only SIBLINGS above.
-TS_SIBLINGS="bnf abnf feed railroad"
+# TypeScript-only additions needed by ci/polyglot/run.sh, which builds them
+# before debug. The hosted workflow clones the union; the Rust gate
+# validates only SIBLINGS above.
+TS_SIBLINGS="bnf abnf railroad"
 
 for SIBLING in $SIBLINGS; do
   if [[ ! -f "$ROOT/../$SIBLING/rs/Cargo.toml" ]]; then

@@ -15,8 +15,10 @@ import (
 // A program runs on stages it does not implement: the host hands Compile
 // transduce's Routers and render's Renderers (shared.Routers and
 // shared.Renderers, the interfaces this module declares and those two
-// implement), and every runtime the program makes builds its stages
-// through them.
+// implement), and every sink the program makes builds its stages through
+// them. Compiling asks nothing of them: building the plan evaluates
+// values and plans, and formats a number itself (shortestNumber), so the
+// stages are first called when a sink is made.
 //
 // The host pushes transduce Events into the sink and one End; the sink
 // writes the output as it goes and flushes it at End. A failure comes back
@@ -37,7 +39,7 @@ type Program struct {
 	// abort is the host's cancellation, handed to every sink's runtime.
 	abort *shared.AbortFlag
 	// routers and renderers are the stages the program runs on, the
-	// host's, handed to every runtime it makes.
+	// host's, handed to the runtime of every sink it makes.
 	routers   shared.Routers
 	renderers shared.Renderers
 	// result is export applied to the input plan under the flags above.
@@ -51,8 +53,10 @@ type Program struct {
 // the plan is bounded by MaxPlanSteps and MaxEvalDepth.
 //
 // routers and renderers are the stages the program runs on: transduce's
-// Routers and render's Renderers. The plan is built with them (a number's
-// text is the renderer's), and every sink the program makes runs on them.
+// Routers and render's Renderers. The plan is built without them: Compile
+// calls neither (a number's text is this package's own, render's layout
+// byte for byte), so a host that only compiles, checks or explains may
+// pass nil for both. Every sink the program makes runs on them.
 func Compile(src, file string, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
 	return CompileSources([]Source{{File: file, Text: src}}, routers, renderers)
 }
@@ -75,7 +79,8 @@ func Compile(src, file string, routers shared.Routers, renderers shared.Renderer
 // (yaml-render (program-export input))`, with the user's program linked
 // as `program-export`), in one plan under one set of limits.
 //
-// routers and renderers are the stages the program runs on, as for Compile.
+// routers and renderers are the stages the program runs on, as for Compile:
+// compiling calls neither, and every sink the program makes runs on them.
 func CompileSources(sources []Source, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
 	a, f := AnalyzeSources(sources)
 	if f != nil {
@@ -85,13 +90,13 @@ func CompileSources(sources []Source, routers shared.Routers, renderers shared.R
 }
 
 func buildProgram(resolved *Resolved, sources *Sources, output Output, native bool, duplicates shared.Duplicates, abort *shared.AbortFlag, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
+	// The plan is built on a runtime without the stages: evaluating asks
+	// nothing of them, and the program keeps them for its sinks.
 	result, f := NewRuntime(resolved, sources).
 		WithNative(native).
 		WithDuplicates(duplicates).
 		WithFuel(MaxPlanSteps).
 		WithAbort(abort).
-		WithRouters(routers).
-		WithRenderers(renderers).
 		Export()
 	if f != nil {
 		return nil, f
