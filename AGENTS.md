@@ -66,8 +66,8 @@ effect summary the **planner** reports (`explain`). The **interpreter**
 evaluates values eagerly and streams lazily, lowering `route`,
 `scan-emit`, `csv`, `json` and the text algebra to transduce and render
 sinks; the standard compositions run natively, and a differential test
-proves the interpreted standard-library definitions in `stdlib/*.alc`
-produce the same bytes.
+(alchemy-cli's, since it runs programs) proves the interpreted
+standard-library definitions in `stdlib/*.alc` produce the same bytes.
 
 ## The reader repeats by replacement, never by a push chain
 
@@ -143,14 +143,13 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (each takes the host's `Routers` and `Renderers`; several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
 | `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded from the crate's copies in `rs/stdlib/`, resolved and checked on first use |
-| `rs/tests/spec_test.rs` | the shared fixtures through `tabnas_support::Runner` (`run.tsv` both natively and interpreted), the layout round trip, the reference's examples, and every failure the fixtures meet held to the grammar document's catalogue |
+| `rs/tests/spec_test.rs` | the shared fixtures `reader.tsv`, `pipe.tsv` and `check.tsv` through `tabnas_support::Runner`, the layout round trip, the reference's examples, and each failure those rows meet held to the grammar document's catalogue; `run.tsv` is alchemy-cli's to run (see below) |
 | `rs/tests/debug_model_test.rs` | the grammar composed with `tabnas-debug`, as every grammar carries |
 | `rs/tests/repeat_test.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
-| `rs/tests/lower_test.rs` | the lowering, the program API and the effects that need a real run, on transduce's routers and render's renderers (dev-dependencies) |
-| `rs/tests/run_test.rs` | the API end to end: the worked example both ways, the spec's streaming rows, the `json` echo, `records` |
-| `rs/tests/sources_test.rs` | `compile_sources`: a format's part linked with a program and run as one, a program linked under another name and fed to a render, every stage's failure naming the file it is in, and the linking's refusals |
+| `rs/tests/sources_test.rs` | `compile_sources`: every compile stage's failure naming the file it is in, and the linking's refusals |
 | `rs/tests/shared_sources_test.rs` | the embedded grammar is `alchemy-grammar.jsonic`, and `rs/stdlib/` is `stdlib/`, file for file |
-| `rs/tests/stdlib_test.rs` | the differential test: the interpreted library against the native path on every fixture and generated document |
+| `rs/tests/stdlib_test.rs` | the library loads: every definition in `stdlib/*.alc` resolves and checks |
+| `rs/tests/common/` | the tests' inert stages: a `Routers` and `Renderers` whose every method panics, since compiling asks nothing of them |
 | `test/spec/reader.tsv` | shared fixtures: layout → canonical, and the reader's errors by code |
 | `test/spec/pipe.tsv` | shared fixtures: layout → canonical of the desugared program, and the desugaring errors |
 | `test/spec/check.tsv` | shared fixtures: program → `ERROR:<finer code>` for every resolver and checker code, and program → plan report |
@@ -158,6 +157,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `test/AGENTS.md` | the fixtures' columns, the error-code contract, who runs what |
 | `docs/language.md` | the language reference; every example in it is a fixture row |
 | `ci/rust/run.sh` | the gate `.github/workflows/rust.yml` runs |
+| `.github/workflows/downstream.yml` | alchemy-cli's gates against this checkout: the tests that run programs |
 
 ## Shared sources
 
@@ -204,6 +204,20 @@ cargo clippy --all-targets --all-features -- -D warnings
 header lists. Every `dsl` example in the design document and in
 `docs/language.md` is a row in `test/spec/`, run by the shared fixture
 runner, so a stale example fails the gate.
+
+**The tests that run programs are alchemy-cli's.** This crate depends on
+neither transduce nor render (the maintainer's ruling of 2026-10-08), so
+their releases never leave its requirements a release behind; its own
+tests compile with inert stages. Running needs the real routers and
+renderers, so `run.tsv`, the lowering, events, linked sources, the
+translation parts and the standard library's differential test are in
+[tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), the
+composition root, in all three runtimes, reading this repository's
+`test/spec/` from the sibling checkout. `.github/workflows/downstream.yml`
+runs alchemy-cli's two gates against every change here; locally, with
+alchemy-cli and its siblings cloned beside this checkout, run
+`../alchemy-cli/ci/polyglot/run.sh` and `../alchemy-cli/ci/rust/run.sh`.
+A change to `run.tsv`, or to what a run does, is verified there.
 
 ## Error codes
 
@@ -252,8 +266,8 @@ definition that reaches itself; from the evaluator, nesting past
 the plan, so `duplicate_key`, `no_match` and the evaluator's
 `recursion` have rows where the plan's own evaluation meets them.
 `render_of_text` needs a renderer, which `check` never takes;
-`rs/tests/run_test.rs` and `rs/tests/lower_test.rs` pin it. `duplicate_file`
-needs several sources, which `check` never takes;
+alchemy-cli's `rs/tests/run_test.rs` and `rs/tests/lower_test.rs` pin it.
+`duplicate_file` needs several sources, which `check` never takes;
 `rs/tests/sources_test.rs` pins it. Runtime failures
 carry the transduce and render codes unchanged, and a `fail "message"`
 in a program is `INPUT_INVALID` with the message and the form's
@@ -265,11 +279,14 @@ every code its fixtures expect), in `options.error` and `options.hint`
 after the grammar's own. An entry's message is the text its raising
 sites write, each `{name}` standing for what a site fills in, and a code
 raised in more than one sentence holds one per line.
-`the_raised_messages_match_the_document` (`rs/tests/spec_test.rs`, and
-the same test in `ts/test/spec.test.ts` and `go/spec_test.go`) runs
-every error row of `test/spec/` and wants each failure's code declared,
-its text a line of that code's entry, each finer code raised with one
-code, and every line of every entry met by some row. A raising site whose
+`the_raised_messages_match_the_document` runs every error row of
+`test/spec/` and wants each failure's code declared, its text a line of
+that code's entry, each finer code raised with one code, and every line
+of every entry met by some row. It runs in two places: here
+(`rs/tests/spec_test.rs`, `ts/test/spec.test.ts`, `go/spec_test.go`) over
+the rows of `reader.tsv`, `pipe.tsv` and `check.tsv`, without the last
+clause, and in alchemy-cli over every row of all four files, the last
+clause included, since `run.tsv`'s rows need the stages. A raising site whose
 code or text drifts fails there; a new failure's text goes into the
 catalogue with a row that meets it. Where the checker and the runtime
 report the same situation they write one sentence, and a value both

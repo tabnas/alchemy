@@ -109,6 +109,16 @@ func TestANativeReadsAsItsReferenceRow(t *testing.T) {
 	}
 }
 
+// The library loads, with the definitions the differential test runs
+// interpreted (alchemy-cli's go/e2e/differential_test.go, which runs it
+// against the native compositions on transduce's and render's stages).
+func TestTheLibraryLoads(t *testing.T) {
+	lib := StdlibLoaded()
+	if lib.Get("table-from-json") == nil || lib.Get("csv") == nil {
+		t.Error("the library lacks table-from-json or csv")
+	}
+}
+
 func TestTheLibraryLoadsWithTheSpecDefinitions(t *testing.T) {
 	lib := StdlibLoaded()
 	want := "[public-column table-inferred-column table-row table-first-row table-step table-finish table-finish-for table-captures table-from-json csv-options csv-field csv-row csv]"

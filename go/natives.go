@@ -217,21 +217,110 @@ func option(op string, options Val, key string) (Val, *Fail) {
 // Numbers
 // ---------------------------------------------------------------------------
 
+// The magnitudes written positionally, as the renderers write them: from
+// 1e-6 up to, not including, 1e21 (render's positionalMin and
+// positionalMax, the thresholds of JavaScript's Number#toString).
+const (
+	positionalMin = 1e-6
+	positionalMax = 1e21
+)
+
 // shortestNumber is the shortest text that reads back as value, laid out
 // as the render package lays it out: positional within the JavaScript
-// range, exponent form outside it. The two must agree byte for byte, which
-// the differential test checks on every number without a lexeme, so this
-// is render's own formatter, from the renderers the host handed in.
-func shortestNumber(renderers shared.Renderers, value float64) string {
-	return renderers.WriteValue(value)
+// range, exponent form outside it. It and appendShortestNumber are render's
+// own formatter, mirrored line for line from render's go/number.go
+// (FormatValue and appendValue), as the Rust crate's shortest_number
+// mirrors render's number::write_value: this package formats a number
+// itself, so that building a plan asks nothing of the renderers a host
+// hands in. The two must agree byte for byte, which the differential test
+// in alchemy-cli (go/e2e) checks on real documents, natively through
+// render's renderers and interpreted through this function.
+//
+// A non-finite value has no such text and gives "", as FormatValue does;
+// numberText refuses one before it asks.
+func shortestNumber(value float64) string {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return ""
+	}
+	return string(appendShortestNumber(nil, value))
+}
+
+// appendShortestNumber appends the shortest text that reads back as value
+// to dst: render's appendValue.
+//
+// strconv's shortest formatting gives the digits; this function only
+// chooses the layout, because no Go verb has the renderers': positional
+// for zero and for magnitudes within [positionalMin, positionalMax),
+// exponent form outside with no '+' and no leading zeros in the exponent
+// (1e21, 1e-7, 1.7976931348623157e308; Go's 'e' writes 1e+21 and 1e-07).
+// Negative zero is "-0". The value must be finite.
+func appendShortestNumber(dst []byte, value float64) []byte {
+	if value == 0 {
+		if math.Signbit(value) {
+			return append(dst, '-', '0')
+		}
+		return append(dst, '0')
+	}
+	// d.ddddde±XX: the shortest round-tripping digits and the exponent.
+	var scratch [32]byte
+	sci := strconv.AppendFloat(scratch[:0], value, 'e', -1, 64)
+	neg := sci[0] == '-'
+	if neg {
+		sci = sci[1:]
+	}
+	mark := len(sci) - 1
+	for sci[mark] != 'e' {
+		mark--
+	}
+	e, _ := strconv.Atoi(string(sci[mark+1:]))
+	var digits [24]byte
+	nd := 0
+	for _, c := range sci[:mark] {
+		if c != '.' {
+			digits[nd] = c
+			nd++
+		}
+	}
+	ds := digits[:nd]
+	if neg {
+		dst = append(dst, '-')
+	}
+	magnitude := math.Abs(value)
+	if magnitude >= positionalMin && magnitude < positionalMax {
+		switch {
+		case e >= nd-1:
+			dst = append(dst, ds...)
+			for k := 0; k < e-(nd-1); k++ {
+				dst = append(dst, '0')
+			}
+		case e >= 0:
+			dst = append(dst, ds[:e+1]...)
+			dst = append(dst, '.')
+			dst = append(dst, ds[e+1:]...)
+		default:
+			dst = append(dst, '0', '.')
+			for k := 0; k < -e-1; k++ {
+				dst = append(dst, '0')
+			}
+			dst = append(dst, ds...)
+		}
+		return dst
+	}
+	dst = append(dst, ds[0])
+	if nd > 1 {
+		dst = append(dst, '.')
+		dst = append(dst, ds[1:]...)
+	}
+	dst = append(dst, 'e')
+	return strconv.AppendInt(dst, int64(e), 10)
 }
 
 // numberText is the text of a number as a renderer writes it, with the
 // renderer's checks: a lexeme that is not a JSON number is INVALID_NUMBER,
 // a non-finite value TARGET_VALUE_UNREPRESENTABLE. The lexeme is held to
 // IsJSONNumber, this package's own JSON number grammar, the one the
-// renderers hold a lexeme to.
-func numberText(renderers shared.Renderers, value float64, lexeme string, hasLexeme bool) (string, *Fail) {
+// renderers hold a lexeme to; a number without one is shortestNumber's.
+func numberText(value float64, lexeme string, hasLexeme bool) (string, *Fail) {
 	if hasLexeme && !IsJSONNumber(lexeme) {
 		return "", NewFail(CodeInvalidNumber, strconv.Quote(lexeme)+" is not a JSON number")
 	}
@@ -245,7 +334,7 @@ func numberText(renderers shared.Renderers, value float64, lexeme string, hasLex
 	if hasLexeme {
 		return lexeme, nil
 	}
-	return shortestNumber(renderers, value), nil
+	return shortestNumber(value), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -893,7 +982,7 @@ func nScalarText(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	case BoolVal:
 		return StrVal(strconv.FormatBool(bool(x))), nil
 	case NumVal:
-		s, f := numberText(rt.Renderers(), x.Value, x.Lexeme, x.HasLexeme)
+		s, f := numberText(x.Value, x.Lexeme, x.HasLexeme)
 		if f != nil {
 			return nil, f
 		}

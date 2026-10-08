@@ -173,8 +173,9 @@ export class Runtime {
   // The stages the lowering builds (`Router`, `TableFromJson`, `ScanEmit`,
   // `Guarded`): transduce's, passed in.
   readonly routers: Routers
-  // The renderers and text stages the lowering builds, and the number
-  // layout the natives write: render's, passed in.
+  // The renderers and text stages the lowering builds: render's, passed
+  // in. Building a plan never calls them; the natives write a number's
+  // text with this package's own `shortestNumber`.
   readonly renderers: Renderers
   private isNative = true
   private policy: Duplicates = 'reject'

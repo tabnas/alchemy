@@ -8,8 +8,10 @@ package tabnasalchemy
 // with the program that calls them. The program runs as the same text in
 // one file runs; a failure in any source carries that source's file, row
 // and column, in the field and in the failure's display, at every stage
-// that positions one: the reader, the desugarer, the resolver, the checker
-// and the run.
+// that positions one: the reader, the desugarer, the resolver and the
+// checker here; the linked program's run, and a failure the run meets in a
+// part, are alchemy-cli's (go/e2e/sources_test.go), since a run needs
+// transduce's routers and render's renderers.
 
 import (
 	"encoding/json"
@@ -18,8 +20,6 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	tt "github.com/tabnas/transduce/go"
 )
 
 // part is a render part: definitions prefixed by the format's name, no
@@ -45,24 +45,6 @@ func sourcesOf(list ...[2]string) []Source {
 // test has it.
 func linked(partText string) (*Program, *Fail) {
 	return CompileSources(sourcesOf([2]string{mainFile, mainSrc}, [2]string{partFile, partText}), routers, renderers)
-}
-
-func mustLink(t testing.TB, sources []Source) *Program {
-	t.Helper()
-	p, f := CompileSources(sources, routers, renderers)
-	if f != nil {
-		t.Fatal(f)
-	}
-	return p
-}
-
-func render(t testing.TB, program *Program, text string) string {
-	t.Helper()
-	out, f := hostRun(t, program, text, RenderDefault, tt.DefaultLimits())
-	if f != nil {
-		t.Fatalf("%s: %v", text, f)
-	}
-	return out
 }
 
 // at is the 1-based row and column of needle on the 1-based row of text,
@@ -91,41 +73,6 @@ func assertAt(t testing.TB, f *Fail, file string, row, column uint64) {
 	var j map[string]any
 	if err := json.Unmarshal(data, &j); err != nil || j["file"] != file {
 		t.Errorf("%s", data)
-	}
-}
-
-// Two sources are one namespace: the program calls the part's definitions,
-// in either order of the sources, and runs as the same texts in one file
-// run.
-func TestLinkedSourcesRunAsOneProgram(t *testing.T) {
-	input := `["a","b\"c","d\ne"]`
-	expected := "\"a\"\n\"b\\\"c\"\n\"d\\ne\"\n"
-	mainFirst, f := linked(part)
-	if f != nil {
-		t.Fatal(f)
-	}
-	if got := render(t, mainFirst, input); got != expected {
-		t.Errorf("%q", got)
-	}
-	partFirst := mustLink(t, sourcesOf([2]string{partFile, part}, [2]string{mainFile, mainSrc}))
-	if got := render(t, partFirst, input); got != expected {
-		t.Errorf("%q", got)
-	}
-	one := mustCompile(t, mainSrc+"\n"+part, "one.alc")
-	if got := render(t, one, input); got != expected {
-		t.Errorf("%q", got)
-	}
-	// The program is named by its first source, and its plan is reported
-	// as one program's.
-	if mainFirst.File() != mainFile || partFirst.File() != partFile || mainFirst.Explain() != one.Explain() {
-		t.Errorf("%s %s", mainFirst.File(), partFirst.File())
-	}
-	// A part may call back into the program: the namespace is one.
-	back := "def lines-line [item]\n  concat (main-mark item) \"\\n\"\n\ndef lines-render [items]\n  concat-map lines-line items\n"
-	withMark := mainSrc + "\ndef main-mark [s] (concat \"* \" s)\n"
-	program := mustLink(t, sourcesOf([2]string{mainFile, withMark}, [2]string{partFile, back}))
-	if got := render(t, program, `["x"]`); got != "* x\n" {
-		t.Errorf("%q", got)
 	}
 }
 
@@ -172,31 +119,6 @@ func TestAFailureInTheSecondSourceNamesTheSecondFile(t *testing.T) {
 	if f == nil || f.Code != CodeDSLParseError || !strings.HasPrefix(f.Message, "empty_step: ") || f.File != partFile || f.Row != 6 {
 		t.Errorf("%v", f)
 	}
-}
-
-// A failure the run meets in a part, from a fail in its definition, is the
-// program's INPUT_INVALID at the part's file and position.
-func TestARunTimeFailureInAPartNamesThePart(t *testing.T) {
-	strict := "def lines-line [item]\n  match item\n    case \"bad\" (fail \"a bad item\")\n    case _ (concat (quoted item) \"\\n\")\n\ndef lines-render [items]\n  concat-map lines-line items\n"
-	program, f := linked(strict)
-	if f != nil {
-		t.Fatal(f)
-	}
-	if got := render(t, program, `["ok"]`); got != "\"ok\"\n" {
-		t.Errorf("%q", got)
-	}
-	row, col := at(t, strict, 3, "(fail")
-	_, f = hostRun(t, program, `["ok","bad"]`, RenderDefault, tt.DefaultLimits())
-	if f == nil || f.Code != CodeInputInvalid || f.Message != "a bad item" {
-		t.Fatalf("%v", f)
-	}
-	assertAt(t, f, partFile, row, col)
-	// The interpreted twin positions it the same way.
-	_, f = hostRun(t, interpreted(t, program), `["bad"]`, RenderDefault, tt.DefaultLimits())
-	if f == nil {
-		t.Fatal("the interpreted run succeeded")
-	}
-	assertAt(t, f, partFile, row, col)
 }
 
 // The linking's own refusals: a name defined in two sources, the one file

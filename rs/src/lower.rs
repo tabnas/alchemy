@@ -1535,13 +1535,12 @@ pub(crate) mod tests {
     /// The routers and renderers of the unit tests that compile a program
     /// and never lower it: compiling builds the plan and keeps the two for
     /// the sinks, and asks nothing of them. The real ones are transduce's
-    /// and render's, which a unit test here cannot take (they are built on
-    /// this crate's library, of which a unit test is a second copy), so the
-    /// tests that lower and run a program are in `tests/`. Every method is
-    /// unreachable.
+    /// and render's, which this crate does not depend on (they are built
+    /// on its shared types), so the tests that lower and run a program are
+    /// in tabnas-alchemy-cli's `rs/tests/`. Every method is unreachable.
     pub(crate) struct Unlowered;
 
-    const UNLOWERED: &str = "a unit test lowered a program; run it from tests/";
+    const UNLOWERED: &str = "a unit test lowered a program; run it from tabnas-alchemy-cli's tests";
 
     impl Routers<Val> for Unlowered {
         fn router(

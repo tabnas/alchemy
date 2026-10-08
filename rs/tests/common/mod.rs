@@ -4,35 +4,123 @@
 // anything real.
 #![allow(dead_code)]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tabnas_alchemy::shared::{Renderers, Routers};
+use tabnas_alchemy::shared::{
+    AbortFlag, CaptureSpec, CsvOptions, Duplicates, Fail, JoinOut, JsonOptions, Limits, Metrics,
+    Renderers, RouteSink, Routers, ScanEmitter, ScanFinish, ScanOut, ScanStep, Sink, TableBinding,
+    TableSink, TextOut,
+};
 use tabnas_alchemy::value::Val;
 use tabnas_alchemy::{Program, Source};
 use tabnas_support::{find_spec_dir, Failure, Value};
-use tabnas_transduce::Fail;
 
-/// The routers a host passes alchemy: transduce's.
-pub fn routers() -> Arc<dyn Routers<Val>> {
-    Arc::new(tabnas_transduce::routers())
+/// The routers and renderers of a compile-only test: compiling builds the
+/// plan and keeps the two for the sinks, and asks nothing of them. The
+/// real ones are tabnas-transduce's and tabnas-render's, which this crate
+/// does not depend on: the tests that lower and run a program are in
+/// tabnas-alchemy-cli, the composition root that depends on all three.
+/// Every method panics.
+pub struct NoStages;
+
+const NO_STAGES: &str = "compile-only test: no stages";
+
+impl Routers<Val> for NoStages {
+    fn router(
+        &self,
+        _: Vec<CaptureSpec>,
+        _: &Limits,
+        _: Duplicates,
+        _: Arc<Metrics>,
+        _: Box<dyn RouteSink + Send>,
+    ) -> Result<Box<dyn Sink + Send>, Fail> {
+        panic!("{NO_STAGES}")
+    }
+
+    fn table_from_json(
+        &self,
+        _: TableBinding,
+        _: &Limits,
+        _: Duplicates,
+        _: Arc<Metrics>,
+        _: Box<dyn TableSink + Send>,
+    ) -> Result<Box<dyn Sink + Send>, Fail> {
+        panic!("{NO_STAGES}")
+    }
+
+    fn scan_emit(
+        &self,
+        _: Val,
+        _: ScanStep<Val>,
+        _: ScanFinish<Val>,
+        _: ScanOut<Val>,
+    ) -> Box<dyn ScanEmitter<Val>> {
+        panic!("{NO_STAGES}")
+    }
+
+    fn guarded(
+        &self,
+        _: Box<dyn Sink + Send>,
+        _: &Limits,
+        _: AbortFlag,
+        _: Arc<Metrics>,
+    ) -> Box<dyn Sink + Send> {
+        panic!("{NO_STAGES}")
+    }
 }
 
-/// The renderers a host passes alchemy: render's.
-pub fn renderers() -> Arc<dyn Renderers> {
-    Arc::new(tabnas_render::renderers())
+impl Renderers for NoStages {
+    fn json(&self, _: Box<dyn TextOut + Send>, _: JsonOptions) -> Box<dyn Sink + Send> {
+        panic!("{NO_STAGES}")
+    }
+
+    fn csv(
+        &self,
+        _: Box<dyn TextOut + Send>,
+        _: CsvOptions,
+    ) -> Result<Box<dyn TableSink + Send>, Fail> {
+        panic!("{NO_STAGES}")
+    }
+
+    fn records_to_json(&self, _: Box<dyn Sink + Send>) -> Box<dyn TableSink + Send> {
+        panic!("{NO_STAGES}")
+    }
+
+    fn join<'a>(&self, _: Box<dyn TextOut + Send + 'a>, _: &str) -> Box<dyn JoinOut + Send + 'a> {
+        panic!("{NO_STAGES}")
+    }
+
+    fn replace_text<'a>(
+        &self,
+        _: Box<dyn TextOut + Send + 'a>,
+        _: &str,
+        _: &str,
+    ) -> Box<dyn TextOut + Send + 'a> {
+        panic!("{NO_STAGES}")
+    }
+
+    fn write_out(
+        &self,
+        _: Box<dyn Write + Send>,
+        _: &Limits,
+        _: Arc<Metrics>,
+    ) -> Box<dyn TextOut + Send> {
+        panic!("{NO_STAGES}")
+    }
 }
 
-/// [`tabnas_alchemy::compile`] with transduce's routers and render's
-/// renderers, as a host compiles.
+/// [`tabnas_alchemy::compile`] with [`NoStages`] routers and renderers,
+/// for a test that reads what compiling decided and runs nothing.
 pub fn compile(src: &str, file: &str) -> Result<Program, Fail> {
-    tabnas_alchemy::compile(src, file, routers(), renderers())
+    tabnas_alchemy::compile(src, file, Arc::new(NoStages), Arc::new(NoStages))
 }
 
-/// [`tabnas_alchemy::compile_sources`] with transduce's routers and
-/// render's renderers.
+/// [`tabnas_alchemy::compile_sources`] with [`NoStages`] routers and
+/// renderers.
 pub fn compile_sources(sources: &[Source<'_>]) -> Result<Program, Fail> {
-    tabnas_alchemy::compile_sources(sources, routers(), renderers())
+    tabnas_alchemy::compile_sources(sources, Arc::new(NoStages), Arc::new(NoStages))
 }
 
 /// The repository root: the parent of `rs/`.

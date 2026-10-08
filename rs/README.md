@@ -25,21 +25,21 @@ the repository [README](../README.md), [AGENTS.md](../AGENTS.md) and
 ```rust
 use std::sync::Arc;
 
-use tabnas_alchemy::shared::{JsonEvent, Limits, Metrics, Sink};
+use tabnas_alchemy::shared::{Fail, JsonEvent, Limits, Metrics, Renderers, Routers, Sink};
+use tabnas_alchemy::value::Val;
 use tabnas_alchemy::{compile, Output};
 
-let program = compile(
-    "def export [input] (json input)",
-    "echo.alc",
-    Arc::new(tabnas_transduce::routers()),
-    Arc::new(tabnas_render::renderers()),
-)?;
-assert_eq!(program.output(), Output::Text);
-let mut sink = program.sink(Box::new(Vec::new()), None, &Limits::default(), Metrics::new())?;
-sink.event(JsonEvent::ArrayStart)?;
-sink.event(JsonEvent::ArrayEnd)?;
-sink.event(JsonEvent::End)?;
-# Ok::<(), tabnas_alchemy::shared::Fail>(())
+/// A host passes in tabnas-transduce's routers (`tabnas_transduce::routers()`)
+/// and tabnas-render's renderers (`tabnas_render::renderers()`).
+fn echo(routers: Arc<dyn Routers<Val>>, renderers: Arc<dyn Renderers>) -> Result<(), Fail> {
+    let program = compile("def export [input] (json input)", "echo.alc", routers, renderers)?;
+    assert_eq!(program.output(), Output::Text);
+    let mut sink = program.sink(Box::new(Vec::new()), None, &Limits::default(), Metrics::new())?;
+    sink.event(JsonEvent::ArrayStart)?;
+    sink.event(JsonEvent::ArrayEnd)?;
+    sink.event(JsonEvent::End)?;
+    Ok(())
+}
 ```
 
 The host pushes the source's events into the sink and one `End`; the
@@ -54,9 +54,12 @@ the sink a thread of that size, passes its abort flag to
 `Program::with_abort`, and sets `max_output_bytes` (see Embedding in
 [`docs/language.md`](../docs/language.md)).
 
-The engine, the JSON grammar, the routers and renderers the tests pass
-in, the fixture runner and the test grammars are sibling checkouts named
-by path in `Cargo.toml`. From this directory:
+The engine, the JSON grammar, the fixture runner and the debug plugin
+are sibling checkouts named by path in `Cargo.toml`. This crate depends
+on neither transduce nor render: its tests compile programs with inert
+stages, and the tests that run them on the real routers and renderers
+are [tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli)'s. From
+this directory:
 `cargo test --all-targets`, `cargo test --doc`,
 `cargo clippy --all-targets --all-features -- -D warnings`, and
 `cargo build --no-default-features` for the shared types alone.

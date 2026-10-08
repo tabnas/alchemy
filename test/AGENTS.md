@@ -29,7 +29,11 @@ Blank lines are skipped, and so are comment lines — a line starting with
 A run is what `alchemy run` does: compile the program (which builds the
 plan), then read `doc` with the tabnas JSON grammar incrementally, pruned
 under the program's row selector when it has one, and push its events
-through the program's sink, with the default `Limits`. The Rust runner
+through the program's sink, with the default `Limits`. A run needs
+transduce's routers and render's renderers, which alchemy does not
+depend on, so `run.tsv` is run by
+[tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), the
+composition root, in every runtime (see "Who runs what"). Its Rust runner
 runs every row twice, with the standard compositions native and through
 the library's text (`with_native(false)`), and fails a row whose two
 paths differ in a byte, a code or a position. A port that runs only the
@@ -65,7 +69,10 @@ line per sentence), and each runtime's
 wants each failure's code declared there, its text a line of that code's
 entry, each finer code raised with one code (`bad_let` from the
 desugarer in `pipe.tsv` and from the resolver in `check.tsv` alike), and
-every line met by some row. A row that meets a new failure,
+every line met by some row. This repository's copy runs the rows of
+`reader.tsv`, `pipe.tsv` and `check.tsv` and holds them to all but the
+last clause; alchemy-cli's runs every row of all four files and holds the
+last clause too. A row that meets a new failure,
 or a new sentence of a known one, comes with its line in the catalogue.
 
 A trailing `@<row>:<col>` also pins the 1-based position the failure
@@ -80,15 +87,29 @@ message. A code pinned only with a position needs no bare row as well.
 
 ## Who runs what
 
-- Rust: `rs/tests/spec_test.rs`, one `tabnas_support::Runner` per file
-  (`reader`, `pipe`, `check`, `run`).
-  `every_fixture_has_a_runner` fails when a file is added without one,
-  and `format_round_trips_every_fixture_row` reads every row's program
-  back from its layout form.
-- TypeScript and Go: not yet; their runners will be `makeRunner(...)` and
-  `support.Runner{...}` over the same directory, holding only what is
-  specific to alchemy (what a row's input becomes, and for `run.tsv` the
-  document and the renderer).
+Here, in each runtime: `reader.tsv`, `pipe.tsv` and `check.tsv`, which
+compile with inert stages.
+
+- Rust: `rs/tests/spec_test.rs`, one `tabnas_support::Runner` per file.
+  `format_round_trips_every_fixture_row` reads every row's program back
+  from its layout form.
+- TypeScript: `ts/test/spec.test.ts`.
+- Go: `go/spec_test.go`.
+
+Each runtime's every-fixture-has-a-runner test fails when a file is added
+without a runner, and names `run.tsv` as run by alchemy-cli.
+
+In [tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), against
+this repository's `test/spec/` in the sibling checkout: `run.tsv`, natively
+and interpreted, and the full catalogue test over all four files.
+
+- Rust: `rs/tests/spec_test.rs`.
+- TypeScript: `ts/test/spec.test.ts`.
+- Go: `go/e2e`'s `TestSpecRun`. Rows that read a document need
+  `-tags tabnas_nodecell`, which alchemy-cli's gate passes.
+
+This repository's `.github/workflows/downstream.yml` runs alchemy-cli's
+gates against each change here.
 
 Finding `test/spec`, reading a file, decoding escapes, the `ERROR:`
 contract, the comparison and the `<file>:<line>` in a failure message
@@ -112,4 +133,6 @@ it.
   corrected behaviour here; record any difference that stays in a
   `DIVERGENCE.md`.
 - A new row must pass in every runtime that exists: `cargo test
-  --all-targets` from `rs/` (or `make test` from the root).
+  --all-targets` from `rs/` (or `make test` from the root), and, for a
+  `run.tsv` row, alchemy-cli's gates (`../alchemy-cli/ci/rust/run.sh` and
+  `../alchemy-cli/ci/polyglot/run.sh`, which downstream.yml runs).

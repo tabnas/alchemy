@@ -6,9 +6,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 
-import { renderers } from '@tabnas/render'
-import { AbortFlag, Datum, Selector, fromJSON, toText } from '@tabnas/transduce'
-
 import {
   MESSAGES,
   Runtime,
@@ -33,6 +30,7 @@ import {
   span,
   value,
 } from '../dist/alchemy'
+import { AbortFlag, Datum, Selector, fromJSON, toText } from '../dist/shared'
 
 import { OPTIONS, thrown } from './common'
 
@@ -523,17 +521,29 @@ describe('natives', () => {
     assert.equal((thrown(() => rt.applyNow(length, [huge], at)) as any).code, 'ABORTED')
   })
 
+  // This package's own number text, as the Rust crate's `shortest_number`
+  // is (rs/src/stdlib/registry.rs's test of the same name, case for case):
+  // laid out as render's `writeValue` lays it out, which alchemy-cli's
+  // differential tests hold it to.
   it('numbers print as the renderers print them', () => {
-    assert.equal(shortestNumber(renderers, 1), '1')
-    assert.equal(shortestNumber(renderers, 50.25), '50.25')
-    assert.equal(shortestNumber(renderers, 1e20), '100000000000000000000')
-    assert.equal(shortestNumber(renderers, 1e21), '1e21')
-    assert.equal(shortestNumber(renderers, 1e-7), '1e-7')
-    assert.equal(shortestNumber(renderers, -0), '-0')
-    assert.equal(numberText(renderers, 1.5, '1.50'), '1.50')
-    assert.equal((thrown(() => numberText(renderers, 1, '01')) as any).code, 'INVALID_NUMBER')
-    assert.equal((thrown(() => numberText(renderers, Infinity, '1e999')) as any).code, 'TARGET_VALUE_UNREPRESENTABLE')
-    assert.equal((thrown(() => numberText(renderers, NaN)) as any).code, 'TARGET_VALUE_UNREPRESENTABLE')
+    assert.equal(shortestNumber(1), '1')
+    assert.equal(shortestNumber(50.25), '50.25')
+    assert.equal(shortestNumber(1e20), '100000000000000000000')
+    assert.equal(shortestNumber(1e21), '1e21')
+    assert.equal(shortestNumber(1e-7), '1e-7')
+    assert.equal(shortestNumber(-0), '-0')
+    assert.equal(numberText(1.5, '1.50'), '1.50')
+    assert.equal((thrown(() => numberText(1, '01')) as any).code, 'INVALID_NUMBER')
+    assert.equal((thrown(() => numberText(Infinity, '1e999')) as any).code, 'TARGET_VALUE_UNREPRESENTABLE')
+    assert.equal((thrown(() => numberText(NaN)) as any).code, 'TARGET_VALUE_UNREPRESENTABLE')
+    // The form 0.2.3 published, renderers first, still answers; the
+    // renderers are not consulted.
+    const unused = {} as any
+    assert.equal(shortestNumber(unused, 50.25), '50.25')
+    assert.equal(shortestNumber(unused, -0), '-0')
+    assert.equal(numberText(unused, 2.5), '2.5')
+    assert.equal(numberText(unused, 1.5, '1.50'), '1.50')
+    assert.equal((thrown(() => numberText(unused, 1, '01')) as any).code, 'INVALID_NUMBER')
   })
 
   it('a datum value keeps its member order', () => {

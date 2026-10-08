@@ -1,0 +1,81 @@
+# alchemy-cli's gates, run against this checkout of alchemy.
+#
+# alchemy depends on neither transduce nor render (the maintainer's ruling
+# of 2026-10-08), so their releases never leave its requirements a release
+# behind. The tests that run programs on them moved to tabnas/alchemy-cli,
+# the composition root that depends on all three: run.tsv, the lowering,
+# events, linked sources, the translation parts and the standard library's
+# differential test, in TypeScript, Go and Rust. This job keeps them in
+# front of every change here. It checks this repository out where
+# alchemy-cli expects its alchemy sibling, clones alchemy-cli and the other
+# siblings its gates name (each at this run's branch when that repository
+# has one, so a change made in both at once is tested together, else at
+# its default branch), and runs alchemy-cli's two gate scripts unchanged.
+name: downstream
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  alchemy-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: alchemy
+
+      # The branch goes through the environment, not into the script: a
+      # pull request's branch name is text its author chose.
+      - name: Check out alchemy-cli and its siblings
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          clone() {
+            if git clone -q --depth 1 --branch "$BRANCH" "https://github.com/tabnas/$1" "$1" 2>/dev/null; then
+              echo "$1 @ $BRANCH"
+            else
+              git clone -q --depth 1 "https://github.com/tabnas/$1" "$1"
+              echo "$1 @ default branch"
+            fi
+          }
+          echo "alchemy-cli: $(clone alchemy-cli)"
+          SIBLINGS=$(sed -n 's/^\(TS_\)\?SIBLINGS="\(.*\)"$/\2/p' alchemy-cli/ci/rust/run.sh)
+          n=0; total=$(echo $SIBLINGS | wc -w)
+          for s in $SIBLINGS; do
+            n=$((n+1))
+            if [ "$s" = alchemy ]; then
+              echo "siblings: $n of $total ($((n*100/total))%) alchemy: this checkout"
+            else
+              echo "siblings: $n of $total ($((n*100/total))%) $(clone "$s")"
+            fi
+          done
+
+      - name: Install alchemy-cli's MSRV toolchain
+        run: |
+          MSRV=$(awk -F'"' '/^rust-version = /{print $2; exit}' alchemy-cli/rs/Cargo.toml)
+          rustup toolchain install "$MSRV" --profile minimal --component rustfmt,clippy
+          rustup default "$MSRV"
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24.x
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: 1.24.x
+          cache: false
+
+      - name: alchemy-cli's TypeScript and Go gate
+        run: alchemy-cli/ci/polyglot/run.sh
+
+      - name: alchemy-cli's Rust gate
+        run: alchemy-cli/ci/rust/run.sh

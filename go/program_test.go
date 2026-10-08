@@ -2,14 +2,15 @@
 
 package tabnasalchemy
 
-// program_test.go: the API a host embeds (rs/src/program.rs's tests).
+// program_test.go: the API a host embeds (rs/src/program.rs's tests). The
+// sink a program writes through is alchemy-cli's to test
+// (go/e2e/program_test.go): it runs on transduce's and render's stages.
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
-	tt "github.com/tabnas/transduce/go"
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 func rowSelectorText(p *Program) string {
@@ -42,28 +43,6 @@ func TestAProgramKnowsItsOutputAndRowSelector(t *testing.T) {
 	}
 }
 
-func TestTheSinkWritesThroughAWriter(t *testing.T) {
-	p := mustCompile(t, workedExample, "t.alc")
-	var buffer bytes.Buffer
-	sink, f := p.Sink(&buffer, RenderDefault, tt.DefaultLimits(), tt.NewMetrics())
-	if f != nil {
-		t.Fatal(f)
-	}
-	d, err := tt.DatumFromJSON(records)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, f := tt.WalkDatum(&d, sink); f != nil {
-		t.Fatal(f)
-	}
-	if _, f := sink.Event(tt.EvEnd()); f != nil {
-		t.Fatal(f)
-	}
-	if buffer.String() != expectedCSV {
-		t.Errorf("%q", buffer.String())
-	}
-}
-
 func TestCompileReportsReaderResolverAndExportFailures(t *testing.T) {
 	if _, f := Compile("(a b", "t.alc", routers, renderers); f == nil || f.Code != CodeDSLParseError {
 		t.Errorf("%v", f)
@@ -79,7 +58,7 @@ func TestCompileReportsReaderResolverAndExportFailures(t *testing.T) {
 // WithAbort keeps the plan and changes only the flag the sinks read.
 func TestWithAbortKeepsThePlan(t *testing.T) {
 	p := mustCompile(t, workedExample, "t.alc")
-	flag := tt.NewAbortFlag()
+	flag := shared.NewAbortFlag()
 	q := p.WithAbort(flag)
 	if q.Result() != p.Result() || q.abort != flag || p.abort == flag {
 		t.Error("WithAbort rebuilt the plan or changed the program it was asked of")

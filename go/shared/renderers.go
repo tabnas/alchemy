@@ -6,9 +6,10 @@ import (
 	"io"
 )
 
-// Renderers is what alchemy's runtime builds and calls on the renderer
-// side: one method per renderer, text stage and number function it uses,
-// each tabnas-render's constructor or function, with its parameters.
+// Renderers is what alchemy's runtime builds on the renderer side when a
+// program's sink is made: one method per renderer and text stage it uses,
+// each tabnas-render's constructor, with its parameters (and WriteValue,
+// render's number function, which alchemy no longer calls).
 // Render's Renderers answers the implementation, and a host hands it to
 // alchemy, which depends on no implementation.
 type Renderers interface {
@@ -35,6 +36,11 @@ type Renderers interface {
 	WriteOut(w io.Writer, limits Limits, metrics *Metrics) TextOut
 	// WriteValue is the text a renderer writes for a finite number with
 	// no lexeme, and "" for a non-finite one (render's FormatValue).
+	// alchemy no longer calls it: it formats a number with its own copy
+	// of render's formatter, so that compiling asks nothing of the
+	// renderers, as the Rust crate does, whose Renderers has no such
+	// method. It stays so that the interface render implements is
+	// unchanged.
 	WriteValue(value float64) string
 }
 

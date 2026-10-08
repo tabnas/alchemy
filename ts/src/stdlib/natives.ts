@@ -22,7 +22,8 @@
 // evaluator drives on its own stack (`./trampoline`), so a function that
 // maps itself is the evaluator's `recursion`, never JavaScript's stack.
 
-import { CaptureSpec, Fail, Limits, Renderers, Selector, isJsonNumber, utf8Bytes } from '../shared'
+import { CaptureSpec, Fail, Limits, Selector, isJsonNumber, utf8Bytes } from '../shared'
+import type { Renderers } from '../shared'
 
 import { SourceSpan } from '../ast'
 import type { Runtime } from '../interp'
@@ -153,19 +154,70 @@ function quotedText(s: string): string {
 // Numbers
 // ---------------------------------------------------------------------------
 
-// The shortest text that reads back as `value`, laid out as the render
-// package lays it out (`writeValue`, from the renderers a host passes):
-// positional within the JavaScript range, exponent form outside it. The two
-// must agree byte for byte, which the differential test checks on every
-// number without a lexeme.
-export function shortestNumber(renderers: Renderers, value: number): string {
-  return renderers.writeValue(value)
+// The magnitudes written positionally, as the renderers write them: from
+// `1e-6` up to, not including, `1e21`.
+const POSITIONAL_MIN = 1e-6
+const POSITIONAL_MAX = 1e21
+
+// The shortest text that reads back as `value`, which must be finite, laid
+// out as the render package lays it out (`writeValue` in its number.ts):
+// positional within the JavaScript range, exponent form outside it, with no
+// `+` and no leading zeros in the exponent (`1e21`, `1e-7`), and negative
+// zero as `-0`. This package's own, as the Rust crate's `shortest_number`
+// is, so that building a plan asks nothing of the renderers a host passes.
+// The digits are the shortest that round-trip, as `toExponential()` with no
+// argument gives them; only the layout is chosen here. The two must agree
+// byte for byte, which the differential test checks on every number without
+// a lexeme (alchemy-cli runs it, on render's renderers).
+//
+// The form that takes the renderers first is the one 0.2.3 published,
+// kept so a caller of it still gets the right text; they are not consulted.
+export function shortestNumber(value: number): string
+/** @deprecated The renderers are not consulted: pass the value alone. */
+export function shortestNumber(renderers: Renderers, value: number): string
+export function shortestNumber(first: number | Renderers, second?: number): string {
+  const value = 'number' === typeof first ? first : (second as number)
+  if (0 === value) return Object.is(value, -0) ? '-0' : '0'
+  const neg = value < 0
+  const magnitude = neg ? -value : value
+  // `d.ddde±x`: the shortest round-trip digits and the decimal exponent.
+  const exp = magnitude.toExponential()
+  const at = exp.indexOf('e')
+  const digits = exp.charAt(0) + exp.slice(2, at)
+  const e = parseInt(exp.slice(at + 1), 10)
+  const n = digits.length
+  let text: string
+  if (magnitude >= POSITIONAL_MIN && magnitude < POSITIONAL_MAX) {
+    if (e >= n - 1) {
+      text = digits + '0'.repeat(e - (n - 1))
+    } else if (e >= 0) {
+      text = digits.slice(0, e + 1) + '.' + digits.slice(e + 1)
+    } else {
+      text = '0.' + '0'.repeat(-e - 1) + digits
+    }
+  } else {
+    text = (1 < n ? digits.charAt(0) + '.' + digits.slice(1) : digits) + 'e' + e
+  }
+  return neg ? '-' + text : text
 }
 
 // The text of a number as a renderer writes it, with the renderer's
 // checks: a lexeme that is not a JSON number is `INVALID_NUMBER`, a
-// non-finite value `TARGET_VALUE_UNREPRESENTABLE`.
-export function numberText(renderers: Renderers, value: number, lexeme?: string): string {
+// non-finite value `TARGET_VALUE_UNREPRESENTABLE`. As with
+// `shortestNumber`, the form that takes the renderers first is the one
+// 0.2.3 published, kept and not consulted.
+export function numberText(value: number, lexeme?: string): string
+/** @deprecated The renderers are not consulted: pass the value and lexeme alone. */
+export function numberText(renderers: Renderers, value: number, lexeme?: string): string
+export function numberText(
+  first: number | Renderers,
+  second?: number | string,
+  third?: string,
+): string {
+  const [value, lexeme] =
+    'number' === typeof first
+      ? [first, second as string | undefined]
+      : [second as number, third]
   if (undefined !== lexeme && !isJsonNumber(lexeme)) {
     throw new Fail('INVALID_NUMBER', `${quotedText(lexeme)} is not a JSON number`)
   }
@@ -176,7 +228,7 @@ export function numberText(renderers: Renderers, value: number, lexeme?: string)
         : `${displayNumber(value)} has no representation as a number`
     throw new Fail('TARGET_VALUE_UNREPRESENTABLE', message)
   }
-  return undefined !== lexeme ? lexeme : shortestNumber(renderers, value)
+  return undefined !== lexeme ? lexeme : shortestNumber(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +670,7 @@ function scalarText(rt: Runtime, a: ReadonlyArray<Val>): Val {
     case 'bool':
       return str(cell.value ? 'true' : 'false')
     case 'num':
-      return str(numberText(rt.renderers, cell.value, cell.lexeme))
+      return str(numberText(cell.value, cell.lexeme))
     case 'str':
       return cell
     case 'vector':
