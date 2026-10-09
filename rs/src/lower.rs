@@ -161,6 +161,7 @@ pub fn csv_options(v: &Val) -> Option<CsvOptions> {
         _ => return None,
     };
     crate::stdlib::registry::non_finite(v).ok()?;
+    crate::stdlib::registry::no_columns_empty(v).ok()?;
     Some(CsvOptions {
         delimiter,
         newline,
@@ -181,6 +182,27 @@ impl Sink for NullNonFinite {
             JsonEvent::Number(n) if !n.value.is_finite() => self.0.event(JsonEvent::Null),
             ev => self.0.event(ev),
         }
+    }
+}
+
+/// The CSV renderer's adapter for `:no-columns :empty`: a table of no
+/// columns is the empty document, so its schema, its rows (each of no
+/// cells) and its end go no further, and the renderer, which refuses such
+/// a schema, writes nothing; a table of columns passes as it came.
+struct NoColumns {
+    empty: bool,
+    next: Box<dyn TableSink + Send>,
+}
+
+impl TableSink for NoColumns {
+    fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
+        if let TableEvent::Schema(columns) = &ev {
+            self.empty = columns.is_empty();
+        }
+        if self.empty {
+            return Ok(Flow::Continue);
+        }
+        self.next.table_event(ev)
     }
 }
 
@@ -906,6 +928,9 @@ enum Phase {
 struct CsvTableStage {
     rt: Arc<Runtime>,
     metrics: Arc<Metrics>,
+    /// The options say `(entry :no-columns :empty)`: a table of no columns
+    /// passes, for the text to write as the empty document.
+    no_columns: bool,
     /// Whether this stage counts the rows in `metrics.rows`: when no later
     /// table stage does ([`Lowering::items`]).
     count_rows: bool,
@@ -932,7 +957,7 @@ impl ItemSink for CsvTableStage {
                     Phase::Rows => return Err(Fail::protocol("a second schema")),
                     Phase::Done => return Err(Fail::protocol("a schema after the end")),
                 }
-                if columns.is_empty() {
+                if columns.is_empty() && !self.no_columns {
                     return Err(Fail::new(
                         Code::TargetValueUnrepresentable,
                         "a table with no columns has no CSV form",
@@ -1249,7 +1274,13 @@ impl<'a> Lowering<'a> {
                 let options = csv_options(options).ok_or_else(|| {
                     type_error("csv: the options record does not map to the renderer's dialect")
                 })?;
-                let renderer = self.renderers.csv(out, options.clone())?;
+                let mut renderer = self.renderers.csv(out, options.clone())?;
+                if crate::stdlib::registry::no_columns_empty(options_val)? {
+                    renderer = Box::new(NoColumns {
+                        empty: false,
+                        next: renderer,
+                    });
+                }
                 match crate::stdlib::registry::non_finite(options_val)? {
                     NonFinite::Reject => self.table(source, renderer, false),
                     policy => self.table(
@@ -1517,11 +1548,13 @@ impl<'a> Lowering<'a> {
             }
             Plan::CsvTable { options, source } => {
                 check_delimiter(options)?;
+                let no_columns = crate::stdlib::registry::no_columns_empty(options)?;
                 self.items(
                     source,
                     Box::new(CsvTableStage {
                         rt: self.rt.clone(),
                         metrics: self.metrics.clone(),
+                        no_columns,
                         count_rows: !counted_later,
                         down,
                         phase: Phase::BeforeSchema,

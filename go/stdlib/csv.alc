@@ -2,7 +2,10 @@
 ; RFC 4180 profile (design document sections 13.1 and 13.2). `csv-table`
 ; is the protocol validator section 13.2 asks for (one schema first, rows
 ; as wide as it, one end), with the renderer's own refusals: a table of no
-; columns, and a delimiter no reader could take. The runtime runs `csv`
+; columns, unless the options say `(entry :no-columns :empty)`, and a
+; delimiter no reader could take. A table of no columns that the options
+; let through is written as the empty document: no header and no record,
+; since a record of no fields is no line a reader could tell from none. The runtime runs `csv`
 ; natively when the options record maps onto the renderer's dialect, and
 ; the differential test proves that path and this text produce the same
 ; bytes, or fail with the same code.
@@ -36,15 +39,20 @@ def csv [options events]
     fn [event]
       match event
         case (schema columns)
-          if (get :header options)
-            csv-row options
-              map
-                fn [column]
-                  get :label column
-                columns
-            ""
+          match (count columns)
+            case 0 ""
+            case _
+              if (get :header options)
+                csv-row options
+                  map
+                    fn [column]
+                      get :label column
+                    columns
+                ""
         case (row cells)
-          csv-row options cells
+          match (count cells)
+            case 0 ""
+            case _ (csv-row options cells)
         case table-end
           ""
     csv-table options events

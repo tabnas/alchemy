@@ -1025,21 +1025,26 @@ def csv [options events]
     fn [event]
       match event
         case (schema columns)
-          if (get :header options)
-            csv-row options
-              map
-                fn [column]
-                  get :label column
-                columns
-            ""
+          match (count columns)
+            case 0 ""
+            case _
+              if (get :header options)
+                csv-row options
+                  map
+                    fn [column]
+                      get :label column
+                    columns
+                ""
         case (row cells)
-          csv-row options cells
+          match (count cells)
+            case 0 ""
+            case _ (csv-row options cells)
         case table-end
           ""
     csv-table options events
 ```
 ```core
-(def csv (fn [options events] (concat-map (fn [event] (match event (case (schema columns) (if (get :header options) (csv-row options (map (fn [column] (get :label column)) columns)) "")) (case (row cells) (csv-row options cells)) (case table-end ""))) (csv-table options events))))
+(def csv (fn [options events] (concat-map (fn [event] (match event (case (schema columns) (match (count columns) (case 0 "") (case _ (if (get :header options) (csv-row options (map (fn [column] (get :label column)) columns)) "")))) (case (row cells) (match (count cells) (case 0 "") (case _ (csv-row options cells)))) (case table-end ""))) (csv-table options events))))
 ```
 
 The native path substitutes transduce's `TableFromJson` for
@@ -1048,11 +1053,16 @@ The native path substitutes transduce's `TableFromJson` for
 dialect (`:delimiter` one character, `:newline` CRLF or LF, `:header` a
 boolean, `:null-text` a string, `:missing` `:error` or a string, and
 `:non-finite`, when the record has it, `:reject`, `:null` or
-`:literal`); any other options run the text above. `:non-finite` is
-what a number cell that is not finite becomes, as `scalar-text` writes
-it: refused (`:reject`, the default, `TARGET_VALUE_UNREPRESENTABLE`),
-the null text (`:null`), or the word `Infinity`, `-Infinity` or `NaN`
-(`:literal`). The two paths agree on more than the
+`:literal`, and `:no-columns`, when it has it, `:refuse` or `:empty`);
+any other options run the text above. `:non-finite` is what a number
+cell that is not finite becomes, as `scalar-text` writes it: refused
+(`:reject`, the default, `TARGET_VALUE_UNREPRESENTABLE`), the null text
+(`:null`), or the word `Infinity`, `-Infinity` or `NaN` (`:literal`).
+`:no-columns` is what a table of no columns becomes (the table of a
+document with no rows, or whose first row has no members): refused
+(`:refuse`, the default, `TARGET_VALUE_UNREPRESENTABLE`), or written as
+the empty document (`:empty`), with no header and no record, since a
+record of no fields is no line a reader could tell from none. The two paths agree on more than the
 standard shapes, and alchemy-cli's `rs/tests/stdlib_test.rs` pins each
 agreement:
 
