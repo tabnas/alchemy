@@ -16,6 +16,7 @@ import {
   kindWord,
   CHARS_WITHIN_STEP,
   LENGTH_CHUNK,
+  UNQUOTED_STEP,
   native,
   numberText,
   outer,
@@ -774,6 +775,30 @@ describe('natives', () => {
       runtime('').withFuel(10).applyNow(charsWithin, [few, V.str('a'.repeat(CHARS_WITHIN_STEP * 6))], at),
     ) as any
     assert.equal(g.limit?.name, 'max_plan_steps', String(g))
+  })
+
+  // `unquoted` reads its input an evaluation step per `UNQUOTED_STEP`
+  // characters as it goes, as `length` counts a long string in steps: ten
+  // steps of fuel read ten times that many characters and no more, whether
+  // or not the string turns out to be a quoted form, and a string refused
+  // at its start costs no more than its first step.
+  it('unquoted takes a step per characters read', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const unquoted: value.Func = { fn: 'native', native: native('unquoted')! }
+    const run = (text: string) => runtime('').withFuel(10).applyNow(unquoted, [V.str(text)], at)
+    // A quoted form `n` characters long, its quotes included.
+    const quoted = (n: number, c = 'a') => `"${c.repeat(n - 2)}"`
+    same(run(quoted(10 * UNQUOTED_STEP)), V.str('a'.repeat(10 * UNQUOTED_STEP - 2)))
+    // A character is a code point: a surrogate pair is one.
+    same(run(quoted(10 * UNQUOTED_STEP, '\u{1f680}')), V.str('\u{1f680}'.repeat(10 * UNQUOTED_STEP - 2)))
+    // One character more takes an eleventh step.
+    let f = thrown(() => run(quoted(10 * UNQUOTED_STEP + 1))) as any
+    assert.equal(f.limit?.name, 'max_plan_steps', String(f))
+    // A string with no closing quote is read as far before it is refused.
+    f = thrown(() => run(`"${'a'.repeat(10 * UNQUOTED_STEP)}`)) as any
+    assert.equal(f.limit?.name, 'max_plan_steps', String(f))
+    f = thrown(() => run(`x${'a'.repeat(100 * UNQUOTED_STEP)}`)) as any
+    assert.equal(f.code, 'INPUT_INVALID', String(f))
   })
 
   // A CSV options record's `:no-columns`: `:refuse`, the default, or

@@ -200,6 +200,38 @@ func TestCharsWithinTakesAStepPerComparisons(t *testing.T) {
 	}
 }
 
+// unquoted reads its input an evaluation step per UnquotedStep characters
+// as it goes, as length counts a long string in steps: ten steps of fuel
+// read ten times that many characters and no more, whether or not the
+// string turns out to be a quoted form, and a string refused at its start
+// costs no more than its first step.
+func TestUnquotedTakesAStepPerCharactersRead(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	run := func(text string) (Val, *Fail) {
+		return nUnquoted(runtimeOf(t, "").WithFuel(10), []Val{StrVal(text)}, at)
+	}
+	// A quoted form n characters long, its quotes included.
+	quoted := func(n int, c string) string { return `"` + strings.Repeat(c, n-2) + `"` }
+	limit := func(f *Fail) bool { return f != nil && f.Limit != nil && f.Limit.Name == "max_plan_steps" }
+	// A character is a rune: one of four bytes is one.
+	for _, c := range []string{"a", "\U0001F680"} {
+		if v, f := run(quoted(10*UnquotedStep, c)); f != nil || v != StrVal(strings.Repeat(c, 10*UnquotedStep-2)) {
+			t.Errorf("%q: %v", c, f)
+		}
+	}
+	// One character more takes an eleventh step.
+	if _, f := run(quoted(10*UnquotedStep+1, "a")); !limit(f) {
+		t.Errorf("%v", f)
+	}
+	// A string with no closing quote is read as far before it is refused.
+	if _, f := run(`"` + strings.Repeat("a", 10*UnquotedStep)); !limit(f) {
+		t.Errorf("%v", f)
+	}
+	if _, f := run("x" + strings.Repeat("a", 100*UnquotedStep)); f == nil || f.Code != CodeInputInvalid {
+		t.Errorf("%v", f)
+	}
+}
+
 // A CSV options record's :no-columns: :refuse, the default, or :empty; any
 // other value is a type error where it is read.
 func TestNoColumnsNamesAPolicyForATableOfNoColumns(t *testing.T) {

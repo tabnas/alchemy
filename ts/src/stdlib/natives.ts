@@ -435,14 +435,19 @@ function length(rt: Runtime, a: ReadonlyArray<Val>): Val {
 // surrogate pair as the one character it names). Any other text is
 // INPUT_INVALID: no quotes, a quote or a control character unescaped
 // inside, another escape, or a surrogate on its own. A format's reverse
-// reads back with it what its embedding wrote with `quoted`.
+// reads back with it what its embedding wrote with `quoted`. The input is
+// read an evaluation step per `UNQUOTED_STEP` characters, as `length`
+// counts a long string in steps, so the host's abort flag stops the read
+// of a long one.
 function unquoted(rt: Runtime, a: ReadonlyArray<Val>): Val {
   const s = asStr('unquoted', 'the string', a[0])
-  const text = unquote(s)
+  const text = readQuoted(s, () => rt.tick())
   if (undefined === text) throw Fail.input(`unquoted: ${JSON.stringify(s)} is not a double-quoted string`)
-  rt.tick()
   return str(text)
 }
+
+// How many characters of its input `unquoted` reads per evaluation step.
+export const UNQUOTED_STEP = 4096
 
 // The string a double-quoted form spells, or undefined. A `\u` escape of a
 // surrogate on its own is refused, as the Rust crate refuses it, although
@@ -450,70 +455,95 @@ function unquoted(rt: Runtime, a: ReadonlyArray<Val>): Val {
 // written as itself, which only a JavaScript string can hold, is passed on
 // as `quote` wrote it.
 export function unquote(s: string): string | undefined {
-  if (s.length < 2 || '"' !== s[0] || '"' !== s[s.length - 1]) return undefined
-  // The closing quote's position: the inner text ends before it.
-  const end = s.length - 1
-  let i = 1
-  let out = ''
-  // Four hex digits at `i`, either case, inside the quotes.
-  const hex4 = (): number | undefined => {
-    if (i + 4 > end) return undefined
-    const digits = s.substring(i, i + 4)
-    if (!/^[0-9a-fA-F]{4}$/.test(digits)) return undefined
-    i += 4
-    return parseInt(digits, 16)
+  return readQuoted(s, () => {})
+}
+
+// `unquote`, read from the front with a `step` before the first of each
+// `UNQUOTED_STEP` characters (a surrogate pair is one), so a string read
+// to its end takes a step per `UNQUOTED_STEP` characters or part of them:
+// the opening quote, the characters and escapes, and a closing quote that
+// ends the input.
+function readQuoted(s: string, step: () => void): string | undefined {
+  let i = 0
+  let read = 0
+  // The character at `i`, read: a step first when it is the first of
+  // `UNQUOTED_STEP`, then `i` past it. Its first code unit, or -1 at the
+  // end.
+  const next = (): number => {
+    if (i >= s.length) return -1
+    if (0 === read % UNQUOTED_STEP) step()
+    read++
+    const c = s.charCodeAt(i++)
+    if (0xd800 <= c && c <= 0xdbff && i < s.length) {
+      const d = s.charCodeAt(i)
+      if (0xdc00 <= d && d <= 0xdfff) i++
+    }
+    return c
   }
-  while (i < end) {
-    const c = s.charCodeAt(i)
-    if (0x22 === c || c < 0x20) return undefined
+  // Four hex digits, either case, as the code unit they spell.
+  const hex4 = (): number | undefined => {
+    let v = 0
+    for (let k = 0; k < 4; k++) {
+      const c = next()
+      const lower = c | 0x20
+      if (0x30 <= c && c <= 0x39) v = v * 16 + (c - 0x30)
+      else if (0x61 <= lower && lower <= 0x66) v = v * 16 + (lower - 0x57)
+      else return undefined
+    }
+    return v
+  }
+  if (0x22 !== next()) return undefined
+  let out = ''
+  for (;;) {
+    const start = i
+    const c = next()
+    // No closing quote.
+    if (-1 === c) return undefined
+    // The closing quote, which must end the input.
+    if (0x22 === c) return i === s.length ? out : undefined
+    if (c < 0x20) return undefined
     if (0x5c !== c) {
       // A run of characters written as themselves, taken whole.
-      let j = i + 1
-      while (j < end) {
-        const d = s.charCodeAt(j)
+      while (i < s.length) {
+        const d = s.charCodeAt(i)
         if (0x22 === d || d < 0x20 || 0x5c === d) break
-        j++
+        next()
       }
-      out += s.substring(i, j)
-      i = j
+      out += s.substring(start, i)
       continue
     }
-    if (i + 1 >= end) return undefined
-    const escape = s[i + 1]
-    i += 2
-    switch (escape) {
-      case '"':
+    switch (next()) {
+      case 0x22:
         out += '"'
         break
-      case '\\':
+      case 0x5c:
         out += '\\'
         break
-      case '/':
+      case 0x2f:
         out += '/'
         break
-      case 'b':
+      case 0x62:
         out += '\b'
         break
-      case 'f':
+      case 0x66:
         out += '\f'
         break
-      case 'n':
+      case 0x6e:
         out += '\n'
         break
-      case 'r':
+      case 0x72:
         out += '\r'
         break
-      case 't':
+      case 0x74:
         out += '\t'
         break
-      case 'u': {
+      case 0x75: {
         const high = hex4()
         if (undefined === high) return undefined
         if (0xd800 <= high && high <= 0xdbff) {
           // A high surrogate names a character only with the low one after
           // it, as a second escape.
-          if (i + 2 > end || '\\' !== s[i] || 'u' !== s[i + 1]) return undefined
-          i += 2
+          if (0x5c !== next() || 0x75 !== next()) return undefined
           const low = hex4()
           if (undefined === low || low < 0xdc00 || low > 0xdfff) return undefined
           out += String.fromCharCode(high, low)
@@ -528,7 +558,6 @@ export function unquote(s: string): string | undefined {
         return undefined
     }
   }
-  return out
 }
 
 // How many comparisons, or ranges read, `chars-within` makes per

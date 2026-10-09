@@ -135,6 +135,7 @@ export {
   CAPTURE_LIMITS,
   CHARS_WITHIN_STEP,
   LENGTH_CHUNK,
+  UNQUOTED_STEP,
   captureBudget,
   getField,
   implOf,

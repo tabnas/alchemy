@@ -590,76 +590,127 @@ func nNumber(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 // \uXXXX, a surrogate pair as the one character it names). Any other text
 // is INPUT_INVALID: no quotes, a quote or a control character unescaped
 // inside, another escape, or a surrogate on its own. A format's reverse
-// reads back with it what its embedding wrote with `quoted`.
+// reads back with it what its embedding wrote with `quoted`. The input is
+// read an evaluation step per UnquotedStep characters, as `length` counts
+// a long string in steps, so the host's abort flag stops the read of a
+// long one.
 func nUnquoted(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	s, f := asStr("unquoted", "the string", a[0])
 	if f != nil {
 		return nil, f
 	}
-	text, ok := unquote(s)
+	text, ok, f := readQuoted(s, rt.Tick)
+	if f != nil {
+		return nil, f
+	}
 	if !ok {
 		return nil, inputInvalid("unquoted: " + strconv.Quote(s) + " is not a double-quoted string")
-	}
-	if f := rt.Tick(); f != nil {
-		return nil, f
 	}
 	return StrVal(text), nil
 }
 
+// UnquotedStep is how many characters of its input `unquoted` reads per
+// evaluation step.
+const UnquotedStep = 4096
+
 // unquote is the string a double-quoted form spells, and whether s is
 // one.
 func unquote(s string) (string, bool) {
-	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
-		return "", false
+	text, ok, _ := readQuoted(s, func() *Fail { return nil })
+	return text, ok
+}
+
+// quotedReader reads a string's characters with a step before the first
+// of each UnquotedStep of them, so a string read to its end takes a step
+// per UnquotedStep characters or part of them.
+type quotedReader struct {
+	s    string
+	i    int
+	read int
+	step func() *Fail
+}
+
+// next reads the character at i: the rune, false at the end, or the
+// step's failure.
+func (r *quotedReader) next() (rune, bool, *Fail) {
+	if r.i >= len(r.s) {
+		return 0, false, nil
 	}
-	inner := s[1 : len(s)-1]
+	if r.read%UnquotedStep == 0 {
+		if f := r.step(); f != nil {
+			return 0, false, f
+		}
+	}
+	c, width := utf8.DecodeRuneInString(r.s[r.i:])
+	r.i += width
+	r.read++
+	return c, true, nil
+}
+
+// hex4 reads four hex digits, either case, as the code unit they spell.
+func (r *quotedReader) hex4() (rune, bool, *Fail) {
+	var v rune
+	for k := 0; k < 4; k++ {
+		c, ok, f := r.next()
+		if f != nil || !ok {
+			return 0, false, f
+		}
+		switch {
+		case '0' <= c && c <= '9':
+			v = v*16 + (c - '0')
+		case 'a' <= c && c <= 'f':
+			v = v*16 + (c - 'a' + 10)
+		case 'A' <= c && c <= 'F':
+			v = v*16 + (c - 'A' + 10)
+		default:
+			return 0, false, nil
+		}
+	}
+	return v, true, nil
+}
+
+// readQuoted is unquote, read from the front with a step per UnquotedStep
+// characters: the opening quote, the characters and escapes, and a
+// closing quote that ends the input.
+func readQuoted(s string, step func() *Fail) (string, bool, *Fail) {
+	r := &quotedReader{s: s, step: step}
+	if c, ok, f := r.next(); f != nil || !ok || c != '"' {
+		return "", false, f
+	}
 	var b strings.Builder
-	b.Grow(len(inner))
-	i := 0
-	// hex4 reads four hex digits at i, either case.
-	hex4 := func() (rune, bool) {
-		if i+4 > len(inner) {
-			return 0, false
+	b.Grow(len(s))
+	for {
+		start := r.i
+		c, ok, f := r.next()
+		if f != nil || !ok {
+			// No closing quote.
+			return "", false, f
 		}
-		var v rune
-		for k := i; k < i+4; k++ {
-			c := inner[k]
-			switch {
-			case '0' <= c && c <= '9':
-				v = v*16 + rune(c-'0')
-			case 'a' <= c && c <= 'f':
-				v = v*16 + rune(c-'a'+10)
-			case 'A' <= c && c <= 'F':
-				v = v*16 + rune(c-'A'+10)
-			default:
-				return 0, false
+		switch {
+		case c == '"':
+			// The closing quote, which must end the input.
+			if r.i != len(s) {
+				return "", false, nil
 			}
-		}
-		i += 4
-		return v, true
-	}
-	for i < len(inner) {
-		c := inner[i]
-		if c == '"' || c < 0x20 {
-			return "", false
-		}
-		if c != '\\' {
+			return b.String(), true, nil
+		case c < 0x20:
+			return "", false, nil
+		case c != '\\':
 			// A run of characters written as themselves, taken whole: no
 			// byte of a multi-byte character is a quote, a backslash or a
 			// control character.
-			j := i + 1
-			for j < len(inner) && inner[j] != '"' && inner[j] >= 0x20 && inner[j] != '\\' {
-				j++
+			for r.i < len(s) && s[r.i] != '"' && s[r.i] >= 0x20 && s[r.i] != '\\' {
+				if _, _, f := r.next(); f != nil {
+					return "", false, f
+				}
 			}
-			b.WriteString(inner[i:j])
-			i = j
+			b.WriteString(s[start:r.i])
 			continue
 		}
-		if i+1 >= len(inner) {
-			return "", false
+		escape, ok, f := r.next()
+		if f != nil || !ok {
+			return "", false, f
 		}
-		escape := inner[i+1]
-		i += 2
 		switch escape {
 		case '"':
 			b.WriteByte('"')
@@ -678,32 +729,33 @@ func unquote(s string) (string, bool) {
 		case 't':
 			b.WriteByte('\t')
 		case 'u':
-			code, ok := hex4()
-			if !ok {
-				return "", false
+			code, ok, f := r.hex4()
+			if f != nil || !ok {
+				return "", false, f
 			}
 			switch {
 			case 0xD800 <= code && code <= 0xDBFF:
 				// A high surrogate names a character only with the low one
 				// after it, as a second escape.
-				if i+2 > len(inner) || inner[i] != '\\' || inner[i+1] != 'u' {
-					return "", false
+				if c, ok, f := r.next(); f != nil || !ok || c != '\\' {
+					return "", false, f
 				}
-				i += 2
-				low, ok := hex4()
-				if !ok || low < 0xDC00 || low > 0xDFFF {
-					return "", false
+				if c, ok, f := r.next(); f != nil || !ok || c != 'u' {
+					return "", false, f
+				}
+				low, ok, f := r.hex4()
+				if f != nil || !ok || low < 0xDC00 || low > 0xDFFF {
+					return "", false, f
 				}
 				code = 0x10000 + (code-0xD800)<<10 + (low - 0xDC00)
 			case 0xDC00 <= code && code <= 0xDFFF:
-				return "", false
+				return "", false, nil
 			}
 			b.WriteRune(code)
 		default:
-			return "", false
+			return "", false, nil
 		}
 	}
-	return b.String(), true
 }
 
 // CharsWithinStep is how many comparisons, or ranges read, `chars-within`

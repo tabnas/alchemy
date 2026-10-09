@@ -531,69 +531,134 @@ fn number(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// `\uXXXX`, a surrogate pair as the one character it names). Any other
 /// text is INPUT_INVALID: no quotes, a quote or a control character
 /// unescaped inside, another escape, or a surrogate on its own. A format's
-/// reverse reads back with it what its embedding wrote with `quoted`.
+/// reverse reads back with it what its embedding wrote with `quoted`. The
+/// input is read an evaluation step per [`UNQUOTED_STEP`] characters, as
+/// `length` counts a long string in steps, so the host's abort flag stops
+/// the read of a long one.
 fn unquoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let s = as_str("unquoted", "the string", &a[0])?;
-    match unquote(s) {
-        Some(text) => {
-            rt.tick()?;
-            Ok(Val::Str(Arc::from(text)))
-        }
+    match read_quoted(s, || rt.tick())? {
+        Some(text) => Ok(Val::Str(Arc::from(text))),
         None => Err(input_invalid(format!(
             "unquoted: {s:?} is not a double-quoted string"
         ))),
     }
 }
 
+/// How many characters of its input `unquoted` reads per evaluation step.
+pub const UNQUOTED_STEP: usize = 4096;
+
 /// The string a double-quoted form spells, or `None`.
 pub fn unquote(s: &str) -> Option<String> {
-    let inner = s.strip_prefix('"')?.strip_suffix('"')?;
-    let mut out = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    let hex4 = |chars: &mut std::str::Chars<'_>| -> Option<u32> {
+    match read_quoted(s, || Ok::<(), std::convert::Infallible>(())) {
+        Ok(text) => text,
+        Err(never) => match never {},
+    }
+}
+
+/// A string's characters, read with a `step` before the first of each
+/// [`UNQUOTED_STEP`] of them, so a string read to its end takes one step
+/// per [`UNQUOTED_STEP`] characters or part of them.
+struct Counted<'s, F> {
+    chars: std::str::Chars<'s>,
+    read: usize,
+    step: F,
+}
+
+impl<E, F: FnMut() -> Result<(), E>> Counted<'_, F> {
+    fn next(&mut self) -> Result<Option<char>, E> {
+        if self.read % UNQUOTED_STEP == 0 && !self.chars.as_str().is_empty() {
+            (self.step)()?;
+        }
+        let c = self.chars.next();
+        if c.is_some() {
+            self.read += 1;
+        }
+        Ok(c)
+    }
+
+    /// Four hex digits, either case, as the code unit they spell.
+    fn hex4(&mut self) -> Result<Option<u32>, E> {
         let mut v = 0;
         for _ in 0..4 {
-            v = v * 16 + chars.next()?.to_digit(16)?;
+            match self.next()?.and_then(|c| c.to_digit(16)) {
+                Some(d) => v = v * 16 + d,
+                None => return Ok(None),
+            }
         }
-        Some(v)
+        Ok(Some(v))
+    }
+}
+
+/// [`unquote`], read from the front with a `step` per [`UNQUOTED_STEP`]
+/// characters: the opening quote, the characters and escapes, and a
+/// closing quote that ends the input.
+fn read_quoted<E>(s: &str, step: impl FnMut() -> Result<(), E>) -> Result<Option<String>, E> {
+    let mut r = Counted {
+        chars: s.chars(),
+        read: 0,
+        step,
     };
-    while let Some(c) = chars.next() {
+    if r.next()? != Some('"') {
+        return Ok(None);
+    }
+    let mut out = String::with_capacity(s.len());
+    loop {
+        let Some(c) = r.next()? else {
+            // No closing quote.
+            return Ok(None);
+        };
         match c {
-            '"' => return None,
-            c if (c as u32) < 0x20 => return None,
-            '\\' => match chars.next()? {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '/' => out.push('/'),
-                'b' => out.push('\u{8}'),
-                'f' => out.push('\u{c}'),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                'u' => {
-                    let high = hex4(&mut chars)?;
-                    let code = match high {
-                        0xD800..=0xDBFF => {
-                            if chars.next()? != '\\' || chars.next()? != 'u' {
-                                return None;
+            // The closing quote, which must end the input.
+            '"' => return Ok(r.chars.as_str().is_empty().then_some(out)),
+            c if (c as u32) < 0x20 => return Ok(None),
+            '\\' => {
+                let Some(escape) = r.next()? else {
+                    return Ok(None);
+                };
+                match escape {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
+                    'b' => out.push('\u{8}'),
+                    'f' => out.push('\u{c}'),
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    'u' => {
+                        let Some(high) = r.hex4()? else {
+                            return Ok(None);
+                        };
+                        let code = match high {
+                            0xD800..=0xDBFF => {
+                                // A high surrogate names a character only
+                                // with the low one after it, as a second
+                                // escape.
+                                if r.next()? != Some('\\') || r.next()? != Some('u') {
+                                    return Ok(None);
+                                }
+                                let Some(low) = r.hex4()? else {
+                                    return Ok(None);
+                                };
+                                if !(0xDC00..=0xDFFF).contains(&low) {
+                                    return Ok(None);
+                                }
+                                0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
                             }
-                            let low = hex4(&mut chars)?;
-                            if !(0xDC00..=0xDFFF).contains(&low) {
-                                return None;
-                            }
-                            0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+                            0xDC00..=0xDFFF => return Ok(None),
+                            v => v,
+                        };
+                        match char::from_u32(code) {
+                            Some(c) => out.push(c),
+                            None => return Ok(None),
                         }
-                        0xDC00..=0xDFFF => return None,
-                        v => v,
-                    };
-                    out.push(char::from_u32(code)?);
+                    }
+                    _ => return Ok(None),
                 }
-                _ => return None,
-            },
+            }
             c => out.push(c),
         }
     }
-    Some(out)
 }
 
 /// `chars-within ranges string`: whether every character of the string
@@ -1700,16 +1765,33 @@ mod tests {
     /// characters.
     #[test]
     fn chars_within_takes_a_step_per_comparisons() {
-        let rt = crate::lower::tests::runtime("def export [input] input", true);
-        let rt = match std::sync::Arc::try_unwrap(rt) {
-            Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
-            Err(_) => unreachable!("the test holds the one runtime"),
+        // A runtime of its own for each case, with ten steps of fuel.
+        let fueled = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match std::sync::Arc::try_unwrap(rt) {
+                Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
         };
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
         let range = Val::vector(vec![Val::num(5.0), Val::num(5.0)]);
         let ranges = Val::vector(vec![range; 100_000]);
         let s = Val::Str(Arc::from("a"));
-        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
-        let fail = chars_within(&rt, &[ranges, s], &span).unwrap_err();
+        let fail = chars_within(&fueled(), &[ranges, s], &span).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().map(|l| l.name),
+            Some("max_plan_steps"),
+            "{fail}"
+        );
+        // A long string against a few ranges is counted the same way: two
+        // ranges read take no step, and the comparisons alone, two for each
+        // character, exhaust the fuel.
+        let few = Val::vector(vec![
+            Val::vector(vec![Val::num(0.0), Val::num(1.0)]),
+            Val::vector(vec![Val::num(97.0), Val::num(97.0)]),
+        ]);
+        let long = Val::Str(Arc::from("a".repeat(CHARS_WITHIN_STEP * 6)));
+        let fail = chars_within(&fueled(), &[few, long], &span).unwrap_err();
         assert_eq!(
             fail.limit.as_ref().map(|l| l.name),
             Some("max_plan_steps"),
@@ -1750,6 +1832,45 @@ mod tests {
         ] {
             assert_eq!(unquote(text), None, "{text:?}");
         }
+    }
+
+    /// `unquoted` reads its input an evaluation step per [`UNQUOTED_STEP`]
+    /// characters as it goes, as `length` counts a long string in steps:
+    /// ten steps of fuel read ten times that many characters and no more,
+    /// whether or not the string turns out to be a quoted form, and a
+    /// string refused at its start costs no more than its first step.
+    #[test]
+    fn unquoted_takes_a_step_per_characters_read() {
+        // A runtime of its own for each case, with ten steps of fuel.
+        let fueled = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match std::sync::Arc::try_unwrap(rt) {
+                Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
+        };
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let run = |text: String| unquoted(&fueled(), &[Val::Str(Arc::from(text))], &span);
+        // A quoted form `n` characters long, its quotes included.
+        let quoted = |n: usize, c: &str| format!("\"{}\"", c.repeat(n - 2));
+        let limit = |fail: &Fail| fail.limit.as_ref().map(|l| l.name);
+        // A character is a character, however many bytes it takes.
+        for c in ["a", "\u{1f680}"] {
+            assert_eq!(
+                run(quoted(10 * UNQUOTED_STEP, c)).unwrap(),
+                Val::str(&c.repeat(10 * UNQUOTED_STEP - 2)),
+                "{c}"
+            );
+        }
+        // One character more takes an eleventh step.
+        let fail = run(quoted(10 * UNQUOTED_STEP + 1, "a")).unwrap_err();
+        assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+        // A string with no closing quote is read as far before it is
+        // refused.
+        let fail = run(format!("\"{}", "a".repeat(10 * UNQUOTED_STEP))).unwrap_err();
+        assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+        let fail = run(format!("x{}", "a".repeat(100 * UNQUOTED_STEP))).unwrap_err();
+        assert_eq!(fail.code, Code::InputInvalid, "{fail}");
     }
 
     /// `kind` names every retained value's kind by one keyword, the word
