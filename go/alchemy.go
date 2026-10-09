@@ -28,8 +28,11 @@
 // with transduce and render are declared in its shared package
 // (github.com/tabnas/alchemy/go/shared), which those two build on, and the
 // host hands Compile their implementations of the shared Routers and
-// Renderers, so this package depends on neither. The `alchemy` command is
-// in the alchemy-cli repository (github.com/tabnas/alchemy-cli/go).
+// Renderers, so this package depends on neither. The translate package
+// (github.com/tabnas/alchemy/go/translate) composes a translation between
+// formats from the formats' parts on this API, as a host would. The
+// `alchemy` command is in the alchemy-cli repository
+// (github.com/tabnas/alchemy-cli/go).
 //
 // A program's sink takes any source's events. `alchemy run` reads its
 // document as the Rust command does, with the JSON grammar through

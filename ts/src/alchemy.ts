@@ -10,6 +10,8 @@
 // sinks); `./effects` reads the plan for `explain`; `./program` is the API
 // a host embeds (`compile`, `compileSources`, `Program`). The natives are
 // listed in `./stdlib/registry` and implemented in `./stdlib/natives`.
+// `./translate` composes a translation between formats from the formats'
+// parts, as the namespace `translate`.
 //
 // `./shared` holds the types alchemy, transduce and render share, and
 // `Routers` and `Renderers`, the stages the lowering builds: transduce and
@@ -76,6 +78,8 @@ export type { Checked } from './check'
 
 export { Program, analyze, analyzeSources, compile, compileSources } from './program'
 export type { Analyzed, CompileOptions, Output, Source } from './program'
+
+export * as translate from './translate'
 
 export { MAX_EVAL_DEPTH, MAX_PLAN_STEPS, Runtime, arityError, partial } from './interp'
 export type { Bounds, Measure } from './interp'
