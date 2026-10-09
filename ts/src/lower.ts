@@ -77,7 +77,7 @@ import { csvDialect, isInferred } from './effects'
 import { isFail } from './fail'
 import type { Bounds, Runtime } from './interp'
 import type { Output } from './output'
-import { captureBudget, getField, nonFinite, numberText, truth } from './stdlib/natives'
+import { captureBudget, getField, noColumnsEmpty, nonFinite, numberText, truth } from './stdlib/natives'
 import { G, run } from './trampoline'
 import {
   Func,
@@ -153,9 +153,9 @@ export function isTableBinding(v: Val): boolean {
 // The renderer's dialect for a `csv-options` record, when every field has a
 // value the renderer accepts: `:delimiter` one character, `:newline` CRLF
 // or LF, `:header` a boolean, `:null-text` a string, `:missing` `:error` or
-// a string, and `:non-finite`, when the record has it, a policy (the
-// report's `csvDialect`, which reads the same record). Any other record
-// runs the library's own `csv`.
+// a string, and `:non-finite` and `:no-columns`, when the record has them,
+// a policy (the report's `csvDialect`, which reads the same record). Any
+// other record runs the library's own `csv`.
 export function csvOptions(v: Val): CsvOptions | undefined {
   const dialect = csvDialect(v)
   if (undefined === dialect) return undefined
@@ -177,6 +177,22 @@ class NullNonFinite implements Sink {
   event(ev: JsonEvent): Flow {
     if ('number' === ev.type && !Number.isFinite(ev.value)) return this.next.event(Ev.null)
     return this.next.event(ev)
+  }
+}
+
+// The CSV renderer's adapter for `:no-columns :empty`: a table of no
+// columns is the empty document, so its schema, its rows (each of no
+// cells) and its end go no further, and the renderer, which refuses such a
+// schema, writes nothing; a table of columns passes as it came.
+class NoColumns implements TableSink {
+  private empty = false
+
+  constructor(private readonly next: TableSink) {}
+
+  tableEvent(ev: TableEvent): Flow {
+    if ('schema' === ev.type) this.empty = 0 === ev.columns.length
+    if (this.empty) return 'continue'
+    return this.next.tableEvent(ev)
   }
 }
 
@@ -799,6 +815,9 @@ class CsvTableStage implements ItemSink {
   constructor(
     private readonly rt: Runtime,
     private readonly metrics: Metrics,
+    // The options say `(entry :no-columns :empty)`: a table of no columns
+    // passes, for the text to write as the empty document.
+    private readonly noColumns: boolean,
     // Whether this stage counts the rows in `metrics.rows`: when no later
     // table stage does (`Lowering.items`).
     private readonly countRows: boolean,
@@ -811,7 +830,7 @@ class CsvTableStage implements ItemSink {
       const columns = schemaColumns(this.rt, v.fields)
       if ('rows' === this.phase) throw Fail.protocol('a second schema')
       if ('done' === this.phase) throw Fail.protocol('a schema after the end')
-      if (0 === columns.length) {
+      if (0 === columns.length && !this.noColumns) {
         throw new Fail('TARGET_VALUE_UNREPRESENTABLE', 'a table with no columns has no CSV form')
       }
       this.width = columns.length
@@ -1048,7 +1067,8 @@ export class Lowering {
         if (undefined === options) {
           throw typeError("csv: the options record does not map to the renderer's dialect")
         }
-        const renderer = this.rt.renderers.csv(out, options)
+        let renderer: TableSink = this.rt.renderers.csv(out, options)
+        if (noColumnsEmpty(plan.options)) renderer = new NoColumns(renderer)
         const policy = nonFinite(plan.options)
         if ('reject' === policy) return this.table(plan.source, renderer, false)
         return this.table(plan.source, new NonFiniteCells(policy, renderer), false)
@@ -1204,9 +1224,11 @@ export class Lowering {
         return this.items(plan.source, new FilterStage(this.rt, plan.f, plan.at, down), countedLater)
       case 'table-from-json':
         return this.table(plan, new TableToTagged(down), true)
-      case 'csv-table':
+      case 'csv-table': {
         checkDelimiter(plan.options)
-        return this.items(plan.source, new CsvTableStage(this.rt, this.metrics, !countedLater, down), true)
+        const noColumns = noColumnsEmpty(plan.options)
+        return this.items(plan.source, new CsvTableStage(this.rt, this.metrics, noColumns, !countedLater, down), true)
+      }
       case 'input':
       case 'records':
       case 'as-events':

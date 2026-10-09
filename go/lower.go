@@ -134,10 +134,10 @@ func isInferred(binding Val) bool {
 // csvOptions is the renderer's dialect for a `csv-options` record, when
 // every field has a value the renderer accepts: :delimiter one character,
 // :newline CRLF or LF, :header a boolean, :null-text a string, :missing
-// :error or a string, and :non-finite, when the record has it, :reject,
-// :null or :literal. Any other record runs the library's own csv, whose
-// `scalar-text` refuses a :non-finite that names no policy where a cell
-// needs it.
+// :error or a string, :non-finite, when the record has it, :reject, :null
+// or :literal, and :no-columns, when it has it, :refuse or :empty. Any
+// other record runs the library's own csv, which refuses a policy that is
+// none where it is read.
 func csvOptions(v Val) (shared.CSVOptions, bool) {
 	r, ok := v.(*RecordVal)
 	if !ok {
@@ -186,6 +186,9 @@ func csvOptions(v Val) (shared.CSVOptions, bool) {
 	if _, f := NonFinitePolicy(v); f != nil {
 		return shared.CSVOptions{}, false
 	}
+	if _, f := NoColumnsEmpty(v); f != nil {
+		return shared.CSVOptions{}, false
+	}
 	return options, true
 }
 
@@ -200,6 +203,25 @@ func (n *nullNonFinite) Event(ev shared.Event) (shared.Flow, *Fail) {
 		return n.next.Event(shared.EvNull())
 	}
 	return n.next.Event(ev)
+}
+
+// noColumns is the CSV renderer's adapter for :no-columns :empty: a table
+// of no columns is the empty document, so its schema, its rows (each of no
+// cells) and its end go no further, and the renderer, which refuses such a
+// schema, writes nothing; a table of columns passes as it came.
+type noColumns struct {
+	empty bool
+	next  shared.TableSink
+}
+
+func (n *noColumns) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
+	if ev.Kind == shared.TableSchema {
+		n.empty = len(ev.Columns) == 0
+	}
+	if n.empty {
+		return shared.Continue, nil
+	}
+	return n.next.TableEvent(ev)
 }
 
 // isNonFiniteCell is whether a cell is a number that is not finite.
@@ -933,6 +955,10 @@ const (
 type csvTableStage struct {
 	rt      *Runtime
 	metrics *shared.Metrics
+	// noColumns is whether the options say (entry :no-columns :empty): a
+	// table of no columns passes, for the text to write as the empty
+	// document.
+	noColumns bool
 	// countRows is whether this stage counts the rows in metrics.Rows:
 	// when no later table stage does (Lowering.items).
 	countRows bool
@@ -960,7 +986,7 @@ func (c *csvTableStage) Item(v Val) (shared.Flow, *Fail) {
 		case phaseDone:
 			return shared.Continue, shared.ProtocolFail("a schema after the end")
 		}
-		if len(columns) == 0 {
+		if len(columns) == 0 && !c.noColumns {
 			return shared.Continue, NewFail(CodeTargetValueUnrepresentable, "a table with no columns has no CSV form")
 		}
 		c.width = len(columns)
@@ -1255,6 +1281,13 @@ func (l *Lowering) text(p *Plan, out shared.TextOut) (shared.Sink, *Fail) {
 		if f != nil {
 			return nil, f
 		}
+		empty, f := NoColumnsEmpty(p.Options)
+		if f != nil {
+			return nil, f
+		}
+		if empty {
+			renderer = &noColumns{next: renderer}
+		}
 		policy, f := NonFinitePolicy(p.Options)
 		if f != nil {
 			return nil, f
@@ -1406,7 +1439,11 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 		if f := checkDelimiter(p.Options); f != nil {
 			return nil, f
 		}
-		return l.items(p.Source, &csvTableStage{rt: l.rt, metrics: l.metrics, countRows: !countedLater, down: down}, true)
+		empty, f := NoColumnsEmpty(p.Options)
+		if f != nil {
+			return nil, f
+		}
+		return l.items(p.Source, &csvTableStage{rt: l.rt, metrics: l.metrics, noColumns: empty, countRows: !countedLater, down: down}, true)
 	case PlanInput, PlanRecords, PlanAsEvents:
 		return nil, protocolMismatch("JSON events cannot be read item by item; select or route what the stream should yield, or read its events")
 	}

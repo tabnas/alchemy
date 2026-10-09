@@ -179,6 +179,53 @@ func TestCharsWithinTestsEveryCharacterInStepsTheAbortFlagReads(t *testing.T) {
 	}
 }
 
+// chars-within counts its work in comparisons, so ranges from data as many
+// as they are take evaluation steps, and a bound on steps (the fuel, the
+// abort flag) stops a test that has not yet read 4,096 characters.
+func TestCharsWithinTakesAStepPerComparisons(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	ranges := make([]Val, 100_000)
+	for i := range ranges {
+		ranges[i] = Vector(Num(5), Num(5))
+	}
+	rt := runtimeOf(t, "def export [input] input").WithFuel(10)
+	if _, f := nCharsWithin(rt, []Val{Vector(ranges...), StrVal("a")}, at); f == nil || f.Limit == nil || f.Limit.Name != "max_plan_steps" {
+		t.Errorf("%v", f)
+	}
+	// A long string against a few ranges is counted the same way.
+	few := Vector(Vector(Num(0), Num(1)), Vector(Num(97), Num(97)))
+	rt = runtimeOf(t, "").WithFuel(10)
+	if _, f := nCharsWithin(rt, []Val{few, StrVal(strings.Repeat("a", CharsWithinStep*6))}, at); f == nil || f.Limit == nil || f.Limit.Name != "max_plan_steps" {
+		t.Errorf("%v", f)
+	}
+}
+
+// A CSV options record's :no-columns: :refuse, the default, or :empty; any
+// other value is a type error where it is read.
+func TestNoColumnsNamesAPolicyForATableOfNoColumns(t *testing.T) {
+	for _, c := range []struct {
+		v    Val
+		want bool
+	}{
+		{NullVal{}, false},
+		{mustEval(t, "", "(record)"), false},
+		{mustEval(t, "", "(record (entry :no-columns :refuse))"), false},
+		{mustEval(t, "", "(record (entry :no-columns :empty))"), true},
+	} {
+		if got, f := NoColumnsEmpty(c.v); f != nil || got != c.want {
+			t.Errorf("%s: %v %v", DebugString(c.v), got, f)
+		}
+	}
+	for _, c := range []struct{ record, message string }{
+		{"(record (entry :no-columns :nope))", "type_mismatch: :no-columns must be :refuse or :empty, not :nope"},
+		{`(record (entry :no-columns "empty"))`, "type_mismatch: :no-columns must be :refuse or :empty, not a string"},
+	} {
+		if _, f := NoColumnsEmpty(mustEval(t, "", c.record)); f == nil || f.Code != CodeDSLTypeError || f.Message != c.message {
+			t.Errorf("%s: %v", c.record, f)
+		}
+	}
+}
+
 // A number that is not finite is refused by scalar-text, as the renderers
 // refuse it, unless the options' :non-finite names what to write instead;
 // a policy that is none is a type error where a number needs it, and only

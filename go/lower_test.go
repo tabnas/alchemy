@@ -37,17 +37,20 @@ func TestTheCsvOptionsMapToTheDialectOrNot(t *testing.T) {
 	}
 }
 
-// :non-finite, when the record has it, is one of three policies, which the
-// lowering applies around the renderer; one that is none maps to no
-// dialect, and the library's csv runs, whose scalar-text refuses it.
+// :non-finite and :no-columns, when the record has them, are policies,
+// which the lowering applies around the renderer; one that is none maps to
+// no dialect, and the library's csv runs, which refuses it where it is
+// read.
 func TestACsvOptionsRecordMapsWithANonFinitePolicyAndNotWithAnotherValue(t *testing.T) {
 	const base = `(entry :delimiter ",") (entry :newline "\r\n") (entry :header true) (entry :null-text "") (entry :missing :error)`
-	record := func(policy string) string { return "(record " + base + " (entry :non-finite " + policy + "))" }
+	record := func(policy string) string { return "(record " + base + " " + policy + ")" }
 	for _, c := range []struct {
 		policy string
 		maps   bool
 	}{
-		{":literal", true}, {":null", true}, {":reject", true}, {":nope", false}, {"1", false},
+		{"(entry :non-finite :literal)", true}, {"(entry :non-finite :null)", true}, {"(entry :non-finite :reject)", true},
+		{"(entry :non-finite :nope)", false}, {"(entry :non-finite 1)", false},
+		{"(entry :no-columns :empty)", true}, {"(entry :no-columns :refuse)", true}, {"(entry :no-columns :nope)", false},
 	} {
 		o, ok := csvOptions(mustEval(t, "", record(c.policy)))
 		if ok != c.maps || (ok && o != shared.DefaultCSVOptions()) {

@@ -531,12 +531,19 @@ export function unquote(s: string): string | undefined {
   return out
 }
 
+// How many comparisons, or ranges read, `chars-within` makes per
+// evaluation step.
+export const CHARS_WITHIN_STEP = 4096
+
 // `chars-within ranges string`: whether every character of the string
 // lies within one of the ranges, each a vector `[low high]` of code
 // points, both included. The empty string is within any ranges. A format's
 // part tests a string with it against the characters the format can carry
 // (XML's `Char` production, a name's characters) before it writes the
-// string, and chooses its convention when it cannot.
+// string, and chooses its convention when it cannot. The ranges may come
+// from data, so the work is counted in comparisons, an evaluation step per
+// `CHARS_WITHIN_STEP` of them and per as many ranges read, and the host's
+// abort flag stops a long test as it stops any long evaluation.
 function charsWithin(rt: Runtime, a: ReadonlyArray<Val>): Val {
   const ranges = asItems('chars-within', a[0])
   const point = (v: Val): number => {
@@ -556,7 +563,9 @@ function charsWithin(rt: Runtime, a: ReadonlyArray<Val>): Val {
     throw typeError(`chars-within: a range's bound must be a code point from 0 to 1114111, not ${spelled}`)
   }
   const bounds: Array<readonly [number, number]> = []
-  for (const range of ranges) {
+  for (let i = 0; i < ranges.length; i++) {
+    if (CHARS_WITHIN_STEP - 1 === i % CHARS_WITHIN_STEP) rt.tick()
+    const range = ranges[i]
     if ('vector' !== range.v || 2 !== range.items.length) {
       const what = 'vector' === range.v ? `a vector of ${range.items.length} items` : kindText(range)
       throw typeError(`chars-within: a range must be a vector [low high], not ${what}`)
@@ -571,14 +580,31 @@ function charsWithin(rt: Runtime, a: ReadonlyArray<Val>): Val {
     bounds.push([low, high])
   }
   const s = asStr('chars-within', 'the string', a[1])
-  // An evaluation step every 4096 characters, so the host's abort flag
-  // stops a long string's test as it stops any long evaluation.
-  let i = 0
+  // Comparisons made since the last step; a character costs at least one,
+  // so an empty range vector still counts its characters.
+  let work = 0
   for (const c of s) {
-    if (4095 === i % 4096) rt.tick()
-    i++
     const code = c.codePointAt(0) as number
-    if (!bounds.some(([low, high]) => low <= code && code <= high)) return bool(false)
+    let within = false
+    for (const [low, high] of bounds) {
+      work += 1
+      if (work >= CHARS_WITHIN_STEP) {
+        rt.tick()
+        work = 0
+      }
+      if (low <= code && code <= high) {
+        within = true
+        break
+      }
+    }
+    if (0 === bounds.length) {
+      work += 1
+      if (work >= CHARS_WITHIN_STEP) {
+        rt.tick()
+        work = 0
+      }
+    }
+    if (!within) return bool(false)
   }
   return bool(true)
 }
@@ -901,6 +927,20 @@ export function nonFinite(options: Val): NonFinite {
     return policy
   }
   throw typeError(`:non-finite must be :reject, :null or :literal, not ${kindText(v)}`)
+}
+
+// Whether a CSV options record lets a table of no columns through, to be
+// written as the empty document: its `:no-columns` is `:empty`, where
+// `:refuse`, the default when the record has none, refuses it.
+export function noColumnsEmpty(options: Val): boolean {
+  const v = field(options, 'no-columns')
+  if (undefined === v || isMissing(v)) return false
+  if ('keyword' === v.v) {
+    if ('refuse' === v.name) return false
+    if ('empty' === v.name) return true
+    throw typeError(`:no-columns must be :refuse or :empty, not :${v.name}`)
+  }
+  throw typeError(`:no-columns must be :refuse or :empty, not ${kindText(v)}`)
 }
 
 // Whether `quote` writes the code point `c` as `\uXXXX`: U+0000 to U+001F

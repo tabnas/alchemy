@@ -14,12 +14,14 @@ import {
   desugarProgram,
   fileOf,
   kindWord,
+  CHARS_WITHIN_STEP,
   LENGTH_CHUNK,
   native,
   numberText,
   outer,
   parseFile,
   partial,
+  noColumnsEmpty,
   nonFinite,
   quote,
   quotedLen,
@@ -753,6 +755,41 @@ describe('natives', () => {
     assert.equal((thrown(() => rt.applyNow(charsWithin, [all, huge], at)) as any).code, 'ABORTED')
     // The first character outside the ranges answers at once.
     same(rt.applyNow(charsWithin, [ascii, V.str('é' + long)], at), V.bool(false))
+  })
+
+  // `chars-within` counts its work in comparisons, so ranges from data as
+  // many as they are take evaluation steps, and a bound on steps (the fuel,
+  // the abort flag) stops a test that has not yet read 4,096 characters.
+  it('chars-within takes a step per comparisons', () => {
+    const rt = runtime('def export [input] input').withFuel(10)
+    const range = V.vectorVal([n(5), n(5)])
+    const ranges = V.vectorVal(Array.from({ length: 100_000 }, () => range))
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const charsWithin: value.Func = { fn: 'native', native: native('chars-within')! }
+    const f = thrown(() => rt.applyNow(charsWithin, [ranges, V.str('a')], at)) as any
+    assert.equal(f.limit?.name, 'max_plan_steps', String(f))
+    // A long string against a few ranges is counted the same way.
+    const few = V.vectorVal([V.vectorVal([n(0), n(1)]), V.vectorVal([n(97), n(97)])])
+    const g = thrown(() =>
+      runtime('').withFuel(10).applyNow(charsWithin, [few, V.str('a'.repeat(CHARS_WITHIN_STEP * 6))], at),
+    ) as any
+    assert.equal(g.limit?.name, 'max_plan_steps', String(g))
+  })
+
+  // A CSV options record's `:no-columns`: `:refuse`, the default, or
+  // `:empty`; any other value is a type error where it is read.
+  it('no-columns names a policy for a table of no columns', () => {
+    assert.equal(noColumnsEmpty(V.NULL), false)
+    assert.equal(noColumnsEmpty(evalIn('', '(record)')), false)
+    assert.equal(noColumnsEmpty(evalIn('', '(record (entry :no-columns :refuse))')), false)
+    assert.equal(noColumnsEmpty(evalIn('', '(record (entry :no-columns :empty))')), true)
+    let f = thrown(() => noColumnsEmpty(evalIn('', '(record (entry :no-columns :nope))'))) as any
+    assert.deepStrictEqual(
+      [f.code, f.message],
+      ['DSL_TYPE_ERROR', 'type_mismatch: :no-columns must be :refuse or :empty, not :nope'],
+    )
+    f = thrown(() => noColumnsEmpty(evalIn('', '(record (entry :no-columns "empty"))'))) as any
+    assert.equal(f.message, 'type_mismatch: :no-columns must be :refuse or :empty, not a string')
   })
 
   // A number that is not finite is refused by `scalar-text`, as the

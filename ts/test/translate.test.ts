@@ -22,7 +22,7 @@ const T = translate
 // mains below are held to the Rust crate's text byte for byte.
 const INFERRED = '(record (entry :columns :infer) (entry :rows (path each-index)))'
 const CSV_OPTIONS =
-  '(record (entry :delimiter ",") (entry :newline "\\r\\n") (entry :header true) (entry :null-text "") (entry :missing "") (entry :non-finite :literal))'
+  '(record (entry :delimiter ",") (entry :newline "\\r\\n") (entry :header true) (entry :null-text "") (entry :missing "") (entry :non-finite :literal) (entry :no-columns :empty))'
 
 function part(id: string, t: string, render?: translate.PartText): translate.Part | undefined {
   return T.Part.fromDescriptor({

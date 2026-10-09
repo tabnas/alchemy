@@ -25,7 +25,7 @@ import (
 // mains below are held to the Rust crate's text byte for byte.
 const (
 	inferredText   = `(record (entry :columns :infer) (entry :rows (path each-index)))`
-	csvOptionsText = `(record (entry :delimiter ",") (entry :newline "\r\n") (entry :header true) (entry :null-text "") (entry :missing "") (entry :non-finite :literal))`
+	csvOptionsText = `(record (entry :delimiter ",") (entry :newline "\r\n") (entry :header true) (entry :null-text "") (entry :missing "") (entry :non-finite :literal) (entry :no-columns :empty))`
 )
 
 func part(id, translate string, render *PartText) *Part {

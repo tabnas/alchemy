@@ -41,6 +41,12 @@ func TestAProgramKnowsItsOutputAndRowSelector(t *testing.T) {
 	if sel.Output() != OutputText || rowSelectorText(sel) != ".a[*]" {
 		t.Errorf("%s %s", sel.Output(), rowSelectorText(sel))
 	}
+	// A rewritten tree the program says is events: the rows are still the
+	// select's, behind as-events.
+	rewritten := mustCompile(t, `def export [input] (as-events (map (fn [x] (scalar x)) (select (path "a" each-index) input)))`, "t.alc")
+	if rewritten.Output() != OutputJsonEvents || rowSelectorText(rewritten) != ".a[*]" {
+		t.Errorf("%s %s", rewritten.Output(), rowSelectorText(rewritten))
+	}
 }
 
 func TestCompileReportsReaderResolverAndExportFailures(t *testing.T) {

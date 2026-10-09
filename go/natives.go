@@ -706,12 +706,19 @@ func unquote(s string) (string, bool) {
 	return b.String(), true
 }
 
+// CharsWithinStep is how many comparisons, or ranges read, `chars-within`
+// makes per evaluation step.
+const CharsWithinStep = 4096
+
 // nCharsWithin is `chars-within ranges string`: whether every character
 // of the string lies within one of the ranges, each a vector [low high]
 // of code points, both included. The empty string is within any ranges. A
 // format's part tests a string with it against the characters the format
 // can carry (XML's Char production, a name's characters) before it writes
-// the string, and chooses its convention when it cannot.
+// the string, and chooses its convention when it cannot. The ranges may
+// come from data, so the work is counted in comparisons, an evaluation
+// step per CharsWithinStep of them and per as many ranges read, and the
+// host's abort flag stops a long test as it stops any long evaluation.
 func nCharsWithin(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	ranges, f := asItems("chars-within", a[0])
 	if f != nil {
@@ -734,7 +741,12 @@ func nCharsWithin(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		return 0, typeError("chars-within: a range's bound must be a code point from 0 to 1114111, not " + spelled)
 	}
 	bounds := make([][2]rune, 0, len(ranges))
-	for _, r := range ranges {
+	for i, r := range ranges {
+		if i%CharsWithinStep == CharsWithinStep-1 {
+			if f := rt.Tick(); f != nil {
+				return nil, f
+			}
+		}
 		pair, ok := r.(*VectorVal)
 		if !ok || len(pair.Items) != 2 {
 			what := KindOf(r)
@@ -761,21 +773,31 @@ func nCharsWithin(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	if f != nil {
 		return nil, f
 	}
-	// An evaluation step every 4096 characters, so the host's abort flag
-	// stops a long string's test as it stops any long evaluation.
-	i := 0
-	for _, c := range s {
-		if i%4096 == 4095 {
-			if f := rt.Tick(); f != nil {
-				return nil, f
-			}
+	// work is the comparisons made since the last step; a character costs
+	// at least one, so an empty range vector still counts its characters.
+	work := 0
+	count := func() *Fail {
+		work++
+		if work >= CharsWithinStep {
+			work = 0
+			return rt.Tick()
 		}
-		i++
+		return nil
+	}
+	for _, c := range s {
 		within := false
 		for _, b := range bounds {
+			if f := count(); f != nil {
+				return nil, f
+			}
 			if b[0] <= c && c <= b[1] {
 				within = true
 				break
+			}
+		}
+		if len(bounds) == 0 {
+			if f := count(); f != nil {
+				return nil, f
 			}
 		}
 		if !within {
@@ -1302,6 +1324,27 @@ func NonFinitePolicy(options Val) (NonFinite, *Fail) {
 		return NonFiniteReject, typeError(":non-finite must be :reject, :null or :literal, not :" + string(k))
 	}
 	return NonFiniteReject, typeError(":non-finite must be :reject, :null or :literal, not " + KindOf(v))
+}
+
+// NoColumnsEmpty is whether a CSV options record lets a table of no
+// columns through, to be written as the empty document: its :no-columns
+// is :empty, where :refuse, the default when the record has none, refuses
+// it.
+func NoColumnsEmpty(options Val) (bool, *Fail) {
+	v, ok := Field(options, "no-columns")
+	if !ok || IsMissing(v) {
+		return false, nil
+	}
+	if k, ok := v.(KeywordVal); ok {
+		switch k {
+		case "refuse":
+			return false, nil
+		case "empty":
+			return true, nil
+		}
+		return false, typeError(":no-columns must be :refuse or :empty, not :" + string(k))
+	}
+	return false, typeError(":no-columns must be :refuse or :empty, not " + KindOf(v))
 }
 
 // escapedAsCode is whether quote writes a character as \uXXXX: U+0000 to

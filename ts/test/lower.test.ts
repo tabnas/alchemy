@@ -52,13 +52,14 @@ describe('lower', () => {
     assert.equal(csvOptions(V.NULL), undefined)
   })
 
-  // `:non-finite`, when the record has it, is one of three policies, which
-  // the lowering applies around the renderer; one that is none maps to no
-  // dialect, and the library's `csv` runs, whose `scalar-text` refuses it.
+  // `:non-finite` and `:no-columns`, when the record has them, are
+  // policies, which the lowering applies around the renderer; one that is
+  // none maps to no dialect, and the library's `csv` runs, which refuses
+  // it where it is read.
   it('a csv options record maps with a non-finite policy and not with another value', () => {
     const base = '(entry :delimiter ",") (entry :newline "\\r\\n") (entry :header true) (entry :null-text "") (entry :missing :error)'
     const rt = runtime(
-      `def lit (record ${base} (entry :non-finite :literal))\ndef nul (record ${base} (entry :non-finite :null))\ndef nope (record ${base} (entry :non-finite :nope))\ndef one (record ${base} (entry :non-finite 1))`,
+      `def lit (record ${base} (entry :non-finite :literal))\ndef nul (record ${base} (entry :non-finite :null))\ndef nope (record ${base} (entry :non-finite :nope))\ndef one (record ${base} (entry :non-finite 1))\ndef empty (record ${base} (entry :no-columns :empty))\ndef refuse (record ${base} (entry :no-columns :refuse))\ndef nocols (record ${base} (entry :no-columns :nope))`,
       true,
     )
     const options = (name: string) => csvOptions(run(rt.defValue('program', name)) as value.Val)
@@ -66,6 +67,10 @@ describe('lower', () => {
     assert.deepStrictEqual(options('nul'), CsvOptions.default())
     assert.equal(options('nope'), undefined)
     assert.equal(options('one'), undefined)
+    // `:no-columns` the same way: a policy maps, anything else does not.
+    assert.deepStrictEqual(options('empty'), CsvOptions.default())
+    assert.deepStrictEqual(options('refuse'), CsvOptions.default())
+    assert.equal(options('nocols'), undefined)
     // The fast path takes the first two, and declines the others for the
     // library's text.
     const binding = 'def b\n  record\n    entry :columns (path "m")\n    entry :rows (path "r" each-index)\n    entry :column (fn [d] d)\n'
@@ -96,6 +101,14 @@ describe('program', () => {
     const select = compile('def export [input] (join "," (select (path "a" each-index) input))', 't.alc')
     assert.equal(select.output, 'Text')
     assert.equal(select.rowSelector()!.toString(), '.a[*]')
+    // A rewritten tree the program says is events: the rows are still the
+    // select's, behind as-events.
+    const rewritten = compile(
+      'def export [input] (as-events (map (fn [x] (scalar x)) (select (path "a" each-index) input)))',
+      't.alc',
+    )
+    assert.equal(rewritten.output, 'JsonEvents/1')
+    assert.equal(rewritten.rowSelector()!.toString(), '.a[*]')
     // A rewritten tree: a stream of items the checker typed as events, or
     // one the program said are events, is JSON events for the host.
     const tree = compile('def export [input] (map (fn [e] e) (events input))', 't.alc')

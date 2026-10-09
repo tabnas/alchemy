@@ -325,13 +325,14 @@ export const Options = Object.freeze({
 })
 
 // The CSV options a composed `csv` runs under: the library's, with the
-// export's policy for an absent member, an empty field, and a number that
-// is not finite written as its word, `Infinity`, `-Infinity` or `NaN`,
-// since every CSV cell is text.
+// export's policy for an absent member, an empty field; a number that is
+// not finite written as its word, `Infinity`, `-Infinity` or `NaN`, since
+// every CSV cell is text; and a table of no columns (an empty document, or
+// rows of no members) written as the empty document.
 export const CSV_OPTIONS =
   '(record (entry :delimiter ",") (entry :newline "\\r\\n") ' +
   '(entry :header true) (entry :null-text "") (entry :missing "") ' +
-  '(entry :non-finite :literal))'
+  '(entry :non-finite :literal) (entry :no-columns :empty))'
 
 // What a composed `json` runs under: a number that is not finite, which
 // JSON has no spelling for, is written as `null`.

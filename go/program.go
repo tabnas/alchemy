@@ -234,7 +234,7 @@ func rootStage(plan *Plan) *Plan {
 		case PlanInput:
 			return here
 		case PlanRoute, PlanSelect, PlanEvents, PlanScanEmit, PlanMap, PlanFilter,
-			PlanTableFromJSON, PlanRecords, PlanCsvTable, PlanCsv, PlanJSON:
+			PlanTableFromJSON, PlanRecords, PlanAsEvents, PlanCsvTable, PlanCsv, PlanJSON:
 			if here.Source.Kind == PlanInput {
 				return here
 			}

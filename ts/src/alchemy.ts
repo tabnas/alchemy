@@ -133,11 +133,13 @@ export type { Arity, Kind, Native } from './stdlib/registry'
 
 export {
   CAPTURE_LIMITS,
+  CHARS_WITHIN_STEP,
   LENGTH_CHUNK,
   captureBudget,
   getField,
   implOf,
   kindWord,
+  noColumnsEmpty,
   nonFinite,
   numberText,
   quote,
