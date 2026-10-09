@@ -36,3 +36,32 @@ func TestTheCsvOptionsMapToTheDialectOrNot(t *testing.T) {
 		t.Error("null maps")
 	}
 }
+
+// :non-finite, when the record has it, is one of three policies, which the
+// lowering applies around the renderer; one that is none maps to no
+// dialect, and the library's csv runs, whose scalar-text refuses it.
+func TestACsvOptionsRecordMapsWithANonFinitePolicyAndNotWithAnotherValue(t *testing.T) {
+	const base = `(entry :delimiter ",") (entry :newline "\r\n") (entry :header true) (entry :null-text "") (entry :missing :error)`
+	record := func(policy string) string { return "(record " + base + " (entry :non-finite " + policy + "))" }
+	for _, c := range []struct {
+		policy string
+		maps   bool
+	}{
+		{":literal", true}, {":null", true}, {":reject", true}, {":nope", false}, {"1", false},
+	} {
+		o, ok := csvOptions(mustEval(t, "", record(c.policy)))
+		if ok != c.maps || (ok && o != shared.DefaultCSVOptions()) {
+			t.Errorf("%s: %+v %v", c.policy, o, ok)
+		}
+		// The fast path takes what maps, and declines the rest for the
+		// library's text.
+		src := "def b\n  record\n    entry :columns (path \"m\")\n    entry :rows (path \"r\" each-index)\n    entry :column (fn [d] d)\n" +
+			"def export [input] (csv " + record(c.policy) + " (table-from-json b input))"
+		text, ok := mustCompile(t, src, "t.alc").Result().(TextVal)
+		if !ok {
+			t.Errorf("%s: not a text", c.policy)
+		} else if (text.Plan.Kind == PlanCsv) != c.maps {
+			t.Errorf("%s: %s", c.policy, PlanName(text.Plan))
+		}
+	}
+}

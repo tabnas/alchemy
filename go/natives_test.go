@@ -53,9 +53,222 @@ func TestQuotedIsTheJSONStringFormWithTheC1ControlsEscaped(t *testing.T) {
 		t.Errorf("%q, the shared Datum %q", quote(s), json)
 	}
 	// The length counted before building is the length built.
-	for _, s := range []string{"", "plain", "q\" \\ \n \x1f é", "del\u007f pad\u0080 日本 🚀"} {
+	for _, s := range []string{"", "plain", "q\" \\ \n \x1f é", "del\u007f pad\u0080 日本 🚀", "nonchar\ufffe\uffff\ufffd"} {
 		if quotedLen(s) != len(quote(s)) {
 			t.Errorf("%q: %d, built %d", s, quotedLen(s), len(quote(s)))
+		}
+	}
+	// The two noncharacters YAML's printable set and XML's characters
+	// exclude are escaped; U+FFFD, a character, is not.
+	if got := quote("\ufffe\uffff\ufffd"); got != "\"\\ufffe\\uffff\ufffd\"" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestUnquoteReadsBackWhatQuoteWrites(t *testing.T) {
+	for _, s := range []string{
+		"",
+		"plain",
+		"q\" b\\ n\n r\r t\t bs\b ff\f nul\x00 us\x1f",
+		"del\u007f pad\u0080 apc\u009f nbsp\u00a0 é 日本 🚀 /",
+		"\ufffe\uffff",
+	} {
+		if got, ok := unquote(quote(s)); !ok || got != s {
+			t.Errorf("%q: %q %v", s, got, ok)
+		}
+	}
+	// JSON's other spellings: the solidus, uppercase hex, a surrogate pair.
+	if got, ok := unquote(`"\/\u00E9\ud83d\ude80"`); !ok || got != "/é🚀" {
+		t.Errorf("%q %v", got, ok)
+	}
+	// Not a double-quoted form.
+	for _, text := range []string{
+		"",
+		"\"",
+		"plain",
+		"\"open",
+		"\"in\"side\"",
+		"\"raw\nline\"",
+		"\"bad \\x escape\"",
+		"\"short \\u12\"",
+		"\"lone \\ud800\"",
+		"\"low \\udc00 first\"",
+		"\"pair \\ud800\\u0041\"",
+	} {
+		if got, ok := unquote(text); ok {
+			t.Errorf("%q: %q", text, got)
+		}
+	}
+}
+
+// unquoted reads a double-quoted form back, and refuses any other text as
+// data the program was given, naming it.
+func TestUnquotedReadsADoubleQuotedFormOrRefusesTheText(t *testing.T) {
+	at := SourceSpan{File: NewFile("t")}
+	if v, f := nUnquoted(runtimeOf(t, ""), []Val{StrVal(`"a\nb \ud83d\ude00"`)}, at); f != nil || !Equal(v, StrVal("a\nb 😀")) {
+		t.Errorf("%v %v", v, f)
+	}
+	if _, f := nUnquoted(runtimeOf(t, ""), []Val{StrVal("x")}, at); f == nil || f.Code != CodeInputInvalid ||
+		f.Message != `unquoted: "x" is not a double-quoted string` {
+		t.Errorf("%v", f)
+	}
+	if _, f := nUnquoted(runtimeOf(t, ""), []Val{StrVal(`"\ud800"`)}, at); f == nil || f.Code != CodeInputInvalid {
+		t.Errorf("%v", f)
+	}
+	if f := mustFail(t, "", "unquoted 1"); f.Message != "type_mismatch: unquoted: the string must be a string, not a number" {
+		t.Errorf("%v", f)
+	}
+}
+
+// chars-within tests every character, a code point at a time, against
+// ranges it validates first, and takes an evaluation step every 4096
+// characters, so the host's abort flag stops a long string's test.
+func TestCharsWithinTestsEveryCharacterInStepsTheAbortFlagReads(t *testing.T) {
+	const xml = "[[9 10] [13 13] [32 55295] [57344 65533] [65536 1114111]]"
+	for _, c := range []struct {
+		expr string
+		want bool
+	}{
+		{"chars-within " + xml + ` "tab\there 😀"`, true},
+		{"chars-within " + xml + ` "nul\u0000"`, false},
+		{"chars-within " + xml + ` "\uffff"`, false},
+		{"chars-within " + xml + ` ""`, true},
+		{`chars-within [] ""`, true},
+		{`chars-within [] "a"`, false},
+		// A character above U+FFFF is one code point.
+		{`chars-within [[128512 128512]] "😀"`, true},
+		{`chars-within [[0 65535]] "😀"`, false},
+	} {
+		if v := mustEval(t, "", c.expr); !Equal(v, BoolVal(c.want)) {
+			t.Errorf("%s: %s", c.expr, DebugString(v))
+		}
+	}
+	for _, c := range []struct{ expr, message string }{
+		{`chars-within [[5 3]] "a"`, "a range must be a vector [low high] with low at most high, not [5 3]"},
+		{`chars-within [[0 1.5]] "a"`, "a range's bound must be a code point from 0 to 1114111, not 1.5"},
+		{`chars-within [[-1 2]] "a"`, "a range's bound must be a code point from 0 to 1114111, not -1"},
+		{`chars-within [[0 1114112]] "a"`, "a range's bound must be a code point from 0 to 1114111, not 1114112"},
+		{`chars-within [[0 (number "Infinity")]] "a"`, "a range's bound must be a code point from 0 to 1114111, not inf"},
+		{`chars-within [["a" 1]] "a"`, "a range's bound must be a number, not a string"},
+		{`chars-within [[0]] "a"`, "a range must be a vector [low high], not a vector of 1 items"},
+		{`chars-within [1] "a"`, "a range must be a vector [low high], not a number"},
+		{`chars-within 1 "a"`, "the data must be a vector, not a number"},
+		{`chars-within [[5 3]] 1`, "a range must be a vector [low high] with low at most high, not [5 3]"},
+		{`chars-within [[0 3]] 1`, "the string must be a string, not a number"},
+	} {
+		if f := mustFail(t, "", c.expr); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: chars-within: "+c.message {
+			t.Errorf("%s: %v", c.expr, f)
+		}
+	}
+	at := SourceSpan{File: NewFile("t")}
+	all := Vector(Vector(Num(0), Num(1114111)))
+	ascii := Vector(Vector(Num(0), Num(127)))
+	long := strings.Repeat("k", 4096*64)
+	if v, f := nCharsWithin(runtimeOf(t, ""), []Val{all, StrVal(long)}, at); f != nil || !Equal(v, BoolVal(true)) {
+		t.Errorf("%v %v", v, f)
+	}
+	flag := shared.NewAbortFlag()
+	rt := runtimeOf(t, "").WithAbort(flag)
+	flag.Abort()
+	if _, f := nCharsWithin(rt, []Val{all, StrVal(long)}, at); f == nil || f.Code != CodeAborted {
+		t.Errorf("%v", f)
+	}
+	// The first character outside the ranges answers at once.
+	if v, f := nCharsWithin(rt, []Val{ascii, StrVal("é" + long)}, at); f != nil || !Equal(v, BoolVal(false)) {
+		t.Errorf("%v %v", v, f)
+	}
+}
+
+// A number that is not finite is refused by scalar-text, as the renderers
+// refuse it, unless the options' :non-finite names what to write instead;
+// a policy that is none is a type error where a number needs it, and only
+// there.
+func TestScalarTextWritesANumberThatIsNotFiniteByTheOptionsPolicy(t *testing.T) {
+	options := func(policy string) string {
+		o := `(record (entry :null-text "-") (entry :missing :error)`
+		if policy != "" {
+			o += " (entry :non-finite " + policy + ")"
+		}
+		return o + ")"
+	}
+	text := func(policy, x string) string { return "scalar-text " + options(policy) + ` (number "` + x + `")` }
+	for _, c := range []struct{ policy, x, want string }{
+		{":null", "NaN", "-"},
+		{":literal", "NaN", "NaN"},
+		{":literal", "Infinity", "Infinity"},
+		{":literal", "-Infinity", "-Infinity"},
+		{":reject", "2.50", "2.50"},
+		{":nope", "2.50", "2.50"},
+	} {
+		if v := mustEval(t, "", text(c.policy, c.x)); !Equal(v, StrVal(c.want)) {
+			t.Errorf("%s %s: %s", c.policy, c.x, DebugString(v))
+		}
+	}
+	for _, policy := range []string{"", ":reject"} {
+		if f := mustFail(t, "", text(policy, "Infinity")); f.Code != CodeTargetValueUnrepresentable {
+			t.Errorf("%q: %v", policy, f)
+		}
+	}
+	if f := mustFail(t, "", text(":nope", "NaN")); f.Code != CodeDSLTypeError ||
+		f.Message != "type_mismatch: :non-finite must be :reject, :null or :literal, not :nope" {
+		t.Errorf("%v", f)
+	}
+	if f := mustFail(t, "", text("1", "NaN")); f.Message != "type_mismatch: :non-finite must be :reject, :null or :literal, not a number" {
+		t.Errorf("%v", f)
+	}
+	// The policy of a record, and of what is no record: none.
+	for _, c := range []struct {
+		v    Val
+		want NonFinite
+	}{
+		{NullVal{}, NonFiniteReject},
+		{mustEval(t, "", "(record)"), NonFiniteReject},
+		{mustEval(t, "", "(record (entry :non-finite missing))"), NonFiniteReject},
+		{mustEval(t, "", "(record (entry :non-finite :literal))"), NonFiniteLiteral},
+	} {
+		if got, f := NonFinitePolicy(c.v); f != nil || got != c.want {
+			t.Errorf("%s: %v %v", DebugString(c.v), got, f)
+		}
+	}
+	if NonFiniteWord(math.Inf(-1)) != "-Infinity" {
+		t.Error(NonFiniteWord(math.Inf(-1)))
+	}
+	if _, ok := NonFiniteNamed("nope"); ok {
+		t.Error("nope names a policy")
+	}
+}
+
+// json takes an options record first, which holds :non-finite and nothing
+// else, :reject or :null; the plan carries the policy.
+func TestJSONTakesAnOptionsRecordBeforeItsEvents(t *testing.T) {
+	policy := func(options string) NonFinite {
+		text, ok := mustCompile(t, "def export [input] (json "+options+"input)", "t.alc").Result().(TextVal)
+		if !ok || text.Plan.Kind != PlanJSON {
+			t.Fatalf("%s: not a json plan", options)
+		}
+		return text.Plan.NonFinite
+	}
+	for _, c := range []struct {
+		options string
+		want    NonFinite
+	}{
+		{"", NonFiniteReject},
+		{"(record) ", NonFiniteReject},
+		{"(record (entry :non-finite :reject)) ", NonFiniteReject},
+		{"(record (entry :non-finite :null)) ", NonFiniteNull},
+	} {
+		if got := policy(c.options); got != c.want {
+			t.Errorf("%q: %v", c.options, got)
+		}
+	}
+	for _, c := range []struct{ options, message string }{
+		{"(record (entry :non-finite :literal))", "json: :non-finite must be :reject or :null, not :literal"},
+		{"(record (entry :non-finite :nope))", ":non-finite must be :reject, :null or :literal, not :nope"},
+		{"(record (entry :non-finite :null) (entry :indent 2))", "json: an option must be :non-finite, not :indent"},
+	} {
+		_, f := Compile("def export [input] (json "+c.options+" input)", "t.alc", routers, renderers)
+		if f == nil || f.Code != CodeDSLTypeError || f.Message != "type_mismatch: "+c.message || f.Row != 1 || f.Column != 20 {
+			t.Errorf("%s: %v", c.options, f)
 		}
 	}
 }

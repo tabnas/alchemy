@@ -30,6 +30,7 @@ import type { Runtime } from '../interp'
 import { G } from '../trampoline'
 import {
   Func,
+  NonFinite,
   Plan,
   Seq,
   Val,
@@ -46,6 +47,8 @@ import {
   kindText,
   liveKind,
   missing as missingVal,
+  nonFiniteNamed,
+  nonFiniteWord,
   num,
   record as recordVal,
   selectorSegments,
@@ -426,6 +429,160 @@ function length(rt: Runtime, a: ReadonlyArray<Val>): Val {
   return num(n)
 }
 
+// `unquoted string`: the string a double-quoted form spells, the reverse
+// of `quoted`: a leading and a trailing quote around characters and JSON's
+// escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX`, a
+// surrogate pair as the one character it names). Any other text is
+// INPUT_INVALID: no quotes, a quote or a control character unescaped
+// inside, another escape, or a surrogate on its own. A format's reverse
+// reads back with it what its embedding wrote with `quoted`.
+function unquoted(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const s = asStr('unquoted', 'the string', a[0])
+  const text = unquote(s)
+  if (undefined === text) throw Fail.input(`unquoted: ${JSON.stringify(s)} is not a double-quoted string`)
+  rt.tick()
+  return str(text)
+}
+
+// The string a double-quoted form spells, or undefined. A `\u` escape of a
+// surrogate on its own is refused, as the Rust crate refuses it, although
+// a JavaScript string could hold one: a surrogate is no character. One
+// written as itself, which only a JavaScript string can hold, is passed on
+// as `quote` wrote it.
+export function unquote(s: string): string | undefined {
+  if (s.length < 2 || '"' !== s[0] || '"' !== s[s.length - 1]) return undefined
+  // The closing quote's position: the inner text ends before it.
+  const end = s.length - 1
+  let i = 1
+  let out = ''
+  // Four hex digits at `i`, either case, inside the quotes.
+  const hex4 = (): number | undefined => {
+    if (i + 4 > end) return undefined
+    const digits = s.substring(i, i + 4)
+    if (!/^[0-9a-fA-F]{4}$/.test(digits)) return undefined
+    i += 4
+    return parseInt(digits, 16)
+  }
+  while (i < end) {
+    const c = s.charCodeAt(i)
+    if (0x22 === c || c < 0x20) return undefined
+    if (0x5c !== c) {
+      // A run of characters written as themselves, taken whole.
+      let j = i + 1
+      while (j < end) {
+        const d = s.charCodeAt(j)
+        if (0x22 === d || d < 0x20 || 0x5c === d) break
+        j++
+      }
+      out += s.substring(i, j)
+      i = j
+      continue
+    }
+    if (i + 1 >= end) return undefined
+    const escape = s[i + 1]
+    i += 2
+    switch (escape) {
+      case '"':
+        out += '"'
+        break
+      case '\\':
+        out += '\\'
+        break
+      case '/':
+        out += '/'
+        break
+      case 'b':
+        out += '\b'
+        break
+      case 'f':
+        out += '\f'
+        break
+      case 'n':
+        out += '\n'
+        break
+      case 'r':
+        out += '\r'
+        break
+      case 't':
+        out += '\t'
+        break
+      case 'u': {
+        const high = hex4()
+        if (undefined === high) return undefined
+        if (0xd800 <= high && high <= 0xdbff) {
+          // A high surrogate names a character only with the low one after
+          // it, as a second escape.
+          if (i + 2 > end || '\\' !== s[i] || 'u' !== s[i + 1]) return undefined
+          i += 2
+          const low = hex4()
+          if (undefined === low || low < 0xdc00 || low > 0xdfff) return undefined
+          out += String.fromCharCode(high, low)
+        } else if (0xdc00 <= high && high <= 0xdfff) {
+          return undefined
+        } else {
+          out += String.fromCharCode(high)
+        }
+        break
+      }
+      default:
+        return undefined
+    }
+  }
+  return out
+}
+
+// `chars-within ranges string`: whether every character of the string
+// lies within one of the ranges, each a vector `[low high]` of code
+// points, both included. The empty string is within any ranges. A format's
+// part tests a string with it against the characters the format can carry
+// (XML's `Char` production, a name's characters) before it writes the
+// string, and chooses its convention when it cannot.
+function charsWithin(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const ranges = asItems('chars-within', a[0])
+  const point = (v: Val): number => {
+    if ('num' !== v.v) {
+      throw typeError(`chars-within: a range's bound must be a number, not ${kindText(v)}`)
+    }
+    const value = v.value
+    if (0 === value % 1 && 0 <= value && value <= 1114111) return value
+    // The bound as it was spelled, or as Rust's `Display` writes a value
+    // that has no number text (`inf`, `NaN`).
+    let spelled: string
+    try {
+      spelled = numberText(value, v.lexeme)
+    } catch {
+      spelled = displayNumber(value)
+    }
+    throw typeError(`chars-within: a range's bound must be a code point from 0 to 1114111, not ${spelled}`)
+  }
+  const bounds: Array<readonly [number, number]> = []
+  for (const range of ranges) {
+    if ('vector' !== range.v || 2 !== range.items.length) {
+      const what = 'vector' === range.v ? `a vector of ${range.items.length} items` : kindText(range)
+      throw typeError(`chars-within: a range must be a vector [low high], not ${what}`)
+    }
+    const low = point(range.items[0])
+    const high = point(range.items[1])
+    if (low > high) {
+      throw typeError(
+        `chars-within: a range must be a vector [low high] with low at most high, not [${low} ${high}]`,
+      )
+    }
+    bounds.push([low, high])
+  }
+  const s = asStr('chars-within', 'the string', a[1])
+  // An evaluation step every 4096 characters, so the host's abort flag
+  // stops a long string's test as it stops any long evaluation.
+  let i = 0
+  for (const c of s) {
+    if (4095 === i % 4096) rt.tick()
+    i++
+    const code = c.codePointAt(0) as number
+    if (!bounds.some(([low, high]) => low <= code && code <= high)) return bool(false)
+  }
+  return bool(true)
+}
+
 // `compare a b`: how two numbers are ordered, `:less`, `:equal` or
 // `:greater`, and `:unordered` when either is NaN; -0 and 0 are equal.
 function compare(_rt: Runtime, a: ReadonlyArray<Val>): Val {
@@ -693,7 +850,9 @@ function replaceText(_rt: Runtime, a: ReadonlyArray<Val>): Val {
 
 // The text of a scalar cell under the options' policies: what the CSV
 // renderer writes for the same cell, so that the interpreted and the native
-// `csv` agree byte for byte.
+// `csv` agree byte for byte. A number that is not finite is refused, as
+// the renderer refuses it, unless the options' `:non-finite` says to write
+// the null text (`:null`) or the word (`:literal`) instead.
 function scalarText(rt: Runtime, a: ReadonlyArray<Val>): Val {
   const options = a[0]
   const cell = a[1]
@@ -703,6 +862,13 @@ function scalarText(rt: Runtime, a: ReadonlyArray<Val>): Val {
     case 'bool':
       return str(cell.value ? 'true' : 'false')
     case 'num':
+      if (!Number.isFinite(cell.value)) {
+        const policy = nonFinite(options)
+        if ('null' === policy) {
+          return str(asStr('scalar-text', ':null-text', option('scalar-text', options, 'null-text')))
+        }
+        if ('literal' === policy) return str(nonFiniteWord(cell.value))
+      }
       return str(numberText(cell.value, cell.lexeme))
     case 'str':
       return cell
@@ -721,6 +887,26 @@ function scalarText(rt: Runtime, a: ReadonlyArray<Val>): Val {
       throw typeError(`scalar-text: a scalar was expected, not ${kindText(cell)}`)
     }
   }
+}
+
+// The `:non-finite` policy of an options record: `reject` (the default,
+// when the record has none), `null` or `literal`; any other value is a
+// type error. What is not a record has none.
+export function nonFinite(options: Val): NonFinite {
+  const v = field(options, 'non-finite')
+  if (undefined === v || isMissing(v)) return 'reject'
+  if ('keyword' === v.v) {
+    const policy = nonFiniteNamed(v.name)
+    if (undefined === policy) throw typeError(`:non-finite must be :reject, :null or :literal, not :${v.name}`)
+    return policy
+  }
+  throw typeError(`:non-finite must be :reject, :null or :literal, not ${kindText(v)}`)
+}
+
+// Whether `quote` writes the code point `c` as `\uXXXX`: U+0000 to U+001F
+// but the five with short escapes, U+007F to U+009F, U+FFFE and U+FFFF.
+function escapedAsCode(c: number): boolean {
+  return c < 0x20 || (0x7f <= c && c <= 0x9f) || 0xfffe === c || 0xffff === c
 }
 
 // The escape `quote` writes for the code point `c`, or undefined when it
@@ -742,16 +928,17 @@ function quoteEscape(c: number): string | undefined {
     case 0x0c:
       return '\\f'
     default:
-      return c < 0x20 || (0x7f <= c && c <= 0x9f) ? '\\u' + c.toString(16).padStart(4, '0') : undefined
+      return escapedAsCode(c) ? '\\u' + c.toString(16).padStart(4, '0') : undefined
   }
 }
 
 // The double-quoted form of `s`: the JSON string form (RFC 8259's escapes
 // for the quote, the backslash and U+0000 to U+001F, the short ones where
 // they exist, `\u00xx` otherwise, in the render package's lowercase) with
-// U+007F to U+009F escaped the same way, since YAML's double-quoted style
-// reads JSON's escapes but its printable set excludes the C1 controls.
-// Every other character is written as itself.
+// U+007F to U+009F, U+FFFE and U+FFFF escaped the same way, since YAML's
+// double-quoted style reads JSON's escapes but its printable set excludes
+// the C1 controls and those two noncharacters, which XML's characters
+// exclude too. Every other character is written as itself.
 export function quote(s: string): string {
   let out = '"'
   for (const c of s) {
@@ -762,7 +949,7 @@ export function quote(s: string): string {
 
 // The length of `quote`'s result in UTF-8 bytes, counted before it is
 // built: two quotes, and each character as itself, as a two-byte escape,
-// or as the six bytes of `\u00XX`.
+// or as the six bytes of `\uXXXX`.
 export function quotedLen(s: string): number {
   let n = 2
   for (const c of s) {
@@ -927,8 +1114,36 @@ function csvTable(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   return streamVal({ p: 'csv-table', options: a[0], source })
 }
 
+// `json events`, or `json options events`: the options, when given, are
+// read before the events.
 function json(_rt: Runtime, a: ReadonlyArray<Val>): Val {
-  return textVal({ p: 'json', source: asStream('json', a[0]) })
+  let policy: NonFinite
+  let events: Val
+  if (1 === a.length) {
+    policy = 'reject'
+    events = a[0]
+  } else if (2 === a.length) {
+    policy = jsonNonFinite(a[0])
+    events = a[1]
+  } else {
+    throw typeError('json takes events, or an options record and events')
+  }
+  return textVal({ p: 'json', source: asStream('json', events), nonFinite: policy })
+}
+
+// The policy `json`'s options record names (the Rust crate's
+// `json_options`): it holds `:non-finite` and nothing else, `:reject` or
+// `:null`, since JSON has no other spelling.
+function jsonNonFinite(options: Val): NonFinite {
+  if ('record' !== options.v) {
+    throw typeError(`json: the options must be a record, not ${kindText(options)}`)
+  }
+  for (const k of options.fields.keys()) {
+    if ('non-finite' !== k) throw typeError(`json: an option must be :non-finite, not :${k}`)
+  }
+  const policy = nonFinite(options)
+  if ('literal' === policy) throw typeError('json: :non-finite must be :reject or :null, not :literal')
+  return policy
 }
 
 function records(_rt: Runtime, a: ReadonlyArray<Val>): Val {
@@ -950,6 +1165,8 @@ const IMPLS: Record<string, NativeImpl> = {
   count,
   keys,
   length,
+  unquoted,
+  'chars-within': charsWithin,
   number,
   compare,
   'number-class': numberClass,

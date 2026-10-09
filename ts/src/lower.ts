@@ -77,11 +77,12 @@ import { csvDialect, isInferred } from './effects'
 import { isFail } from './fail'
 import type { Bounds, Runtime } from './interp'
 import type { Output } from './output'
-import { captureBudget, getField, numberText, truth } from './stdlib/natives'
+import { captureBudget, getField, nonFinite, numberText, truth } from './stdlib/natives'
 import { G, run } from './trampoline'
 import {
   Func,
   NULL,
+  NonFinite,
   Plan,
   Protocol,
   Val,
@@ -95,6 +96,7 @@ import {
   keyword,
   kindText,
   missing,
+  nonFiniteWord,
   num,
   planName,
   protocol,
@@ -151,8 +153,9 @@ export function isTableBinding(v: Val): boolean {
 // The renderer's dialect for a `csv-options` record, when every field has a
 // value the renderer accepts: `:delimiter` one character, `:newline` CRLF
 // or LF, `:header` a boolean, `:null-text` a string, `:missing` `:error` or
-// a string (the report's `csvDialect`, which reads the same record). Any
-// other record runs the library's own `csv`.
+// a string, and `:non-finite`, when the record has it, a policy (the
+// report's `csvDialect`, which reads the same record). Any other record
+// runs the library's own `csv`.
 export function csvOptions(v: Val): CsvOptions | undefined {
   const dialect = csvDialect(v)
   if (undefined === dialect) return undefined
@@ -163,6 +166,42 @@ export function csvOptions(v: Val): CsvOptions | undefined {
     header: dialect.header,
     nullText: dialect.nullText,
     missing: 'error' === dialect.missing.kind ? MissingText.error : MissingText.text(dialect.missing.text),
+  }
+}
+
+// The `json` renderer's adapter for `:non-finite :null`: a number that is
+// not finite goes on as null, everything else as it came.
+class NullNonFinite implements Sink {
+  constructor(private readonly next: Sink) {}
+
+  event(ev: JsonEvent): Flow {
+    if ('number' === ev.type && !Number.isFinite(ev.value)) return this.next.event(Ev.null)
+    return this.next.event(ev)
+  }
+}
+
+// Whether a cell is a number that is not finite.
+function isNonFiniteCell(c: Cell): c is Extract<Cell, { type: 'number' }> {
+  return 'number' === c.type && !Number.isFinite(c.value)
+}
+
+// The CSV renderer's adapter for `:non-finite` `:null` or `:literal`: a
+// number cell that is not finite goes on as a null cell, which the renderer
+// writes as the null text, or as the string `Infinity`, `-Infinity` or
+// `NaN`, as `scalar-text` writes it under the same options.
+class NonFiniteCells implements TableSink {
+  constructor(
+    private readonly policy: NonFinite,
+    private readonly next: TableSink,
+  ) {}
+
+  tableEvent(ev: TableEvent): Flow {
+    if ('row' !== ev.type || !ev.cells.some(isNonFiniteCell)) return this.next.tableEvent(ev)
+    const cells = ev.cells.map((c) => {
+      if (!isNonFiniteCell(c)) return c
+      return 'null' === this.policy ? Cell.null : Cell.string(nonFiniteWord(c.value))
+    })
+    return this.next.tableEvent({ type: 'row', cells })
   }
 }
 
@@ -1009,10 +1048,16 @@ export class Lowering {
         if (undefined === options) {
           throw typeError("csv: the options record does not map to the renderer's dialect")
         }
-        return this.table(plan.source, this.rt.renderers.csv(out, options), false)
+        const renderer = this.rt.renderers.csv(out, options)
+        const policy = nonFinite(plan.options)
+        if ('reject' === policy) return this.table(plan.source, renderer, false)
+        return this.table(plan.source, new NonFiniteCells(policy, renderer), false)
       }
-      case 'json':
-        return this.events(plan.source, this.rt.renderers.json(out, jsonOptions()))
+      case 'json': {
+        const json = this.rt.renderers.json(out, jsonOptions())
+        if ('null' === plan.nonFinite) return this.events(plan.source, new NullNonFinite(json))
+        return this.events(plan.source, json)
+      }
       case 'concat-map':
         if ('stream' !== plan.items.seq) break
         return this.items(plan.items.plan, new ConcatMapStage(this.rt, plan.f, plan.at, out, this.limits), false)

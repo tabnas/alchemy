@@ -435,7 +435,7 @@ func TestOutputs(t *testing.T) {
 
 func TestArityTypeAndProtocolMismatches(t *testing.T) {
 	for _, c := range [][2]string{
-		{"def export [input] (json input 1)", "arity"},
+		{"def export [input] (json input 1 2)", "arity"},
 		{"def export [input] (csv csv-options)", "arity"},
 		{"def f [a b] a\ndef export [input] (json (f input))", "arity"},
 		{"def export [input] (text 1 (json input))", "arity"},
@@ -460,6 +460,16 @@ func TestArityTypeAndProtocolMismatches(t *testing.T) {
 		}
 	}
 	if c := checkCode(t, "def export [input] (json (text 1))"); c != (coded{CodeDSLTypeError, "type_mismatch", 1, 32}) {
+		t.Errorf("%+v", c)
+	}
+	// json takes an options record before its events.
+	if c := mustCheck(t, "def export [input] (json (record (entry :non-finite :null)) input)"); c.Output != OutputText {
+		t.Errorf("%v", c.Output)
+	}
+	if c := checkCode(t, "def export [input] (json 1 input)"); c != (coded{CodeDSLTypeError, "type_mismatch", 1, 26}) {
+		t.Errorf("%+v", c)
+	}
+	if c := checkCode(t, "def export [input] (json (record) 1)"); c != (coded{CodeDSLTypeError, "type_mismatch", 1, 35}) {
 		t.Errorf("%+v", c)
 	}
 }
@@ -522,6 +532,9 @@ func TestAStreamPassedToADefinitionIsAffineInItsBody(t *testing.T) {
 	}
 	for _, c := range [][2]string{
 		{"def mk [s] (partial json s)\ndef export [input]\n  let [g (mk input)]\n    concat (g) (g)", "type_mismatch"},
+		// A native of more than one arity has no type a partial can read,
+		// and still holds what it is given.
+		{"def mk [s] (partial fail s)\ndef export [input]\n  let [g (mk input)]\n    concat (g) (g)", "type_mismatch"},
 		{"def mk [s] (record (entry :s s))\ndef export [input]\n  let [r (mk input)]\n    concat (json (get :s r)) (json (get :s r))", "type_mismatch"},
 		{"def twice [t] (concat t t)\ndef export [input] (twice (json input))", "reused"},
 		{"def export [input] ((fn [s] (concat (json s) (json s))) input)", "reused"},

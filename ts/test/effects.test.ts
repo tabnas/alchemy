@@ -144,7 +144,7 @@ describe('explain', () => {
 
   it('the JSON echo, the identity and a text of its own', () => {
     const echo = 'def export [input]\n  json input'
-    assert.equal(explain(program(echo, text({ p: 'json', source: INPUT }))), pinned(echo))
+    assert.equal(explain(program(echo, text({ p: 'json', source: INPUT, nonFinite: 'reject' }))), pinned(echo))
     const identity = 'def export [input] input'
     const id = program(identity, stream(INPUT))
     assert.equal(explain(id), pinned(identity))

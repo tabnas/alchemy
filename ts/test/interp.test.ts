@@ -20,6 +20,7 @@ import {
   outer,
   parseFile,
   partial,
+  nonFinite,
   quote,
   quotedLen,
   resolve,
@@ -28,11 +29,12 @@ import {
   source,
   sourceFile,
   span,
+  unquote,
   value,
 } from '../dist/alchemy'
 import { AbortFlag, Datum, Selector, fromJSON, toText } from '../dist/shared'
 
-import { OPTIONS, thrown } from './common'
+import { OPTIONS, compile, thrown } from './common'
 
 const V = value
 
@@ -581,8 +583,42 @@ describe('natives', () => {
     assert.equal(quote('q" \\ \n \u001f é'), toText(Datum.string('q" \\ \n \u001f é')))
     // The length counted before building is the length built, in UTF-8
     // bytes.
-    for (const s of ['', 'plain', 'q" \\ \n \u001f é', 'del\u007f pad\u0080 日本 🚀']) {
+    for (const s of ['', 'plain', 'q" \\ \n \u001f é', 'del\u007f pad\u0080 日本 🚀', 'nonchar\ufffe\uffff\ufffd']) {
       assert.equal(quotedLen(s), Buffer.byteLength(quote(s), 'utf8'), JSON.stringify(s))
+    }
+    // The two noncharacters YAML's printable set and XML's characters
+    // exclude are escaped; U+FFFD, a character, is not.
+    assert.equal(quote('\ufffe\uffff\ufffd'), '"\\ufffe\\uffff\ufffd"')
+  })
+
+  it('unquote reads back what quote writes', () => {
+    for (const s of [
+      '',
+      'plain',
+      'q" b\\ n\n r\r t\t bs\u0008 ff\u000c nul\u0000 us\u001f',
+      'del\u007f pad\u0080 apc\u009f nbsp  é 日本 🚀 /',
+      '\ufffe\uffff',
+    ]) {
+      assert.equal(unquote(quote(s)), s, JSON.stringify(s))
+    }
+    // JSON's other spellings: the solidus, uppercase hex, a surrogate pair.
+    assert.equal(unquote('"\\/\\u00E9\\ud83d\\ude80"'), '/é🚀')
+    // Not a double-quoted form; a surrogate on its own is refused although
+    // a JavaScript string could hold one.
+    for (const text of [
+      '',
+      '"',
+      'plain',
+      '"open',
+      '"in"side"',
+      '"raw\nline"',
+      '"bad \\x escape"',
+      '"short \\u12"',
+      '"lone \\ud800"',
+      '"low \\udc00 first"',
+      '"pair \\ud800\\u0041"',
+    ]) {
+      assert.equal(unquote(text), undefined, JSON.stringify(text))
     }
   })
 
@@ -658,6 +694,121 @@ describe('natives', () => {
     const rt = runtime('').withAbort(flag)
     flag.abort()
     assert.equal((thrown(() => rt.applyNow(indices, [long], at)) as any).code, 'ABORTED')
+  })
+
+  // `unquoted` reads a double-quoted form back, and refuses any other text
+  // as data the program was given, naming it.
+  it('unquoted reads a double-quoted form or refuses the text', () => {
+    const at = span(sourceFile('t'), 0, 0)
+    const unquoted: value.Func = { fn: 'native', native: native('unquoted')! }
+    same(runtime('').applyNow(unquoted, [V.str('"a\\nb \\ud83d\\ude00"')], at), V.str('a\nb 😀'))
+    let f = thrown(() => runtime('').applyNow(unquoted, [V.str('x')], at)) as any
+    assert.deepStrictEqual([f.code, f.message], ['INPUT_INVALID', 'unquoted: "x" is not a double-quoted string'])
+    f = thrown(() => runtime('').applyNow(unquoted, [V.str('"\\ud800"')], at)) as any
+    assert.equal(f.code, 'INPUT_INVALID')
+    f = evalFail('', 'unquoted 1')
+    assert.equal(f.message, 'type_mismatch: unquoted: the string must be a string, not a number')
+  })
+
+  // `chars-within` tests every character, a code point at a time, against
+  // ranges it validates first, and takes an evaluation step every 4096
+  // characters, so the host's abort flag stops a long string's test.
+  it('chars-within tests every character in steps the abort flag reads', () => {
+    const xml = '[[9 10] [13 13] [32 55295] [57344 65533] [65536 1114111]]'
+    same(evalIn('', `chars-within ${xml} "tab\\there 😀"`), V.bool(true))
+    same(evalIn('', `chars-within ${xml} "nul\\u0000"`), V.bool(false))
+    same(evalIn('', `chars-within ${xml} "\\uffff"`), V.bool(false))
+    same(evalIn('', `chars-within ${xml} ""`), V.bool(true))
+    same(evalIn('', 'chars-within [] ""'), V.bool(true))
+    same(evalIn('', 'chars-within [] "a"'), V.bool(false))
+    // A character above U+FFFF is one code point, not two halves.
+    same(evalIn('', 'chars-within [[128512 128512]] "😀"'), V.bool(true))
+    same(evalIn('', 'chars-within [[0 65535]] "😀"'), V.bool(false))
+    for (const [expr, message] of [
+      ['chars-within [[5 3]] "a"', 'a range must be a vector [low high] with low at most high, not [5 3]'],
+      ['chars-within [[0 1.5]] "a"', "a range's bound must be a code point from 0 to 1114111, not 1.5"],
+      ['chars-within [[-1 2]] "a"', "a range's bound must be a code point from 0 to 1114111, not -1"],
+      ['chars-within [[0 1114112]] "a"', "a range's bound must be a code point from 0 to 1114111, not 1114112"],
+      ['chars-within [[0 (number "Infinity")]] "a"', "a range's bound must be a code point from 0 to 1114111, not inf"],
+      ['chars-within [["a" 1]] "a"', "a range's bound must be a number, not a string"],
+      ['chars-within [[0]] "a"', 'a range must be a vector [low high], not a vector of 1 items'],
+      ['chars-within [1] "a"', 'a range must be a vector [low high], not a number'],
+      ['chars-within 1 "a"', 'the data must be a vector, not a number'],
+      ['chars-within [[5 3]] 1', 'a range must be a vector [low high] with low at most high, not [5 3]'],
+      ['chars-within [[0 3]] 1', 'the string must be a string, not a number'],
+    ]) {
+      const f = evalFail('', expr)
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: chars-within: ${message}`], expr)
+    }
+    const at = span(sourceFile('t'), 0, 0)
+    const charsWithin: value.Func = { fn: 'native', native: native('chars-within')! }
+    const all = V.vectorVal([V.vectorVal([n(0), n(1114111)])])
+    const ascii = V.vectorVal([V.vectorVal([n(0), n(127)])])
+    const long = 'k'.repeat(4096 * 64)
+    const huge = V.str(long)
+    same(runtime('').applyNow(charsWithin, [all, huge], at), V.bool(true))
+    const flag = new AbortFlag()
+    const rt = runtime('').withAbort(flag)
+    flag.abort()
+    assert.equal((thrown(() => rt.applyNow(charsWithin, [all, huge], at)) as any).code, 'ABORTED')
+    // The first character outside the ranges answers at once.
+    same(rt.applyNow(charsWithin, [ascii, V.str('é' + long)], at), V.bool(false))
+  })
+
+  // A number that is not finite is refused by `scalar-text`, as the
+  // renderers refuse it, unless the options' `:non-finite` names what to
+  // write instead; a policy that is none is a type error where a number
+  // needs it, and only there.
+  it('scalar-text writes a number that is not finite by the options policy', () => {
+    const options = (policy: string) =>
+      `(record (entry :null-text "-") (entry :missing :error)${'' === policy ? '' : ` (entry :non-finite ${policy})`})`
+    const text = (policy: string, x: string) => evalIn('', `scalar-text ${options(policy)} (number "${x}")`)
+    same(text(':null', 'NaN'), V.str('-'))
+    same(text(':literal', 'NaN'), V.str('NaN'))
+    same(text(':literal', 'Infinity'), V.str('Infinity'))
+    same(text(':literal', '-Infinity'), V.str('-Infinity'))
+    same(text(':reject', '2.50'), V.str('2.50'))
+    same(text(':nope', '2.50'), V.str('2.50'))
+    for (const policy of ['', ':reject']) {
+      const f = evalFail('', `scalar-text ${options(policy)} (number "Infinity")`)
+      assert.equal(f.code, 'TARGET_VALUE_UNREPRESENTABLE', policy)
+    }
+    let f = evalFail('', `scalar-text ${options(':nope')} (number "NaN")`)
+    assert.deepStrictEqual(
+      [f.code, f.message],
+      ['DSL_TYPE_ERROR', 'type_mismatch: :non-finite must be :reject, :null or :literal, not :nope'],
+    )
+    f = evalFail('', `scalar-text ${options('1')} (number "NaN")`)
+    assert.equal(f.message, 'type_mismatch: :non-finite must be :reject, :null or :literal, not a number')
+    // The policy of a record, and of what is no record: none.
+    assert.equal(nonFinite(V.NULL), 'reject')
+    assert.equal(nonFinite(evalIn('', '(record)')), 'reject')
+    assert.equal(nonFinite(evalIn('', '(record (entry :non-finite missing))')), 'reject')
+    assert.equal(nonFinite(evalIn('', '(record (entry :non-finite :literal))')), 'literal')
+    assert.equal(V.nonFiniteWord(-Infinity), '-Infinity')
+    assert.equal(V.nonFiniteNamed('nope'), undefined)
+  })
+
+  // `json` takes an options record first, which holds `:non-finite` and
+  // nothing else, `:reject` or `:null`; the plan carries the policy.
+  it('json takes an options record before its events', () => {
+    const policy = (options: string) => {
+      const result = compile(`def export [input] (json ${options}input)`, 't.alc').result
+      if ('text' !== result.v || 'json' !== result.plan.p) throw new Error('json answers its plan')
+      return result.plan.nonFinite
+    }
+    assert.equal(policy(''), 'reject')
+    assert.equal(policy('(record) '), 'reject')
+    assert.equal(policy('(record (entry :non-finite :reject)) '), 'reject')
+    assert.equal(policy('(record (entry :non-finite :null)) '), 'null')
+    for (const [options, message] of [
+      ['(record (entry :non-finite :literal))', 'json: :non-finite must be :reject or :null, not :literal'],
+      ['(record (entry :non-finite :nope))', ':non-finite must be :reject, :null or :literal, not :nope'],
+      ['(record (entry :non-finite :null) (entry :indent 2))', 'json: an option must be :non-finite, not :indent'],
+    ]) {
+      const f = thrown(() => compile(`def export [input] (json ${options} input)`, 't.alc'))
+      assert.deepStrictEqual([f.code, f.message, f.row, f.col], ['DSL_TYPE_ERROR', `type_mismatch: ${message}`, 1, 20])
+    }
   })
 
   // This package's own number text, as the Rust crate's `shortest_number`

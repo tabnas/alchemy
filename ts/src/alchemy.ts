@@ -134,12 +134,14 @@ export {
   getField,
   implOf,
   kindWord,
+  nonFinite,
   numberText,
   quote,
   quotedLen,
   shortestNumber,
   truth,
   unimplemented,
+  unquote,
 } from './stdlib/natives'
 export type { NativeImpl } from './stdlib/natives'
 

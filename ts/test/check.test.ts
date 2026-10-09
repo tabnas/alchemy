@@ -112,7 +112,11 @@ describe('check', () => {
   })
 
   it('arity, type and protocol mismatches', () => {
-    assert.equal(code('def export [input] (json input 1)')[1], 'arity')
+    assert.equal(code('def export [input] (json input 1 2)')[1], 'arity')
+    // `json` takes an options record before its events.
+    assert.equal(check('def export [input] (json (record (entry :non-finite :null)) input)').output, 'Text')
+    assert.deepStrictEqual(code('def export [input] (json 1 input)'), ['DSL_TYPE_ERROR', 'type_mismatch', 1, 26])
+    assert.deepStrictEqual(code('def export [input] (json (record) 1)'), ['DSL_TYPE_ERROR', 'type_mismatch', 1, 35])
     assert.equal(code('def export [input] (csv csv-options)')[1], 'arity')
     assert.equal(code('def f [a b] a\ndef export [input] (json (f input))')[1], 'arity')
     assert.equal(code('def export [input] (text 1 (json input))')[1], 'arity')
@@ -169,6 +173,9 @@ describe('check', () => {
     assert.deepStrictEqual(r, ['STREAM_REUSED', 'reused', 1, col(src, 's)', 2)])
     // Held by a partial application or a record, to be used again.
     assert.equal(code('def mk [s] (partial json s)\ndef export [input]\n  let [g (mk input)]\n    concat (g) (g)')[1], 'type_mismatch')
+    // A native of more than one arity has no type a partial can read, and
+    // still holds what it is given.
+    assert.equal(code('def mk [s] (partial fail s)\ndef export [input]\n  let [g (mk input)]\n    concat (g) (g)')[1], 'type_mismatch')
     assert.equal(
       code('def mk [s] (record (entry :s s))\ndef export [input]\n  let [r (mk input)]\n    concat (json (get :s r)) (json (get :s r))')[1],
       'type_mismatch',

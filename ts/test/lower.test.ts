@@ -51,6 +51,32 @@ describe('lower', () => {
     assert.equal(csvOptions(bad), undefined)
     assert.equal(csvOptions(V.NULL), undefined)
   })
+
+  // `:non-finite`, when the record has it, is one of three policies, which
+  // the lowering applies around the renderer; one that is none maps to no
+  // dialect, and the library's `csv` runs, whose `scalar-text` refuses it.
+  it('a csv options record maps with a non-finite policy and not with another value', () => {
+    const base = '(entry :delimiter ",") (entry :newline "\\r\\n") (entry :header true) (entry :null-text "") (entry :missing :error)'
+    const rt = runtime(
+      `def lit (record ${base} (entry :non-finite :literal))\ndef nul (record ${base} (entry :non-finite :null))\ndef nope (record ${base} (entry :non-finite :nope))\ndef one (record ${base} (entry :non-finite 1))`,
+      true,
+    )
+    const options = (name: string) => csvOptions(run(rt.defValue('program', name)) as value.Val)
+    assert.deepStrictEqual(options('lit'), CsvOptions.default())
+    assert.deepStrictEqual(options('nul'), CsvOptions.default())
+    assert.equal(options('nope'), undefined)
+    assert.equal(options('one'), undefined)
+    // The fast path takes the first two, and declines the others for the
+    // library's text.
+    const binding = 'def b\n  record\n    entry :columns (path "m")\n    entry :rows (path "r" each-index)\n    entry :column (fn [d] d)\n'
+    for (const [policy, fast] of [[':literal', true], [':null', true], [':nope', false]] as const) {
+      const result = compile(
+        `${binding}def o (record ${base} (entry :non-finite ${policy}))\ndef export [input] (csv o (table-from-json b input))`,
+        't.alc',
+      ).result
+      assert.equal('text' === result.v && 'csv' === result.plan.p, fast, policy)
+    }
+  })
 })
 
 describe('program', () => {

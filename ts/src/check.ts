@@ -880,6 +880,13 @@ class Checker {
       case 'number':
         this.expect('the string of number', Str, t(0), at(0))
         return Num
+      case 'unquoted':
+        this.expect('the string of unquoted', Str, t(0), at(0))
+        return Str
+      case 'chars-within':
+        this.expect('the ranges of chars-within', vectorOf(Unknown), t(0), at(0))
+        this.expect('the string of chars-within', Str, t(1), at(1))
+        return Bool
       case 'compare':
         this.expect('the first number of compare', Num, t(0), at(0))
         this.expect('the second number of compare', Num, t(1), at(1))
@@ -949,7 +956,13 @@ class Checker {
           }
           return func(f.params.slice(args.length - 1), f.result)
         }
-        if ('Unknown' === f.t || 'Never' === f.t) return Unknown
+        // A function of more than one arity (`json`, `fail`) or of a type
+        // only the run knows: its arguments are still held, so none may be
+        // a stream.
+        if ('Unknown' === f.t || 'Never' === f.t) {
+          for (let i = 1; i < args.length; i++) noStream(i, 'a partial application')
+          return Unknown
+        }
         throw this.mismatch('the function of partial', funcOf(1), f, at(0))
       }
       case 'join': {
@@ -1031,9 +1044,13 @@ class Checker {
           )
         }
         return tagged('scalar')
-      case 'json':
-        this.expect('the events of json', JsonEvents, t(0), at(0))
+      case 'json': {
+        // `json events`, or `json options events`.
+        const events = args.length - 1
+        if (2 === args.length) this.expect('the options of json', Record, t(0), at(0))
+        this.expect('the events of json', JsonEvents, t(events), at(events))
         return Text
+      }
       case 'csv-table':
         this.expect('the options of csv-table', Record, t(0), at(0))
         this.expect('the table events of csv-table', tableEvents(), t(1), at(1))

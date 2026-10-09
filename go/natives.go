@@ -54,6 +54,8 @@ func init() {
 		"count":           nCount,
 		"keys":            nKeys,
 		"length":          nLength,
+		"unquoted":        nUnquoted,
+		"chars-within":    nCharsWithin,
 		"number":          nNumber,
 		"compare":         nCompare,
 		"number-class":    nNumberClass,
@@ -582,6 +584,207 @@ func nNumber(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	return NumLexeme(v, s), nil
 }
 
+// nUnquoted is `unquoted string`: the string a double-quoted form spells,
+// the reverse of `quoted`: a leading and a trailing quote around
+// characters and JSON's escapes (\", \\, \/, \b, \f, \n, \r, \t and
+// \uXXXX, a surrogate pair as the one character it names). Any other text
+// is INPUT_INVALID: no quotes, a quote or a control character unescaped
+// inside, another escape, or a surrogate on its own. A format's reverse
+// reads back with it what its embedding wrote with `quoted`.
+func nUnquoted(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	s, f := asStr("unquoted", "the string", a[0])
+	if f != nil {
+		return nil, f
+	}
+	text, ok := unquote(s)
+	if !ok {
+		return nil, inputInvalid("unquoted: " + strconv.Quote(s) + " is not a double-quoted string")
+	}
+	if f := rt.Tick(); f != nil {
+		return nil, f
+	}
+	return StrVal(text), nil
+}
+
+// unquote is the string a double-quoted form spells, and whether s is
+// one.
+func unquote(s string) (string, bool) {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return "", false
+	}
+	inner := s[1 : len(s)-1]
+	var b strings.Builder
+	b.Grow(len(inner))
+	i := 0
+	// hex4 reads four hex digits at i, either case.
+	hex4 := func() (rune, bool) {
+		if i+4 > len(inner) {
+			return 0, false
+		}
+		var v rune
+		for k := i; k < i+4; k++ {
+			c := inner[k]
+			switch {
+			case '0' <= c && c <= '9':
+				v = v*16 + rune(c-'0')
+			case 'a' <= c && c <= 'f':
+				v = v*16 + rune(c-'a'+10)
+			case 'A' <= c && c <= 'F':
+				v = v*16 + rune(c-'A'+10)
+			default:
+				return 0, false
+			}
+		}
+		i += 4
+		return v, true
+	}
+	for i < len(inner) {
+		c := inner[i]
+		if c == '"' || c < 0x20 {
+			return "", false
+		}
+		if c != '\\' {
+			// A run of characters written as themselves, taken whole: no
+			// byte of a multi-byte character is a quote, a backslash or a
+			// control character.
+			j := i + 1
+			for j < len(inner) && inner[j] != '"' && inner[j] >= 0x20 && inner[j] != '\\' {
+				j++
+			}
+			b.WriteString(inner[i:j])
+			i = j
+			continue
+		}
+		if i+1 >= len(inner) {
+			return "", false
+		}
+		escape := inner[i+1]
+		i += 2
+		switch escape {
+		case '"':
+			b.WriteByte('"')
+		case '\\':
+			b.WriteByte('\\')
+		case '/':
+			b.WriteByte('/')
+		case 'b':
+			b.WriteByte('\b')
+		case 'f':
+			b.WriteByte('\f')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'u':
+			code, ok := hex4()
+			if !ok {
+				return "", false
+			}
+			switch {
+			case 0xD800 <= code && code <= 0xDBFF:
+				// A high surrogate names a character only with the low one
+				// after it, as a second escape.
+				if i+2 > len(inner) || inner[i] != '\\' || inner[i+1] != 'u' {
+					return "", false
+				}
+				i += 2
+				low, ok := hex4()
+				if !ok || low < 0xDC00 || low > 0xDFFF {
+					return "", false
+				}
+				code = 0x10000 + (code-0xD800)<<10 + (low - 0xDC00)
+			case 0xDC00 <= code && code <= 0xDFFF:
+				return "", false
+			}
+			b.WriteRune(code)
+		default:
+			return "", false
+		}
+	}
+	return b.String(), true
+}
+
+// nCharsWithin is `chars-within ranges string`: whether every character
+// of the string lies within one of the ranges, each a vector [low high]
+// of code points, both included. The empty string is within any ranges. A
+// format's part tests a string with it against the characters the format
+// can carry (XML's Char production, a name's characters) before it writes
+// the string, and chooses its convention when it cannot.
+func nCharsWithin(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	ranges, f := asItems("chars-within", a[0])
+	if f != nil {
+		return nil, f
+	}
+	point := func(v Val) (rune, *Fail) {
+		n, ok := v.(NumVal)
+		if !ok {
+			return 0, typeError("chars-within: a range's bound must be a number, not " + KindOf(v))
+		}
+		if isWhole(n.Value) && n.Value >= 0 && n.Value <= 1114111 {
+			return rune(n.Value), nil
+		}
+		// The bound as it was spelled, or as Rust's Display writes a value
+		// that has no number text (inf, NaN).
+		spelled, f := numberText(n.Value, n.Lexeme, n.HasLexeme)
+		if f != nil {
+			spelled = floatText(n.Value)
+		}
+		return 0, typeError("chars-within: a range's bound must be a code point from 0 to 1114111, not " + spelled)
+	}
+	bounds := make([][2]rune, 0, len(ranges))
+	for _, r := range ranges {
+		pair, ok := r.(*VectorVal)
+		if !ok || len(pair.Items) != 2 {
+			what := KindOf(r)
+			if ok {
+				what = fmt.Sprintf("a vector of %d items", len(pair.Items))
+			}
+			return nil, typeError("chars-within: a range must be a vector [low high], not " + what)
+		}
+		low, f := point(pair.Items[0])
+		if f != nil {
+			return nil, f
+		}
+		high, f := point(pair.Items[1])
+		if f != nil {
+			return nil, f
+		}
+		if low > high {
+			return nil, typeError(fmt.Sprintf(
+				"chars-within: a range must be a vector [low high] with low at most high, not [%d %d]", low, high))
+		}
+		bounds = append(bounds, [2]rune{low, high})
+	}
+	s, f := asStr("chars-within", "the string", a[1])
+	if f != nil {
+		return nil, f
+	}
+	// An evaluation step every 4096 characters, so the host's abort flag
+	// stops a long string's test as it stops any long evaluation.
+	i := 0
+	for _, c := range s {
+		if i%4096 == 4095 {
+			if f := rt.Tick(); f != nil {
+				return nil, f
+			}
+		}
+		i++
+		within := false
+		for _, b := range bounds {
+			if b[0] <= c && c <= b[1] {
+				within = true
+				break
+			}
+		}
+		if !within {
+			return BoolVal(false), nil
+		}
+	}
+	return BoolVal(true), nil
+}
+
 // nLength is `length string`: how many characters the string holds, as a
 // column counts them (Unicode scalar values). A long string is counted a
 // chunk at a time, an evaluation step each, so the host's abort flag stops
@@ -1015,11 +1218,14 @@ func nReplaceText(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 
 // nScalarText is the text of a scalar cell under the options' policies:
 // what the CSV renderer writes for the same cell, so that the interpreted
-// and the native `csv` agree byte for byte.
+// and the native `csv` agree byte for byte. A number that is not finite is
+// refused, as the renderer refuses it, unless the options' :non-finite
+// says to write the null text (:null) or the word (:literal) instead.
 func nScalarText(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	options, cell := a[0], a[1]
-	switch x := cell.(type) {
-	case NullVal:
+	// The options' null text, for a null cell and for a number that is
+	// not finite under :non-finite :null.
+	nullText := func() (Val, *Fail) {
 		v, f := option("scalar-text", options, "null-text")
 		if f != nil {
 			return nil, f
@@ -1029,9 +1235,25 @@ func nScalarText(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 			return nil, f
 		}
 		return StrVal(s), nil
+	}
+	switch x := cell.(type) {
+	case NullVal:
+		return nullText()
 	case BoolVal:
 		return StrVal(strconv.FormatBool(bool(x))), nil
 	case NumVal:
+		if math.IsNaN(x.Value) || math.IsInf(x.Value, 0) {
+			policy, f := NonFinitePolicy(options)
+			if f != nil {
+				return nil, f
+			}
+			switch policy {
+			case NonFiniteNull:
+				return nullText()
+			case NonFiniteLiteral:
+				return StrVal(NonFiniteWord(x.Value)), nil
+			}
+		}
 		s, f := numberText(x.Value, x.Lexeme, x.HasLexeme)
 		if f != nil {
 			return nil, f
@@ -1064,12 +1286,39 @@ func nScalarText(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	return nil, typeError("scalar-text: a scalar was expected, not " + KindOf(cell))
 }
 
+// NonFinitePolicy is the :non-finite policy of an options record:
+// NonFiniteReject (the default, when the record has none), NonFiniteNull
+// or NonFiniteLiteral; any other value is a type error. What is not a
+// record has none.
+func NonFinitePolicy(options Val) (NonFinite, *Fail) {
+	v, ok := Field(options, "non-finite")
+	if !ok || IsMissing(v) {
+		return NonFiniteReject, nil
+	}
+	if k, ok := v.(KeywordVal); ok {
+		if policy, ok := NonFiniteNamed(string(k)); ok {
+			return policy, nil
+		}
+		return NonFiniteReject, typeError(":non-finite must be :reject, :null or :literal, not :" + string(k))
+	}
+	return NonFiniteReject, typeError(":non-finite must be :reject, :null or :literal, not " + KindOf(v))
+}
+
+// escapedAsCode is whether quote writes a character as \uXXXX: U+0000 to
+// U+001F but the five with short escapes, U+007F to U+009F, U+FFFE and
+// U+FFFF.
+func escapedAsCode(c rune) bool {
+	return c < 0x20 || (c >= 0x7f && c <= 0x9f) || c == 0xfffe || c == 0xffff
+}
+
 // quote is the double-quoted form of s: the JSON string form (RFC 8259's
 // escapes for the quote, the backslash and U+0000 to U+001F, the short
 // ones where they exist, \u00xx otherwise, in the render package's
-// lowercase) with U+007F to U+009F escaped the same way, since YAML's
-// double-quoted style reads JSON's escapes but its printable set excludes
-// the C1 controls. Every other character is written as itself.
+// lowercase) with U+007F to U+009F, U+FFFE and U+FFFF escaped the same
+// way, since YAML's double-quoted style reads JSON's escapes but its
+// printable set excludes the C1 controls and those two noncharacters,
+// which XML's characters exclude too. Every other character is written as
+// itself.
 func quote(s string) string {
 	var b strings.Builder
 	b.Grow(quotedLen(s))
@@ -1090,7 +1339,7 @@ func quote(s string) string {
 			b.WriteString(`\b`)
 		case c == '\f':
 			b.WriteString(`\f`)
-		case c < 0x20 || (c >= 0x7f && c <= 0x9f):
+		case escapedAsCode(c):
 			fmt.Fprintf(&b, `\u%04x`, c)
 		default:
 			b.WriteRune(c)
@@ -1102,14 +1351,14 @@ func quote(s string) string {
 
 // quotedLen is the length of quote's result, counted before it is built:
 // two quotes, and each character as itself, as a two-byte escape, or as
-// the six bytes of \u00XX.
+// the six bytes of \uXXXX.
 func quotedLen(s string) int {
 	n := 2
 	for _, c := range s {
 		switch {
 		case c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r' || c == '\b' || c == '\f':
 			n += 2
-		case c < 0x20 || (c >= 0x7f && c <= 0x9f):
+		case escapedAsCode(c):
 			n += 6
 		default:
 			n += utf8.RuneLen(c)
@@ -1324,12 +1573,51 @@ func nCsvTable(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	return StreamVal{Plan: &Plan{Kind: PlanCsvTable, Options: a[0], Source: source}}, nil
 }
 
+// nJSON is `json events`, or `json options events`: the options, when
+// given, are read before the events.
 func nJSON(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
-	source, f := asStream("json", a[0])
+	policy := NonFiniteReject
+	var events Val
+	switch len(a) {
+	case 1:
+		events = a[0]
+	case 2:
+		p, f := jsonNonFinite(a[0])
+		if f != nil {
+			return nil, f
+		}
+		policy, events = p, a[1]
+	default:
+		return nil, typeError("json takes events, or an options record and events")
+	}
+	source, f := asStream("json", events)
 	if f != nil {
 		return nil, f
 	}
-	return TextVal{Plan: &Plan{Kind: PlanJSON, Source: source}}, nil
+	return TextVal{Plan: &Plan{Kind: PlanJSON, Source: source, NonFinite: policy}}, nil
+}
+
+// jsonNonFinite is the policy json's options record names (the Rust
+// crate's json_options): it holds :non-finite and nothing else, :reject or
+// :null, since JSON has no other spelling.
+func jsonNonFinite(options Val) (NonFinite, *Fail) {
+	r, ok := options.(*RecordVal)
+	if !ok {
+		return NonFiniteReject, typeError("json: the options must be a record, not " + KindOf(options))
+	}
+	for _, k := range r.Keys() {
+		if k != "non-finite" {
+			return NonFiniteReject, typeError("json: an option must be :non-finite, not :" + k)
+		}
+	}
+	policy, f := NonFinitePolicy(options)
+	if f != nil {
+		return NonFiniteReject, f
+	}
+	if policy == NonFiniteLiteral {
+		return NonFiniteReject, typeError("json: :non-finite must be :reject or :null, not :literal")
+	}
+	return policy, nil
 }
 
 func nRecords(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {

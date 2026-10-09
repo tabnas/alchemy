@@ -4,6 +4,7 @@ package tabnasalchemy
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -133,7 +134,10 @@ func isInferred(binding Val) bool {
 // csvOptions is the renderer's dialect for a `csv-options` record, when
 // every field has a value the renderer accepts: :delimiter one character,
 // :newline CRLF or LF, :header a boolean, :null-text a string, :missing
-// :error or a string. Any other record runs the library's own csv.
+// :error or a string, and :non-finite, when the record has it, :reject,
+// :null or :literal. Any other record runs the library's own csv, whose
+// `scalar-text` refuses a :non-finite that names no policy where a cell
+// needs it.
 func csvOptions(v Val) (shared.CSVOptions, bool) {
 	r, ok := v.(*RecordVal)
 	if !ok {
@@ -179,7 +183,68 @@ func csvOptions(v Val) (shared.CSVOptions, bool) {
 	default:
 		return shared.CSVOptions{}, false
 	}
+	if _, f := NonFinitePolicy(v); f != nil {
+		return shared.CSVOptions{}, false
+	}
 	return options, true
+}
+
+// nullNonFinite is the json renderer's adapter for :non-finite :null: a
+// number that is not finite goes on as null, everything else as it came.
+type nullNonFinite struct {
+	next shared.Sink
+}
+
+func (n *nullNonFinite) Event(ev shared.Event) (shared.Flow, *Fail) {
+	if ev.Kind == shared.Number && (math.IsNaN(ev.Value) || math.IsInf(ev.Value, 0)) {
+		return n.next.Event(shared.EvNull())
+	}
+	return n.next.Event(ev)
+}
+
+// isNonFiniteCell is whether a cell is a number that is not finite.
+func isNonFiniteCell(c *shared.Cell) bool {
+	return c.Kind == shared.CellNumber && (math.IsNaN(c.Value) || math.IsInf(c.Value, 0))
+}
+
+// nonFiniteCells is the CSV renderer's adapter for :non-finite :null or
+// :literal: a number cell that is not finite goes on as a null cell, which
+// the renderer writes as the null text, or as the string Infinity,
+// -Infinity or NaN, as `scalar-text` writes it under the same options. A
+// row with such a cell is copied into cells, which the next row reuses.
+type nonFiniteCells struct {
+	policy NonFinite
+	next   shared.TableSink
+	cells  []shared.Cell
+}
+
+func (n *nonFiniteCells) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
+	if ev.Kind != shared.TableRow {
+		return n.next.TableEvent(ev)
+	}
+	found := false
+	for i := range ev.Cells {
+		if isNonFiniteCell(&ev.Cells[i]) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return n.next.TableEvent(ev)
+	}
+	n.cells = append(n.cells[:0], ev.Cells...)
+	for i := range n.cells {
+		c := &n.cells[i]
+		if !isNonFiniteCell(c) {
+			continue
+		}
+		if n.policy == NonFiniteNull {
+			*c = shared.Cell{Kind: shared.CellNull}
+		} else {
+			*c = shared.Cell{Kind: shared.CellString, Text: NonFiniteWord(c.Value)}
+		}
+	}
+	return n.next.TableEvent(shared.TableEvent{Kind: shared.TableRow, Cells: n.cells})
 }
 
 // csvProfile is a CSV dialect as the report prints it.
@@ -1190,9 +1255,20 @@ func (l *Lowering) text(p *Plan, out shared.TextOut) (shared.Sink, *Fail) {
 		if f != nil {
 			return nil, f
 		}
-		return l.table(p.Source, renderer, false)
+		policy, f := NonFinitePolicy(p.Options)
+		if f != nil {
+			return nil, f
+		}
+		if policy == NonFiniteReject {
+			return l.table(p.Source, renderer, false)
+		}
+		return l.table(p.Source, &nonFiniteCells{policy: policy, next: renderer}, false)
 	case p.Kind == PlanJSON:
-		return l.events(p.Source, l.rt.Renderers().JSON(out, jsonOptions()))
+		json := l.rt.Renderers().JSON(out, jsonOptions())
+		if p.NonFinite == NonFiniteNull {
+			return l.events(p.Source, &nullNonFinite{next: json})
+		}
+		return l.events(p.Source, json)
 	case p.Kind == PlanConcatMap && p.Seq.IsStream():
 		return l.items(p.Seq.Stream, &concatMapStage{rt: l.rt, f: p.F, at: p.At, out: out, scratch: newScratch(l.limits)}, false)
 	case p.Kind == PlanJoin && p.Seq.IsStream():

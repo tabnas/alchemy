@@ -202,8 +202,27 @@ export type Plan =
   | { readonly p: 'replace'; readonly from: string; readonly to: string; readonly source: Val }
   // The standard CSV renderer, run natively.
   | { readonly p: 'csv'; readonly options: Val; readonly source: Plan }
-  // `json events`.
-  | { readonly p: 'json'; readonly source: Plan }
+  // `json events`, or `json options events`.
+  | { readonly p: 'json'; readonly source: Plan; readonly nonFinite: NonFinite }
+
+// What a renderer does with a number that is not finite (infinity,
+// negative infinity or NaN), which JSON has no spelling for and CSV no
+// type: the `:non-finite` option of `json` and of a CSV options record.
+// `reject`, the default, is TARGET_VALUE_UNREPRESENTABLE; `null` writes it
+// as null, `null` in JSON and the null text in CSV; `literal` (CSV only)
+// writes the cell's text as the word `Infinity`, `-Infinity` or `NaN`.
+export type NonFinite = 'reject' | 'null' | 'literal'
+
+// The policy a keyword names.
+export function nonFiniteNamed(name: string): NonFinite | undefined {
+  return 'reject' === name || 'null' === name || 'literal' === name ? name : undefined
+}
+
+// The word `:literal` writes for a number that is not finite.
+export function nonFiniteWord(value: number): string {
+  if (Number.isNaN(value)) return 'NaN'
+  return value > 0 ? 'Infinity' : '-Infinity'
+}
 
 // What a plan produces: `JsonEvents`, `TableRows` (natively), or `Items`
 // for a stream of values whose shape the runtime learns item by item.

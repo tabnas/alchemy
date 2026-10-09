@@ -1175,6 +1175,10 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(NumberT, exp("the string of length", StringT, 0)())
 	case "number":
 		return ret(NumberT, exp("the string of number", StringT, 0)())
+	case "unquoted":
+		return ret(StringT, exp("the string of unquoted", StringT, 0)())
+	case "chars-within":
+		return ret(BoolT, first(exp("the ranges of chars-within", VectorOf(Unknown), 0), exp("the string of chars-within", StringT, 1)))
 	case "compare":
 		return ret(KeywordT, first(exp("the first number of compare", NumberT, 0), exp("the second number of compare", NumberT, 1)))
 	case "number-class":
@@ -1239,6 +1243,14 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 			}
 			return Func(append([]Type(nil), params[len(args)-1:]...), *t(0).Result), nil
 		case TUnknown, TNever:
+			// A function of more than one arity (`json`, `fail`) or of a
+			// type only the run knows: its arguments are still held, so
+			// none may be a stream.
+			for i := 1; i < len(args); i++ {
+				if f := noStream(i, "a partial application"); f != nil {
+					return Type{}, f
+				}
+			}
 			return Unknown, nil
 		}
 		return Type{}, c.mismatch("the function of partial", FuncOf(1), t(0), at(0))
@@ -1316,7 +1328,14 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		}
 		return Tagged("scalar"), nil
 	case "json":
-		return ret(TextT, exp("the events of json", JsonEvents, 0)())
+		// `json events`, or `json options events`.
+		events := len(args) - 1
+		if len(args) == 2 {
+			if f := exp("the options of json", RecordT, 0)(); f != nil {
+				return Type{}, f
+			}
+		}
+		return ret(TextT, exp("the events of json", JsonEvents, events)())
 	case "csv-table":
 		return ret(TableEvents(), first(exp("the options of csv-table", RecordT, 0), exp("the table events of csv-table", TableEvents(), 1)))
 	case "records":
