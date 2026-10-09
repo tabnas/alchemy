@@ -1041,6 +1041,28 @@ fn as_events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Stream(Arc::new(Plan::AsEvents { source })))
 }
 
+/// The positions of a vector's items, as numbers: what the interpreted
+/// inferred table labels an array row's cells by. A bounded operation
+/// over one vector, like `keys` over one record.
+fn indices(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Vector(items) => {
+            // A step per item, as `keys` takes one per key, so the host's
+            // abort flag stops a long vector's count like any evaluation.
+            let mut out = Vec::with_capacity(items.len());
+            for i in 0..items.len() {
+                rt.tick()?;
+                out.push(Val::num(i as f64));
+            }
+            Ok(Val::vector(out))
+        }
+        other => Err(type_error(format!(
+            "indices: a vector was expected, not {}",
+            other.kind()
+        ))),
+    }
+}
+
 fn is_ready_value(v: &Val) -> bool {
     matches!(v, Val::Tagged { tag, fields } if &**tag == "ready" && fields.len() == 1)
 }
@@ -1254,6 +1276,7 @@ static NATIVES: &[Native] = &[
     f("route", Exact(2), route, "route captures input -> Stream<Selected>", "one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap"),
     f("select", Exact(2), select, "select selector input -> Stream<Value>", "route with one capture, delivering the values"),
     f("events", Exact(1), events, "events input -> Stream<Event>", "every event of JsonEvents as one item, as it arrives: the container events as constants, key and scalar with their one field; End ends the stream and is no item; nothing is retained between events"),
+    f("indices", Exact(1), indices, "indices vector -> Vector<Number>", "the positions of the vector's items, 0 to one less than its count, as numbers: the labels the inferred table gives an array row's cells; a bounded operation over one vector"),
     f("as-events", Exact(1), as_events, "as-events items -> JsonEvents", "a stream of items the program built, each an event, as JsonEvents: what every taker of JSON events applies to such a stream, said by the program where the checker cannot type the items (an export, say); an item that is not an event fails where it arrives"),
     f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its concat-map applies included): at most max_metadata_bytes, no deeper than max_depth, reported in retained_bytes_high; ready after each item; finish runs once at the validated end"),
     k("transition", Exact(2), transition, "transition state outputs -> Transition", "one step's result: the next state and a vector of outputs"),
@@ -1349,7 +1372,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 43);
+        assert_eq!(compared, 44);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

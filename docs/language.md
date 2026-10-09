@@ -598,6 +598,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `top` | `top vector -> Value` | the last item; an empty vector is a type error |
 | `count` | `count vector -> Number` | how many items the vector holds |
 | `keys` | `keys record -> Vector` | the record's keys as strings, in its order, which for a captured object is the document's |
+| `indices` | `indices vector -> Vector<Number>` | the positions of the vector's items, 0 to one less than its count, as numbers: the labels the inferred table gives an array row's cells; a bounded operation over one vector |
 | `length` | `length string -> Number` | how many characters the string holds |
 | `compare` | `compare a b -> Keyword` | how two numbers are ordered: `:less`, `:equal` or `:greater`, and `:unordered` when either is NaN |
 | `number-class` | `number-class number -> Keyword` | `:finite`, `:infinity`, `:negative-infinity` or `:nan` |
@@ -766,8 +767,9 @@ fail "Required metadata was not found"
 ### The library's own definitions
 
 The rest of the library is written in alchemy, embedded from
-[`stdlib/table.alc`](../stdlib/table.alc) and
-[`stdlib/csv.alc`](../stdlib/csv.alc), and checked against its declared
+[`stdlib/table.alc`](../stdlib/table.alc),
+[`stdlib/csv.alc`](../stdlib/csv.alc) and
+[`stdlib/root.alc`](../stdlib/root.alc), and checked against its declared
 signatures as it loads. The blocks below are those files' text, word for
 word (`rs/tests/spec_test.rs` holds the two together), and they are the
 reference: the runtime runs `table-from-json` and `csv` natively when
@@ -788,8 +790,11 @@ native renderer fails it rather than being printed. And the binding may
 take its columns from the first row rather than from metadata
 (`:columns :infer`), which the spec leaves to the host: `table-captures`
 routes only the rows then, `table-first-row` binds the columns from the
-first row's keys (`keys`), and `table-finish-for` writes the schema of
-no columns for a document with no rows, leaving `table-finish` as the
+first row (`table-inferred-columns`: an object's members by name, an
+array's cells by position, a scalar as the one column `value`; a later
+row of another kind projects through those sources and is missing where
+a path does not apply to it), and `table-finish-for` writes the schema
+of no columns for a document with no rows, leaving `table-finish` as the
 spec has it.
 
 The table transducer, metadata first or inferred from the first row,
@@ -827,26 +832,53 @@ def table-row [columns raw]
 ```
 
 ```alchemy
+def table-positional-column [i]
+  record
+    entry :label (scalar-text csv-options i)
+    entry :source (path i)
+```
+```core
+(def table-positional-column (fn [i] (record (entry :label (scalar-text csv-options i)) (entry :source (path i)))))
+```
+
+```alchemy
+def table-value-column
+  record
+    entry :label "value"
+    entry :source root
+```
+```core
+(def table-value-column (record (entry :label "value") (entry :source root)))
+```
+
+```alchemy
+def table-inferred-columns [raw]
+  match (kind raw)
+    case :record (map table-inferred-column (keys raw))
+    case :vector (map table-positional-column (indices raw))
+    case _ (vector table-value-column)
+```
+```core
+(def table-inferred-columns (fn [raw] (match (kind raw) (case :record (map table-inferred-column (keys raw))) (case :vector (map table-positional-column (indices raw))) (case _ (vector table-value-column)))))
+```
+
+```alchemy
 def table-first-row [binding state raw]
   match (get :columns binding)
     case :infer
-      match (kind raw)
-        case :record
-          let [columns (map table-inferred-column (keys raw))]
-            transition (ready columns)
-              vector
-                schema
-                  map public-column columns
-                table-row columns raw
-        case _
-          fail "The first row is not an object, so no columns can be inferred from it"
+      let [columns (table-inferred-columns raw)]
+        transition (ready columns)
+          vector
+            schema
+              map public-column columns
+            table-row columns raw
     case _
       transition state
         vector
           table-row (require-columns state) raw
 ```
 ```core
-(def table-first-row (fn [binding state raw] (match (get :columns binding) (case :infer (match (kind raw) (case :record (let [columns (map table-inferred-column (keys raw))] (transition (ready columns) (vector (schema (map public-column columns)) (table-row columns raw))))) (case _ (fail "The first row is not an object, so no columns can be inferred from it")))) (case _ (transition state (vector (table-row (require-columns state) raw)))))))
+(def table-first-row (fn [binding state raw] (match (get :columns binding) (case :infer (let [columns (table-inferred-columns raw)] (transition (ready columns) (vector (schema (map public-column columns)) (table-row columns raw))))) (case _ (transition state (vector (table-row (require-columns state) raw)))))))
 ```
 
 ```alchemy
@@ -1044,6 +1076,115 @@ and is pinned: metadata selected twice (a `:columns` selector naming
 several locations) is `INPUT_ORDER_VIOLATION` natively, since a table has
 one schema, and `INPUT_INVALID` interpreted, the text's own `fail`.
 
+
+The root adapters, `JsonEvents` in and `JsonEvents` out: a render that
+writes from a tree may need the root to be an object (TOML, INI) or an
+array (JSON Lines, and a records target, whose rows are its elements).
+`wrap-object name input` passes an object root through and wraps an
+array or a scalar as the one member `name` of an object; `wrap-array
+input` passes an array root through and wraps an object or a scalar as
+the one element of an array. Each decides at the first event, retains
+one marker and, while it wraps a container, one marker per open
+container, and is a rewritten tree (`as-events`), so any taker of JSON
+events takes it. A stream that begins with an end or a key, ends inside
+a container, or holds more after a wrapped root is refused as no tree's
+(`PROTOCOL_ORDER_ERROR`).
+
+```alchemy
+def wrap-object-close [stack event]
+  let [rest (pop stack)]
+    match (count rest)
+      case 0 (transition [:done] [event object-end])
+      case _ (transition [:wrap rest] [event])
+```
+```core
+(def wrap-object-close (fn [stack event] (let [rest (pop stack)] (match (count rest) (case 0 (transition [:done] [event object-end])) (case _ (transition [:wrap rest] [event]))))))
+```
+
+```alchemy
+def wrap-object-step [name state event]
+  match state
+    case [:start]
+      match event
+        case object-start (transition [:pass] [event])
+        case array-start (transition [:wrap [:open]] [object-start (key name) event])
+        case (scalar value) (transition [:done] [object-start (key name) event object-end])
+        case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")
+    case [:pass] (transition state [event])
+    case [:wrap stack]
+      match event
+        case array-start (transition [:wrap (push :open stack)] [event])
+        case object-start (transition [:wrap (push :open stack)] [event])
+        case array-end (wrap-object-close stack event)
+        case object-end (wrap-object-close stack event)
+        case _ (transition state [event])
+    case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")
+```
+```core
+(def wrap-object-step (fn [name state event] (match state (case [:start] (match event (case object-start (transition [:pass] [event])) (case array-start (transition [:wrap [:open]] [object-start (key name) event])) (case (scalar value) (transition [:done] [object-start (key name) event object-end])) (case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")))) (case [:pass] (transition state [event])) (case [:wrap stack] (match event (case array-start (transition [:wrap (push :open stack)] [event])) (case object-start (transition [:wrap (push :open stack)] [event])) (case array-end (wrap-object-close stack event)) (case object-end (wrap-object-close stack event)) (case _ (transition state [event])))) (case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")))))
+```
+
+```alchemy
+def wrap-finish [state]
+  match state
+    case [:start] (fail :protocol-order "the events hold no value, where a tree's hold one")
+    case [:pass] []
+    case [:done] []
+    case _ (fail :protocol-order "the events ended inside a container, which a tree's never do")
+```
+```core
+(def wrap-finish (fn [state] (match state (case [:start] (fail :protocol-order "the events hold no value, where a tree's hold one")) (case [:pass] []) (case [:done] []) (case _ (fail :protocol-order "the events ended inside a container, which a tree's never do")))))
+```
+
+```alchemy
+def wrap-object [name input]
+  as-events (scan-emit [:start] (partial wrap-object-step name) wrap-finish (events input))
+```
+```core
+(def wrap-object (fn [name input] (as-events (scan-emit [:start] (partial wrap-object-step name) wrap-finish (events input)))))
+```
+
+```alchemy
+def wrap-array-close [stack event]
+  let [rest (pop stack)]
+    match (count rest)
+      case 0 (transition [:done] [event array-end])
+      case _ (transition [:wrap rest] [event])
+```
+```core
+(def wrap-array-close (fn [stack event] (let [rest (pop stack)] (match (count rest) (case 0 (transition [:done] [event array-end])) (case _ (transition [:wrap rest] [event]))))))
+```
+
+```alchemy
+def wrap-array-step [state event]
+  match state
+    case [:start]
+      match event
+        case array-start (transition [:pass] [event])
+        case object-start (transition [:wrap [:open]] [array-start event])
+        case (scalar value) (transition [:done] [array-start event array-end])
+        case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")
+    case [:pass] (transition state [event])
+    case [:wrap stack]
+      match event
+        case array-start (transition [:wrap (push :open stack)] [event])
+        case object-start (transition [:wrap (push :open stack)] [event])
+        case array-end (wrap-array-close stack event)
+        case object-end (wrap-array-close stack event)
+        case _ (transition state [event])
+    case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")
+```
+```core
+(def wrap-array-step (fn [state event] (match state (case [:start] (match event (case array-start (transition [:pass] [event])) (case object-start (transition [:wrap [:open]] [array-start event])) (case (scalar value) (transition [:done] [array-start event array-end])) (case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")))) (case [:pass] (transition state [event])) (case [:wrap stack] (match event (case array-start (transition [:wrap (push :open stack)] [event])) (case object-start (transition [:wrap (push :open stack)] [event])) (case array-end (wrap-array-close stack event)) (case object-end (wrap-array-close stack event)) (case _ (transition state [event])))) (case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")))))
+```
+
+```alchemy
+def wrap-array [input]
+  as-events (scan-emit [:start] wrap-array-step wrap-finish (events input))
+```
+```core
+(def wrap-array (fn [input] (as-events (scan-emit [:start] wrap-array-step wrap-finish (events input)))))
+```
 ## Programs
 
 The spec's worked example (sections 5, 12.1 and 13.4): an application

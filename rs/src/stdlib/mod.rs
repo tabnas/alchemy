@@ -39,6 +39,7 @@ use registry::Kind;
 pub const SOURCES: &[(&str, &str)] = &[
     ("stdlib/table.alc", include_str!("../../stdlib/table.alc")),
     ("stdlib/csv.alc", include_str!("../../stdlib/csv.alc")),
+    ("stdlib/root.alc", include_str!("../../stdlib/root.alc")),
 ];
 
 /// The library, loaded: each file's resolved definitions, and all of them
@@ -203,6 +204,9 @@ mod tests {
                 "public-column",
                 "table-inferred-column",
                 "table-row",
+                "table-positional-column",
+                "table-value-column",
+                "table-inferred-columns",
                 "table-first-row",
                 "table-step",
                 "table-finish",
@@ -213,9 +217,16 @@ mod tests {
                 "csv-field",
                 "csv-row",
                 "csv",
+                "wrap-object-close",
+                "wrap-object-step",
+                "wrap-finish",
+                "wrap-object",
+                "wrap-array-close",
+                "wrap-array-step",
+                "wrap-array",
             ]
         );
-        assert_eq!(lib.files.len(), 2);
+        assert_eq!(lib.files.len(), 3);
         assert_eq!(
             lib.get("table-from-json").unwrap().params(),
             Some(vec!["binding", "input"])

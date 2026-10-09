@@ -7,6 +7,7 @@
 mod common;
 
 use tabnas_alchemy::shared::Code;
+use tabnas_alchemy::Output;
 
 use common::compile;
 
@@ -29,8 +30,11 @@ fn events_over_the_input_is_affine() {
     assert_eq!(fail.code, Code::StreamReused, "{fail}");
     assert!(fail.message.starts_with("captured: "), "{fail}");
     // The stream `events` yields is a stream of items: events, which
-    // `json` takes back, but not table events for `csv` and not the
-    // output; a stream of values is not events.
+    // `json` takes back, but not table events for `csv`; a stream of
+    // values is not events. As the output it is a rewritten tree, handed
+    // on as JSON events.
+    let events = compile("def export [input] (events input)", "ok.alc").unwrap();
+    assert_eq!(events.output(), Output::JsonEvents);
     for (src, finer) in [
         (
             "def export [input] (json (select (path each-index) input))",
@@ -44,7 +48,6 @@ fn events_over_the_input_is_affine() {
             "def export [input] (events (select (path each-index) input))",
             "protocol_mismatch",
         ),
-        ("def export [input] (events input)", "bad_output"),
     ] {
         let fail = compile(src, "bad.alc").unwrap_err();
         assert_eq!(fail.code, Code::DslTypeError, "{src}: {fail}");

@@ -69,6 +69,22 @@ pub fn stdlib_signature(name: &str) -> Option<Type> {
     Some(match name {
         "public-column" => Type::func(vec![Record], Record),
         "table-inferred-column" => Type::func(vec![Type::String], Record),
+        "table-positional-column" => Type::func(vec![Number], Record),
+        "table-value-column" => Record,
+        "table-inferred-columns" => Type::func(vec![Value], Type::vector(Record)),
+        // The root adapters (stdlib/root.alc): a state and an event in, a
+        // transition out; the entries answer JSON events, since each is a
+        // stream of events said to be so (`as-events`).
+        "wrap-object-close" => Type::func(vec![Unknown, Unknown], Type::tagged("transition")),
+        "wrap-object-step" => Type::func(
+            vec![Type::String, Unknown, Unknown],
+            Type::tagged("transition"),
+        ),
+        "wrap-finish" => Type::func(vec![Unknown], Type::vector(Event)),
+        "wrap-object" => Type::func(vec![Type::String, JsonEvents], JsonEvents),
+        "wrap-array-close" => Type::func(vec![Unknown, Unknown], Type::tagged("transition")),
+        "wrap-array-step" => Type::func(vec![Unknown, Unknown], Type::tagged("transition")),
+        "wrap-array" => Type::func(vec![JsonEvents], JsonEvents),
         "table-row" => Type::func(vec![Unknown, Value], Type::tagged("row")),
         "table-first-row" => Type::func(vec![Record, Unknown, Value], Type::tagged("transition")),
         "table-step" => Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition")),
@@ -1142,6 +1158,10 @@ impl Checker<'_> {
                     at(0),
                 )?;
                 JsonEvents
+            }
+            "indices" => {
+                self.expect("the vector of indices", &Type::vector(Unknown), t(0), at(0))?;
+                Type::vector(Number)
             }
             "transition" => {
                 no_stream(self, 0, "a state")?;
