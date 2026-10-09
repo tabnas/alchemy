@@ -556,7 +556,7 @@ fn root_stage(plan: &Plan) -> &Plan {
             | Plan::Records { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
-            | Plan::Json { source } => {
+            | Plan::Json { source, .. } => {
                 if matches!(**source, Plan::Input) {
                     return here;
                 }

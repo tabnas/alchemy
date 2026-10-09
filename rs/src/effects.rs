@@ -171,7 +171,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
             | Plan::Records { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
-            | Plan::Json { source } => source,
+            | Plan::Json { source, .. } => source,
             Plan::ConcatMap {
                 items: Seq::Stream(source),
                 ..

@@ -275,8 +275,48 @@ pub enum Plan {
     },
     /// The standard CSV renderer, run natively.
     Csv { options: Val, source: Arc<Plan> },
-    /// `json events`.
-    Json { source: Arc<Plan> },
+    /// `json events`, or `json options events`.
+    Json {
+        source: Arc<Plan>,
+        non_finite: NonFinite,
+    },
+}
+
+/// What a renderer does with a number that is not finite (infinity,
+/// negative infinity or NaN), which JSON has no spelling for and CSV no
+/// type: the `:non-finite` option of `json` and of a CSV options record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NonFinite {
+    /// `:reject`, the default: TARGET_VALUE_UNREPRESENTABLE.
+    Reject,
+    /// `:null`: written as null, `null` in JSON and the null text in CSV.
+    Null,
+    /// `:literal` (CSV only): the cell's text is the word `Infinity`,
+    /// `-Infinity` or `NaN`.
+    Literal,
+}
+
+impl NonFinite {
+    /// The policy a keyword names.
+    pub fn named(name: &str) -> Option<NonFinite> {
+        match name {
+            "reject" => Some(NonFinite::Reject),
+            "null" => Some(NonFinite::Null),
+            "literal" => Some(NonFinite::Literal),
+            _ => None,
+        }
+    }
+
+    /// The word `:literal` writes for a number that is not finite.
+    pub fn word(value: f64) -> &'static str {
+        if value.is_nan() {
+            "NaN"
+        } else if value > 0.0 {
+            "Infinity"
+        } else {
+            "-Infinity"
+        }
+    }
 }
 
 impl Plan {
@@ -302,7 +342,7 @@ impl Plan {
             | Plan::Records { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
-            | Plan::Json { source } => source.is_live(),
+            | Plan::Json { source, .. } => source.is_live(),
             Plan::Lit(_) => false,
             Plan::Concat { live, .. } => live.is_some(),
             Plan::Join { items, .. } | Plan::ConcatMap { items, .. } => {

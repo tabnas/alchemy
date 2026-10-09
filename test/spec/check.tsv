@@ -20,7 +20,7 @@ def a [x] (b x)\ndef b [x] (a x)\ndef export [input] (a input)	ERROR:recursion@1
 # ... and a function applied to itself, which only evaluation can see: `check` builds the plan, and the evaluation depth ends it.
 def w [f] (f f)\ndef export [input]\n  let [x (w w)]\n    json input	ERROR:recursion@1:12
 # The checker's: argument counts, kinds, and protocols.
-def export [input] (json input 1)	ERROR:arity@1:20
+def export [input] (json input 1 2)	ERROR:arity@1:20
 def f [a b] a\ndef export [input] (json (f input))	ERROR:arity@2:26
 def export [input] (json (text 1))	ERROR:type_mismatch@1:32
 def export [input] (if 1 (json input) (json input))	ERROR:type_mismatch@1:24
@@ -101,3 +101,7 @@ def export [input] (join "" (map (fn [x] (fail :nope "x")) (select (path each-in
 def export [input] (join "" (map (fn [x] (fail "x" "y")) (select (path each-index) input)))	ERROR:type_mismatch@1:48
 # number takes a string.
 def export [input] (join "," (map (fn [x] (number 1)) (select (path each-index) input)))	ERROR:type_mismatch@1:51
+# unquoted takes a string; chars-within a vector of ranges and a string; json an options record before its events.
+def export [input] (join "," (map (fn [x] (unquoted 1)) (select (path each-index) input)))	ERROR:type_mismatch@1:53
+def export [input] (join "," (map (fn [x] (if (chars-within 1 x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:61
+def export [input] (json 1 input)	ERROR:type_mismatch@1:26

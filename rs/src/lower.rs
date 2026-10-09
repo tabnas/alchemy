@@ -52,7 +52,7 @@ use crate::shared::{
     TableEvent, TableSink, TextOut, Transition,
 };
 use crate::stdlib::registry::{capture_budget, get_field, number_text, truth};
-use crate::value::{selector_segments, type_error, Func, Plan, Protocol, Seq, Val};
+use crate::value::{selector_segments, type_error, Func, NonFinite, Plan, Protocol, Seq, Val};
 
 /// The output every text stage writes to.
 pub type Out = Box<dyn TextOut + Send>;
@@ -160,6 +160,7 @@ pub fn csv_options(v: &Val) -> Option<CsvOptions> {
         Val::Str(s) => MissingText::Text(Box::from(&**s)),
         _ => return None,
     };
+    crate::stdlib::registry::non_finite(v).ok()?;
     Some(CsvOptions {
         delimiter,
         newline,
@@ -168,6 +169,54 @@ pub fn csv_options(v: &Val) -> Option<CsvOptions> {
         missing,
         ..CsvOptions::default()
     })
+}
+
+/// The `json` renderer's adapter for `:non-finite :null`: a number that
+/// is not finite goes on as null, everything else as it came.
+struct NullNonFinite(Box<dyn Sink + Send>);
+
+impl Sink for NullNonFinite {
+    fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
+        match ev {
+            JsonEvent::Number(n) if !n.value.is_finite() => self.0.event(JsonEvent::Null),
+            ev => self.0.event(ev),
+        }
+    }
+}
+
+/// The CSV renderer's adapter for `:non-finite` `:null` or `:literal`: a
+/// number cell that is not finite goes on as a null cell, which the
+/// renderer writes as the null text, or as the string `Infinity`,
+/// `-Infinity` or `NaN`, as `scalar-text` writes it under the same
+/// options.
+struct NonFiniteCells {
+    policy: NonFinite,
+    next: Box<dyn TableSink + Send>,
+}
+
+impl TableSink for NonFiniteCells {
+    fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
+        match ev {
+            TableEvent::Row(cells)
+                if cells
+                    .iter()
+                    .any(|c| matches!(c, Cell::Number { value, .. } if !value.is_finite())) =>
+            {
+                let cells: Vec<Cell> = cells
+                    .iter()
+                    .map(|c| match c {
+                        Cell::Number { value, .. } if !value.is_finite() => match self.policy {
+                            NonFinite::Null => Cell::Null,
+                            _ => Cell::String(NonFinite::word(*value).into()),
+                        },
+                        c => c.clone(),
+                    })
+                    .collect();
+                self.next.table_event(TableEvent::Row(&cells))
+            }
+            ev => self.next.table_event(ev),
+        }
+    }
 }
 
 /// A cell as the table protocol carries it, from the value a program
@@ -1196,13 +1245,30 @@ impl<'a> Lowering<'a> {
         }
         match &**plan {
             Plan::Csv { options, source } => {
+                let options_val = options;
                 let options = csv_options(options).ok_or_else(|| {
                     type_error("csv: the options record does not map to the renderer's dialect")
                 })?;
-                let renderer = self.renderers.csv(out, options)?;
-                self.table(source, renderer, false)
+                let renderer = self.renderers.csv(out, options.clone())?;
+                match crate::stdlib::registry::non_finite(options_val)? {
+                    NonFinite::Reject => self.table(source, renderer, false),
+                    policy => self.table(
+                        source,
+                        Box::new(NonFiniteCells {
+                            policy,
+                            next: renderer,
+                        }),
+                        false,
+                    ),
+                }
             }
-            Plan::Json { source } => self.events(source, self.renderers.json(out, json_options())),
+            Plan::Json { source, non_finite } => {
+                let json = self.renderers.json(out, json_options());
+                match non_finite {
+                    NonFinite::Null => self.events(source, Box::new(NullNonFinite(json))),
+                    _ => self.events(source, json),
+                }
+            }
             Plan::ConcatMap {
                 f,
                 items: Seq::Stream(source),

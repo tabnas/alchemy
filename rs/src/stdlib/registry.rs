@@ -23,7 +23,7 @@ use crate::ast::SourceSpan;
 use crate::interp::Runtime;
 use crate::lex::is_json_number;
 use crate::shared::{CaptureSpec, Code, Fail, Selector};
-use crate::value::{type_error, Func, Partial, Plan, Seq, Val, MISSING};
+use crate::value::{type_error, Func, NonFinite, Partial, Plan, Seq, Val, MISSING};
 
 /// How many arguments an operator takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -525,6 +525,135 @@ fn number(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Num { value, lexeme })
 }
 
+/// `unquoted string`: the string a double-quoted form spells, the reverse
+/// of `quoted`: a leading and a trailing quote around characters and
+/// JSON's escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and
+/// `\uXXXX`, a surrogate pair as the one character it names). Any other
+/// text is INPUT_INVALID: no quotes, a quote or a control character
+/// unescaped inside, another escape, or a surrogate on its own. A format's
+/// reverse reads back with it what its embedding wrote with `quoted`.
+fn unquoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("unquoted", "the string", &a[0])?;
+    match unquote(s) {
+        Some(text) => {
+            rt.tick()?;
+            Ok(Val::Str(Arc::from(text)))
+        }
+        None => Err(input_invalid(format!(
+            "unquoted: {s:?} is not a double-quoted string"
+        ))),
+    }
+}
+
+/// The string a double-quoted form spells, or `None`.
+pub fn unquote(s: &str) -> Option<String> {
+    let inner = s.strip_prefix('"')?.strip_suffix('"')?;
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    let hex4 = |chars: &mut std::str::Chars<'_>| -> Option<u32> {
+        let mut v = 0;
+        for _ in 0..4 {
+            v = v * 16 + chars.next()?.to_digit(16)?;
+        }
+        Some(v)
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return None,
+            c if (c as u32) < 0x20 => return None,
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'b' => out.push('\u{8}'),
+                'f' => out.push('\u{c}'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'u' => {
+                    let high = hex4(&mut chars)?;
+                    let code = match high {
+                        0xD800..=0xDBFF => {
+                            if chars.next()? != '\\' || chars.next()? != 'u' {
+                                return None;
+                            }
+                            let low = hex4(&mut chars)?;
+                            if !(0xDC00..=0xDFFF).contains(&low) {
+                                return None;
+                            }
+                            0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+                        }
+                        0xDC00..=0xDFFF => return None,
+                        v => v,
+                    };
+                    out.push(char::from_u32(code)?);
+                }
+                _ => return None,
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// `chars-within ranges string`: whether every character of the string
+/// lies within one of the ranges, each a vector `[low high]` of code
+/// points, both included. The empty string is within any ranges. A
+/// format's part tests a string with it against the characters the format
+/// can carry (XML's `Char` production, a name's characters) before it
+/// writes the string, and chooses its convention when it cannot.
+fn chars_within(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let ranges = as_items("chars-within", &a[0])?;
+    let mut bounds: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for range in ranges.iter() {
+        let pair = match range {
+            Val::Vector(pair) if pair.len() == 2 => pair,
+            other => {
+                return Err(type_error(format!(
+                    "chars-within: a range must be a vector [low high], not {}",
+                    match other {
+                        Val::Vector(v) => format!("a vector of {} items", v.len()),
+                        other => other.kind().to_string(),
+                    }
+                )))
+            }
+        };
+        let point = |v: &Val| match v {
+            Val::Num { value, .. }
+                if value.fract() == 0.0 && (0.0..=1_114_111.0).contains(value) =>
+            {
+                Ok(*value as u32)
+            }
+            Val::Num { value, lexeme } => Err(type_error(format!(
+                "chars-within: a range's bound must be a code point from 0 to 1114111, not {}",
+                number_text(*value, lexeme.as_deref()).unwrap_or_else(|_| value.to_string())
+            ))),
+            other => Err(type_error(format!(
+                "chars-within: a range's bound must be a number, not {}",
+                other.kind()
+            ))),
+        };
+        let (low, high) = (point(&pair[0])?, point(&pair[1])?);
+        if low > high {
+            return Err(type_error(format!(
+                "chars-within: a range must be a vector [low high] with low at most high, not [{low} {high}]"
+            )));
+        }
+        bounds.push((low, high));
+    }
+    let s = as_str("chars-within", "the string", &a[1])?;
+    for (i, c) in s.chars().enumerate() {
+        if i % 4096 == 4095 {
+            rt.tick()?;
+        }
+        let c = c as u32;
+        if !bounds.iter().any(|&(low, high)| (low..=high).contains(&c)) {
+            return Ok(Val::Bool(false));
+        }
+    }
+    Ok(Val::Bool(true))
+}
+
 /// `compare a b`: how two numbers are ordered, `:less`, `:equal` or
 /// `:greater`, and `:unordered` when either is NaN; -0 and 0 are equal.
 fn compare(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -865,6 +994,19 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         .clone(),
         Val::Bool(true) => Arc::from("true"),
         Val::Bool(false) => Arc::from("false"),
+        Val::Num { value, .. }
+            if !value.is_finite() && non_finite(options)? != NonFinite::Reject =>
+        {
+            match non_finite(options)? {
+                NonFinite::Null => as_str(
+                    "scalar-text",
+                    ":null-text",
+                    &option("scalar-text", options, "null-text")?,
+                )?
+                .clone(),
+                _ => Arc::from(NonFinite::word(*value)),
+            }
+        }
         Val::Num { value, lexeme } => Arc::from(number_text(*value, lexeme.as_deref())?),
         Val::Str(s) => s.clone(),
         v if v.is_missing() => match option("scalar-text", options, "missing")? {
@@ -893,12 +1035,32 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Str(text))
 }
 
+/// The `:non-finite` policy of an options record: `:reject` (the default,
+/// when the record has none), `:null` or `:literal`.
+pub fn non_finite(options: &Val) -> Result<NonFinite, Fail> {
+    match options.field("non-finite") {
+        None => Ok(NonFinite::Reject),
+        Some(v) if v.is_missing() => Ok(NonFinite::Reject),
+        Some(Val::Keyword(k)) => NonFinite::named(&k).ok_or_else(|| {
+            type_error(format!(
+                ":non-finite must be :reject, :null or :literal, not :{k}"
+            ))
+        }),
+        Some(other) => Err(type_error(format!(
+            ":non-finite must be :reject, :null or :literal, not {}",
+            other.kind()
+        ))),
+    }
+}
+
 /// The double-quoted form of `s`: the JSON string form (RFC 8259's
 /// escapes for the quote, the backslash and U+0000 to U+001F, the short
 /// ones where they exist, `\u00xx` otherwise, in the render crate's
-/// lowercase) with U+007F to U+009F escaped the same way, since YAML's
-/// double-quoted style reads JSON's escapes but its printable set excludes
-/// the C1 controls. Every other character is written as itself.
+/// lowercase) with U+007F to U+009F, U+FFFE and U+FFFF escaped the same
+/// way, since YAML's double-quoted style reads JSON's escapes but its
+/// printable set excludes the C1 controls and those two noncharacters,
+/// which XML's characters exclude too. Every other character is written
+/// as itself.
 pub fn quote(s: &str) -> String {
     let mut out = String::with_capacity(quoted_len(s));
     out.push('"');
@@ -911,7 +1073,7 @@ pub fn quote(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => {
+            c if escaped_as_code(c) => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => out.push(c),
@@ -919,6 +1081,13 @@ pub fn quote(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Whether [`quote`] writes a character as `\uXXXX`: U+0000 to U+001F but
+/// the five with short escapes, U+007F to U+009F, U+FFFE and U+FFFF.
+fn escaped_as_code(c: char) -> bool {
+    let c = c as u32;
+    c < 0x20 || (0x7f..=0x9f).contains(&c) || c == 0xfffe || c == 0xffff
 }
 
 /// The length of [`quote`]'s result, counted before it is built: two
@@ -929,7 +1098,7 @@ pub fn quoted_len(s: &str) -> usize {
         .chars()
         .map(|c| match c {
             '"' | '\\' | '\n' | '\t' | '\r' | '\u{8}' | '\u{c}' => 2,
-            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => 6,
+            c if escaped_as_code(c) => 6,
             c => c.len_utf8(),
         })
         .sum::<usize>()
@@ -1205,8 +1374,43 @@ fn csv_table(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 }
 
 fn json(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let source = as_stream("json", &a[0])?.clone();
-    Ok(Val::Text(Arc::new(Plan::Json { source })))
+    let (options, events) = match a {
+        [events] => (None, events),
+        [options, events] => (Some(options), events),
+        _ => {
+            return Err(type_error(
+                "json takes events, or an options record and events",
+            ))
+        }
+    };
+    let non_finite = match options {
+        None => NonFinite::Reject,
+        Some(options) => json_options(options)?,
+    };
+    let source = as_stream("json", events)?.clone();
+    Ok(Val::Text(Arc::new(Plan::Json { source, non_finite })))
+}
+
+/// The policy `json`'s options record names: it holds `:non-finite` and
+/// nothing else, `:reject` or `:null`, since JSON has no other spelling.
+fn json_options(options: &Val) -> Result<NonFinite, Fail> {
+    let Val::Record(fields) = options else {
+        return Err(type_error(format!(
+            "json: the options must be a record, not {}",
+            options.kind()
+        )));
+    };
+    if let Some(other) = fields.keys().find(|k| &***k != "non-finite") {
+        return Err(type_error(format!(
+            "json: an option must be :non-finite, not :{other}"
+        )));
+    }
+    match non_finite(options)? {
+        NonFinite::Literal => Err(type_error(
+            "json: :non-finite must be :reject or :null, not :literal",
+        )),
+        policy => Ok(policy),
+    }
 }
 
 fn records(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -1285,6 +1489,8 @@ static NATIVES: &[Native] = &[
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
     f("keys", Exact(1), keys, "keys record -> Vector", "the record's keys as strings, in its order, which for a captured object is the document's"),
     f("length", Exact(1), length, "length string -> Number", "how many characters the string holds"),
+    f("unquoted", Exact(1), unquoted, "unquoted string -> String", "the string a double-quoted form spells, the reverse of quoted: JSON's escapes (\\\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, \\uXXXX) read, a surrogate pair as the one character it names; INPUT_INVALID for any other text (no quotes, a quote or a control character unescaped inside, another escape, a surrogate on its own)"),
+    f("chars-within", Exact(2), chars_within, "chars-within ranges string -> Bool", "whether every character of the string lies within one of the ranges, each a vector [low high] of code points, both included; true for the empty string. A part tests a string with it against what its format can carry (XML's Char production, a name's characters) and chooses its convention where it cannot"),
     f("number", Exact(1), number, "number string -> Number", "the number the string spells: a JSON number, its text kept as the lexeme, or Infinity, -Infinity or NaN; INPUT_INVALID for any other text"),
     f("compare", Exact(2), compare, "compare a b -> Keyword", "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"),
     f("number-class", Exact(1), number_class, "number-class number -> Keyword", ":finite, :infinity, :negative-infinity or :nan"),
@@ -1315,8 +1521,8 @@ static NATIVES: &[Native] = &[
     f("concat", AtLeast(0), concat, "concat item... -> Text", "in order, without assembling the result"),
     f("text", Exact(1), text, "text string -> Text", "a string as a text"),
     f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),
-    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
-    f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
+    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' :non-finite is :null, the null text, or :literal, the word Infinity, -Infinity or NaN), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
+    f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F, U+FFFE and U+FFFF as \\uXXXX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls and the two noncharacters its printable set excludes, which XML's characters exclude too); refused past max_scalar_bytes, before it is built"),
     f("string-join", Exact(2), string_join, "string-join separator strings -> String", "the strings of a vector joined into one string, the separator between them; refused past max_scalar_bytes, before it is built"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Between(1, 2), fail, "fail [code] message -> Never", "INPUT_INVALID with the message and the form's position; with a code first, :unrepresentable is TARGET_VALUE_UNREPRESENTABLE (a value the target cannot carry), :protocol-order is PROTOCOL_ORDER_ERROR (a stream that breaks its protocol) and :invalid is INPUT_INVALID"),
@@ -1338,7 +1544,7 @@ static NATIVES: &[Native] = &[
     k("key", Exact(1), key, "key name -> Event", "the name of the member whose value follows, inside an object"),
     k("scalar", Exact(1), scalar, "scalar value -> Event", "one scalar of the source: null, a boolean, a number with its lexeme, or a string"),
     // Renderers and protocol adapters.
-    f("json", Exact(1), json, "json events -> Text", "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline"),
+    f("json", Between(1, 2), json, "json [options] events -> Text", "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (TARGET_VALUE_UNREPRESENTABLE), unless an options record first says (entry :non-finite :null): then it is written as null. The record holds :non-finite and nothing else, :reject (the default) or :null"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
     f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most max_columns, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that holds the quote, a line break or NUL is refused before anything runs"),
 ];
@@ -1398,7 +1604,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 45);
+        assert_eq!(compared, 47);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
@@ -1425,8 +1631,50 @@ mod tests {
             "plain",
             "q\" \\ \n \u{1f} é",
             "del\u{7f} pad\u{80} 日本 🚀",
+            "nonchar\u{fffe}\u{ffff}\u{fffd}",
         ] {
             assert_eq!(quoted_len(s), quote(s).len(), "{s:?}");
+        }
+        // The two noncharacters YAML's printable set and XML's characters
+        // exclude are escaped; U+FFFD, a character, is not.
+        assert_eq!(
+            quote("\u{fffe}\u{ffff}\u{fffd}"),
+            "\"\\ufffe\\uffff\u{fffd}\""
+        );
+    }
+
+    #[test]
+    fn unquote_reads_back_what_quote_writes() {
+        for s in [
+            "",
+            "plain",
+            "q\" b\\ n\n r\r t\t bs\u{8} ff\u{c} nul\0 us\u{1f}",
+            "del\u{7f} pad\u{80} apc\u{9f} nbsp\u{a0} é 日本 🚀 /",
+            "\u{fffe}\u{ffff}",
+        ] {
+            assert_eq!(unquote(&quote(s)).as_deref(), Some(s), "{s:?}");
+        }
+        // JSON's other spellings: the solidus, uppercase hex, a surrogate
+        // pair.
+        assert_eq!(
+            unquote(r#""\/\u00E9\ud83d\ude80""#).as_deref(),
+            Some("/é🚀")
+        );
+        // Not a double-quoted form.
+        for text in [
+            "",
+            "\"",
+            "plain",
+            "\"open",
+            "\"in\"side\"",
+            "\"raw\nline\"",
+            "\"bad \\x escape\"",
+            "\"short \\u12\"",
+            "\"lone \\ud800\"",
+            "\"low \\udc00 first\"",
+            "\"pair \\ud800\\u0041\"",
+        ] {
+            assert_eq!(unquote(text), None, "{text:?}");
         }
     }
 

@@ -1088,6 +1088,20 @@ impl Checker<'_> {
                 self.expect("the string of number", &String, t(0), at(0))?;
                 Number
             }
+            "unquoted" => {
+                self.expect("the string of unquoted", &String, t(0), at(0))?;
+                String
+            }
+            "chars-within" => {
+                self.expect(
+                    "the ranges of chars-within",
+                    &Type::vector(Unknown),
+                    t(0),
+                    at(0),
+                )?;
+                self.expect("the string of chars-within", &String, t(1), at(1))?;
+                Bool
+            }
             "compare" => {
                 self.expect("the first number of compare", &Number, t(0), at(0))?;
                 self.expect("the second number of compare", &Number, t(1), at(1))?;
@@ -1196,7 +1210,15 @@ impl Checker<'_> {
                     }
                     Type::func(params[args.len() - 1..].to_vec(), (**result).clone())
                 }
-                Unknown | Never => Unknown,
+                // A function of more than one arity (`json`, `fail`) or
+                // of a type only the run knows: its arguments are still
+                // held, so none may be a stream.
+                Unknown | Never => {
+                    for i in 1..args.len() {
+                        no_stream(self, i, "a partial application")?;
+                    }
+                    Unknown
+                }
                 other => {
                     return Err(self.mismatch(
                         "the function of partial",
@@ -1317,7 +1339,11 @@ impl Checker<'_> {
                 Type::tagged("scalar")
             }
             "json" => {
-                self.expect("the events of json", &JsonEvents, t(0), at(0))?;
+                let events = args.len() - 1;
+                if args.len() == 2 {
+                    self.expect("the options of json", &Record, t(0), at(0))?;
+                }
+                self.expect("the events of json", &JsonEvents, t(events), at(events))?;
                 Text
             }
             "csv-table" => {
@@ -1640,7 +1666,7 @@ mod tests {
 
     #[test]
     fn arity_type_and_protocol_mismatches() {
-        assert_eq!(code("def export [input] (json input 1)").1, "arity");
+        assert_eq!(code("def export [input] (json input 1 2)").1, "arity");
         assert_eq!(code("def export [input] (csv csv-options)").1, "arity");
         assert_eq!(
             code("def f [a b] a\ndef export [input] (json (f input))").1,

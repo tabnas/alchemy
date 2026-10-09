@@ -600,6 +600,8 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `keys` | `keys record -> Vector` | the record's keys as strings, in its order, which for a captured object is the document's |
 | `indices` | `indices vector -> Vector<Number>` | the positions of the vector's items, 0 to one less than its count, as numbers: the labels the inferred table gives an array row's cells; a bounded operation over one vector |
 | `length` | `length string -> Number` | how many characters the string holds |
+| `unquoted` | `unquoted string -> String` | the string a double-quoted form spells, the reverse of `quoted`: JSON's escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`) read, a surrogate pair as the one character it names; `INPUT_INVALID` for any other text (no quotes, a quote or a control character unescaped inside, another escape, a surrogate on its own) |
+| `chars-within` | `chars-within ranges string -> Bool` | whether every character of the string lies within one of the ranges, each a vector `[low high]` of code points, both included; `true` for the empty string. A part tests a string with it against what its format can carry (XML's `Char` production, a name's characters) and chooses its convention where it cannot |
 | `number` | `number string -> Number` | the number the string spells: a JSON number, its text kept as the lexeme, or `Infinity`, `-Infinity` or `NaN`; `INPUT_INVALID` for any other text |
 | `compare` | `compare a b -> Keyword` | how two numbers are ordered: `:less`, `:equal` or `:greater`, and `:unordered` when either is NaN |
 | `number-class` | `number-class number -> Keyword` | `:finite`, `:infinity`, `:negative-infinity` or `:nan` |
@@ -621,8 +623,8 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `concat` | `concat item... -> Text` | in order, without assembling the result |
 | `text` | `text string -> Text` | a string as a text |
 | `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length |
-| `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
-| `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F as `\u00XX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past `max_scalar_bytes`, before it is built |
+| `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' `:non-finite` is `:null`, the null text, or `:literal`, the word `Infinity`, `-Infinity` or `NaN`), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
+| `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F, U+FFFE and U+FFFF as `\uXXXX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls and the two noncharacters its printable set excludes, which XML's characters exclude too); refused past `max_scalar_bytes`, before it is built |
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `string-join` | `string-join separator strings -> String` | the strings of a vector joined into one string, the separator between them; refused past `max_scalar_bytes`, before it is built |
 | `fail` | `fail [code] message -> Never` | `INPUT_INVALID` with the message and the form's position; with a code first, `:unrepresentable` is `TARGET_VALUE_UNREPRESENTABLE` (a value the target cannot carry), `:protocol-order` is `PROTOCOL_ORDER_ERROR` (a stream that breaks its protocol) and `:invalid` is `INPUT_INVALID` |
@@ -636,7 +638,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `array-end` | `array-end -> Event` | an array ends |
 | `key` | `key name -> Event` | the name of the member whose value follows, inside an object |
 | `scalar` | `scalar value -> Event` | one scalar of the source: `null`, a boolean, a number with its lexeme, or a string |
-| `json` | `json events -> Text` | `JsonEvents`, or a `Stream<Event>` a program built, as compact JSON text, event by event, with a final newline |
+| `json` | `json [options] events -> Text` | `JsonEvents`, or a `Stream<Event>` a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (`TARGET_VALUE_UNREPRESENTABLE`), unless an options record first says `(entry :non-finite :null)`: then it is written as `null`. The record holds `:non-finite` and nothing else, `:reject` (the default) or `:null` |
 | `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
 | `csv-table` | `csv-table options events -> TableEvents` | the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most `max_columns`, labels strings, numbers or booleans; rows as wide as the schema; one `table-end`; a delimiter that holds the quote, a line break or NUL is refused before anything runs |
 
@@ -1044,8 +1046,13 @@ The native path substitutes transduce's `TableFromJson` for
 `table-from-json` when the binding has the standard shape, and render's
 `CsvRenderer` for `csv` when every option maps onto the renderer's
 dialect (`:delimiter` one character, `:newline` CRLF or LF, `:header` a
-boolean, `:null-text` a string, `:missing` `:error` or a string); any
-other options run the text above. The two paths agree on more than the
+boolean, `:null-text` a string, `:missing` `:error` or a string, and
+`:non-finite`, when the record has it, `:reject`, `:null` or
+`:literal`); any other options run the text above. `:non-finite` is
+what a number cell that is not finite becomes, as `scalar-text` writes
+it: refused (`:reject`, the default, `TARGET_VALUE_UNREPRESENTABLE`),
+the null text (`:null`), or the word `Infinity`, `-Infinity` or `NaN`
+(`:literal`). The two paths agree on more than the
 standard shapes, and alchemy-cli's `rs/tests/stdlib_test.rs` pins each
 agreement:
 
