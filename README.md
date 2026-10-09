@@ -50,7 +50,7 @@ language and [`AGENTS.md`](AGENTS.md) for how the repository is worked on.
 | [`alchemy-grammar.jsonic`](alchemy-grammar.jsonic) | the grammar document, options and rules: the one source every runtime embeds (`make embed`) |
 | [`test/spec/`](test/spec/) | shared fixtures, run by the fleet's fixture runner: `reader.tsv` (layout to canonical), `pipe.tsv` (desugared), `check.tsv` (the checker's codes and the plan reports) and `run.tsv` (a program over a document: the bytes it writes, or the failure); [`test/AGENTS.md`](test/AGENTS.md) describes them |
 | [`docs/language.md`](docs/language.md) | the language reference; every example in it is a fixture row |
-| [`stdlib/`](stdlib/) | the standard library's own definitions in alchemy (`table.alc`, `csv.alc`), embedded in the crate (as the copies in `rs/stdlib/`, written by `make embed`) and the reference the native paths are checked against |
+| [`stdlib/`](stdlib/) | the standard library's own definitions in alchemy (`table.alc`, `csv.alc`, and `root.alc`, the root adapters `wrap-object` and `wrap-array`), embedded in the crate (as the copies in `rs/stdlib/`, written by `make embed`) and the reference the native paths are checked against |
 | [`ci/rust/run.sh`](ci/rust/run.sh) | the gate CI runs |
 
 The crate is the whole language: the reader (the grammar plugin, the
@@ -60,7 +60,11 @@ mode), the planner (`explain`), the interpreter, which lowers a plan
 through the `Routers` and `Renderers` its host passes in and runs the
 standard compositions natively, and the embedded standard library. The
 differential test proves the native paths and the library's own text
-produce the same bytes. The `alchemy` command, which composes alchemy,
+produce the same bytes. The `translate` module composes a translation
+from the parts each format's package exports (its manifest's `translate`
+object, its render, its lift and its embedding): the one-line main a host
+links with them, so that any format the tabnas parsers read can be
+written as any other (ADR-27 in tabnas/admin). The `alchemy` command, which composes alchemy,
 transduce and render, is
 [tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli), and so are
 the tests that run programs, the differential test among them: alchemy
