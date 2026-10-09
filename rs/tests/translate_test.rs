@@ -1,9 +1,10 @@
 //! Every route the translation module composes compiles with the standard
 //! library's adapters, and its output is a text: the root adapters, the
 //! inferred table over a wrapped root, an embed, a lift, a program's
-//! events and its table. The parts here are stand-ins (a render that is
-//! `json`, an embed that hands its input on); running real parts is
-//! alchemy-cli's, which composes the routers and renderers.
+//! events and its table, into a schema-only target as into any other. The
+//! parts here are stand-ins (a render that is `json`, an embed that hands
+//! its input on); running real parts is alchemy-cli's, which composes the
+//! routers and renderers.
 
 mod common;
 
@@ -82,6 +83,21 @@ fn every_route_compiles_to_a_text() {
         xml.clone(),
     ];
     let sources: [Option<&Part>; 4] = [None, Some(&csv), Some(&md), Some(&xml)];
+    // A program's events and its table into `target`.
+    let programs = |target: &Part| {
+        for output in [Output::JsonEvents, Output::TableRows] {
+            let c = compose_program(output, target, &o, "main").unwrap();
+            let user = Source::new("p.alc", match output {
+                Output::TableRows => "def export [input] (table-from-json (record (entry :columns :infer) (entry :rows (path each-index))) input)",
+                _ => "def export [input] input",
+            });
+            let program = c
+                .compile(Some(user), Arc::new(NoStages), Arc::new(NoStages))
+                .unwrap_or_else(|f| panic!("{output:?} into {}: {f}\n{}", target.id, c.main));
+            assert_eq!(program.output(), Output::Text, "{}", c.main);
+            assert_eq!(c.front, Front::None);
+        }
+    };
     for target in &targets {
         for source in sources {
             let c = compose(source, target, &o, "main").unwrap();
@@ -97,19 +113,20 @@ fn every_route_compiles_to_a_text() {
                 });
             assert_eq!(program.output(), Output::Text, "{}", c.main);
         }
-        for output in [Output::JsonEvents, Output::TableRows] {
-            let c = compose_program(output, target, &o, "main").unwrap();
-            let user = Source::new("p.alc", match output {
-                Output::TableRows => "def export [input] (table-from-json (record (entry :columns :infer) (entry :rows (path each-index))) input)",
-                _ => "def export [input] input",
-            });
-            let program = c
-                .compile(Some(user), Arc::new(NoStages), Arc::new(NoStages))
-                .unwrap_or_else(|f| panic!("{output:?} into {}: {f}\n{}", target.id, c.main));
-            assert_eq!(program.output(), Output::Text, "{}", c.main);
-            assert_eq!(c.front, Front::None);
-        }
+        programs(target);
     }
+    // A schema-only target refuses each source above, and takes a
+    // program's output, which makes its tree.
+    let css = part(
+        "css",
+        r#"{"reads": "tree", "writes": "tree", "root": "any", "schema": "css", "render": "alchemy/render.alc"}"#,
+        None,
+        None,
+    );
+    for source in sources {
+        assert!(compose(source, &css, &o, "main").is_err());
+    }
+    programs(&css);
 }
 
 /// A part whose render does not compile is a failure naming its file.

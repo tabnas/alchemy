@@ -187,10 +187,40 @@ describe('translate', () => {
     assert.ok(c.loss.some((l) => l.includes('"a \\"b\\""')))
   })
 
+  // A program writing to a target that has a schema makes that schema's
+  // tree: a schema-only target, which refuses another format's tree, takes
+  // a program's events into its render, and a target with an embed takes
+  // them without it; the shape adapters apply as before.
+  it("a program makes a schema target's tree", () => {
+    const o = T.Options.default()
+    const css: translate.Part = { ...tree('css', 'any'), schema: 'css' }
+    let c = T.composeProgram('JsonEvents/1', css, o, 'main')
+    assert.equal(c.main, 'def export [input] (css-render (program-export input))')
+    assert.deepStrictEqual(c.adapters, [])
+    const xml: translate.Part = {
+      ...tree('xml', 'any'),
+      schema: 'xml-element',
+      embed: { file: 'tabnas-xml/alchemy/embed.alc', entry: 'xml-embed', text: 'def xml-embed [input] input' },
+    }
+    c = T.composeProgram('JsonEvents/1', xml, o, 'main')
+    assert.equal(c.main, 'def export [input] (xml-render (program-export input))')
+    assert.deepStrictEqual(c.adapters, [])
+    assert.deepStrictEqual(c.sources, [
+      { file: 'tabnas-xml/alchemy/render.alc', text: 'def xml-render [input] (json input)' },
+    ])
+    // A table is records, and a root of the wrong kind is wrapped.
+    c = T.composeProgram('TableRows/1', xml, o, 'main')
+    assert.equal(c.main, 'def export [input] (xml-render (records (program-export input)))')
+    assert.deepStrictEqual(c.adapters, [{ kind: 'records' }])
+    const object: translate.Part = { ...tree('x', 'object'), schema: 'x-tree' }
+    c = T.composeProgram('JsonEvents/1', object, o, 'main')
+    assert.deepStrictEqual(c.adapters, [{ kind: 'wrap-object', key: 'items' }])
+  })
+
   // Every route the module composes compiles with the standard library's
   // adapters, and its output is a text: the root adapters, the inferred
   // table over a wrapped root, an embed, a lift, a program's events and
-  // its table.
+  // its table, into a schema-only target as into any other.
   it('every route compiles to a text', () => {
     const o = T.Options.default()
     const csv = full('csv', '{"reads": "tree", "writes": "records", "root": "array", "render": "csv"}')
@@ -210,17 +240,8 @@ describe('translate', () => {
     )
     const targets = [tree('toml', 'object'), tree('jsonl', 'array'), tree('yaml', 'any'), csv, xml]
     const sources: Array<translate.Part | undefined> = [undefined, csv, md, xml]
-    for (const target of targets) {
-      for (const source of sources) {
-        const c = T.compose(source, target, o, 'main')
-        let output: Output
-        try {
-          output = c.compile(undefined, OPTIONS).output
-        } catch (f) {
-          throw new Error(`${source?.id ?? 'tree'} into ${target.id}: ${f}\n${c.main}`)
-        }
-        assert.equal(output, 'Text', c.main)
-      }
+    // A program's events and its table into `target`.
+    const programs = (target: translate.Part): void => {
       for (const output of ['JsonEvents/1', 'TableRows/1'] as const) {
         const c = T.composeProgram(output, target, o, 'main')
         const user = {
@@ -240,6 +261,27 @@ describe('translate', () => {
         assert.equal(c.front, 'none')
       }
     }
+    for (const target of targets) {
+      for (const source of sources) {
+        const c = T.compose(source, target, o, 'main')
+        let output: Output
+        try {
+          output = c.compile(undefined, OPTIONS).output
+        } catch (f) {
+          throw new Error(`${source?.id ?? 'tree'} into ${target.id}: ${f}\n${c.main}`)
+        }
+        assert.equal(output, 'Text', c.main)
+      }
+      programs(target)
+    }
+    // A schema-only target refuses each source above, and takes a program's
+    // output, which makes its tree.
+    const css = full(
+      'css',
+      '{"reads": "tree", "writes": "tree", "root": "any", "schema": "css", "render": "alchemy/render.alc"}',
+    )
+    for (const source of sources) thrown(() => T.compose(source, css, o, 'main'))
+    programs(css)
   })
 
   // The inferred table keeps a repeated member's last value, as an export

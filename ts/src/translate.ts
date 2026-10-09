@@ -26,6 +26,11 @@
 //    as it is;
 // 4. the target's render: a part's own, or alchemy's `json` or `csv`.
 //
+// A program's output takes the source's place (`composeProgram`), its JSON
+// events a tree and its table records, and is of the target's schema: a
+// program writing to such a target makes that schema's tree, so neither the
+// embed nor the refusal runs for it.
+//
 // The composed program is a one-line `export` linked with the parts'
 // sources (`Composition.compile`). A host runs it as it runs any program,
 // and keeps a tree's contract in front of a render that writes from one
@@ -387,8 +392,16 @@ export function compose(source: Part | undefined, target: Part, options: Options
 // Compose a program's output into `target`, in the source's place: JSON
 // events are a tree and a table is records (`Part.ofOutput`). The program
 // is linked under `PROGRAM_EXPORT` by `Composition.compile`.
+//
+// A program writing to a target that has a schema makes that schema's
+// tree: its part takes the target's schema, so neither the embed nor a
+// schema-only target's refusal runs for it, while the shape adapters
+// (`records`, the inferred table, and the root adapters, which pass a root
+// of the right kind through) apply as they do for any source. A plain tree
+// that wants embedding takes the format's own route, `compose`, instead.
 export function composeProgram(output: Output, target: Part, options: Options, mainFile: string): Composition {
-  const source = Part.ofOutput(output)
+  const program = Part.ofOutput(output)
+  const source: Part = undefined === target.schema ? program : { ...program, schema: target.schema }
   return composeOver(source, `(${PROGRAM_EXPORT} input)`, target, options, mainFile, 'none')
 }
 

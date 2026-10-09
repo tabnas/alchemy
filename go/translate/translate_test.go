@@ -246,9 +246,47 @@ func TestAProgramsOutputStandsInTheSourcesPlace(t *testing.T) {
 	}
 }
 
+// A program writing to a target that has a schema makes that schema's
+// tree: a schema-only target, which refuses another format's tree, takes a
+// program's events into its render, and a target with an embed takes them
+// without it; the shape adapters apply as before.
+func TestAProgramMakesASchemaTargetsTree(t *testing.T) {
+	o := DefaultOptions()
+	css := *tree(t, "css", "any")
+	css.Schema = "css"
+	c, f := ComposeProgram(alchemy.OutputJsonEvents, &css, o, "main")
+	if f != nil || c.Main != `def export [input] (css-render (program-export input))` || len(c.Adapters) != 0 {
+		t.Errorf("%+v %v", c, f)
+	}
+	xml := *tree(t, "xml", "any")
+	xml.Schema = "xml-element"
+	xml.Embed = &Alc{File: "tabnas-xml/alchemy/embed.alc", Entry: "xml-embed", Text: "def xml-embed [input] input"}
+	c, f = ComposeProgram(alchemy.OutputJsonEvents, &xml, o, "main")
+	if f != nil || c.Main != `def export [input] (xml-render (program-export input))` || len(c.Adapters) != 0 {
+		t.Errorf("%+v %v", c, f)
+	}
+	render := []alchemy.Source{{File: "tabnas-xml/alchemy/render.alc", Text: "def xml-render [input] (json input)"}}
+	if !reflect.DeepEqual(c.Sources, render) {
+		t.Errorf("%+v", c.Sources)
+	}
+	// A table is records, and a root of the wrong kind is wrapped.
+	c, f = ComposeProgram(alchemy.OutputTableRows, &xml, o, "main")
+	if f != nil || c.Main != `def export [input] (xml-render (records (program-export input)))` ||
+		!reflect.DeepEqual(c.Adapters, []Adapter{{Kind: AdapterRecords}}) {
+		t.Errorf("%+v %v", c, f)
+	}
+	object := *tree(t, "x", "object")
+	object.Schema = "x-tree"
+	c, f = ComposeProgram(alchemy.OutputJsonEvents, &object, o, "main")
+	if f != nil || !reflect.DeepEqual(c.Adapters, []Adapter{{Kind: AdapterWrapObject, Key: "items"}}) {
+		t.Errorf("%+v %v", c, f)
+	}
+}
+
 // Every route the package composes compiles with the standard library's
 // adapters, and its output is a text: the root adapters, the inferred table
-// over a wrapped root, an embed, a lift, a program's events and its table.
+// over a wrapped root, an embed, a lift, a program's events and its table,
+// into a schema-only target as into any other.
 func TestEveryRouteCompilesToAText(t *testing.T) {
 	o := DefaultOptions()
 	csv := full(t, "csv", `{"reads": "tree", "writes": "records", "root": "array", "render": "csv"}`, nil, nil)
@@ -260,22 +298,8 @@ func TestEveryRouteCompilesToAText(t *testing.T) {
 		nil, NewPartText("xml-embed", "def xml-embed [input] (wrap-array input)"))
 	targets := []*Part{tree(t, "toml", "object"), tree(t, "jsonl", "array"), tree(t, "yaml", "any"), csv, xml}
 	sources := []*Part{nil, csv, md, xml}
-	for _, target := range targets {
-		for _, source := range sources {
-			name := "tree"
-			if source != nil {
-				name = source.ID
-			}
-			c := mustCompose(t, source, target, o)
-			program, f := c.Compile(nil, nil, nil)
-			if f != nil {
-				t.Errorf("%s into %s: %v\n%s", name, target.ID, f, c.Main)
-				continue
-			}
-			if program.Output() != alchemy.OutputText {
-				t.Errorf("%s: %v", c.Main, program.Output())
-			}
-		}
+	// programs composes a program's events and its table into target.
+	programs := func(target *Part) {
 		for _, output := range []alchemy.Output{alchemy.OutputJsonEvents, alchemy.OutputTableRows} {
 			c, f := ComposeProgram(output, target, o, "main")
 			if f != nil {
@@ -295,6 +319,33 @@ func TestEveryRouteCompilesToAText(t *testing.T) {
 			}
 		}
 	}
+	for _, target := range targets {
+		for _, source := range sources {
+			name := "tree"
+			if source != nil {
+				name = source.ID
+			}
+			c := mustCompose(t, source, target, o)
+			program, f := c.Compile(nil, nil, nil)
+			if f != nil {
+				t.Errorf("%s into %s: %v\n%s", name, target.ID, f, c.Main)
+				continue
+			}
+			if program.Output() != alchemy.OutputText {
+				t.Errorf("%s: %v", c.Main, program.Output())
+			}
+		}
+		programs(target)
+	}
+	// A schema-only target refuses each source above, and takes a program's
+	// output, which makes its tree.
+	css := full(t, "css", `{"reads": "tree", "writes": "tree", "root": "any", "schema": "css", "render": "alchemy/render.alc"}`, nil, nil)
+	for _, source := range sources {
+		if _, f := Compose(source, css, o, "main"); f == nil {
+			t.Errorf("%+v into css: no refusal", source)
+		}
+	}
+	programs(css)
 }
 
 // The inferred table keeps a repeated member's last value, as an export
