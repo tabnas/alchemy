@@ -1053,6 +1053,27 @@ pub fn non_finite(options: &Val) -> Result<NonFinite, Fail> {
     }
 }
 
+/// Whether a CSV options record lets a table of no columns through, to be
+/// written as the empty document: its `:no-columns` is `:empty`, where
+/// `:refuse`, the default when the record has none, refuses it.
+pub fn no_columns_empty(options: &Val) -> Result<bool, Fail> {
+    match options.field("no-columns") {
+        None => Ok(false),
+        Some(v) if v.is_missing() => Ok(false),
+        Some(Val::Keyword(k)) => match &*k {
+            "refuse" => Ok(false),
+            "empty" => Ok(true),
+            other => Err(type_error(format!(
+                ":no-columns must be :refuse or :empty, not :{other}"
+            ))),
+        },
+        Some(other) => Err(type_error(format!(
+            ":no-columns must be :refuse or :empty, not {}",
+            other.kind()
+        ))),
+    }
+}
+
 /// The double-quoted form of `s`: the JSON string form (RFC 8259's
 /// escapes for the quote, the backslash and U+0000 to U+001F, the short
 /// ones where they exist, `\u00xx` otherwise, in the render crate's
