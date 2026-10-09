@@ -357,7 +357,10 @@ pub enum Front {
 }
 
 /// How the composition may be run by a host's own renderer instead,
-/// when the route is the identity into alchemy's `json`.
+/// when the route is the identity into alchemy's `json`. The composed
+/// `json` writes a number that is not finite as `null` (JSON has no
+/// spelling for one, and the target declares the loss), so a host that
+/// runs its own JSON renderer instead writes such a number as `null` too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Native {
     /// The source's events as they are, into the JSON renderer.
@@ -381,9 +384,16 @@ impl Default for Options {
 }
 
 /// The CSV options a composed `csv` runs under: the library's, with the
-/// export's policy for an absent member, an empty field.
+/// export's policy for an absent member, an empty field, and a number
+/// that is not finite written as its word, `Infinity`, `-Infinity` or
+/// `NaN`, since every CSV cell is text.
 pub const CSV_OPTIONS: &str = "(record (entry :delimiter \",\") (entry :newline \"\\r\\n\") \
-                               (entry :header true) (entry :null-text \"\") (entry :missing \"\"))";
+                               (entry :header true) (entry :null-text \"\") (entry :missing \"\") \
+                               (entry :non-finite :literal))";
+
+/// What a composed `json` runs under: a number that is not finite, which
+/// JSON has no spelling for, is written as `null`.
+pub const JSON_OPTIONS: &str = "(record (entry :non-finite :null))";
 
 /// The binding of the inferred table: the rows are the root array's
 /// elements, the columns the first row's.
@@ -555,7 +565,7 @@ fn compose_over(
         _ => None,
     };
     let render = match &target.render {
-        Render::Json => "json".to_string(),
+        Render::Json => format!("json {JSON_OPTIONS}"),
         Render::Csv => format!("csv {CSV_OPTIONS}"),
         Render::Alc(alc) => {
             sources.insert(0, (alc.file.clone(), alc.text.clone()));
@@ -757,9 +767,13 @@ mod tests {
             Some(PartText::new("json", None)),
         )
         .unwrap();
+        let c = compose(None, &json, &o, "main").unwrap();
+        assert_eq!(c.native, Some(Native::Json));
+        // A number that is not finite is written as null, which JSON has
+        // a spelling for.
         assert_eq!(
-            compose(None, &json, &o, "main").unwrap().native,
-            Some(Native::Json)
+            c.main,
+            "def export [input] (json (record (entry :non-finite :null)) input)"
         );
     }
 
