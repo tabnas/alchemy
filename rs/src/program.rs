@@ -426,12 +426,15 @@ impl Program {
     }
 
     /// The protocol the built plan produces; the checker's `output` agrees
-    /// with it, and a test holds the two together.
+    /// with it, and a test holds the two together. A stream of items is
+    /// the checker's to name (every item an event, or a table event),
+    /// since the runtime learns an item's shape only as it arrives.
     pub fn plan_output(&self) -> Output {
         match &self.result {
             Val::Stream(plan) => match plan.protocol() {
                 Protocol::JsonEvents => Output::JsonEvents,
-                _ => Output::TableRows,
+                Protocol::TableRows => Output::TableRows,
+                Protocol::Items | Protocol::Text => self.output,
             },
             _ => Output::Text,
         }
@@ -532,7 +535,7 @@ impl Program {
             self.injected.routers.clone(),
             self.injected.renderers.clone(),
         )
-        .sink(&self.result, out, render)
+        .sink_as(&self.result, out, render, self.output)
     }
 }
 

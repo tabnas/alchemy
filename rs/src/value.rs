@@ -216,6 +216,11 @@ pub enum Plan {
     /// the container events as constants and `key` and `scalar` with
     /// their one field; `End` is the stream's end, not an item.
     Events { source: Arc<Plan> },
+    /// `as-events items`: a stream of items the program built, each an
+    /// event, as `JsonEvents/1`: the reverse of `events`, which any taker
+    /// of JSON events already applies to such a stream; here the program
+    /// says so, where the checker could not tell the items' type.
+    AsEvents { source: Arc<Plan> },
     /// `scan-emit init step finish stream`.
     ScanEmit {
         init: Val,
@@ -289,6 +294,7 @@ impl Plan {
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
+            | Plan::AsEvents { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
@@ -325,7 +331,7 @@ impl Plan {
     /// shape the runtime learns item by item.
     pub fn protocol(&self) -> Protocol {
         match self {
-            Plan::Input | Plan::Records { .. } => Protocol::JsonEvents,
+            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Protocol::JsonEvents,
             Plan::TableFromJson { .. } => Protocol::TableRows,
             Plan::Route { .. }
             | Plan::Select { .. }
@@ -629,6 +635,7 @@ pub fn plan_name(plan: &Plan) -> &'static str {
         Plan::Route { .. } => "route",
         Plan::Select { .. } => "select",
         Plan::Events { .. } => "events",
+        Plan::AsEvents { .. } => "as-events",
         Plan::ScanEmit { .. } => "scan-emit",
         Plan::Map { .. } => "map",
         Plan::Filter { .. } => "filter",

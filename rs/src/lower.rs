@@ -43,6 +43,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::ast::SourceSpan;
 use crate::interp::{Bounds, Runtime};
+use crate::program::Output;
 use crate::shared::limits::NODE_BYTES;
 use crate::shared::{
     BoundColumn, CaptureSpec, Cell, Code, CsvOptions, Datum, Fail, Flow, JoinOut, JsonEvent,
@@ -1103,16 +1104,44 @@ impl<'a> Lowering<'a> {
 
     /// The sink for a program's result over `out`. `render` is the host's
     /// choice for a stream result; a text result takes none
-    /// (`render_of_text`).
+    /// (`render_of_text`). A stream of items is taken for a table's rows,
+    /// as the runtime cannot tell an item's shape before it arrives;
+    /// [`Lowering::sink_as`] takes the checker's word instead.
     pub fn sink(
         &self,
         result: &Val,
         out: Out,
         render: Option<Renderer>,
     ) -> Result<EventSink, Fail> {
+        let output = match result {
+            Val::Stream(plan) => match plan.protocol() {
+                Protocol::JsonEvents => Output::JsonEvents,
+                _ => Output::TableRows,
+            },
+            _ => Output::Text,
+        };
+        self.sink_as(result, out, render, output)
+    }
+
+    /// [`Lowering::sink`] with `output`, what the checker decided the
+    /// result is: a stream of items the runtime cannot tell the protocol
+    /// of is JSON events when the checker typed every item an event (a
+    /// rewritten tree), and a table's rows otherwise.
+    pub fn sink_as(
+        &self,
+        result: &Val,
+        out: Out,
+        render: Option<Renderer>,
+        output: Output,
+    ) -> Result<EventSink, Fail> {
         match result {
             // A string is a text where a text is expected (spec 10.4).
-            Val::Str(s) => self.sink(&Val::Text(Arc::new(Plan::Lit(s.clone()))), out, render),
+            Val::Str(s) => self.sink_as(
+                &Val::Text(Arc::new(Plan::Lit(s.clone()))),
+                out,
+                render,
+                output,
+            ),
             Val::Text(plan) => {
                 if render.is_some() {
                     return Err(Fail::new(
@@ -1123,7 +1152,11 @@ impl<'a> Lowering<'a> {
                 self.text(plan, out)
             }
             Val::Stream(plan) => {
-                let protocol = plan.protocol();
+                let protocol = match (plan.protocol(), output) {
+                    // A rewritten tree: the checker saw every item an event.
+                    (Protocol::Items, Output::JsonEvents) => Protocol::JsonEvents,
+                    (protocol, _) => protocol,
+                };
                 let render = render.unwrap_or(match protocol {
                     Protocol::JsonEvents => Renderer::Json,
                     _ => Renderer::Csv,
@@ -1235,6 +1268,9 @@ impl<'a> Lowering<'a> {
             Plan::Records { source } => {
                 self.table(source, self.renderers.records_to_json(sink), false)
             }
+            // `as-events` names what the arm below does for any items
+            // plan: the program's items, each an event, as JSON events.
+            Plan::AsEvents { source } => self.events(source, sink),
             // A stream whose items may be events (`events` itself, or a
             // `scan-emit`, `map` or `filter` over anything): each item is
             // turned back into an event as the stream runs, the reverse of
@@ -1296,7 +1332,7 @@ impl<'a> Lowering<'a> {
                 )?;
                 self.events(source, transducer)
             }
-            Plan::Input | Plan::Records { .. } => Err(protocol_mismatch(
+            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Err(protocol_mismatch(
                 "table events were expected, not JSON events (table-from-json makes a table of them)",
             )),
             _ => self.items(
@@ -1430,7 +1466,7 @@ impl<'a> Lowering<'a> {
                     true,
                 )
             }
-            Plan::Input | Plan::Records { .. } => Err(protocol_mismatch(
+            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Err(protocol_mismatch(
                 "JSON events cannot be read item by item; select or route what the stream should yield, or read its events",
             )),
             other => Err(type_error(format!(

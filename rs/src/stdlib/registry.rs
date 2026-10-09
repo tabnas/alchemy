@@ -1004,8 +1004,41 @@ fn repeat(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 }
 
 fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
-    let message = as_str("fail", "the message", &a[0])?;
-    Err(rt.fail_at(Fail::new(Code::InputInvalid, message.to_string()), at))
+    // `(fail message)` is INPUT_INVALID, the code of a document the
+    // program refuses; `(fail :code message)` names what the failure is: a
+    // value the target cannot carry, or a stream that breaks its protocol.
+    let (code, message) = match a {
+        [message] => (Code::InputInvalid, message),
+        [code, message] => {
+            let code = match code {
+                Val::Keyword(k) => match &**k {
+                    "invalid" => Code::InputInvalid,
+                    "unrepresentable" => Code::TargetValueUnrepresentable,
+                    "protocol-order" => Code::ProtocolOrderError,
+                    other => {
+                        return Err(type_error(format!(
+                            "the code of fail must be :invalid, :unrepresentable or :protocol-order, not :{other}"
+                        )))
+                    }
+                },
+                other => {
+                    return Err(type_error(format!(
+                        "fail: the code must be a keyword, not {}",
+                        other.kind()
+                    )))
+                }
+            };
+            (code, message)
+        }
+        _ => return Err(type_error("fail takes a message, or a code and a message")),
+    };
+    let message = as_str("fail", "the message", message)?;
+    Err(rt.fail_at(Fail::new(code, message.to_string()), at))
+}
+
+fn as_events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("as-events", &a[0])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::AsEvents { source })))
 }
 
 fn is_ready_value(v: &Val) -> bool {
@@ -1221,6 +1254,7 @@ static NATIVES: &[Native] = &[
     f("route", Exact(2), route, "route captures input -> Stream<Selected>", "one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap"),
     f("select", Exact(2), select, "select selector input -> Stream<Value>", "route with one capture, delivering the values"),
     f("events", Exact(1), events, "events input -> Stream<Event>", "every event of JsonEvents as one item, as it arrives: the container events as constants, key and scalar with their one field; End ends the stream and is no item; nothing is retained between events"),
+    f("as-events", Exact(1), as_events, "as-events items -> JsonEvents", "a stream of items the program built, each an event, as JsonEvents: what every taker of JSON events applies to such a stream, said by the program where the checker cannot type the items (an export, say); an item that is not an event fails where it arrives"),
     f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its concat-map applies included): at most max_metadata_bytes, no deeper than max_depth, reported in retained_bytes_high; ready after each item; finish runs once at the validated end"),
     k("transition", Exact(2), transition, "transition state outputs -> Transition", "one step's result: the next state and a vector of outputs"),
     f("partial", AtLeast(1), partial, "partial f arg... -> Fn", "f with its first arguments supplied"),
@@ -1236,7 +1270,7 @@ static NATIVES: &[Native] = &[
     f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
     f("string-join", Exact(2), string_join, "string-join separator strings -> String", "the strings of a vector joined into one string, the separator between them; refused past max_scalar_bytes, before it is built"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
-    f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
+    f("fail", Between(1, 2), fail, "fail [code] message -> Never", "INPUT_INVALID with the message and the form's position; with a code first, :unrepresentable is TARGET_VALUE_UNREPRESENTABLE (a value the target cannot carry), :protocol-order is PROTOCOL_ORDER_ERROR (a stream that breaks its protocol) and :invalid is INPUT_INVALID"),
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
@@ -1315,7 +1349,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 42);
+        assert_eq!(compared, 43);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

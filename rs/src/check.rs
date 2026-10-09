@@ -1134,6 +1134,15 @@ impl Checker<'_> {
                 self.expect("the input of events", &JsonEvents, t(0), at(0))?;
                 Type::events()
             }
+            "as-events" => {
+                self.expect(
+                    "the items of as-events",
+                    &Type::stream(Unknown),
+                    t(0),
+                    at(0),
+                )?;
+                JsonEvents
+            }
             "transition" => {
                 no_stream(self, 0, "a state")?;
                 self.expect(
@@ -1222,7 +1231,28 @@ impl Checker<'_> {
                 String
             }
             "fail" => {
-                self.expect("the message of fail", &String, t(0), at(0))?;
+                // `(fail message)` is INPUT_INVALID; `(fail :code message)`
+                // names the code: a literal keyword is held to the three
+                // here, any other keyword at run time.
+                let message = args.len() - 1;
+                if args.len() == 2 {
+                    self.expect("the code of fail", &Keyword, t(0), at(0))?;
+                    if let Expr::Keyword { name, span } = &args[0] {
+                        if !matches!(
+                            name.as_str(),
+                            "invalid" | "unrepresentable" | "protocol-order"
+                        ) {
+                            return Err(self.type_error(
+                                "type_mismatch",
+                                format!(
+                                    "the code of fail must be :invalid, :unrepresentable or :protocol-order, not :{name}"
+                                ),
+                                span,
+                            ));
+                        }
+                    }
+                }
+                self.expect("the message of fail", &String, t(message), at(message))?;
                 Never
             }
             "is-ready" => Bool,
@@ -1313,7 +1343,18 @@ fn output_of(export: &Type) -> Result<Output, (Code, &'static str, String)> {
     match export {
         Type::Text | Type::String => Ok(Output::Text),
         Type::JsonEvents => Ok(Output::JsonEvents),
+        // Items the checker could not type could be anything, and
+        // `Unknown` is accepted everywhere: asked first, so that such a
+        // stream is never taken for a table's rows.
+        Type::Stream(item) if **item == Type::Unknown => Err((
+            Code::StreamabilityUnknown,
+            "unknown_output",
+            "export answers a stream of items whose type is not known; as-events says they are events, or render them as a text (join, concat-map), or make table events of them"
+                .to_string(),
+        )),
         Type::Stream(item) if Type::TableEvent.accepts(item) => Ok(Output::TableRows),
+        // A rewritten tree: every item an event, handed on as JSON events.
+        Type::Stream(item) if Type::Event.accepts(item) => Ok(Output::JsonEvents),
         Type::Stream(item) => Err((
             Code::DslTypeError,
             "bad_output",
@@ -1520,10 +1561,43 @@ mod tests {
         let records =
             format!("{BINDING}def export [input] (records (table-from-json api-binding input))");
         assert_eq!(check(&records).unwrap().output, Output::JsonEvents);
-        // A user's own scan-emit is a stream of unknown items: rendered as
-        // a table, checked at run time.
+        // A user's own scan-emit is a stream of unknown items: not an
+        // output, since Unknown is accepted everywhere and the items could
+        // as well be events; `as-events` says which, and the run checks it.
         let scan = "def step [s x] (transition s [(row [x])])\ndef fin [s] [table-end]\ndef export [input] (scan-emit null step fin (select (path each-index) input))";
-        assert_eq!(check(scan).unwrap().output, Output::TableRows);
+        let (c, finer, _, _) = code(scan);
+        assert_eq!(
+            (c, finer.as_str()),
+            (Code::StreamabilityUnknown, "unknown_output")
+        );
+        let said = "def step [s x] (transition s [x])\ndef fin [s] []\ndef export [input] (as-events (scan-emit null step fin (events input)))";
+        assert_eq!(check(said).unwrap().output, Output::JsonEvents);
+        // A stream the checker typed as events is a rewritten tree.
+        assert_eq!(
+            check("def export [input] (events input)").unwrap().output,
+            Output::JsonEvents
+        );
+        assert_eq!(
+            code("def export [input] (as-events input)").1,
+            "protocol_mismatch",
+            "as-events takes a stream of items, not the input's events"
+        );
+        // fail's code: a literal keyword is held to the three at the
+        // checker; the message is the last argument either way.
+        let (c, finer, row, col) = code("def export [input] (join \"\" (map (fn [x] (fail :nope \"x\")) (select (path each-index) input)))");
+        assert_eq!((c, finer.as_str()), (Code::DslTypeError, "type_mismatch"));
+        assert_eq!((row, col), (Some(1), Some(48)));
+        assert_eq!(
+            check("def export [input] (join \"\" (map (fn [x] (fail :unrepresentable \"x\")) (select (path each-index) input)))")
+                .unwrap()
+                .output,
+            Output::Text
+        );
+        assert_eq!(
+            code("def export [input] (join \"\" (map (fn [x] (fail \"x\" \"y\")) (select (path each-index) input)))").1,
+            "type_mismatch",
+            "the code is a keyword"
+        );
         assert_eq!(
             code("def export [input] (select (path each-index) input)").1,
             "bad_output"
@@ -1868,7 +1942,11 @@ mod tests {
                 (Arc::from("p"), Type::vector(Type::Keyword)),
             ])
         );
-        assert_eq!(code("def export [input] (events input)").1, "bad_output");
+        assert_eq!(
+            check("def export [input] (events input)").unwrap().output,
+            Output::JsonEvents,
+            "a stream of events is a rewritten tree"
+        );
         // A stream of events reaches a taker of JSON events; a stream of
         // values does not, nor do events reach a taker of table events.
         assert_eq!(

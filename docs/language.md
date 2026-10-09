@@ -571,9 +571,15 @@ ERROR:dynamic@1:30
 `JsonEvents`, and its result decides the output: a `Text` (or a string)
 is written as it is; `TableEvents` are rendered by the host (CSV by
 default, or JSON records with `--render json`); `JsonEvents` are
-rendered as JSON. A program without one is `no_export`; a result of
-another type is `bad_output`; one that cannot be typed is
-`STREAMABILITY_UNKNOWN` (`unknown_output`).
+rendered as JSON, and so is a stream whose every item the checker typed
+an event (`(events input)` itself, or a `map` over it with a typed
+function): a rewritten tree, handed to the host as JSON events. A
+program without one is `no_export`; a result of another type is
+`bad_output`; one that cannot be typed is `STREAMABILITY_UNKNOWN`
+(`unknown_output`), and so is a stream of items whose type the checker
+could not tell, such as a `scan-emit` whose step hands the matched item
+back: `as-events` says the items are events, and the run holds each
+item to that where it arrives.
 
 ## The standard library
 
@@ -602,6 +608,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `capture` | `capture :tag selector [:limit] -> CaptureSpec` | materialize each selected scope under `max_capture_bytes`, or under the `Limits` field the keyword names (`:max_metadata_bytes`, `:max_record_bytes`), the host's value for it |
 | `route` | `route captures input -> Stream<Selected>` | one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap |
 | `select` | `select selector input -> Stream<Value>` | route with one capture, delivering the values |
+| `as-events` | `as-events items -> JsonEvents` | a stream of items the program built, each an event, as `JsonEvents`: what every taker of JSON events applies to such a stream, said by the program where the checker cannot type the items (an export, say); an item that is not an event fails where it arrives |
 | `events` | `events input -> Stream<Event>` | every event of `JsonEvents` as one item, as it arrives: the container events as constants, `key` and `scalar` with their one field; `End` ends the stream and is no item; nothing is retained between events |
 | `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its `concat-map` applies included): at most `max_metadata_bytes`, no deeper than `max_depth`, reported in `retained_bytes_high`; ready after each item; finish runs once at the validated end |
 | `transition` | `transition state outputs -> Transition` | one step's result: the next state and a vector of outputs |
@@ -616,7 +623,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F as `\u00XX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past `max_scalar_bytes`, before it is built |
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `string-join` | `string-join separator strings -> String` | the strings of a vector joined into one string, the separator between them; refused past `max_scalar_bytes`, before it is built |
-| `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
+| `fail` | `fail [code] message -> Never` | `INPUT_INVALID` with the message and the form's position; with a code first, `:unrepresentable` is `TARGET_VALUE_UNREPRESENTABLE` (a value the target cannot carry), `:protocol-order` is `PROTOCOL_ORDER_ERROR` (a stream that breaks its protocol) and `:invalid` is `INPUT_INVALID` |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema, of at most `max_columns` columns, refused where it is built past them; one row, as wide as the schema; the end, after the source validated |
 | `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |

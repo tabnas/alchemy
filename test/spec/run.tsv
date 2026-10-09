@@ -55,3 +55,9 @@ def export [input] input	ERROR:protocol_mismatch	{"a":1}	csv
 def export [input] (json input)	ERROR:INPUT_INVALID@1:4	[1,	
 # A program that does not compile fails before the document is read, with the checker's code.
 def export [input] (csv csv-options input)	ERROR:protocol_mismatch@1:37	[]	
+# A rewritten tree is rendered as JSON by the host: the stream `events` yields as it is, and a scan-emit's items said to be events; fail's codes.
+def step [s event]\n  match event\n    case (scalar "secret") (transition s [(scalar "***")])\n    case _ (transition s [event])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (events input))	"{\"user\":\"ann\",\"pass\":\"***\",\"list\":[\"***\",1]}\n"	{"user":"ann","pass":"secret","list":["secret",1]}	
+def export [input] (events input)	"{\"user\":\"ann\",\"pass\":\"secret\",\"list\":[\"secret\",1]}\n"	{"user":"ann","pass":"secret","list":["secret",1]}	
+def export [input] (join "" (map (fn [x] (fail :unrepresentable "no form for it")) (select (path each-index) input)))	ERROR:TARGET_VALUE_UNREPRESENTABLE@1:42	[1]	
+def export [input] (join "" (map (fn [x] (fail :protocol-order "no form for it")) (select (path each-index) input)))	ERROR:PROTOCOL_ORDER_ERROR@1:42	[1]	
+def export [input] (join "" (map (fn [x] (fail :invalid "no form for it")) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:42	[1]	

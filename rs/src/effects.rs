@@ -163,6 +163,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
+            | Plan::AsEvents { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
@@ -198,7 +199,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
 /// The protocol a stage produces, as the report names it.
 fn protocol_of(stage: &Plan) -> &'static str {
     match stage {
-        Plan::Input | Plan::Records { .. } => "JsonEvents/1",
+        Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => "JsonEvents/1",
         Plan::TableFromJson { .. } | Plan::CsvTable { .. } => "TableRows/1",
         Plan::Route { .. } => "Stream<Selected>",
         Plan::Select { .. } => "Stream<Value>",
