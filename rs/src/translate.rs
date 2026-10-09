@@ -24,9 +24,10 @@
 //! 4. the target's render: a part's own, or alchemy's `json` or `csv`.
 //!
 //! A program's output takes the source's place ([`compose_program`]), its
-//! JSON events a tree and its table records, and is of the target's
-//! schema: a program writing to such a target makes that schema's tree, so
-//! neither the embed nor the refusal runs for it.
+//! JSON events a tree and its table records. A program writing to a
+//! schema-only target makes that schema's tree, so the refusal does not
+//! run for it; into a target with an embed its output is a plain tree,
+//! embedded like any source's.
 //!
 //! The composed program is a one-line `export` linked with the parts'
 //! sources ([`Composition::compile`]). A host runs it as it runs any
@@ -472,23 +473,24 @@ pub fn compose(
 /// program is linked under [`PROGRAM_EXPORT`] by
 /// [`Composition::compile`].
 ///
-/// A program writing to a target that has a schema makes that schema's
-/// tree: its part takes the target's schema, so neither the embed nor a
-/// schema-only target's refusal runs for it, while the shape adapters
-/// (`records`, the inferred table, and the root adapters, which pass a root
-/// of the right kind through) apply as they do for any source. A plain
-/// tree that wants embedding takes the format's own route, [`compose`],
-/// instead.
+/// A program writing to a schema-only target (a schema and no embed) makes
+/// that schema's tree: its part takes the target's schema, so the refusal
+/// does not run for it, since the program route is the only route into
+/// such a target. Into a target with an embed its output is a plain tree,
+/// embedded like any source's, and so is its table, which `records` makes
+/// a plain tree. The shape adapters (`records`, the inferred table, and
+/// the root adapters, which pass a root of the right kind through) apply as
+/// they do for any source.
 pub fn compose_program(
     output: Output,
     target: &Part,
     options: &Options,
     main_file: &str,
 ) -> Result<Composition, Fail> {
-    let source = Part {
-        schema: target.schema.clone(),
-        ..Part::of_output(output)?
-    };
+    let mut source = Part::of_output(output)?;
+    if target.embed.is_none() {
+        source.schema = target.schema.clone();
+    }
     let input = format!("({PROGRAM_EXPORT} input)");
     compose_over(
         Some(&source),
@@ -823,12 +825,13 @@ mod tests {
         assert!(c.loss.iter().any(|l| l.contains("\"a \\\"b\\\"\"")));
     }
 
-    /// A program writing to a target that has a schema makes that schema's
-    /// tree: a schema-only target, which refuses another format's tree,
-    /// takes a program's events into its render, and a target with an
-    /// embed takes them without it; the shape adapters apply as before.
+    /// A program writing to a schema-only target makes that schema's tree:
+    /// such a target, which refuses another format's tree, takes a
+    /// program's events into its render. Into a target with an embed a
+    /// program's output is a plain tree, embedded like any source's, its
+    /// table through `records`; the shape adapters apply as before.
     #[test]
-    fn a_program_makes_a_schema_targets_tree() {
+    fn a_program_makes_a_schema_only_targets_tree() {
         let o = Options::default();
         let css = Part {
             schema: Some("css".into()),
@@ -840,6 +843,15 @@ mod tests {
             "def export [input] (css-render (program-export input))"
         );
         assert!(c.adapters.is_empty());
+        let c = compose_program(Output::TableRows, &css, &o, "main").unwrap();
+        assert_eq!(c.adapters, vec![Adapter::Records]);
+        // A root of the wrong kind is wrapped for a schema-only target too.
+        let object = Part {
+            schema: Some("x-tree".into()),
+            ..tree("x", "object")
+        };
+        let c = compose_program(Output::JsonEvents, &object, &o, "main").unwrap();
+        assert_eq!(c.adapters, vec![Adapter::WrapObject("items".into())]);
         let xml = Part {
             schema: Some("xml-element".into()),
             embed: Some(Alc {
@@ -852,28 +864,15 @@ mod tests {
         let c = compose_program(Output::JsonEvents, &xml, &o, "main").unwrap();
         assert_eq!(
             c.main,
-            "def export [input] (xml-render (program-export input))"
+            "def export [input] (xml-render (xml-embed (program-export input)))"
         );
-        assert!(c.adapters.is_empty());
-        assert_eq!(
-            c.sources,
-            vec![(
-                "tabnas-xml/alchemy/render.alc".to_string(),
-                "def xml-render [input] (json input)".to_string()
-            )]
-        );
-        // A table is records, and a root of the wrong kind is wrapped.
+        assert_eq!(c.adapters, vec![Adapter::Embed]);
+        assert_eq!(c.sources.len(), 2);
         let c = compose_program(Output::TableRows, &xml, &o, "main").unwrap();
         assert_eq!(
             c.main,
-            "def export [input] (xml-render (records (program-export input)))"
+            "def export [input] (xml-render (xml-embed (records (program-export input))))"
         );
-        assert_eq!(c.adapters, vec![Adapter::Records]);
-        let object = Part {
-            schema: Some("x-tree".into()),
-            ..tree("x", "object")
-        };
-        let c = compose_program(Output::JsonEvents, &object, &o, "main").unwrap();
-        assert_eq!(c.adapters, vec![Adapter::WrapObject("items".into())]);
+        assert_eq!(c.adapters, vec![Adapter::Records, Adapter::Embed]);
     }
 }

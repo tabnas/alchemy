@@ -246,11 +246,12 @@ func TestAProgramsOutputStandsInTheSourcesPlace(t *testing.T) {
 	}
 }
 
-// A program writing to a target that has a schema makes that schema's
-// tree: a schema-only target, which refuses another format's tree, takes a
-// program's events into its render, and a target with an embed takes them
-// without it; the shape adapters apply as before.
-func TestAProgramMakesASchemaTargetsTree(t *testing.T) {
+// A program writing to a schema-only target makes that schema's tree: such
+// a target, which refuses another format's tree, takes a program's events
+// into its render. Into a target with an embed a program's output is a
+// plain tree, embedded like any source's, its table through records; the
+// shape adapters apply as before.
+func TestAProgramMakesASchemaOnlyTargetsTree(t *testing.T) {
 	o := DefaultOptions()
 	css := *tree(t, "css", "any")
 	css.Schema = "css"
@@ -258,27 +259,28 @@ func TestAProgramMakesASchemaTargetsTree(t *testing.T) {
 	if f != nil || c.Main != `def export [input] (css-render (program-export input))` || len(c.Adapters) != 0 {
 		t.Errorf("%+v %v", c, f)
 	}
-	xml := *tree(t, "xml", "any")
-	xml.Schema = "xml-element"
-	xml.Embed = &Alc{File: "tabnas-xml/alchemy/embed.alc", Entry: "xml-embed", Text: "def xml-embed [input] input"}
-	c, f = ComposeProgram(alchemy.OutputJsonEvents, &xml, o, "main")
-	if f != nil || c.Main != `def export [input] (xml-render (program-export input))` || len(c.Adapters) != 0 {
+	c, f = ComposeProgram(alchemy.OutputTableRows, &css, o, "main")
+	if f != nil || !reflect.DeepEqual(c.Adapters, []Adapter{{Kind: AdapterRecords}}) {
 		t.Errorf("%+v %v", c, f)
 	}
-	render := []alchemy.Source{{File: "tabnas-xml/alchemy/render.alc", Text: "def xml-render [input] (json input)"}}
-	if !reflect.DeepEqual(c.Sources, render) {
-		t.Errorf("%+v", c.Sources)
-	}
-	// A table is records, and a root of the wrong kind is wrapped.
-	c, f = ComposeProgram(alchemy.OutputTableRows, &xml, o, "main")
-	if f != nil || c.Main != `def export [input] (xml-render (records (program-export input)))` ||
-		!reflect.DeepEqual(c.Adapters, []Adapter{{Kind: AdapterRecords}}) {
-		t.Errorf("%+v %v", c, f)
-	}
+	// A root of the wrong kind is wrapped for a schema-only target too.
 	object := *tree(t, "x", "object")
 	object.Schema = "x-tree"
 	c, f = ComposeProgram(alchemy.OutputJsonEvents, &object, o, "main")
 	if f != nil || !reflect.DeepEqual(c.Adapters, []Adapter{{Kind: AdapterWrapObject, Key: "items"}}) {
+		t.Errorf("%+v %v", c, f)
+	}
+	xml := *tree(t, "xml", "any")
+	xml.Schema = "xml-element"
+	xml.Embed = &Alc{File: "tabnas-xml/alchemy/embed.alc", Entry: "xml-embed", Text: "def xml-embed [input] input"}
+	c, f = ComposeProgram(alchemy.OutputJsonEvents, &xml, o, "main")
+	if f != nil || c.Main != `def export [input] (xml-render (xml-embed (program-export input)))` ||
+		!reflect.DeepEqual(c.Adapters, []Adapter{{Kind: AdapterEmbed}}) || len(c.Sources) != 2 {
+		t.Errorf("%+v %v", c, f)
+	}
+	c, f = ComposeProgram(alchemy.OutputTableRows, &xml, o, "main")
+	if f != nil || c.Main != `def export [input] (xml-render (xml-embed (records (program-export input))))` ||
+		!reflect.DeepEqual(c.Adapters, []Adapter{{Kind: AdapterRecords}, {Kind: AdapterEmbed}}) {
 		t.Errorf("%+v %v", c, f)
 	}
 }

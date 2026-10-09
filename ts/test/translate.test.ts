@@ -187,34 +187,35 @@ describe('translate', () => {
     assert.ok(c.loss.some((l) => l.includes('"a \\"b\\""')))
   })
 
-  // A program writing to a target that has a schema makes that schema's
-  // tree: a schema-only target, which refuses another format's tree, takes
-  // a program's events into its render, and a target with an embed takes
-  // them without it; the shape adapters apply as before.
-  it("a program makes a schema target's tree", () => {
+  // A program writing to a schema-only target makes that schema's tree:
+  // such a target, which refuses another format's tree, takes a program's
+  // events into its render. Into a target with an embed a program's output
+  // is a plain tree, embedded like any source's, its table through
+  // `records`; the shape adapters apply as before.
+  it("a program makes a schema-only target's tree", () => {
     const o = T.Options.default()
     const css: translate.Part = { ...tree('css', 'any'), schema: 'css' }
     let c = T.composeProgram('JsonEvents/1', css, o, 'main')
     assert.equal(c.main, 'def export [input] (css-render (program-export input))')
     assert.deepStrictEqual(c.adapters, [])
+    c = T.composeProgram('TableRows/1', css, o, 'main')
+    assert.deepStrictEqual(c.adapters, [{ kind: 'records' }])
+    // A root of the wrong kind is wrapped for a schema-only target too.
+    const object: translate.Part = { ...tree('x', 'object'), schema: 'x-tree' }
+    c = T.composeProgram('JsonEvents/1', object, o, 'main')
+    assert.deepStrictEqual(c.adapters, [{ kind: 'wrap-object', key: 'items' }])
     const xml: translate.Part = {
       ...tree('xml', 'any'),
       schema: 'xml-element',
       embed: { file: 'tabnas-xml/alchemy/embed.alc', entry: 'xml-embed', text: 'def xml-embed [input] input' },
     }
     c = T.composeProgram('JsonEvents/1', xml, o, 'main')
-    assert.equal(c.main, 'def export [input] (xml-render (program-export input))')
-    assert.deepStrictEqual(c.adapters, [])
-    assert.deepStrictEqual(c.sources, [
-      { file: 'tabnas-xml/alchemy/render.alc', text: 'def xml-render [input] (json input)' },
-    ])
-    // A table is records, and a root of the wrong kind is wrapped.
+    assert.equal(c.main, 'def export [input] (xml-render (xml-embed (program-export input)))')
+    assert.deepStrictEqual(c.adapters, [{ kind: 'embed' }])
+    assert.equal(c.sources.length, 2)
     c = T.composeProgram('TableRows/1', xml, o, 'main')
-    assert.equal(c.main, 'def export [input] (xml-render (records (program-export input)))')
-    assert.deepStrictEqual(c.adapters, [{ kind: 'records' }])
-    const object: translate.Part = { ...tree('x', 'object'), schema: 'x-tree' }
-    c = T.composeProgram('JsonEvents/1', object, o, 'main')
-    assert.deepStrictEqual(c.adapters, [{ kind: 'wrap-object', key: 'items' }])
+    assert.equal(c.main, 'def export [input] (xml-render (xml-embed (records (program-export input))))')
+    assert.deepStrictEqual(c.adapters, [{ kind: 'records' }, { kind: 'embed' }])
   })
 
   // Every route the module composes compiles with the standard library's

@@ -27,9 +27,10 @@
 //  4. the target's render: a part's own, or alchemy's `json` or `csv`.
 //
 // A program's output takes the source's place (ComposeProgram), its JSON
-// events a tree and its table records, and is of the target's schema: a
-// program writing to such a target makes that schema's tree, so neither the
-// embed nor the refusal runs for it.
+// events a tree and its table records. A program writing to a schema-only
+// target makes that schema's tree, so the refusal does not run for it; into
+// a target with an embed its output is a plain tree, embedded like any
+// source's.
 //
 // The composed program is a one-line export linked with the parts' sources
 // (Composition.Compile). A host runs it as it runs any program, and keeps a
@@ -564,18 +565,22 @@ func Compose(source, target *Part, options Options, mainFile string) (*Compositi
 // place: JSON events are a tree and a table is records (PartOfOutput). The
 // program is linked under ProgramExport by Composition.Compile.
 //
-// A program writing to a target that has a schema makes that schema's
-// tree: its part takes the target's schema, so neither the embed nor a
-// schema-only target's refusal runs for it, while the shape adapters
-// (`records`, the inferred table, and the root adapters, which pass a root
-// of the right kind through) apply as they do for any source. A plain tree
-// that wants embedding takes the format's own route, Compose, instead.
+// A program writing to a schema-only target (a schema and no embed) makes
+// that schema's tree: its part takes the target's schema, so the refusal
+// does not run for it, since the program route is the only route into such
+// a target. Into a target with an embed its output is a plain tree,
+// embedded like any source's, and so is its table, which `records` makes a
+// plain tree. The shape adapters (`records`, the inferred table, and the
+// root adapters, which pass a root of the right kind through) apply as they
+// do for any source.
 func ComposeProgram(output alchemy.Output, target *Part, options Options, mainFile string) (*Composition, *alchemy.Fail) {
 	source, f := PartOfOutput(output)
 	if f != nil {
 		return nil, f
 	}
-	source.Schema = target.Schema
+	if target.Embed == nil {
+		source.Schema = target.Schema
+	}
 	return composeOver(source, "("+ProgramExport+" input)", target, options, mainFile, FrontNone)
 }
 
