@@ -504,25 +504,97 @@ fn length(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// text as its lexeme, so a renderer writes it as it was spelled; the three
 /// non-finite numbers are spelled `Infinity`, `-Infinity` and `NaN`, as
 /// JavaScript spells them. A format's reverse reads its numbers back with
-/// it (XML's embedding writes a number as text).
-fn number(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+/// it (XML's embedding writes a number as text). The string is read by
+/// [`read_number`], as `is-number` reads it.
+fn number(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let s = as_str("number", "the string", &a[0])?;
-    let value = match &**s {
-        "Infinity" => f64::INFINITY,
-        "-Infinity" => f64::NEG_INFINITY,
-        "NaN" => f64::NAN,
-        text if is_json_number(text) => match text.parse::<f64>() {
+    read_number(rt, s)?.ok_or_else(|| input_invalid(format!("number: {s:?} spells no number")))
+}
+
+/// `is-number string`: whether `number` reads the string, without
+/// failing: a JSON number, or `Infinity`, `-Infinity` or `NaN`. A program
+/// cannot catch a failure, so a format's part tests a string with it
+/// before it calls `number` (zon's render, a big integer's digits; XML's
+/// reverse, a number's text). The two read with [`read_number`], so
+/// `number` fails exactly where this answers false.
+fn is_number(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("is-number", "the string", &a[0])?;
+    Ok(Val::Bool(read_number(rt, s)?.is_some()))
+}
+
+/// How many characters of its input `number` and `is-number` read per
+/// evaluation step.
+pub const NUMBER_STEP: usize = 4096;
+
+/// What [`read_number`] has read of a spelling.
+#[derive(Clone, Copy)]
+enum Spelled {
+    Start,
+    Minus,
+    /// An integer part `0`, which no digit follows.
+    Zero,
+    /// An integer part of a digit from 1 to 9 and the digits after it.
+    Integer,
+    /// A decimal point, before the fraction's first digit.
+    Point,
+    Fraction,
+    /// The exponent's `e` or `E`.
+    E,
+    /// The exponent's sign.
+    Sign,
+    Exponent,
+    /// A word begun: the characters it still wants, and the number it
+    /// spells.
+    Word(&'static [u8], f64),
+}
+
+/// The number `number` answers for a string, or `None` where it fails: a
+/// JSON number (`-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`), its
+/// text kept as the lexeme while the value is finite, or `Infinity`,
+/// `-Infinity` or `NaN`. The string is read from the front, an evaluation
+/// step before the first of each [`NUMBER_STEP`] characters, and refused
+/// at the first character no spelling goes on with, so the host's abort
+/// flag stops the read of a long one, a number or not.
+fn read_number(rt: &Runtime, s: &Arc<str>) -> Result<Option<Val>, Fail> {
+    use Spelled::*;
+    let mut at = Start;
+    // A spelling is ASCII, so a byte read is a character read up to the
+    // first that is not, where the reading ends.
+    for (i, &c) in s.as_bytes().iter().enumerate() {
+        if i % NUMBER_STEP == 0 {
+            rt.tick()?;
+        }
+        at = match (at, c) {
+            (Start, b'-') => Minus,
+            (Start | Minus, b'0') => Zero,
+            (Start | Minus, b'1'..=b'9') | (Integer, b'0'..=b'9') => Integer,
+            (Zero | Integer, b'.') => Point,
+            (Point | Fraction, b'0'..=b'9') => Fraction,
+            (Zero | Integer | Fraction, b'e' | b'E') => E,
+            (E, b'+' | b'-') => Sign,
+            (E | Sign | Exponent, b'0'..=b'9') => Exponent,
+            (Start, b'I') => Word(b"nfinity", f64::INFINITY),
+            (Minus, b'I') => Word(b"nfinity", f64::NEG_INFINITY),
+            (Start, b'N') => Word(b"aN", f64::NAN),
+            (Word(word, value), c) if word.first() == Some(&c) => Word(&word[1..], value),
+            _ => return Ok(None),
+        };
+    }
+    let value = match at {
+        // Every JSON number reads as an f64, one too large as an infinity.
+        Zero | Integer | Fraction | Exponent => match s.parse::<f64>() {
             Ok(v) => v,
-            Err(_) => return Err(input_invalid(format!("number: {text:?} spells no number"))),
+            Err(_) => return Ok(None),
         },
-        text => return Err(input_invalid(format!("number: {text:?} spells no number"))),
+        Word([], value) => value,
+        _ => return Ok(None),
     };
     let lexeme = if value.is_finite() {
         Some(s.clone())
     } else {
         None
     };
-    Ok(Val::Num { value, lexeme })
+    Ok(Some(Val::Num { value, lexeme }))
 }
 
 /// `unquoted string`: the string a double-quoted form spells, the reverse
@@ -1608,6 +1680,7 @@ static NATIVES: &[Native] = &[
     f("unquoted", Exact(1), unquoted, "unquoted string -> String", "the string a double-quoted form spells, the reverse of quoted: JSON's escapes (\\\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, \\uXXXX) read, a surrogate pair as the one character it names; INPUT_INVALID for any other text (no quotes, a quote or a control character unescaped inside, another escape, a surrogate on its own)"),
     f("chars-within", Exact(2), chars_within, "chars-within ranges string -> Bool", "whether every character of the string lies within one of the ranges, each a vector [low high] of code points, both included; true for the empty string. A part tests a string with it against what its format can carry (XML's Char production, a name's characters) and chooses its convention where it cannot"),
     f("number", Exact(1), number, "number string -> Number", "the number the string spells: a JSON number, its text kept as the lexeme, or Infinity, -Infinity or NaN; INPUT_INVALID for any other text"),
+    f("is-number", Exact(1), is_number, "is-number string -> Bool", "whether number reads the string: a JSON number, or Infinity, -Infinity or NaN; false for any other text, where number fails. A program cannot catch a failure, so a part tests a string with it before it calls number"),
     f("compare", Exact(2), compare, "compare a b -> Keyword", "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"),
     f("number-class", Exact(1), number_class, "number-class number -> Keyword", ":finite, :infinity, :negative-infinity or :nan"),
     f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
@@ -1720,7 +1793,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 47);
+        assert_eq!(compared, 48);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
@@ -1871,6 +1944,140 @@ mod tests {
         assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
         let fail = run(format!("x{}", "a".repeat(100 * UNQUOTED_STEP))).unwrap_err();
         assert_eq!(fail.code, Code::InputInvalid, "{fail}");
+    }
+
+    /// `is-number` answers whether `number` reads a string, and `number`
+    /// fails exactly where it answers false; a string that is not one is
+    /// the same type error to both.
+    #[test]
+    fn is_number_answers_whether_number_reads_the_string() {
+        let rt = crate::lower::tests::runtime("", true);
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let numbers = [
+            "0",
+            "-0",
+            "12",
+            "1.5",
+            "-1.5e10",
+            "2E-3",
+            "1e+5",
+            "0e0",
+            "1e5",
+            "1e999",
+            "12345678901234567890",
+            "Infinity",
+            "-Infinity",
+            "NaN",
+        ];
+        let others = [
+            "",
+            "-",
+            "01",
+            "-01",
+            "1.",
+            ".5",
+            "+1",
+            "1e",
+            "1e+",
+            "1-2",
+            " 1",
+            "1 ",
+            "0x10",
+            "1_000",
+            "1.5e",
+            "-NaN",
+            "nan",
+            "infinity",
+            "Inf",
+            "Infinityx",
+            "NaNN",
+            "١",
+        ];
+        for (text, reads) in numbers
+            .iter()
+            .map(|t| (t, true))
+            .chain(others.iter().map(|t| (t, false)))
+        {
+            let s = Val::str(text);
+            assert_eq!(
+                is_number(&rt, std::slice::from_ref(&s), &at).unwrap(),
+                Val::Bool(reads),
+                "{text:?}"
+            );
+            match number(&rt, &[s], &at) {
+                Ok(_) => assert!(reads, "{text:?} is read"),
+                Err(fail) => {
+                    assert!(!reads, "{text:?}: {fail}");
+                    assert_eq!(fail.code, Code::InputInvalid, "{fail}");
+                }
+            }
+        }
+        // A finite number keeps its text as the lexeme; the non-finite
+        // ones have none.
+        let read = |text: &str| match number(&rt, &[Val::str(text)], &at).unwrap() {
+            Val::Num { value, lexeme } => (value, lexeme.map(|l| l.to_string())),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(read("1.50"), (1.5, Some("1.50".to_string())));
+        assert_eq!(read("-Infinity"), (f64::NEG_INFINITY, None));
+        assert_eq!(read("1e999"), (f64::INFINITY, None));
+        for (name, op) in [("is-number", is_number as Call), ("number", number)] {
+            let fail = op(&rt, &[Val::num(1.0)], &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(
+                fail.message,
+                format!("type_mismatch: {name}: the string must be a string, not a number")
+            );
+        }
+    }
+
+    /// `number` and `is-number` read their input an evaluation step per
+    /// [`NUMBER_STEP`] characters as they go, as `unquoted` reads its own:
+    /// ten steps of fuel read ten times that many characters and no more,
+    /// whether or not the string turns out to spell a number, and a string
+    /// refused at its start costs no more than its first step.
+    #[test]
+    fn number_and_is_number_take_a_step_per_characters_read() {
+        // A runtime of its own for each case, with ten steps of fuel.
+        let fueled = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match std::sync::Arc::try_unwrap(rt) {
+                Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
+        };
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let is = |text: &str| is_number(&fueled(), &[Val::str(text)], &span);
+        let read = |text: &str| number(&fueled(), &[Val::str(text)], &span);
+        let limit = |fail: &Fail| fail.limit.as_ref().map(|l| l.name);
+        // A number `n` characters long.
+        let long = |n: usize| format!("0.{}", "5".repeat(n - 2));
+        assert_eq!(is(&long(10 * NUMBER_STEP)).unwrap(), Val::Bool(true));
+        let n = read(&long(10 * NUMBER_STEP)).unwrap();
+        assert!(
+            matches!(
+                n,
+                Val::Num {
+                    lexeme: Some(_),
+                    ..
+                }
+            ),
+            "{n:?}"
+        );
+        // One character more takes an eleventh step, and so does a
+        // character after as many that ends the spelling: the string is
+        // read as far before it is refused.
+        for text in [
+            long(10 * NUMBER_STEP + 1),
+            format!("{}x", long(10 * NUMBER_STEP)),
+        ] {
+            for fail in [is(&text).unwrap_err(), read(&text).unwrap_err()] {
+                assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+            }
+        }
+        let early = format!("x{}", long(100 * NUMBER_STEP));
+        assert_eq!(is(&early).unwrap(), Val::Bool(false));
+        assert_eq!(read(&early).unwrap_err().code, Code::InputInvalid);
     }
 
     /// `kind` names every retained value's kind by one keyword, the word

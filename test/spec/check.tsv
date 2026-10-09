@@ -101,6 +101,10 @@ def export [input] (join "" (map (fn [x] (fail :nope "x")) (select (path each-in
 def export [input] (join "" (map (fn [x] (fail "x" "y")) (select (path each-index) input)))	ERROR:type_mismatch@1:48
 # number takes a string.
 def export [input] (join "," (map (fn [x] (number 1)) (select (path each-index) input)))	ERROR:type_mismatch@1:51
+# is-number takes one string, as number does.
+def export [input] (join "," (map (fn [x] (if (is-number 1) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:58
+def export [input] (join "," (map (fn [x] (if (is-number x x) "y" "n")) (select (path each-index) input)))	ERROR:arity@1:47
+def export [input] (join "," (map (fn [x] (if (is-number) "y" "n")) (select (path each-index) input)))	ERROR:arity@1:47
 # unquoted takes a string; chars-within a vector of ranges and a string; json an options record before its events.
 def export [input] (join "," (map (fn [x] (unquoted 1)) (select (path each-index) input)))	ERROR:type_mismatch@1:53
 def export [input] (join "," (map (fn [x] (if (chars-within 1 x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:61

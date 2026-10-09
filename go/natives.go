@@ -57,6 +57,7 @@ func init() {
 		"unquoted":        nUnquoted,
 		"chars-within":    nCharsWithin,
 		"number":          nNumber,
+		"is-number":       nIsNumber,
 		"compare":         nCompare,
 		"number-class":    nNumberClass,
 		"kind":            nKind,
@@ -561,27 +562,129 @@ const lengthChunk = 64 * 1024
 // nNumber is `number string`: the number a string spells. A JSON number
 // keeps the text as its lexeme, so a renderer writes it as it was spelled;
 // the three non-finite numbers are spelled Infinity, -Infinity and NaN.
-func nNumber(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+// The string is read by readNumber, as `is-number` reads it.
+func nNumber(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	s, f := asStr("number", "the string", a[0])
 	if f != nil {
 		return nil, f
 	}
-	switch s {
-	case "Infinity":
-		return Num(math.Inf(1)), nil
-	case "-Infinity":
-		return Num(math.Inf(-1)), nil
-	case "NaN":
-		return Num(math.NaN()), nil
+	v, ok, f := readNumber(rt, s)
+	if f != nil {
+		return nil, f
 	}
-	if !IsJSONNumber(s) {
+	if !ok {
 		return nil, inputInvalid("number: " + strconv.Quote(s) + " spells no number")
 	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil && !math.IsInf(v, 0) {
-		return nil, inputInvalid("number: " + strconv.Quote(s) + " spells no number")
+	return v, nil
+}
+
+// nIsNumber is `is-number string`: whether `number` reads the string,
+// without failing: a JSON number, or Infinity, -Infinity or NaN. A program
+// cannot catch a failure, so a format's part tests a string with it before
+// it calls `number` (zon's render, a big integer's digits; XML's reverse, a
+// number's text). The two read with readNumber, so `number` fails exactly
+// where this answers false.
+func nIsNumber(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	s, f := asStr("is-number", "the string", a[0])
+	if f != nil {
+		return nil, f
 	}
-	return NumLexeme(v, s), nil
+	_, ok, f := readNumber(rt, s)
+	if f != nil {
+		return nil, f
+	}
+	return BoolVal(ok), nil
+}
+
+// NumberStep is how many characters of its input `number` and `is-number`
+// read per evaluation step.
+const NumberStep = 4096
+
+// spelled is what readNumber has read of a spelling.
+type spelled int
+
+const (
+	spellStart spelled = iota
+	spellMinus
+	// spellZero is an integer part 0, which no digit follows.
+	spellZero
+	// spellInteger is an integer part of a digit from 1 to 9 and the
+	// digits after it.
+	spellInteger
+	// spellPoint is a decimal point, before the fraction's first digit.
+	spellPoint
+	spellFraction
+	// spellE is the exponent's e or E, and spellSign its sign.
+	spellE
+	spellSign
+	spellExponent
+	// spellWord is a word begun.
+	spellWord
+)
+
+// readNumber is the number `number` answers for a string, and whether it
+// answers one: a JSON number, its text kept as the lexeme, or Infinity,
+// -Infinity or NaN. A JSON number is IsJSONNumber's,
+// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`. The string is read
+// from the front, an evaluation step before the first of each NumberStep
+// characters, and refused at the first character no spelling goes on with,
+// so the host's abort flag stops the read of a long one, a number or not.
+func readNumber(rt *Runtime, s string) (Val, bool, *Fail) {
+	at := spellStart
+	// A word begun: the characters it still wants, and the number it
+	// spells.
+	var word string
+	var value float64
+	// A spelling is ASCII, so a byte read is a character read up to the
+	// first that is not, where the reading ends.
+	for i := 0; i < len(s); i++ {
+		if i%NumberStep == 0 {
+			if f := rt.Tick(); f != nil {
+				return nil, false, f
+			}
+		}
+		c := s[i]
+		digit := '0' <= c && c <= '9'
+		switch {
+		case at == spellStart && c == '-':
+			at = spellMinus
+		case (at == spellStart || at == spellMinus) && c == '0':
+			at = spellZero
+		case (at == spellStart || at == spellMinus) && '1' <= c && c <= '9', at == spellInteger && digit:
+			at = spellInteger
+		case (at == spellZero || at == spellInteger) && c == '.':
+			at = spellPoint
+		case (at == spellPoint || at == spellFraction) && digit:
+			at = spellFraction
+		case (at == spellZero || at == spellInteger || at == spellFraction) && (c == 'e' || c == 'E'):
+			at = spellE
+		case at == spellE && (c == '+' || c == '-'):
+			at = spellSign
+		case (at == spellE || at == spellSign || at == spellExponent) && digit:
+			at = spellExponent
+		case at == spellStart && c == 'I':
+			at, word, value = spellWord, "nfinity", math.Inf(1)
+		case at == spellMinus && c == 'I':
+			at, word, value = spellWord, "nfinity", math.Inf(-1)
+		case at == spellStart && c == 'N':
+			at, word, value = spellWord, "aN", math.NaN()
+		case at == spellWord && word != "" && c == word[0]:
+			word = word[1:]
+		default:
+			return nil, false, nil
+		}
+	}
+	switch {
+	case at == spellZero || at == spellInteger || at == spellFraction || at == spellExponent:
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil && !math.IsInf(v, 0) {
+			return nil, false, nil
+		}
+		return NumLexeme(v, s), true, nil
+	case at == spellWord && word == "":
+		return Num(value), true, nil
+	}
+	return nil, false, nil
 }
 
 // nUnquoted is `unquoted string`: the string a double-quoted form spells,

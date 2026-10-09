@@ -880,6 +880,9 @@ class Checker {
       case 'number':
         this.expect('the string of number', Str, t(0), at(0))
         return Num
+      case 'is-number':
+        this.expect('the string of is-number', Str, t(0), at(0))
+        return Bool
       case 'unquoted':
         this.expect('the string of unquoted', Str, t(0), at(0))
         return Str

@@ -80,6 +80,11 @@ def export [input] (join "," (map (fn [x] (scalar-text csv-options (number x))) 
 def class [n]\n  match (number-class n)\n    case :finite "f"\n    case :nan "n"\n    case :infinity "i"\n    case :negative-infinity "-i"\n\ndef export [input] (join "," (map (fn [x] (class (number x))) (select (path each-index) input)))	"i,-i,n,f"	["Infinity","-Infinity","NaN","2"]	
 def export [input] (join "," (map (fn [x] (scalar-text csv-options (number x))) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:68	["1","x"]	
 def export [input] (join "," (map (fn [x] (scalar-text csv-options (number x))) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:68	["01"]	
+# is-number: whether number reads the string, without failing: a JSON number or a non-finite number by name; false for any other text, so a part tests a string with it before it calls number; a value that is not a string is the type error number gives.
+def export [input] (join "," (map (fn [x] (if (is-number x) "y" "n")) (select (path each-index) input)))	"y,y,y,y,y,y"	["-0","1e5","Infinity","-Infinity","NaN","12345678901234567890"]	
+def export [input] (join "," (map (fn [x] (if (is-number x) "y" "n")) (select (path each-index) input)))	"n,n,n,n,n,n,n,n,n,n"	["1-2","01","","-"," 1","1 ","0x10","+1","1.",".5"]	
+def export [input] (join "," (map (fn [x] (if (is-number x) (scalar-text csv-options (number x)) (quoted x))) (select (path each-index) input)))	"12345678901234567890,\"1-2\",\"01\",-0"	["12345678901234567890","1-2","01","-0"]	
+def export [input] (join "," (map (fn [x] (if (is-number x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:47	[1]	
 # unquoted: the string a double-quoted form spells, the reverse of quoted, a surrogate pair as one character; any other text refused, a surrogate on its own too.
 def export [input] (join "|" (map (fn [x] (unquoted x)) (select (path each-index) input)))	"a\nb|😀x|/|é"	["\\"a\\\\nb\\"","\\"\\\\ud83d\\\\ude00x\\"","\\"\\\\/\\"","\\"\\\\u00E9\\""]	
 def export [input] (join "|" (map (fn [x] (unquoted x)) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:43	["x"]	

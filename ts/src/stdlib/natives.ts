@@ -394,19 +394,85 @@ export const LENGTH_CHUNK = 64 * 1024
 
 // `number string`: the number a string spells. A JSON number keeps the
 // text as its lexeme, so a renderer writes it as it was spelled; the three
-// non-finite numbers are spelled `Infinity`, `-Infinity` and `NaN`.
-function number(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+// non-finite numbers are spelled `Infinity`, `-Infinity` and `NaN`. The
+// string is read by `readNumber`, as `is-number` reads it.
+function number(rt: Runtime, a: ReadonlyArray<Val>): Val {
   const s = asStr('number', 'the string', a[0])
-  switch (s) {
-    case 'Infinity':
-      return num(Infinity)
-    case '-Infinity':
-      return num(-Infinity)
-    case 'NaN':
-      return num(NaN)
+  const value = readNumber(rt, s)
+  if (undefined === value) throw Fail.input(`number: ${JSON.stringify(s)} spells no number`)
+  return value
+}
+
+// `is-number string`: whether `number` reads the string, without failing:
+// a JSON number, or `Infinity`, `-Infinity` or `NaN`. A program cannot
+// catch a failure, so a format's part tests a string with it before it
+// calls `number` (zon's render, a big integer's digits; XML's reverse, a
+// number's text). The two read with `readNumber`, so `number` fails
+// exactly where this answers false.
+function isNumber(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const s = asStr('is-number', 'the string', a[0])
+  return bool(undefined !== readNumber(rt, s))
+}
+
+// How many characters of its input `number` and `is-number` read per
+// evaluation step.
+export const NUMBER_STEP = 4096
+
+// What `readNumber` has read of a spelling: nothing, the minus sign, an
+// integer part `0` (which no digit follows) or of a digit from 1 to 9 and
+// the digits after it, a decimal point (before the fraction's first digit),
+// the fraction, the exponent's `e` or `E`, its sign, its digits, or a word
+// begun.
+type Spelled = 'start' | 'minus' | 'zero' | 'integer' | 'point' | 'fraction' | 'e' | 'sign' | 'exponent' | 'word'
+
+// The number `number` answers for a string, or undefined where it fails: a
+// JSON number (`-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`), its text
+// kept as the lexeme, or `Infinity`, `-Infinity` or `NaN`. The string is
+// read from the front, an evaluation step before the first of each
+// `NUMBER_STEP` characters, and refused at the first character no spelling
+// goes on with, so the host's abort flag stops the read of a long one, a
+// number or not.
+function readNumber(rt: Runtime, s: string): Val | undefined {
+  let at: Spelled = 'start'
+  // A word begun: the characters it still wants, and the number it spells.
+  let word = ''
+  let spelled = NaN
+  const begin = (rest: string, value: number): Spelled => {
+    word = rest
+    spelled = value
+    return 'word'
   }
-  if (!isJsonNumber(s)) throw Fail.input(`number: ${JSON.stringify(s)} spells no number`)
-  return num(Number(s), s)
+  // A spelling is ASCII, so a code unit read is a character read up to the
+  // first that is not, where the reading ends.
+  for (let i = 0; i < s.length; i++) {
+    if (0 === i % NUMBER_STEP) rt.tick()
+    const c = s[i]
+    const digit = '0' <= c && c <= '9'
+    if ('start' === at && '-' === c) at = 'minus'
+    else if (('start' === at || 'minus' === at) && '0' === c) at = 'zero'
+    else if ((('start' === at || 'minus' === at) && '1' <= c && c <= '9') || ('integer' === at && digit)) at = 'integer'
+    else if (('zero' === at || 'integer' === at) && '.' === c) at = 'point'
+    else if (('point' === at || 'fraction' === at) && digit) at = 'fraction'
+    else if (('zero' === at || 'integer' === at || 'fraction' === at) && ('e' === c || 'E' === c)) at = 'e'
+    else if ('e' === at && ('+' === c || '-' === c)) at = 'sign'
+    else if (('e' === at || 'sign' === at || 'exponent' === at) && digit) at = 'exponent'
+    else if ('start' === at && 'I' === c) at = begin('nfinity', Infinity)
+    else if ('minus' === at && 'I' === c) at = begin('nfinity', -Infinity)
+    else if ('start' === at && 'N' === c) at = begin('aN', NaN)
+    else if ('word' === at && c === word[0]) word = word.slice(1)
+    else return undefined
+  }
+  switch (at) {
+    case 'zero':
+    case 'integer':
+    case 'fraction':
+    case 'exponent':
+      return num(Number(s), s)
+    case 'word':
+      return '' === word ? num(spelled) : undefined
+    default:
+      return undefined
+  }
 }
 
 // `length string`: how many characters the string holds, as a column
@@ -1237,6 +1303,7 @@ const IMPLS: Record<string, NativeImpl> = {
   unquoted,
   'chars-within': charsWithin,
   number,
+  'is-number': isNumber,
   compare,
   'number-class': numberClass,
   kind,

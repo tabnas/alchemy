@@ -16,6 +16,7 @@ import {
   kindWord,
   CHARS_WITHIN_STEP,
   LENGTH_CHUNK,
+  NUMBER_STEP,
   UNQUOTED_STEP,
   native,
   numberText,
@@ -799,6 +800,68 @@ describe('natives', () => {
     assert.equal(f.limit?.name, 'max_plan_steps', String(f))
     f = thrown(() => run(`x${'a'.repeat(100 * UNQUOTED_STEP)}`)) as any
     assert.equal(f.code, 'INPUT_INVALID', String(f))
+  })
+
+  // `is-number` answers whether `number` reads a string, and `number` fails
+  // exactly where it answers false; a string that is not one is the same
+  // type error to both.
+  it('is-number answers whether number reads the string', () => {
+    const at = span(sourceFile('t'), 0, 0)
+    const isNumber: value.Func = { fn: 'native', native: native('is-number')! }
+    const number: value.Func = { fn: 'native', native: native('number')! }
+    const numbers = ['0', '-0', '12', '1.5', '-1.5e10', '2E-3', '1e+5', '0e0', '1e5', '1e999']
+    numbers.push('12345678901234567890', 'Infinity', '-Infinity', 'NaN')
+    const others = ['', '-', '01', '-01', '1.', '.5', '+1', '1e', '1e+', '1-2', ' 1', '1 ', '0x10']
+    others.push('1_000', '1.5e', '-NaN', 'nan', 'infinity', 'Inf', 'Infinityx', 'NaNN', '١')
+    for (const [texts, reads] of [
+      [numbers, true],
+      [others, false],
+    ] as const) {
+      for (const text of texts) {
+        same(runtime('').applyNow(isNumber, [V.str(text)], at), V.bool(reads), JSON.stringify(text))
+        if (reads) runtime('').applyNow(number, [V.str(text)], at)
+        else assert.equal(thrown(() => runtime('').applyNow(number, [V.str(text)], at)).code, 'INPUT_INVALID', text)
+      }
+    }
+    // A finite number keeps its text as the lexeme; a non-finite one by
+    // name has none.
+    assert.deepStrictEqual(runtime('').applyNow(number, [V.str('1.50')], at), V.num(1.5, '1.50'))
+    assert.deepStrictEqual(runtime('').applyNow(number, [V.str('-Infinity')], at), V.num(-Infinity))
+    for (const name of ['is-number', 'number']) {
+      const f = evalFail('', `${name} 1`)
+      assert.deepStrictEqual(
+        [f.code, f.message],
+        ['DSL_TYPE_ERROR', `type_mismatch: ${name}: the string must be a string, not a number`],
+      )
+    }
+  })
+
+  // `number` and `is-number` read their input an evaluation step per
+  // `NUMBER_STEP` characters as they go, as `unquoted` reads its own: ten
+  // steps of fuel read ten times that many characters and no more, whether
+  // or not the string turns out to spell a number, and a string refused at
+  // its start costs no more than its first step.
+  it('number and is-number take a step per characters read', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const isNumber: value.Func = { fn: 'native', native: native('is-number')! }
+    const number: value.Func = { fn: 'native', native: native('number')! }
+    const is = (text: string) => runtime('').withFuel(10).applyNow(isNumber, [V.str(text)], at)
+    const read = (text: string) => runtime('').withFuel(10).applyNow(number, [V.str(text)], at)
+    // A number `n` characters long.
+    const long = (n: number) => `0.${'5'.repeat(n - 2)}`
+    same(is(long(10 * NUMBER_STEP)), V.bool(true))
+    assert.deepStrictEqual(read(long(10 * NUMBER_STEP)), V.num(Number(long(10 * NUMBER_STEP)), long(10 * NUMBER_STEP)))
+    // One character more takes an eleventh step, and so does a character
+    // after as many that ends the spelling: the string is read as far
+    // before it is refused.
+    for (const text of [long(10 * NUMBER_STEP + 1), `${long(10 * NUMBER_STEP)}x`]) {
+      for (const f of [thrown(() => is(text)), thrown(() => read(text))]) {
+        assert.equal(f.limit?.name, 'max_plan_steps', String(f))
+      }
+    }
+    const early = `x${long(100 * NUMBER_STEP)}`
+    same(is(early), V.bool(false))
+    assert.equal(thrown(() => read(early)).code, 'INPUT_INVALID')
   })
 
   // A CSV options record's `:no-columns`: `:refuse`, the default, or

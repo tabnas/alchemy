@@ -1175,6 +1175,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(NumberT, exp("the string of length", StringT, 0)())
 	case "number":
 		return ret(NumberT, exp("the string of number", StringT, 0)())
+	case "is-number":
+		return ret(BoolT, exp("the string of is-number", StringT, 0)())
 	case "unquoted":
 		return ret(StringT, exp("the string of unquoted", StringT, 0)())
 	case "chars-within":

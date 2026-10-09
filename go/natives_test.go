@@ -232,6 +232,87 @@ func TestUnquotedTakesAStepPerCharactersRead(t *testing.T) {
 	}
 }
 
+// is-number answers whether number reads a string, and number fails
+// exactly where it answers false; a string that is not one is the same type
+// error to both.
+func TestIsNumberAnswersWhetherNumberReadsTheString(t *testing.T) {
+	at := SourceSpan{File: NewFile("t")}
+	numbers := []string{"0", "-0", "12", "1.5", "-1.5e10", "2E-3", "1e+5", "0e0", "1e5", "1e999",
+		"12345678901234567890", "Infinity", "-Infinity", "NaN"}
+	others := []string{"", "-", "01", "-01", "1.", ".5", "+1", "1e", "1e+", "1-2", " 1", "1 ", "0x10",
+		"1_000", "1.5e", "-NaN", "nan", "infinity", "Inf", "Infinityx", "NaNN", "١"}
+	for _, c := range []struct {
+		texts []string
+		reads bool
+	}{{numbers, true}, {others, false}} {
+		for _, text := range c.texts {
+			if v, f := nIsNumber(runtimeOf(t, ""), []Val{StrVal(text)}, at); f != nil || v != BoolVal(c.reads) {
+				t.Errorf("is-number %q: %v %v", text, v, f)
+			}
+			_, f := nNumber(runtimeOf(t, ""), []Val{StrVal(text)}, at)
+			if c.reads && f != nil || !c.reads && (f == nil || f.Code != CodeInputInvalid) {
+				t.Errorf("number %q: %v", text, f)
+			}
+		}
+	}
+	// A finite number keeps its text as the lexeme; a non-finite one by
+	// name has none.
+	if v, f := nNumber(runtimeOf(t, ""), []Val{StrVal("1.50")}, at); f != nil || v != NumLexeme(1.5, "1.50") {
+		t.Errorf("%v %v", v, f)
+	}
+	if v, f := nNumber(runtimeOf(t, ""), []Val{StrVal("-Infinity")}, at); f != nil || v != Num(math.Inf(-1)) {
+		t.Errorf("%v %v", v, f)
+	}
+	for _, name := range []string{"is-number", "number"} {
+		f := mustFail(t, "", name+" 1")
+		if f.Code != CodeDSLTypeError || f.Message != "type_mismatch: "+name+": the string must be a string, not a number" {
+			t.Errorf("%s: %v", name, f)
+		}
+	}
+}
+
+// number and is-number read their input an evaluation step per NumberStep
+// characters as they go, as unquoted reads its own: ten steps of fuel read
+// ten times that many characters and no more, whether or not the string
+// turns out to spell a number, and a string refused at its start costs no
+// more than its first step.
+func TestNumberAndIsNumberTakeAStepPerCharactersRead(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	is := func(text string) (Val, *Fail) {
+		return nIsNumber(runtimeOf(t, "").WithFuel(10), []Val{StrVal(text)}, at)
+	}
+	read := func(text string) (Val, *Fail) {
+		return nNumber(runtimeOf(t, "").WithFuel(10), []Val{StrVal(text)}, at)
+	}
+	limit := func(f *Fail) bool { return f != nil && f.Limit != nil && f.Limit.Name == "max_plan_steps" }
+	// A number n characters long.
+	long := func(n int) string { return "0." + strings.Repeat("5", n-2) }
+	if v, f := is(long(10 * NumberStep)); f != nil || v != BoolVal(true) {
+		t.Errorf("%v %v", v, f)
+	}
+	if v, f := read(long(10 * NumberStep)); f != nil || v.(NumVal).Lexeme != long(10*NumberStep) {
+		t.Errorf("%v", f)
+	}
+	// One character more takes an eleventh step, and so does a character
+	// after as many that ends the spelling: the string is read as far
+	// before it is refused.
+	for _, text := range []string{long(10*NumberStep + 1), long(10*NumberStep) + "x"} {
+		if _, f := is(text); !limit(f) {
+			t.Errorf("is-number: %v", f)
+		}
+		if _, f := read(text); !limit(f) {
+			t.Errorf("number: %v", f)
+		}
+	}
+	early := "x" + long(100*NumberStep)
+	if v, f := is(early); f != nil || v != BoolVal(false) {
+		t.Errorf("%v %v", v, f)
+	}
+	if _, f := read(early); f == nil || f.Code != CodeInputInvalid {
+		t.Errorf("%v", f)
+	}
+}
+
 // A CSV options record's :no-columns: :refuse, the default, or :empty; any
 // other value is a type error where it is read.
 func TestNoColumnsNamesAPolicyForATableOfNoColumns(t *testing.T) {

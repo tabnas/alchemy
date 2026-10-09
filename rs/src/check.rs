@@ -1088,6 +1088,10 @@ impl Checker<'_> {
                 self.expect("the string of number", &String, t(0), at(0))?;
                 Number
             }
+            "is-number" => {
+                self.expect("the string of is-number", &String, t(0), at(0))?;
+                Bool
+            }
             "unquoted" => {
                 self.expect("the string of unquoted", &String, t(0), at(0))?;
                 String

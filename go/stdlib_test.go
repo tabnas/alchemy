@@ -32,7 +32,7 @@ func TestEveryNativeIsFoundByNameAndNamesAreUnique(t *testing.T) {
 	if LookupNative("nope") != nil {
 		t.Error("nope is a native")
 	}
-	if len(Natives()) != 65 {
+	if len(Natives()) != 66 {
 		t.Errorf("%d natives", len(Natives()))
 	}
 }
@@ -104,7 +104,7 @@ func TestANativeReadsAsItsReferenceRow(t *testing.T) {
 			compared++
 		}
 	}
-	if compared != 47 {
+	if compared != 48 {
 		t.Errorf("%d natives compared", compared)
 	}
 }
