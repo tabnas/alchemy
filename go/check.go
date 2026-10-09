@@ -1173,6 +1173,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(VectorOf(StringT), exp("the record of keys", RecordT, 0)())
 	case "length":
 		return ret(NumberT, exp("the string of length", StringT, 0)())
+	case "number":
+		return ret(NumberT, exp("the string of number", StringT, 0)())
 	case "compare":
 		return ret(KeywordT, first(exp("the first number of compare", NumberT, 0), exp("the second number of compare", NumberT, 1)))
 	case "number-class":

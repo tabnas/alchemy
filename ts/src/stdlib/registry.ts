@@ -97,6 +97,7 @@ const NATIVES: ReadonlyArray<Native> = [
   { name: "count", arity: exact(1), kind: 'function', signature: "count vector -> Number", effect: "how many items the vector holds" },
   { name: "keys", arity: exact(1), kind: 'function', signature: "keys record -> Vector", effect: "the record's keys as strings, in its order, which for a captured object is the document's" },
   { name: "length", arity: exact(1), kind: 'function', signature: "length string -> Number", effect: "how many characters the string holds" },
+  { name: "number", arity: exact(1), kind: 'function', signature: "number string -> Number", effect: "the number the string spells: a JSON number, its text kept as the lexeme, or Infinity, -Infinity or NaN; INPUT_INVALID for any other text" },
   { name: "compare", arity: exact(2), kind: 'function', signature: "compare a b -> Keyword", effect: "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN" },
   { name: "number-class", arity: exact(1), kind: 'function', signature: "number-class number -> Keyword", effect: ":finite, :infinity, :negative-infinity or :nan" },
   { name: "kind", arity: exact(1), kind: 'function', signature: "kind value -> Keyword", effect: "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked" },

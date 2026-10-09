@@ -500,6 +500,31 @@ fn length(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::num(count as f64))
 }
 
+/// `number string`: the number a string spells. A JSON number keeps the
+/// text as its lexeme, so a renderer writes it as it was spelled; the three
+/// non-finite numbers are spelled `Infinity`, `-Infinity` and `NaN`, as
+/// JavaScript spells them. A format's reverse reads its numbers back with
+/// it (XML's embedding writes a number as text).
+fn number(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("number", "the string", &a[0])?;
+    let value = match &**s {
+        "Infinity" => f64::INFINITY,
+        "-Infinity" => f64::NEG_INFINITY,
+        "NaN" => f64::NAN,
+        text if is_json_number(text) => match text.parse::<f64>() {
+            Ok(v) => v,
+            Err(_) => return Err(input_invalid(format!("number: {text:?} spells no number"))),
+        },
+        text => return Err(input_invalid(format!("number: {text:?} spells no number"))),
+    };
+    let lexeme = if value.is_finite() {
+        Some(s.clone())
+    } else {
+        None
+    };
+    Ok(Val::Num { value, lexeme })
+}
+
 /// `compare a b`: how two numbers are ordered, `:less`, `:equal` or
 /// `:greater`, and `:unordered` when either is NaN; -0 and 0 are equal.
 fn compare(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -1260,6 +1285,7 @@ static NATIVES: &[Native] = &[
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
     f("keys", Exact(1), keys, "keys record -> Vector", "the record's keys as strings, in its order, which for a captured object is the document's"),
     f("length", Exact(1), length, "length string -> Number", "how many characters the string holds"),
+    f("number", Exact(1), number, "number string -> Number", "the number the string spells: a JSON number, its text kept as the lexeme, or Infinity, -Infinity or NaN; INPUT_INVALID for any other text"),
     f("compare", Exact(2), compare, "compare a b -> Keyword", "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"),
     f("number-class", Exact(1), number_class, "number-class number -> Keyword", ":finite, :infinity, :negative-infinity or :nan"),
     f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
@@ -1372,7 +1398,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 44);
+        assert_eq!(compared, 45);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

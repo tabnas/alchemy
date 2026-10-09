@@ -1084,6 +1084,10 @@ impl Checker<'_> {
                 self.expect("the string of length", &String, t(0), at(0))?;
                 Number
             }
+            "number" => {
+                self.expect("the string of number", &String, t(0), at(0))?;
+                Number
+            }
             "compare" => {
                 self.expect("the first number of compare", &Number, t(0), at(0))?;
                 self.expect("the second number of compare", &Number, t(1), at(1))?;

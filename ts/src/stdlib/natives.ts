@@ -389,6 +389,23 @@ function indices(rt: Runtime, a: ReadonlyArray<Val>): Val {
 // How many bytes of a string `length` counts per evaluation step.
 export const LENGTH_CHUNK = 64 * 1024
 
+// `number string`: the number a string spells. A JSON number keeps the
+// text as its lexeme, so a renderer writes it as it was spelled; the three
+// non-finite numbers are spelled `Infinity`, `-Infinity` and `NaN`.
+function number(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const s = asStr('number', 'the string', a[0])
+  switch (s) {
+    case 'Infinity':
+      return num(Infinity)
+    case '-Infinity':
+      return num(-Infinity)
+    case 'NaN':
+      return num(NaN)
+  }
+  if (!isJsonNumber(s)) throw Fail.input(`number: ${JSON.stringify(s)} spells no number`)
+  return num(Number(s), s)
+}
+
 // `length string`: how many characters the string holds, as a column
 // counts them (Unicode scalar values; a surrogate pair is one). A long
 // string takes an evaluation step per chunk of its UTF-8 bytes, so the
@@ -933,6 +950,7 @@ const IMPLS: Record<string, NativeImpl> = {
   count,
   keys,
   length,
+  number,
   compare,
   'number-class': numberClass,
   kind,

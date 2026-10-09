@@ -117,6 +117,7 @@ var natives = []Native{
 	{Name: "count", Arity: exact(1), Kind: KindFunction, Signature: "count vector -> Number", Effect: "how many items the vector holds"},
 	{Name: "keys", Arity: exact(1), Kind: KindFunction, Signature: "keys record -> Vector", Effect: "the record's keys as strings, in its order, which for a captured object is the document's"},
 	{Name: "length", Arity: exact(1), Kind: KindFunction, Signature: "length string -> Number", Effect: "how many characters the string holds"},
+	{Name: "number", Arity: exact(1), Kind: KindFunction, Signature: "number string -> Number", Effect: "the number the string spells: a JSON number, its text kept as the lexeme, or Infinity, -Infinity or NaN; INPUT_INVALID for any other text"},
 	{Name: "compare", Arity: exact(2), Kind: KindFunction, Signature: "compare a b -> Keyword", Effect: "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"},
 	{Name: "number-class", Arity: exact(1), Kind: KindFunction, Signature: "number-class number -> Keyword", Effect: ":finite, :infinity, :negative-infinity or :nan"},
 	{Name: "kind", Arity: exact(1), Kind: KindFunction, Signature: "kind value -> Keyword", Effect: "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"},

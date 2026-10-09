@@ -54,6 +54,7 @@ func init() {
 		"count":           nCount,
 		"keys":            nKeys,
 		"length":          nLength,
+		"number":          nNumber,
 		"compare":         nCompare,
 		"number-class":    nNumberClass,
 		"kind":            nKind,
@@ -554,6 +555,32 @@ func nIndices(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 // lengthChunk is how many bytes of a string `length` counts per
 // evaluation step.
 const lengthChunk = 64 * 1024
+
+// nNumber is `number string`: the number a string spells. A JSON number
+// keeps the text as its lexeme, so a renderer writes it as it was spelled;
+// the three non-finite numbers are spelled Infinity, -Infinity and NaN.
+func nNumber(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	s, f := asStr("number", "the string", a[0])
+	if f != nil {
+		return nil, f
+	}
+	switch s {
+	case "Infinity":
+		return Num(math.Inf(1)), nil
+	case "-Infinity":
+		return Num(math.Inf(-1)), nil
+	case "NaN":
+		return Num(math.NaN()), nil
+	}
+	if !IsJSONNumber(s) {
+		return nil, inputInvalid("number: " + strconv.Quote(s) + " spells no number")
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil && !math.IsInf(v, 0) {
+		return nil, inputInvalid("number: " + strconv.Quote(s) + " spells no number")
+	}
+	return NumLexeme(v, s), nil
+}
 
 // nLength is `length string`: how many characters the string holds, as a
 // column counts them (Unicode scalar values). A long string is counted a

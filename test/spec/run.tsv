@@ -61,3 +61,8 @@ def export [input] (events input)	"{\"user\":\"ann\",\"pass\":\"secret\",\"list\
 def export [input] (join "" (map (fn [x] (fail :unrepresentable "no form for it")) (select (path each-index) input)))	ERROR:TARGET_VALUE_UNREPRESENTABLE@1:42	[1]	
 def export [input] (join "" (map (fn [x] (fail :protocol-order "no form for it")) (select (path each-index) input)))	ERROR:PROTOCOL_ORDER_ERROR@1:42	[1]	
 def export [input] (join "" (map (fn [x] (fail :invalid "no form for it")) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:42	[1]	
+# number: the number a string spells, its text kept as the lexeme; the non-finite numbers by name; any other text refused.
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (number x))) (select (path each-index) input)))	"1.50,-0,1e3,12345678901234567890"	["1.50","-0","1e3","12345678901234567890"]	
+def class [n]\n  match (number-class n)\n    case :finite "f"\n    case :nan "n"\n    case :infinity "i"\n    case :negative-infinity "-i"\n\ndef export [input] (join "," (map (fn [x] (class (number x))) (select (path each-index) input)))	"i,-i,n,f"	["Infinity","-Infinity","NaN","2"]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (number x))) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:68	["1","x"]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (number x))) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:68	["01"]	

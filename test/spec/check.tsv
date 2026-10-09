@@ -99,3 +99,5 @@ def step [s event] (transition s [event])\n\ndef export [input]\n  scan-emit [] 
 def export [input] (as-events input)	ERROR:protocol_mismatch@1:31
 def export [input] (join "" (map (fn [x] (fail :nope "x")) (select (path each-index) input)))	ERROR:type_mismatch@1:48
 def export [input] (join "" (map (fn [x] (fail "x" "y")) (select (path each-index) input)))	ERROR:type_mismatch@1:48
+# number takes a string.
+def export [input] (join "," (map (fn [x] (number 1)) (select (path each-index) input)))	ERROR:type_mismatch@1:51

@@ -877,6 +877,9 @@ class Checker {
       case 'length':
         this.expect('the string of length', Str, t(0), at(0))
         return Num
+      case 'number':
+        this.expect('the string of number', Str, t(0), at(0))
+        return Num
       case 'compare':
         this.expect('the first number of compare', Num, t(0), at(0))
         this.expect('the second number of compare', Num, t(1), at(1))

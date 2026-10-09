@@ -600,6 +600,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `keys` | `keys record -> Vector` | the record's keys as strings, in its order, which for a captured object is the document's |
 | `indices` | `indices vector -> Vector<Number>` | the positions of the vector's items, 0 to one less than its count, as numbers: the labels the inferred table gives an array row's cells; a bounded operation over one vector |
 | `length` | `length string -> Number` | how many characters the string holds |
+| `number` | `number string -> Number` | the number the string spells: a JSON number, its text kept as the lexeme, or `Infinity`, `-Infinity` or `NaN`; `INPUT_INVALID` for any other text |
 | `compare` | `compare a b -> Keyword` | how two numbers are ordered: `:less`, `:equal` or `:greater`, and `:unordered` when either is NaN |
 | `number-class` | `number-class number -> Keyword` | `:finite`, `:infinity`, `:negative-infinity` or `:nan` |
 | `kind` | `kind value -> Keyword` | the kind of a value as a keyword: `:null`, `:boolean`, `:number`, `:string`, `:keyword`, `:vector`, `:record`, `:missing`, `:tagged`, `:function`, `:selector` or `:capture`; a stream or a text cannot be asked |
