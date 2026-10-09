@@ -64,11 +64,43 @@ describe('check', () => {
     assert.equal(check('def export [input] "x"').output, 'Text')
     assert.equal(check(`${BINDING}def export [input] (table-from-json api-binding input)`).output, 'TableRows/1')
     assert.equal(check(`${BINDING}def export [input] (records (table-from-json api-binding input))`).output, 'JsonEvents/1')
-    // A user's own scan-emit is a stream of unknown items: rendered as a
-    // table, checked at run time.
+    // A user's own scan-emit is a stream of unknown items: not an output,
+    // since Unknown is accepted everywhere and the items could as well be
+    // events; `as-events` says which, and the run checks it.
     const scan =
       'def step [s x] (transition s [(row [x])])\ndef fin [s] [table-end]\ndef export [input] (scan-emit null step fin (select (path each-index) input))'
-    assert.equal(check(scan).output, 'TableRows/1')
+    assert.deepStrictEqual(code(scan).slice(0, 2), ['STREAMABILITY_UNKNOWN', 'unknown_output'])
+    const said =
+      'def step [s x] (transition s [x])\ndef fin [s] []\ndef export [input] (as-events (scan-emit null step fin (events input)))'
+    assert.equal(check(said).output, 'JsonEvents/1')
+    // A stream the checker typed as events is a rewritten tree.
+    assert.equal(check('def export [input] (events input)').output, 'JsonEvents/1')
+    assert.equal(
+      code('def export [input] (as-events input)')[1],
+      'protocol_mismatch',
+      "as-events takes a stream of items, not the input's events",
+    )
+    // fail's code: a literal keyword is held to the three at the checker;
+    // the message is the last argument either way.
+    assert.deepStrictEqual(
+      code('def export [input] (join "" (map (fn [x] (fail :nope "x")) (select (path each-index) input)))'),
+      ['DSL_TYPE_ERROR', 'type_mismatch', 1, 48],
+    )
+    assert.equal(
+      thrown(() => check('def export [input] (join "" (map (fn [x] (fail :nope "x")) (select (path each-index) input)))'))
+        .message,
+      'type_mismatch: the code of fail must be :invalid, :unrepresentable or :protocol-order, not :nope',
+    )
+    assert.equal(
+      check('def export [input] (join "" (map (fn [x] (fail :unrepresentable "x")) (select (path each-index) input)))')
+        .output,
+      'Text',
+    )
+    assert.equal(
+      code('def export [input] (join "" (map (fn [x] (fail "x" "y")) (select (path each-index) input)))')[1],
+      'type_mismatch',
+      'the code is a keyword',
+    )
     assert.equal(code('def export [input] (select (path each-index) input)')[1], 'bad_output')
     assert.equal(code('def export [input] 1')[1], 'bad_output')
     assert.equal(code('def export [input] csv-options')[1], 'bad_output')
@@ -256,7 +288,25 @@ describe('check', () => {
     eq(defs.get('n'), T.Num)
     eq(defs.get('t'), T.Keyword)
     eq(defs.get('p'), T.vectorOf(T.Keyword))
-    assert.equal(code('def export [input] (events input)')[1], 'bad_output')
+    // `indices` gives a vector's positions, as numbers.
+    eq(check('def i (indices [:a :b])\ndef export [input] (json input)').defs.get('i'), T.vectorOf(T.Num))
+    assert.deepStrictEqual(code('def i (indices "ab")\ndef export [input] (json input)'), [
+      'DSL_TYPE_ERROR',
+      'type_mismatch',
+      1,
+      16,
+    ])
+    assert.equal(
+      check('def export [input] (events input)').output,
+      'JsonEvents/1',
+      'a stream of events is a rewritten tree',
+    )
+    // The root adapters answer JSON events, through the signatures the
+    // library declares for them.
+    assert.equal(check('def export [input] (wrap-object "doc" input)').output, 'JsonEvents/1')
+    assert.equal(check('def export [input] (wrap-array input)').output, 'JsonEvents/1')
+    eq(check('def export [input] (json (wrap-array input))').export, T.Text)
+    assert.equal(code('def export [input] (wrap-object :doc input)')[1], 'type_mismatch')
     eq(check('def export [input] (json (events input))').export, T.Text)
     assert.equal(code('def export [input] (json (select (path each-index) input))')[1], 'protocol_mismatch')
     assert.equal(code('def export [input] (csv csv-options (events input))')[1], 'protocol_mismatch')

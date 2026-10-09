@@ -8,6 +8,7 @@ package tabnasalchemy
 // alchemy-cli's (go/e2e/effects_test.go).
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -351,6 +352,11 @@ func TestTheCheckersOutputIsThePlans(t *testing.T) {
 		"def export [input] input",
 		`def export [input] "done"`,
 		"def export [input] (json input)",
+		// A rewritten tree: a stream of items the checker typed as events,
+		// or one the program said are events, is JSON events for the host.
+		"def export [input] (events input)",
+		"def export [input] (map (fn [e] e) (events input))",
+		"def step [s x] (transition s [x])\ndef fin [s] []\ndef export [input] (as-events (scan-emit null step fin (events input)))",
 	} {
 		p := mustCompile(t, src, "t.alc")
 		for _, q := range []*Program{p, interpreted(t, p)} {
@@ -358,5 +364,35 @@ func TestTheCheckersOutputIsThePlans(t *testing.T) {
 				t.Errorf("%q (native %v): the checker says %s, the plan %s", src, q.Native(), q.Output(), q.PlanOutput())
 			}
 		}
+	}
+}
+
+// A rewritten tree: the items a scan-emit hands back, said to be events,
+// are JSON events for the host, and the report names the protocol.
+func TestARewrittenTreeIsJSONEventsForTheHost(t *testing.T) {
+	src := "def step [s event]\n  match event\n    case (scalar \"secret\") (transition s [(scalar \"***\")])\n    case _ (transition s [event])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (events input))"
+	p := mustCompile(t, src, "check")
+	if p.Output() != OutputJsonEvents || p.PlanOutput() != OutputJsonEvents {
+		t.Errorf("%s %s", p.Output(), p.PlanOutput())
+	}
+	s := p.Summary()
+	if fmt.Sprint(s.Chain) != "[events scan-emit as-events]" {
+		t.Errorf("%v", s.Chain)
+	}
+	if fmt.Sprint(s.Protocol) != "[JsonEvents/1 Stream<Event> Stream<Value> JsonEvents/1 Text]" {
+		t.Errorf("%v", s.Protocol)
+	}
+	if s.Renderer.Kind != RendererJSON || !s.Renderer.Host || s.Confidence != Conditional {
+		t.Errorf("%+v %s", s.Renderer, s.Confidence)
+	}
+	report := p.Explain()
+	if !strings.HasPrefix(report, "export: events → scan-emit → as-events\n\n") ||
+		!strings.Contains(report, "Protocol:              JsonEvents/1 → Stream<Event> → Stream<Value> → JsonEvents/1 → Text\n") {
+		t.Errorf("%s", report)
+	}
+	// The stream events yields is a rewritten tree as it is.
+	tree := mustCompile(t, "def export [input] (events input)", "check")
+	if tree.Output() != OutputJsonEvents || fmt.Sprint(tree.Summary().Protocol) != "[JsonEvents/1 Stream<Event> Text]" {
+		t.Errorf("%s %v", tree.Output(), tree.Summary().Protocol)
 	}
 }

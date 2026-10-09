@@ -21,11 +21,13 @@
 //
 // Each runtime also holds its copies to the sources in its own tests
 // (Rust: rs/tests/shared_sources_test.rs; TypeScript:
-// ts/test/shared-sources.test.ts), so a forgotten embed fails there.
+// ts/test/shared-sources.test.ts; Go: go/shared_sources_test.go), so a
+// forgotten embed fails there.
 //
 // The targets are lists: a runtime adds its entry to GRAMMAR_TARGETS,
 // STDLIB_DIRS or STDLIB_MODULES and nothing else changes. The Go port's
-// are a raw string in go/alchemy.go and the directory go/stdlib/.
+// are a raw string in go/alchemy.go and the directory go/stdlib/ (which
+// the Go module's own `go run ./internal/embed` writes the same way).
 //
 // scripts/embed.js, which the root Makefile's `make embed` runs, is a
 // one-line shim that runs this file.
@@ -69,13 +71,24 @@ function tsLiteral(text) {
   return 'const grammarText = `\n' + templateEscape(text) + '`\n'
 }
 
+// The grammar as a Go raw string. A raw string has no escapes and cannot
+// hold a backquote, so each backquote is spliced in as an interpreted
+// "`" between two raw strings: the constant's value is the file's text
+// exactly. It opens with a line feed, as the others do, and a blank line
+// separates it from the end marker (go/internal/embed's GoLiteral writes
+// the same text).
+function goLiteral(text) {
+  return 'const grammarText = `\n' + text.split('`').join('` + "`" + `') + '`\n\n'
+}
+
 const GRAMMAR_TARGETS = [
   { file: path.join(ROOT, 'rs', 'src', 'grammar.rs'), literal: rustLiteral },
   { file: path.join(ROOT, 'ts', 'src', 'grammar.ts'), literal: tsLiteral },
+  { file: path.join(ROOT, 'go', 'alchemy.go'), literal: goLiteral },
 ]
 
 // Directories that hold the library file for file.
-const STDLIB_DIRS = [path.join(ROOT, 'rs', 'stdlib')]
+const STDLIB_DIRS = [path.join(ROOT, 'rs', 'stdlib'), path.join(ROOT, 'go', 'stdlib')]
 
 // Generated modules that hold the whole library, by the name its spans
 // carry (`stdlib/<file>.alc`), in file-name order.

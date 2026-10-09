@@ -49,6 +49,7 @@ import {
   Selector,
   CaptureSpec,
   TableEvent,
+  Event,
   JsonEvents,
   Text,
   accepts,
@@ -91,6 +92,29 @@ export function stdlibSignature(name: string): Type | undefined {
       return func([Record], Record)
     case 'table-inferred-column':
       return func([Str], Record)
+    case 'table-positional-column':
+      return func([Num], Record)
+    case 'table-value-column':
+      return Record
+    case 'table-inferred-columns':
+      return func([Value], vectorOf(Record))
+    // The root adapters (stdlib/root.alc): a state and an event in, a
+    // transition out; the entries answer JSON events, since each is a
+    // stream of events said to be so (`as-events`).
+    case 'wrap-object-close':
+      return func([Unknown, Unknown], tagged('transition'))
+    case 'wrap-object-step':
+      return func([Str, Unknown, Unknown], tagged('transition'))
+    case 'wrap-finish':
+      return func([Unknown], vectorOf(Event))
+    case 'wrap-object':
+      return func([Str, JsonEvents], JsonEvents)
+    case 'wrap-array-close':
+      return func([Unknown, Unknown], tagged('transition'))
+    case 'wrap-array-step':
+      return func([Unknown, Unknown], tagged('transition'))
+    case 'wrap-array':
+      return func([JsonEvents], JsonEvents)
     case 'table-row':
       return func([Unknown, Value], tagged('row'))
     case 'table-first-row':
@@ -896,6 +920,12 @@ class Checker {
       case 'events':
         this.expect('the input of events', JsonEvents, t(0), at(0))
         return events()
+      case 'as-events':
+        this.expect('the items of as-events', streamOf(Unknown), t(0), at(0))
+        return JsonEvents
+      case 'indices':
+        this.expect('the vector of indices', vectorOf(Unknown), t(0), at(0))
+        return vectorOf(Num)
       case 'transition':
         noStream(0, 'a state')
         this.expect('the outputs of transition', vectorOf(Unknown), t(1), at(1))
@@ -951,9 +981,25 @@ class Checker {
         this.expect('the separator of string-join', Str, t(0), at(0))
         this.expect('the strings of string-join', vectorOf(Unknown), t(1), at(1))
         return Str
-      case 'fail':
-        this.expect('the message of fail', Str, t(0), at(0))
+      case 'fail': {
+        // `(fail message)` is INPUT_INVALID; `(fail :code message)` names
+        // the code: a literal keyword is held to the three here, any other
+        // keyword at run time.
+        const message = args.length - 1
+        if (2 === args.length) {
+          this.expect('the code of fail', Keyword, t(0), at(0))
+          const k = args[0]
+          if ('keyword' === k.kind && !['invalid', 'unrepresentable', 'protocol-order'].includes(k.name)) {
+            throw this.typeError(
+              'type_mismatch',
+              `the code of fail must be :invalid, :unrepresentable or :protocol-order, not :${k.name}`,
+              k.span,
+            )
+          }
+        }
+        this.expect('the message of fail', Str, t(message), at(message))
         return Never
+      }
       case 'is-ready':
         return Bool
       case 'require-columns':
@@ -1009,7 +1055,19 @@ function outputOf(ty: Type): Output | [Code, string, string] {
     case 'JsonEvents':
       return 'JsonEvents/1'
     case 'Stream':
+      // Items the checker could not type could be anything, and `Unknown`
+      // is accepted everywhere: asked first, so that such a stream is
+      // never taken for a table's rows.
+      if ('Unknown' === ty.item.t) {
+        return [
+          'STREAMABILITY_UNKNOWN',
+          'unknown_output',
+          'export answers a stream of items whose type is not known; as-events says they are events, or render them as a text (join, concat-map), or make table events of them',
+        ]
+      }
       if (accepts(TableEvent, ty.item)) return 'TableRows/1'
+      // A rewritten tree: every item an event, handed on as JSON events.
+      if (accepts(Event, ty.item)) return 'JsonEvents/1'
       return [
         'DSL_TYPE_ERROR',
         'bad_output',

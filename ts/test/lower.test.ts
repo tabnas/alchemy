@@ -70,8 +70,19 @@ describe('program', () => {
     const select = compile('def export [input] (join "," (select (path "a" each-index) input))', 't.alc')
     assert.equal(select.output, 'Text')
     assert.equal(select.rowSelector()!.toString(), '.a[*]')
+    // A rewritten tree: a stream of items the checker typed as events, or
+    // one the program said are events, is JSON events for the host.
+    const tree = compile('def export [input] (map (fn [e] e) (events input))', 't.alc')
+    assert.equal(tree.output, 'JsonEvents/1')
+    const said = compile(
+      'def step [s x] (transition s [x])\ndef fin [s] []\ndef export [input] (as-events (scan-emit null step fin (events input)))',
+      't.alc',
+    )
+    assert.equal(said.output, 'JsonEvents/1')
     // The checker's output and the plan's agree.
-    for (const program of [p, slow, table, echo, select]) assert.equal(program.planOutput(), program.output)
+    for (const program of [p, slow, table, echo, select, tree, said]) {
+      assert.equal(program.planOutput(), program.output)
+    }
   })
 
   it('compile reports reader, resolver and export failures', () => {

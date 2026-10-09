@@ -76,12 +76,14 @@ import { SourceSpan } from './ast'
 import { csvDialect, isInferred } from './effects'
 import { isFail } from './fail'
 import type { Bounds, Runtime } from './interp'
+import type { Output } from './output'
 import { captureBudget, getField, numberText, truth } from './stdlib/natives'
 import { G, run } from './trampoline'
 import {
   Func,
   NULL,
   Plan,
+  Protocol,
   Val,
   bool,
   debugText,
@@ -952,12 +954,24 @@ export class Lowering {
 
   // The sink for a program's result over `out`. `render` is the host's
   // choice for a stream result; a text result takes none
-  // (`render_of_text`).
+  // (`render_of_text`). A stream of items is taken for a table's rows, as
+  // the runtime cannot tell an item's shape before it arrives; `sinkAs`
+  // takes the checker's word instead.
   sink(result: Val, out: TextOut, render?: Renderer): Sink {
+    const output: Output =
+      'stream' === result.v ? ('JsonEvents' === protocol(result.plan) ? 'JsonEvents/1' : 'TableRows/1') : 'Text'
+    return this.sinkAs(result, out, render, output)
+  }
+
+  // `sink` with `output`, what the checker decided the result is: a stream
+  // of items the runtime cannot tell the protocol of is JSON events when
+  // the checker typed every item an event (a rewritten tree), and a
+  // table's rows otherwise.
+  sinkAs(result: Val, out: TextOut, render: Renderer | undefined, output: Output): Sink {
     switch (result.v) {
       // A string is a text where a text is expected (spec 10.4).
       case 'str':
-        return this.sink(textVal({ p: 'lit', text: result.value }), out, render)
+        return this.sinkAs(textVal({ p: 'lit', text: result.value }), out, render, output)
       case 'text':
         if (undefined !== render) {
           throw new Fail(
@@ -968,7 +982,9 @@ export class Lowering {
         return this.text(result.plan, out)
       case 'stream': {
         const plan = result.plan
-        const proto = protocol(plan)
+        const built = protocol(plan)
+        // A rewritten tree: the checker saw every item an event.
+        const proto: Protocol = 'Items' === built && 'JsonEvents/1' === output ? 'JsonEvents' : built
         const chosen: Renderer = render ?? ('JsonEvents' === proto ? 'json' : 'csv')
         const renderers = this.rt.renderers
         if ('JsonEvents' === proto) {
@@ -1027,6 +1043,10 @@ export class Lowering {
       // a later table makes rows of its own.
       case 'records':
         return this.table(plan.source, this.rt.renderers.recordsToJson(sink), false)
+      // `as-events` names what the arm below does for any items plan: the
+      // program's items, each an event, as JSON events.
+      case 'as-events':
+        return this.events(plan.source, sink)
       // A stream whose items may be events (`events` itself, or a
       // `scan-emit`, `map` or `filter` over anything): each item is turned
       // back into an event as the stream runs, the reverse of `events`, so
@@ -1072,6 +1092,7 @@ export class Lowering {
       }
       case 'input':
       case 'records':
+      case 'as-events':
         throw protocolMismatch(
           'table events were expected, not JSON events (table-from-json makes a table of them)',
         )
@@ -1143,6 +1164,7 @@ export class Lowering {
         return this.items(plan.source, new CsvTableStage(this.rt, this.metrics, !countedLater, down), true)
       case 'input':
       case 'records':
+      case 'as-events':
         throw protocolMismatch(
           'JSON events cannot be read item by item; select or route what the stream should yield, or read its events',
         )

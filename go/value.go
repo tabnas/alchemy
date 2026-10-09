@@ -376,6 +376,12 @@ const (
 	// PlanEvents is `events input`: every event of JsonEvents/1 as one
 	// tagged item; End is the stream's end, not an item.
 	PlanEvents
+	// PlanAsEvents is `as-events items`: a stream of items the program
+	// built, each an event, as JsonEvents/1: the reverse of `events`,
+	// which any taker of JSON events already applies to such a stream;
+	// here the program says so, where the checker could not tell the
+	// items' type.
+	PlanAsEvents
 	// PlanScanEmit is `scan-emit init step finish stream`.
 	PlanScanEmit
 	PlanMap
@@ -409,8 +415,9 @@ const (
 // Plan is a stream or a text, as a description of how to produce it. Kind
 // says which fields apply:
 //
-//   - Source: the plan a stage reads (route, select, events, scan-emit,
-//     map, filter, table-from-json, records, csv-table, csv, json);
+//   - Source: the plan a stage reads (route, select, events, as-events,
+//     scan-emit, map, filter, table-from-json, records, csv-table, csv,
+//     json);
 //   - Specs: a route's captures; Selector: a select's;
 //   - Init, Step and Finish: a scan-emit's; F: a map's, a filter's or a
 //     concat-map's function; At: the form a scan-emit, map, filter,
@@ -511,7 +518,7 @@ const (
 // JsonEvents, TableRows (natively), or Items.
 func (p *Plan) Protocol() Protocol {
 	switch p.Kind {
-	case PlanInput, PlanRecords:
+	case PlanInput, PlanRecords, PlanAsEvents:
 		return ProtocolJSONEvents
 	case PlanTableFromJSON:
 		return ProtocolTableRows
@@ -532,6 +539,8 @@ func PlanName(p *Plan) string {
 		return "select"
 	case PlanEvents:
 		return "events"
+	case PlanAsEvents:
+		return "as-events"
 	case PlanScanEmit:
 		return "scan-emit"
 	case PlanMap:

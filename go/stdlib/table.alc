@@ -26,19 +26,37 @@ def table-row [columns raw]
         get-path (get :source column) raw
       columns
 
+; A column of an array row, labelled by its position.
+def table-positional-column [i]
+  record
+    entry :label (scalar-text csv-options i)
+    entry :source (path i)
+
+; The one column of a scalar row: the row itself.
+def table-value-column
+  record
+    entry :label "value"
+    entry :source root
+
+; The columns the first row gives: an object's members by name, an
+; array's cells by position, a scalar as the one column `value`; a later
+; row of another kind projects through these sources and is missing
+; where a path does not apply to it.
+def table-inferred-columns [raw]
+  match (kind raw)
+    case :record (map table-inferred-column (keys raw))
+    case :vector (map table-positional-column (indices raw))
+    case _ (vector table-value-column)
+
 def table-first-row [binding state raw]
   match (get :columns binding)
     case :infer
-      match (kind raw)
-        case :record
-          let [columns (map table-inferred-column (keys raw))]
-            transition (ready columns)
-              vector
-                schema
-                  map public-column columns
-                table-row columns raw
-        case _
-          fail "The first row is not an object, so no columns can be inferred from it"
+      let [columns (table-inferred-columns raw)]
+        transition (ready columns)
+          vector
+            schema
+              map public-column columns
+            table-row columns raw
     case _
       transition state
         vector

@@ -172,6 +172,7 @@ function stages(plan: Plan): Plan[] {
       case 'route':
       case 'select':
       case 'events':
+      case 'as-events':
       case 'scan-emit':
       case 'map':
       case 'filter':
@@ -206,6 +207,7 @@ function protocolOf(stage: Plan): string {
   switch (stage.p) {
     case 'input':
     case 'records':
+    case 'as-events':
       return 'JsonEvents/1'
     case 'table-from-json':
     case 'csv-table':

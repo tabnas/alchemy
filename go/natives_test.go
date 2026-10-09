@@ -141,6 +141,36 @@ func TestLengthCountsCharactersInStepsTheAbortFlagReads(t *testing.T) {
 	}
 }
 
+// indices gives the positions of a vector's items, the labels the
+// inferred table gives an array row's cells, and takes an evaluation step
+// per item, so the host's abort flag stops a long vector's count.
+func TestIndicesGivesThePositionsInStepsTheAbortFlagReads(t *testing.T) {
+	if v := mustEval(t, "", "indices [:a :b :c]"); !Equal(v, Vector(Num(0), Num(1), Num(2))) {
+		t.Errorf("%s", DebugString(v))
+	}
+	if v := mustEval(t, "", "indices []"); !Equal(v, Vector()) {
+		t.Errorf("%s", DebugString(v))
+	}
+	if f := mustFail(t, "", "indices (record)"); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: indices: a vector was expected, not a record" {
+		t.Errorf("%v", f)
+	}
+	at := SourceSpan{File: NewFile("t")}
+	items := make([]Val, 1000)
+	for i := range items {
+		items[i] = NullVal{}
+	}
+	long := Vector(items...)
+	if v, f := nIndices(runtimeOf(t, ""), []Val{long}, at); f != nil || len(v.(*VectorVal).Items) != 1000 {
+		t.Errorf("%v %v", v, f)
+	}
+	flag := shared.NewAbortFlag()
+	rt := runtimeOf(t, "").WithAbort(flag)
+	flag.Abort()
+	if _, f := nIndices(rt, []Val{long}, at); f == nil || f.Code != CodeAborted {
+		t.Errorf("%v", f)
+	}
+}
+
 // A number without a lexeme is written as the renderers write it, by this
 // package's own copy of render's formatter (shortestNumber): the shortest
 // digits that read back, positional within [1e-6, 1e21), exponent form
@@ -190,5 +220,33 @@ func TestNumbersPrintAsTheRenderersPrintThem(t *testing.T) {
 	// Without a lexeme, numberText is shortestNumber's text.
 	if s, f := numberText(-1e-7, "", false); f != nil || s != "-1e-7" {
 		t.Errorf("%q %v", s, f)
+	}
+}
+
+// fail takes a code before the message: one of three keywords, each its
+// code; any other keyword, or a code that is not one, is a type error, as
+// the checker's is for a literal keyword.
+func TestFailNamesItsCode(t *testing.T) {
+	src := `def boom [k] (fail k "no")`
+	for _, c := range []struct {
+		expr string
+		code Code
+	}{
+		{"boom :unrepresentable", CodeTargetValueUnrepresentable},
+		{"boom :protocol-order", CodeProtocolOrderError},
+		{"boom :invalid", CodeInputInvalid},
+	} {
+		if f := mustFail(t, src, c.expr); f.Code != c.code || f.Message != "no" || f.Row != 1 || f.Column != 14 {
+			t.Errorf("%s: %v", c.expr, f)
+		}
+	}
+	for _, c := range []struct{ src, expr, message string }{
+		{src, "boom :nope", "type_mismatch: the code of fail must be :invalid, :unrepresentable or :protocol-order, not :nope"},
+		{src, "boom 1", "type_mismatch: fail: the code must be a keyword, not a number"},
+		{`def boom [k] (fail k)`, "boom 1", "type_mismatch: fail: the message must be a string, not a number"},
+	} {
+		if f := mustFail(t, c.src, c.expr); f.Code != CodeDSLTypeError || f.Message != c.message {
+			t.Errorf("%s: %v", c.expr, f)
+		}
 	}
 }

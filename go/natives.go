@@ -68,6 +68,8 @@ func init() {
 		"route":           nRoute,
 		"select":          nSelect,
 		"events":          nEvents,
+		"indices":         nIndices,
+		"as-events":       nAsEvents,
 		"scan-emit":       nScanEmit,
 		"transition":      nTransition,
 		"partial":         nPartial,
@@ -524,6 +526,27 @@ func nKeys(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 			return nil, f
 		}
 		out = append(out, StrVal(k))
+	}
+	return Vector(out...), nil
+}
+
+// nIndices is `indices vector`: the positions of a vector's items, as
+// numbers: what the interpreted inferred table labels an array row's
+// cells by. A bounded operation over one vector, like `keys` over one
+// record.
+func nIndices(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	v, ok := a[0].(*VectorVal)
+	if !ok {
+		return nil, typeError("indices: a vector was expected, not " + KindOf(a[0]))
+	}
+	// A step per item, as `keys` takes one per key, so the host's abort
+	// flag stops a long vector's count like any evaluation.
+	out := make([]Val, 0, len(v.Items))
+	for i := range v.Items {
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+		out = append(out, Num(float64(i)))
 	}
 	return Vector(out...), nil
 }
@@ -1160,11 +1183,38 @@ func nRepeat(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 }
 
 func nFail(rt *Runtime, a []Val, at SourceSpan) (Val, *Fail) {
-	message, f := asStr("fail", "the message", a[0])
+	// `(fail message)` is INPUT_INVALID, the code of a document the
+	// program refuses; `(fail :code message)` names what the failure is: a
+	// value the target cannot carry, or a stream that breaks its protocol.
+	var code Code
+	var message Val
+	switch len(a) {
+	case 1:
+		code, message = CodeInputInvalid, a[0]
+	case 2:
+		k, ok := a[0].(KeywordVal)
+		if !ok {
+			return nil, typeError("fail: the code must be a keyword, not " + KindOf(a[0]))
+		}
+		switch k {
+		case "invalid":
+			code = CodeInputInvalid
+		case "unrepresentable":
+			code = CodeTargetValueUnrepresentable
+		case "protocol-order":
+			code = CodeProtocolOrderError
+		default:
+			return nil, typeError("the code of fail must be :invalid, :unrepresentable or :protocol-order, not :" + string(k))
+		}
+		message = a[1]
+	default:
+		return nil, typeError("fail takes a message, or a code and a message")
+	}
+	text, f := asStr("fail", "the message", message)
 	if f != nil {
 		return nil, f
 	}
-	return nil, rt.FailAt(NewFail(CodeInputInvalid, message), at)
+	return nil, rt.FailAt(NewFail(code, text), at)
 }
 
 func isReadyValue(v Val) bool {
@@ -1229,6 +1279,14 @@ func nEvents(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		return nil, f
 	}
 	return StreamVal{Plan: &Plan{Kind: PlanEvents, Source: source}}, nil
+}
+
+func nAsEvents(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	source, f := asStream("as-events", a[0])
+	if f != nil {
+		return nil, f
+	}
+	return StreamVal{Plan: &Plan{Kind: PlanAsEvents, Source: source}}, nil
 }
 
 func nCsvTable(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {

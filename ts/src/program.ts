@@ -343,10 +343,19 @@ export class Program {
   }
 
   // The protocol the built plan produces; the checker's `output` agrees
-  // with it, and a test holds the two together.
+  // with it, and a test holds the two together. A stream of items is the
+  // checker's to name (every item an event, or a table event), since the
+  // runtime learns an item's shape only as it arrives.
   planOutput(): Output {
     if ('stream' === this.result.v) {
-      return 'JsonEvents' === protocolOf(this.result.plan) ? 'JsonEvents/1' : 'TableRows/1'
+      switch (protocolOf(this.result.plan)) {
+        case 'JsonEvents':
+          return 'JsonEvents/1'
+        case 'TableRows':
+          return 'TableRows/1'
+        default:
+          return this.output
+      }
     }
     return 'Text'
   }
@@ -414,6 +423,6 @@ export class Program {
       .withDuplicates(this.duplicates)
       .withLimits(limits)
       .withAbort(this.abort)
-    return new Lowering(rt, limits, metrics).sink(this.result, out, render)
+    return new Lowering(rt, limits, metrics).sinkAs(this.result, out, render, this.output)
   }
 }

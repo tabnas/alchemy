@@ -162,6 +162,11 @@ export type Plan =
   // container events as constants and `key` and `scalar` with their one
   // field; `end` is the stream's end, not an item.
   | { readonly p: 'events'; readonly source: Plan }
+  // `as-events items`: a stream of items the program built, each an
+  // event, as `JsonEvents/1`: the reverse of `events`, which any taker of
+  // JSON events already applies to such a stream; here the program says
+  // so, where the checker could not tell the items' type.
+  | { readonly p: 'as-events'; readonly source: Plan }
   // `scan-emit init step finish stream`.
   | {
       readonly p: 'scan-emit'
@@ -222,6 +227,7 @@ export function isLive(plan: Plan): boolean {
       case 'route':
       case 'select':
       case 'events':
+      case 'as-events':
       case 'scan-emit':
       case 'map':
       case 'filter':
@@ -270,6 +276,7 @@ export function protocol(plan: Plan): Protocol {
   switch (plan.p) {
     case 'input':
     case 'records':
+    case 'as-events':
       return 'JsonEvents'
     case 'table-from-json':
       return 'TableRows'

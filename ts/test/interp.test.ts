@@ -353,6 +353,123 @@ describe('evaluation', () => {
     assert.equal(fileOf(span(sourceFile('stdlib/table.alc'), 0, 0)), undefined)
   })
 
+  // `fail` takes a code before the message: one of three keywords, each
+  // its code; any other keyword, or a code that is not one, is a type
+  // error, as the checker's is for a literal keyword.
+  it('fail names its code', () => {
+    const src = 'def boom [k] (fail k "no")'
+    for (const [expr, code] of [
+      ['boom :unrepresentable', 'TARGET_VALUE_UNREPRESENTABLE'],
+      ['boom :protocol-order', 'PROTOCOL_ORDER_ERROR'],
+      ['boom :invalid', 'INPUT_INVALID'],
+    ]) {
+      const f = evalFail(src, expr)
+      assert.deepStrictEqual([f.code, f.message, f.row, f.col], [code, 'no', 1, 14], expr)
+    }
+    for (const [program, expr, message] of [
+      [src, 'boom :nope', 'the code of fail must be :invalid, :unrepresentable or :protocol-order, not :nope'],
+      [src, 'boom 1', 'fail: the code must be a keyword, not a number'],
+      ['def boom [k] (fail k)', 'boom 1', 'fail: the message must be a string, not a number'],
+    ]) {
+      const f = evalFail(program, expr)
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: ${message}`], expr)
+    }
+  })
+
+  // The inferred table's columns come from the first row of any kind
+  // (stdlib/table.alc): an object's members by name, an array's cells by
+  // position (`indices`), a scalar as the one column `value`; a later row
+  // of another kind projects through those sources, missing where a path
+  // does not apply to it.
+  it('the inferred columns take every row kind', () => {
+    const labels = (row: string) => evalIn('', `map (fn [c] (get :label c)) (table-inferred-columns ${row})`)
+    same(labels('(record (entry :a 1) (entry :b 2))'), V.vectorVal([V.str('a'), V.str('b')]))
+    same(labels('[10 20 30]'), V.vectorVal([V.str('0'), V.str('1'), V.str('2')]))
+    same(labels('"x"'), V.vectorVal([V.str('value')]))
+    same(labels('[]'), V.vectorVal([]))
+    const row = (first: string, later: string) => evalIn('', `table-row (table-inferred-columns ${first}) ${later}`)
+    same(row('[10 20]', '[30 40]'), V.taggedVal('row', [V.vectorVal([n(30), n(40)])]))
+    same(row('5', '"six"'), V.taggedVal('row', [V.vectorVal([V.str('six')])]))
+    same(row('(record (entry :a 1))', '(record (entry :a 2) (entry :b 3))'), V.taggedVal('row', [V.vectorVal([n(2)])]))
+    same(row('[10 20]', '(record (entry :a 1))'), V.taggedVal('row', [V.vectorVal([V.missing(), V.missing()])]))
+    // The first row binds the columns and writes the schema before itself.
+    same(
+      evalIn('', 'match (table-first-row (record (entry :columns :infer)) no-schema [10 20]) (case (transition s out) out)'),
+      evalIn('', '[(schema [(record (entry :label "0")) (record (entry :label "1"))]) (row [10 20])]'),
+    )
+  })
+
+  // The root adapters (stdlib/root.alc), driven event by event as
+  // scan-emit drives them: each decides at the first event, passes a root
+  // of the kind its target needs through, wraps any other in one, and
+  // refuses events that are no tree's (PROTOCOL_ORDER_ERROR).
+  it('the root adapters wrap the root a target needs', () => {
+    const rt = runtime('')
+    const at = span(sourceFile('t'), 0, 0)
+    const fn = (expr: string): value.Func => {
+      const f = evalIn('', expr, rt)
+      if ('fn' !== f.v) throw new Error(`${expr} is not a function`)
+      return f.f
+    }
+    const items = (v: Val): ReadonlyArray<Val> => {
+      if ('vector' !== v.v) throw new Error(`${V.debugText(v)} is not a vector`)
+      return v.items
+    }
+    const drive = (step: string, events: string): Val => {
+      const s = fn(step)
+      let state = evalIn('', '[:start]', rt)
+      const out: Val[] = []
+      for (const event of items(evalIn('', events, rt))) {
+        const t = rt.applyNow(s, [state, event], at)
+        if ('tagged' !== t.v || 'transition' !== t.tag) throw new Error(`${V.debugText(t)} is not a transition`)
+        state = t.fields[0]
+        out.push(...items(t.fields[1]))
+      }
+      out.push(...items(rt.applyNow(fn('wrap-finish'), [state], at)))
+      return V.vectorVal(out)
+    }
+    const object = 'partial wrap-object-step "doc"'
+    const array = 'wrap-array-step'
+    for (const [step, events, want] of [
+      // An object root passes through; an array or a scalar is the member
+      // `doc` of an object, closed when the wrapped root closes.
+      [object, '[object-start (key "a") (scalar 1) object-end]', '[object-start (key "a") (scalar 1) object-end]'],
+      [
+        object,
+        '[array-start array-start array-end (scalar 1) array-end]',
+        '[object-start (key "doc") array-start array-start array-end (scalar 1) array-end object-end]',
+      ],
+      [object, '[(scalar "x")]', '[object-start (key "doc") (scalar "x") object-end]'],
+      // An array root passes through; an object or a scalar is the one
+      // element of an array.
+      [array, '[array-start (scalar 1) array-end]', '[array-start (scalar 1) array-end]'],
+      [
+        array,
+        '[object-start (key "a") object-start object-end object-end]',
+        '[array-start object-start (key "a") object-start object-end object-end array-end]',
+      ],
+      [array, '[(scalar null)]', '[array-start (scalar null) array-end]'],
+    ]) {
+      same(drive(step, events), evalIn('', want), `${step} ${events}`)
+    }
+    // A failure in the library names its form there.
+    for (const [step, events, message] of [
+      [object, '[object-end]', "the events begin with an end or a key, which a tree's never do (at stdlib/root.alc:36:16)"],
+      [array, '[(key "a")]', "the events begin with an end or a key, which a tree's never do (at stdlib/root.alc:72:16)"],
+      [object, '[]', "the events hold no value, where a tree's hold one (at stdlib/root.alc:49:19)"],
+      [array, '[object-start (key "a")]', "the events ended inside a container, which a tree's never do (at stdlib/root.alc:52:12)"],
+      [object, '[(scalar 1) (scalar 2)]', "the events hold more after the root value, which a tree's never do (at stdlib/root.alc:45:12)"],
+      [
+        array,
+        '[object-start object-end array-start]',
+        "the events hold more after the root value, which a tree's never do (at stdlib/root.alc:81:12)",
+      ],
+    ]) {
+      const f: any = thrown(() => drive(step, events))
+      assert.deepStrictEqual([f.code, f.message], ['PROTOCOL_ORDER_ERROR', message], `${step} ${events}`)
+    }
+  })
+
   it('streams are plans and export applies to the input', () => {
     const out = run(runtime('def export [input] (json input)').export())
     assert.ok('text' === out.v && 'json' === out.plan.p)
@@ -519,6 +636,28 @@ describe('natives', () => {
     flag.abort()
     const huge = V.str('k'.repeat(LENGTH_CHUNK * 64))
     assert.equal((thrown(() => rt.applyNow(length, [huge], at)) as any).code, 'ABORTED')
+  })
+
+  // `indices` gives the positions of a vector's items, the labels the
+  // inferred table gives an array row's cells, and takes an evaluation
+  // step per item, so the host's abort flag stops a long vector's count.
+  it('indices gives the positions of a vector\'s items in steps the abort flag reads', () => {
+    same(evalIn('', 'indices [:a :b :c]'), V.vectorVal([n(0), n(1), n(2)]))
+    same(evalIn('', 'indices []'), V.vectorVal([]))
+    const f = evalFail('', 'indices (record)')
+    assert.deepStrictEqual(
+      [f.code, f.message],
+      ['DSL_TYPE_ERROR', 'type_mismatch: indices: a vector was expected, not a record'],
+    )
+    const at = span(sourceFile('t'), 0, 0)
+    const indices: value.Func = { fn: 'native', native: native('indices')! }
+    const long = V.vectorVal(Array.from({ length: 1000 }, () => V.NULL))
+    const counted = runtime('').applyNow(indices, [long], at)
+    assert.ok('vector' === counted.v && 1000 === counted.items.length)
+    const flag = new AbortFlag()
+    const rt = runtime('').withAbort(flag)
+    flag.abort()
+    assert.equal((thrown(() => rt.applyNow(indices, [long], at)) as any).code, 'ABORTED')
   })
 
   // This package's own number text, as the Rust crate's `shortest_number`

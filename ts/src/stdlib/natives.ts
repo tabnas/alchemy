@@ -22,7 +22,7 @@
 // evaluator drives on its own stack (`./trampoline`), so a function that
 // maps itself is the evaluator's `recursion`, never JavaScript's stack.
 
-import { CaptureSpec, Fail, Limits, Selector, isJsonNumber, utf8Bytes } from '../shared'
+import { CaptureSpec, Code, Fail, Limits, Selector, isJsonNumber, utf8Bytes } from '../shared'
 import type { Renderers } from '../shared'
 
 import { SourceSpan } from '../ast'
@@ -366,6 +366,22 @@ function keys(rt: Runtime, a: ReadonlyArray<Val>): Val {
   for (const k of v.fields.keys()) {
     rt.tick()
     out.push(str(k))
+  }
+  return vectorVal(out)
+}
+
+// `indices vector`: the positions of a vector's items, as numbers: what
+// the interpreted inferred table labels an array row's cells by. A bounded
+// operation over one vector, like `keys` over one record.
+function indices(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const v = a[0]
+  if ('vector' !== v.v) throw typeError(`indices: a vector was expected, not ${kindText(v)}`)
+  // A step per item, as `keys` takes one per key, so the host's abort flag
+  // stops a long vector's count like any evaluation.
+  const out: Val[] = []
+  for (let i = 0; i < v.items.length; i++) {
+    rt.tick()
+    out.push(num(i))
   }
   return vectorVal(out)
 }
@@ -800,8 +816,36 @@ function repeat(rt: Runtime, a: ReadonlyArray<Val>): Val {
 }
 
 function fail(rt: Runtime, a: ReadonlyArray<Val>, at: SourceSpan): Val {
-  const message = asStr('fail', 'the message', a[0])
-  throw rt.failAt(Fail.input(message), at)
+  // `(fail message)` is INPUT_INVALID, the code of a document the program
+  // refuses; `(fail :code message)` names what the failure is: a value the
+  // target cannot carry, or a stream that breaks its protocol.
+  let code: Code
+  let message: Val
+  if (1 === a.length) {
+    code = 'INPUT_INVALID'
+    message = a[0]
+  } else if (2 === a.length) {
+    const k = a[0]
+    if ('keyword' !== k.v) throw typeError(`fail: the code must be a keyword, not ${kindText(k)}`)
+    switch (k.name) {
+      case 'invalid':
+        code = 'INPUT_INVALID'
+        break
+      case 'unrepresentable':
+        code = 'TARGET_VALUE_UNREPRESENTABLE'
+        break
+      case 'protocol-order':
+        code = 'PROTOCOL_ORDER_ERROR'
+        break
+      default:
+        throw typeError(`the code of fail must be :invalid, :unrepresentable or :protocol-order, not :${k.name}`)
+    }
+    message = a[1]
+  } else {
+    throw typeError('fail takes a message, or a code and a message')
+  }
+  const text = asStr('fail', 'the message', message)
+  throw rt.failAt(new Fail(code, text), at)
 }
 
 function isReadyValue(v: Val): boolean {
@@ -857,6 +901,10 @@ function events(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   return streamVal({ p: 'events', source: asStream('events', a[0]) })
 }
 
+function asEvents(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  return streamVal({ p: 'as-events', source: asStream('as-events', a[0]) })
+}
+
 function csvTable(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   const source = asStream('csv-table', a[1])
   return streamVal({ p: 'csv-table', options: a[0], source })
@@ -899,6 +947,8 @@ const IMPLS: Record<string, NativeImpl> = {
   route,
   select,
   events,
+  indices,
+  'as-events': asEvents,
   'scan-emit': scanEmit,
   transition,
   partial,

@@ -162,13 +162,18 @@ func (p *Program) Result() Val { return p.result }
 func (p *Program) Output() Output { return p.output }
 
 // PlanOutput is the protocol the built plan produces; the checker's Output
-// agrees with it, and a test holds the two together.
+// agrees with it, and a test holds the two together. A stream of items is
+// the checker's to name (every item an event, or a table event), since
+// the runtime learns an item's shape only as it arrives.
 func (p *Program) PlanOutput() Output {
 	if s, ok := p.result.(StreamVal); ok {
-		if s.Plan.Protocol() == ProtocolJSONEvents {
+		switch s.Plan.Protocol() {
+		case ProtocolJSONEvents:
 			return OutputJsonEvents
+		case ProtocolTableRows:
+			return OutputTableRows
 		}
-		return OutputTableRows
+		return p.output
 	}
 	return OutputText
 }
@@ -273,7 +278,7 @@ func stagesOf(plan *Plan) []*Plan {
 		var next *Plan
 		switch here.Kind {
 		case PlanInput, PlanLit:
-		case PlanRoute, PlanSelect, PlanEvents, PlanScanEmit, PlanMap, PlanFilter,
+		case PlanRoute, PlanSelect, PlanEvents, PlanAsEvents, PlanScanEmit, PlanMap, PlanFilter,
 			PlanTableFromJSON, PlanRecords, PlanCsvTable, PlanCsv, PlanJSON:
 			next = here.Source
 		case PlanConcatMap, PlanJoin:
@@ -325,7 +330,7 @@ func isLibraryTable(init Val, step Fn) bool {
 func stageOf(p *Plan) Stage {
 	kinds := map[PlanKind]StageKind{
 		PlanInput: StageInput, PlanLit: StageLit, PlanRoute: StageRoute, PlanSelect: StageSelect,
-		PlanEvents: StageEvents, PlanScanEmit: StageScanEmit, PlanMap: StageMap, PlanFilter: StageFilter,
+		PlanEvents: StageEvents, PlanAsEvents: StageAsEvents, PlanScanEmit: StageScanEmit, PlanMap: StageMap, PlanFilter: StageFilter,
 		PlanTableFromJSON: StageTableFromJSON, PlanRecords: StageRecords, PlanCsvTable: StageCsvTable,
 		PlanCsv: StageCsv, PlanJSON: StageJSON, PlanConcatMap: StageConcatMap, PlanJoin: StageJoin,
 		PlanConcat: StageConcat, PlanReplace: StageReplace,
@@ -419,5 +424,5 @@ func (p *Program) SinkOut(out shared.TextOut, render Renderer, limits shared.Lim
 		WithAbort(p.abort).
 		WithRouters(p.routers).
 		WithRenderers(p.renderers)
-	return NewLowering(rt, limits, metrics).Sink(p.result, out, render)
+	return NewLowering(rt, limits, metrics).SinkAs(p.result, out, render, p.output)
 }

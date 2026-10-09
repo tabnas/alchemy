@@ -6,8 +6,9 @@
 // The package embeds the canonical `stdlib/*.alc` files as one generated
 // module, `./sources` (an npm package holds nothing above `ts/`);
 // `npm run embed` writes it, and test/shared-sources.test.ts holds it to
-// the files. `table.alc` is the metadata-first table transducer and
-// `csv.alc` the always-quoted CSV renderer. Both are parsed, desugared and
+// the files. `table.alc` is the metadata-first table transducer,
+// `csv.alc` the always-quoted CSV renderer and `root.alc` the root
+// adapters (`wrap-object`, `wrap-array`). Each is parsed, desugared and
 // resolved once, on first use, and their names are usable from any
 // program; a program's own `def` of the same name shadows the library's
 // for that program, never for the library itself, whose definitions

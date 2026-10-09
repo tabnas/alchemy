@@ -1117,11 +1117,29 @@ func NewLowering(rt *Runtime, limits shared.Limits, metrics *shared.Metrics) *Lo
 
 // Sink is the sink for a program's result over out. render is the host's
 // choice for a stream result; a text result takes none (`render_of_text`).
+// A stream of items is taken for a table's rows, as the runtime cannot
+// tell an item's shape before it arrives; SinkAs takes the checker's word
+// instead.
 func (l *Lowering) Sink(result Val, out shared.TextOut, render Renderer) (shared.Sink, *Fail) {
+	output := OutputText
+	if x, ok := result.(StreamVal); ok {
+		output = OutputTableRows
+		if x.Plan.Protocol() == ProtocolJSONEvents {
+			output = OutputJsonEvents
+		}
+	}
+	return l.SinkAs(result, out, render, output)
+}
+
+// SinkAs is Sink with output, what the checker decided the result is: a
+// stream of items the runtime cannot tell the protocol of is JSON events
+// when the checker typed every item an event (a rewritten tree), and a
+// table's rows otherwise.
+func (l *Lowering) SinkAs(result Val, out shared.TextOut, render Renderer, output Output) (shared.Sink, *Fail) {
 	switch x := result.(type) {
 	// A string is a text where a text is expected (spec 10.4).
 	case StrVal:
-		return l.Sink(TextVal{Plan: litPlan(string(x))}, out, render)
+		return l.SinkAs(TextVal{Plan: litPlan(string(x))}, out, render, output)
 	case TextVal:
 		if render != RenderDefault {
 			return nil, NewFail(CodeDSLTypeError,
@@ -1130,6 +1148,10 @@ func (l *Lowering) Sink(result Val, out shared.TextOut, render Renderer) (shared
 		return l.text(x.Plan, out)
 	case StreamVal:
 		protocol := x.Plan.Protocol()
+		// A rewritten tree: the checker saw every item an event.
+		if protocol == ProtocolItems && output == OutputJsonEvents {
+			protocol = ProtocolJSONEvents
+		}
 		if render == RenderDefault {
 			render = RenderCSV
 			if protocol == ProtocolJSONEvents {
@@ -1203,6 +1225,10 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 	// a later table makes rows of its own.
 	case PlanRecords:
 		return l.table(p.Source, l.rt.Renderers().RecordsToJSON(sink), false)
+	// `as-events` names what the arm below does for any items plan: the
+	// program's items, each an event, as JSON events.
+	case PlanAsEvents:
+		return l.events(p.Source, sink)
 	// A stream whose items may be events (`events` itself, or a
 	// `scan-emit`, `map` or `filter` over anything): each item is turned
 	// back into an event as the stream runs, the reverse of `events`, so a
@@ -1240,7 +1266,7 @@ func (l *Lowering) table(p *Plan, table shared.TableSink, countedLater bool) (sh
 			return nil, f
 		}
 		return l.events(p.Source, transducer)
-	case PlanInput, PlanRecords:
+	case PlanInput, PlanRecords, PlanAsEvents:
 		return nil, protocolMismatch("table events were expected, not JSON events (table-from-json makes a table of them)")
 	}
 	return l.items(p, &taggedToTable{rt: l.rt, metrics: l.metrics, countRows: !countedLater, table: table}, true)
@@ -1305,7 +1331,7 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 			return nil, f
 		}
 		return l.items(p.Source, &csvTableStage{rt: l.rt, metrics: l.metrics, countRows: !countedLater, down: down}, true)
-	case PlanInput, PlanRecords:
+	case PlanInput, PlanRecords, PlanAsEvents:
 		return nil, protocolMismatch("JSON events cannot be read item by item; select or route what the stream should yield, or read its events")
 	}
 	return nil, typeError(PlanName(p) + " is a text, not a stream")
