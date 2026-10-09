@@ -576,6 +576,9 @@ func composeOver(source *Part, input string, target *Part, options Options, main
 	var sources []alchemy.Source
 	var adapters []Adapter
 	expr := input
+	// treeEvents is whether the source's events reach the render whole, no
+	// adapter having taken them apart; only a tree's render reads it (the
+	// front, below), so a records render leaves it as it is.
 	treeEvents := true
 	switch target.Writes {
 	case ShapeRecords:
@@ -586,7 +589,6 @@ func composeOver(source *Part, input string, target *Part, options Options, main
 				expr = "(" + lift.Entry + " " + expr + ")"
 				sources = append(sources, alchemy.Source{File: lift.File, Text: lift.Text})
 			}
-			treeEvents = false
 		} else {
 			// A tree's rows: the elements of the root array.
 			if target.Root == RootArray {
@@ -595,7 +597,6 @@ func composeOver(source *Part, input string, target *Part, options Options, main
 			}
 			expr = "(table-from-json " + inferred + " " + expr + ")"
 			adapters = append(adapters, Adapter{Kind: AdapterInferredTable})
-			treeEvents = len(adapters) == 1
 		}
 	case ShapeTree:
 		if !hasShape(reads, ShapeTree) {

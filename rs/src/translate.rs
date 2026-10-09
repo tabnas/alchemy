@@ -499,6 +499,9 @@ fn compose_over(
     let mut sources: Vec<(String, String)> = Vec::new();
     let mut adapters: Vec<Adapter> = Vec::new();
     let mut expr = input.to_string();
+    // Whether the source's events reach the render whole, no adapter
+    // having taken them apart; only a tree's render reads it (the front,
+    // below), so a records render leaves it as it is.
     let mut tree_events = true;
     match target.writes {
         Shape::Records => {
@@ -509,7 +512,6 @@ fn compose_over(
                     expr = format!("({} {expr})", l.entry);
                     sources.push((l.file.clone(), l.text.clone()));
                 }
-                tree_events = false;
             } else {
                 // A tree's rows: the elements of the root array.
                 if target.root == Root::Array {
@@ -518,7 +520,6 @@ fn compose_over(
                 }
                 expr = format!("(table-from-json {INFERRED} {expr})");
                 adapters.push(Adapter::InferredTable);
-                tree_events = adapters.len() == 1;
             }
         }
         Shape::Tree => {

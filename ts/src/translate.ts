@@ -406,6 +406,9 @@ function composeOver(
   const sources: Source[] = []
   const adapters: Adapter[] = []
   let expr = input
+  // Whether the source's events reach the render whole, no adapter having
+  // taken them apart; only a tree's render reads it (the front, below), so
+  // a records render leaves it as it is.
   let treeEvents = true
   if ('records' === target.writes) {
     if ('records' === reads[0]) {
@@ -415,7 +418,6 @@ function composeOver(
         expr = `(${lift.entry} ${expr})`
         sources.push({ file: lift.file, text: lift.text })
       }
-      treeEvents = false
     } else {
       // A tree's rows: the elements of the root array.
       if ('array' === target.root) {
@@ -424,7 +426,6 @@ function composeOver(
       }
       expr = `(table-from-json ${INFERRED} ${expr})`
       adapters.push({ kind: 'inferred-table' })
-      treeEvents = 1 === adapters.length
     }
   } else {
     if (!reads.includes('tree')) {
