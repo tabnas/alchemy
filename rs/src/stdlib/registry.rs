@@ -601,11 +601,18 @@ pub fn unquote(s: &str) -> Option<String> {
 /// points, both included. The empty string is within any ranges. A
 /// format's part tests a string with it against the characters the format
 /// can carry (XML's `Char` production, a name's characters) before it
-/// writes the string, and chooses its convention when it cannot.
+/// writes the string, and chooses its convention when it cannot. The
+/// ranges may come from data, so the work is counted in comparisons, an
+/// evaluation step per [`CHARS_WITHIN_STEP`] of them and per as many
+/// ranges read, and the host's abort flag stops a long test as it stops
+/// any long evaluation.
 fn chars_within(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let ranges = as_items("chars-within", &a[0])?;
     let mut bounds: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
-    for range in ranges.iter() {
+    for (i, range) in ranges.iter().enumerate() {
+        if i % CHARS_WITHIN_STEP == CHARS_WITHIN_STEP - 1 {
+            rt.tick()?;
+        }
         let pair = match range {
             Val::Vector(pair) if pair.len() == 2 => pair,
             other => {
@@ -642,17 +649,40 @@ fn chars_within(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         bounds.push((low, high));
     }
     let s = as_str("chars-within", "the string", &a[1])?;
-    for (i, c) in s.chars().enumerate() {
-        if i % 4096 == 4095 {
-            rt.tick()?;
-        }
+    // Comparisons made since the last step; a character costs at least
+    // one, so an empty range vector still counts its characters.
+    let mut work = 0usize;
+    for c in s.chars() {
         let c = c as u32;
-        if !bounds.iter().any(|&(low, high)| (low..=high).contains(&c)) {
+        let mut within = false;
+        for &(low, high) in &bounds {
+            work += 1;
+            if work >= CHARS_WITHIN_STEP {
+                rt.tick()?;
+                work = 0;
+            }
+            if (low..=high).contains(&c) {
+                within = true;
+                break;
+            }
+        }
+        if bounds.is_empty() {
+            work += 1;
+            if work >= CHARS_WITHIN_STEP {
+                rt.tick()?;
+                work = 0;
+            }
+        }
+        if !within {
             return Ok(Val::Bool(false));
         }
     }
     Ok(Val::Bool(true))
 }
+
+/// How many comparisons, or ranges read, `chars-within` makes per
+/// evaluation step.
+pub const CHARS_WITHIN_STEP: usize = 4096;
 
 /// `compare a b`: how two numbers are ordered, `:less`, `:equal` or
 /// `:greater`, and `:unordered` when either is NaN; -0 and 0 are equal.
@@ -1661,6 +1691,29 @@ mod tests {
         assert_eq!(
             quote("\u{fffe}\u{ffff}\u{fffd}"),
             "\"\\ufffe\\uffff\u{fffd}\""
+        );
+    }
+
+    /// `chars-within` counts its work in comparisons, so ranges from data
+    /// as many as they are take evaluation steps, and a bound on steps
+    /// (the fuel, the abort flag) stops a test that has not yet read 4,096
+    /// characters.
+    #[test]
+    fn chars_within_takes_a_step_per_comparisons() {
+        let rt = crate::lower::tests::runtime("def export [input] input", true);
+        let rt = match std::sync::Arc::try_unwrap(rt) {
+            Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+            Err(_) => unreachable!("the test holds the one runtime"),
+        };
+        let range = Val::vector(vec![Val::num(5.0), Val::num(5.0)]);
+        let ranges = Val::vector(vec![range; 100_000]);
+        let s = Val::Str(Arc::from("a"));
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let fail = chars_within(&rt, &[ranges, s], &span).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().map(|l| l.name),
+            Some("max_plan_steps"),
+            "{fail}"
         );
     }
 

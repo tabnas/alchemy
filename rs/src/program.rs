@@ -554,6 +554,7 @@ fn root_stage(plan: &Plan) -> &Plan {
             | Plan::Filter { source, .. }
             | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
+            | Plan::AsEvents { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
             | Plan::Json { source, .. } => {
@@ -616,6 +617,15 @@ mod tests {
         .unwrap();
         assert_eq!(select.output(), Output::Text);
         assert_eq!(select.row_selector().unwrap().to_string(), ".a[*]");
+        // A rewritten tree the program says is events: the rows are still
+        // the select's, behind as-events.
+        let rewritten = compile(
+            "def export [input] (as-events (map (fn [x] (scalar x)) (select (path \"a\" each-index) input)))",
+            "t.alc",
+        )
+        .unwrap();
+        assert_eq!(rewritten.output(), Output::JsonEvents);
+        assert_eq!(rewritten.row_selector().unwrap().to_string(), ".a[*]");
     }
 
     #[test]
