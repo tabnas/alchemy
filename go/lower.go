@@ -208,20 +208,71 @@ func (n *nullNonFinite) Event(ev shared.Event) (shared.Flow, *Fail) {
 // noColumns is the CSV renderer's adapter for :no-columns :empty: a table
 // of no columns is the empty document, so its schema, its rows (each of no
 // cells) and its end go no further, and the renderer, which refuses such a
-// schema, writes nothing; a table of columns passes as it came.
+// schema, writes nothing; a table of columns passes as it came. The table
+// it keeps back is held to what the library's `csv-table` holds it to,
+// with the same codes and texts, so the native and the interpreted `csv`
+// fail alike: a row of any cell, a second schema, and anything after the
+// end are PROTOCOL_ORDER_ERROR.
 type noColumns struct {
-	empty bool
-	next  shared.TableSink
+	kept kept
+	// rows is how many rows the kept-back table has had, each of no cells.
+	rows uint64
+	next shared.TableSink
 }
 
+// kept is where a noColumns is in its table.
+type kept uint8
+
+const (
+	// keptBefore: no schema has come.
+	keptBefore kept = iota
+	// keptPassed: a table of columns, which the renderer holds to the
+	// protocol.
+	keptPassed
+	// keptRows: a table of no columns, kept back.
+	keptRows
+	// keptEnded: the kept-back table has ended.
+	keptEnded
+)
+
 func (n *noColumns) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
-	if ev.Kind == shared.TableSchema {
-		n.empty = len(ev.Columns) == 0
+	switch n.kept {
+	case keptBefore:
+		if ev.Kind == shared.TableSchema {
+			if len(ev.Columns) == 0 {
+				n.kept = keptRows
+				return shared.Continue, nil
+			}
+			n.kept = keptPassed
+		}
+		return n.next.TableEvent(ev)
+	case keptPassed:
+		return n.next.TableEvent(ev)
+	case keptRows:
+		switch ev.Kind {
+		case shared.TableSchema:
+			return shared.Continue, shared.ProtocolFail("a second schema")
+		case shared.TableRow:
+			if len(ev.Cells) != 0 {
+				return shared.Continue, shared.ProtocolFail(fmt.Sprintf("row %d has %d cells; the schema has 0 columns",
+					n.rows+1, len(ev.Cells)))
+			}
+			n.rows++
+			return shared.Continue, nil
+		default:
+			n.kept = keptEnded
+			return shared.Continue, nil
+		}
+	default:
+		switch ev.Kind {
+		case shared.TableSchema:
+			return shared.Continue, shared.ProtocolFail("a schema after the end")
+		case shared.TableRow:
+			return shared.Continue, shared.ProtocolFail("a row after the end")
+		default:
+			return shared.Continue, shared.ProtocolFail("a second end")
+		}
 	}
-	if n.empty {
-		return shared.Continue, nil
-	}
-	return n.next.TableEvent(ev)
 }
 
 // isNonFiniteCell is whether a cell is a number that is not finite.

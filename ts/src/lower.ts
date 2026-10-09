@@ -183,16 +183,51 @@ class NullNonFinite implements Sink {
 // The CSV renderer's adapter for `:no-columns :empty`: a table of no
 // columns is the empty document, so its schema, its rows (each of no
 // cells) and its end go no further, and the renderer, which refuses such a
-// schema, writes nothing; a table of columns passes as it came.
-class NoColumns implements TableSink {
-  private empty = false
+// schema, writes nothing; a table of columns passes as it came. The table
+// it keeps back is held to what the library's `csv-table` holds it to,
+// with the same codes and texts, so the native and the interpreted `csv`
+// fail alike: a row of any cell, a second schema, and anything after the
+// end are PROTOCOL_ORDER_ERROR. Exported for the tests, not from the
+// package.
+export class NoColumns implements TableSink {
+  // Where the adapter is in its table: no schema yet, a table of columns
+  // passed to the renderer, a table of no columns kept back, or that
+  // table ended.
+  private kept: 'before' | 'passed' | 'rows' | 'ended' = 'before'
+  // The rows the kept-back table has had, each of no cells.
+  private rows = 0
 
   constructor(private readonly next: TableSink) {}
 
   tableEvent(ev: TableEvent): Flow {
-    if ('schema' === ev.type) this.empty = 0 === ev.columns.length
-    if (this.empty) return 'continue'
-    return this.next.tableEvent(ev)
+    switch (this.kept) {
+      case 'before':
+        if ('schema' === ev.type) {
+          if (0 === ev.columns.length) {
+            this.kept = 'rows'
+            return 'continue'
+          }
+          this.kept = 'passed'
+        }
+        return this.next.tableEvent(ev)
+      case 'passed':
+        return this.next.tableEvent(ev)
+      case 'rows':
+        if ('schema' === ev.type) throw Fail.protocol('a second schema')
+        if ('row' === ev.type) {
+          if (0 !== ev.cells.length) {
+            throw Fail.protocol(`row ${this.rows + 1} has ${ev.cells.length} cells; the schema has 0 columns`)
+          }
+          this.rows += 1
+          return 'continue'
+        }
+        this.kept = 'ended'
+        return 'continue'
+      case 'ended':
+        if ('schema' === ev.type) throw Fail.protocol('a schema after the end')
+        if ('row' === ev.type) throw Fail.protocol('a row after the end')
+        throw Fail.protocol('a second end')
+    }
   }
 }
 

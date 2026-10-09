@@ -188,21 +188,62 @@ impl Sink for NullNonFinite {
 /// The CSV renderer's adapter for `:no-columns :empty`: a table of no
 /// columns is the empty document, so its schema, its rows (each of no
 /// cells) and its end go no further, and the renderer, which refuses such
-/// a schema, writes nothing; a table of columns passes as it came.
+/// a schema, writes nothing; a table of columns passes as it came. The
+/// table it keeps back is held to what the library's `csv-table` holds it
+/// to, with the same codes and texts, so the native and the interpreted
+/// `csv` fail alike: a row of any cell, a second schema, and anything after
+/// the end are PROTOCOL_ORDER_ERROR.
 struct NoColumns {
-    empty: bool,
+    kept: Kept,
     next: Box<dyn TableSink + Send>,
+}
+
+/// Where [`NoColumns`] is in its table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// No schema has come.
+    Before,
+    /// A table of columns, which the renderer holds to the protocol.
+    Passed,
+    /// A table of no columns, kept back: the rows it has had, each of no
+    /// cells.
+    Rows(u64),
+    /// The kept-back table has ended.
+    Ended,
 }
 
 impl TableSink for NoColumns {
     fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
-        if let TableEvent::Schema(columns) = &ev {
-            self.empty = columns.is_empty();
+        match (self.kept, ev) {
+            (Kept::Before, TableEvent::Schema([])) => {
+                self.kept = Kept::Rows(0);
+                Ok(Flow::Continue)
+            }
+            (Kept::Before, ev @ TableEvent::Schema(_)) => {
+                self.kept = Kept::Passed;
+                self.next.table_event(ev)
+            }
+            (Kept::Before | Kept::Passed, ev) => self.next.table_event(ev),
+            (Kept::Rows(_), TableEvent::Schema(_)) => Err(Fail::protocol("a second schema")),
+            (Kept::Rows(rows), TableEvent::Row(cells)) if !cells.is_empty() => {
+                Err(Fail::protocol(format!(
+                    "row {} has {} cells; the schema has 0 columns",
+                    rows + 1,
+                    cells.len()
+                )))
+            }
+            (Kept::Rows(rows), TableEvent::Row(_)) => {
+                self.kept = Kept::Rows(rows + 1);
+                Ok(Flow::Continue)
+            }
+            (Kept::Rows(_), TableEvent::End) => {
+                self.kept = Kept::Ended;
+                Ok(Flow::Continue)
+            }
+            (Kept::Ended, TableEvent::Schema(_)) => Err(Fail::protocol("a schema after the end")),
+            (Kept::Ended, TableEvent::Row(_)) => Err(Fail::protocol("a row after the end")),
+            (Kept::Ended, TableEvent::End) => Err(Fail::protocol("a second end")),
         }
-        if self.empty {
-            return Ok(Flow::Continue);
-        }
-        self.next.table_event(ev)
     }
 }
 
@@ -1277,7 +1318,7 @@ impl<'a> Lowering<'a> {
                 let mut renderer = self.renderers.csv(out, options.clone())?;
                 if crate::stdlib::registry::no_columns_empty(options_val)? {
                     renderer = Box::new(NoColumns {
-                        empty: false,
+                        kept: Kept::Before,
                         next: renderer,
                     });
                 }
@@ -1785,5 +1826,111 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(csv_options(&bad), None);
         assert_eq!(csv_options(&Val::Null), None);
+    }
+
+    /// The table `:no-columns :empty` keeps back from the renderer is held
+    /// to what the library's `csv-table` holds it to, with its texts: a
+    /// clean empty table reaches the renderer not at all, and a table of
+    /// columns reaches it whole, a later schema too, for the renderer to
+    /// refuse.
+    #[test]
+    fn no_columns_holds_the_table_it_keeps_back() {
+        use std::sync::Mutex;
+
+        /// What reaches the renderer, an event to a line.
+        struct Log(Arc<Mutex<Vec<String>>>);
+        impl TableSink for Log {
+            fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
+                self.0.lock().unwrap().push(match ev {
+                    TableEvent::Schema(columns) => format!("schema {}", columns.len()),
+                    TableEvent::Row(cells) => format!("row {}", cells.len()),
+                    TableEvent::End => "end".to_string(),
+                });
+                Ok(Flow::Continue)
+            }
+        }
+        // The events through a fresh adapter: what reached the renderer,
+        // or the failure's text.
+        let run = |events: &[TableEvent<'_>]| -> Result<Vec<String>, String> {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let mut n = NoColumns {
+                kept: Kept::Before,
+                next: Box::new(Log(log.clone())),
+            };
+            for ev in events {
+                if let Err(f) = n.table_event(*ev) {
+                    assert_eq!(f.code, Code::ProtocolOrderError, "{f}");
+                    return Err(f.message);
+                }
+            }
+            let seen = log.lock().unwrap().clone();
+            Ok(seen)
+        };
+        let empty: &[PublicColumn] = &[];
+        let a = [PublicColumn { label: "a".into() }];
+        let one = [Cell::Number {
+            value: 1.0,
+            lexeme: None,
+        }];
+        // A clean empty table: nothing reaches the renderer.
+        assert_eq!(
+            run(&[
+                TableEvent::Schema(empty),
+                TableEvent::Row(&[]),
+                TableEvent::Row(&[]),
+                TableEvent::End
+            ]),
+            Ok(vec![])
+        );
+        // Each refusal, with the library's text.
+        let refused = |events: &[TableEvent<'_>]| run(events).unwrap_err();
+        assert_eq!(
+            refused(&[
+                TableEvent::Schema(empty),
+                TableEvent::Row(&[]),
+                TableEvent::Row(&one)
+            ]),
+            "row 2 has 1 cells; the schema has 0 columns"
+        );
+        assert_eq!(
+            refused(&[TableEvent::Schema(empty), TableEvent::Schema(&a)]),
+            "a second schema"
+        );
+        assert_eq!(
+            refused(&[
+                TableEvent::Schema(empty),
+                TableEvent::End,
+                TableEvent::Schema(empty)
+            ]),
+            "a schema after the end"
+        );
+        assert_eq!(
+            refused(&[
+                TableEvent::Schema(empty),
+                TableEvent::End,
+                TableEvent::Row(&[])
+            ]),
+            "a row after the end"
+        );
+        assert_eq!(
+            refused(&[TableEvent::Schema(empty), TableEvent::End, TableEvent::End]),
+            "a second end"
+        );
+        // A table of columns passes as it came, and so does a later empty
+        // schema, for the renderer to refuse.
+        assert_eq!(
+            run(&[
+                TableEvent::Schema(&a),
+                TableEvent::Row(&one),
+                TableEvent::End,
+                TableEvent::Schema(empty)
+            ]),
+            Ok(vec![
+                "schema 1".to_string(),
+                "row 1".to_string(),
+                "end".to_string(),
+                "schema 0".to_string()
+            ])
+        );
     }
 }

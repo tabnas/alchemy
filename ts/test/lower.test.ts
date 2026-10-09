@@ -20,7 +20,9 @@ import {
   run,
   value,
 } from '../dist/alchemy'
+import { NoColumns } from '../dist/lower'
 import { CsvOptions } from '../dist/shared'
+import type { TableEvent, TableSink } from '../dist/shared'
 
 import { OPTIONS, PROGRAM, compile, thrown } from './common'
 
@@ -130,5 +132,53 @@ describe('program', () => {
     assert.ok(f.message.startsWith('unknown_name: '), String(f))
     f = thrown(() => compile('def x 1', 't.alc'))
     assert.ok(f.message.startsWith('no_export: '), String(f))
+  })
+
+  // The table `:no-columns :empty` keeps back from the renderer is held to
+  // what the library's `csv-table` holds it to, with its texts: a clean
+  // empty table reaches the renderer not at all, and a table of columns
+  // reaches it whole, a later schema too, for the renderer to refuse.
+  it('no-columns holds the table it keeps back', () => {
+    // The events through a fresh adapter: what reached the renderer, an
+    // event to a line, or the failure's text.
+    const run = (events: TableEvent[]): string[] | string => {
+      const seen: string[] = []
+      const log: TableSink = {
+        tableEvent(ev: TableEvent) {
+          seen.push(
+            'schema' === ev.type ? `schema ${ev.columns.length}` : 'row' === ev.type ? `row ${ev.cells.length}` : 'end',
+          )
+          return 'continue'
+        },
+      }
+      const n = new NoColumns(log)
+      try {
+        for (const ev of events) n.tableEvent(ev)
+      } catch (e: any) {
+        assert.equal(e.code, 'PROTOCOL_ORDER_ERROR', String(e))
+        return e.message
+      }
+      return seen
+    }
+    const schema = (...labels: string[]): TableEvent => ({
+      type: 'schema',
+      columns: labels.map((label) => ({ label })),
+    })
+    const row = (...cells: number[]): TableEvent => ({
+      type: 'row',
+      cells: cells.map((value) => ({ type: 'number', value, lexeme: null })),
+    })
+    const end: TableEvent = { type: 'end' }
+    // A clean empty table: nothing reaches the renderer.
+    assert.deepStrictEqual(run([schema(), row(), row(), end]), [])
+    // Each refusal, with the library's text.
+    assert.equal(run([schema(), row(), row(1)]), 'row 2 has 1 cells; the schema has 0 columns')
+    assert.equal(run([schema(), schema('a')]), 'a second schema')
+    assert.equal(run([schema(), end, schema()]), 'a schema after the end')
+    assert.equal(run([schema(), end, row()]), 'a row after the end')
+    assert.equal(run([schema(), end, end]), 'a second end')
+    // A table of columns passes as it came, and so does a later empty
+    // schema, for the renderer to refuse.
+    assert.deepStrictEqual(run([schema('a'), row(1), end, schema()]), ['schema 1', 'row 1', 'end', 'schema 0'])
   })
 })
