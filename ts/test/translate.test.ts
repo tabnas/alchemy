@@ -104,6 +104,22 @@ describe('translate', () => {
     assert.deepStrictEqual(lossy.loss, ['One.', 'Two.'])
   })
 
+  // A format whose documents are read whole says why in `whole`, a
+  // sentence; one that says nothing has none, and a `whole` that is not a
+  // sentence is a manifest this module cannot take.
+  it('whole is the sentence a manifest gives', () => {
+    const whole = (value: string) =>
+      part('toml', `{"reads": "tree", "writes": "tree", "render": "alchemy/render.alc", "whole": ${value}}`, own('toml'))
+    assert.equal(
+      whole('"A table may be defined after the tables that follow it."')?.whole,
+      'A table may be defined after the tables that follow it.',
+    )
+    assert.equal(tree('json', 'any').whole, undefined)
+    assert.ok(!('whole' in tree('json', 'any')))
+    assert.equal(whole('""'), undefined)
+    assert.equal(whole('true'), undefined)
+  })
+
   it('the route wraps a root and embeds into a schema', () => {
     const o = T.Options.default()
     const toml = tree('toml', 'object')

@@ -5,10 +5,11 @@
 //! structural descriptor (`translate()` in each runtime): its manifest,
 //! `tabnas.plugin.json`, whose `translate` object names the shapes the
 //! format reads as and writes from, the root its render needs, the schema
-//! its events carry when they are not a plain tree, and the loss its
-//! render declares; and the alchemy text of its lift, its embed and its
-//! render. This module reads a descriptor into a [`Part`] and composes the
-//! program that translates a document of one format into another:
+//! its events carry when they are not a plain tree, the loss its render
+//! declares, and, where its documents are read whole, why; and the alchemy
+//! text of its lift, its embed and its render. This module reads a
+//! descriptor into a [`Part`] and composes the program that translates a
+//! document of one format into another:
 //!
 //! 1. the source's events, through its lift when the target writes from
 //!    records and the source reads as records first;
@@ -171,6 +172,9 @@ pub struct Part {
     pub render: Render,
     /// What a written document does not keep, a sentence each.
     pub loss: Vec<String>,
+    /// Why the format's documents are read whole, never streamed, where the
+    /// format says so: a sentence a host shows beside the loss.
+    pub whole: Option<String>,
 }
 
 impl Part {
@@ -200,6 +204,10 @@ impl Part {
             Some(v) => Root::parse(v.as_str()?)?,
         };
         let schema = match t.get("schema") {
+            None => None,
+            Some(v) => Some(v.as_str().filter(|s| !s.is_empty())?.to_string()),
+        };
+        let whole = match t.get("whole") {
             None => None,
             Some(v) => Some(v.as_str().filter(|s| !s.is_empty())?.to_string()),
         };
@@ -258,6 +266,7 @@ impl Part {
             embed,
             render,
             loss,
+            whole,
         })
     }
 
@@ -285,6 +294,7 @@ impl Part {
             embed: None,
             render: Render::Json,
             loss: Vec::new(),
+            whole: None,
         })
     }
 }
@@ -693,6 +703,30 @@ mod tests {
             render: own("xml"),
         });
         assert!(embedded.is_none(), "an embed names a schema");
+    }
+
+    /// A format whose documents are read whole says why in `whole`, a
+    /// sentence; one that says nothing has none, and a `whole` that is not
+    /// a sentence is a manifest this module cannot take.
+    #[test]
+    fn whole_is_the_sentence_a_manifest_gives() {
+        let whole = |value: &str| {
+            part(
+                "toml",
+                &format!(
+                    r#"{{"reads": "tree", "writes": "tree", "render": "alchemy/render.alc", "whole": {value}}}"#
+                ),
+                own("toml"),
+            )
+        };
+        let toml = whole(r#""A table may be defined after the tables that follow it.""#).unwrap();
+        assert_eq!(
+            toml.whole.as_deref(),
+            Some("A table may be defined after the tables that follow it.")
+        );
+        assert_eq!(tree("json", "any").whole, None);
+        assert!(whole(r#""""#).is_none());
+        assert!(whole("true").is_none());
     }
 
     #[test]

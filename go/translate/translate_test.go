@@ -130,6 +130,27 @@ func TestADescriptorReadsIntoAPart(t *testing.T) {
 	}
 }
 
+// A format whose documents are read whole says why in whole, a sentence;
+// one that says nothing has none, and a whole that is not a sentence is a
+// manifest this package cannot take.
+func TestWholeIsTheSentenceAManifestGives(t *testing.T) {
+	whole := func(value string) *Part {
+		return part("toml", `{"reads": "tree", "writes": "tree", "render": "alchemy/render.alc", "whole": `+value+`}`, own("toml"))
+	}
+	const sentence = "A table may be defined after the tables that follow it."
+	if p := whole(`"` + sentence + `"`); p == nil || p.Whole != sentence {
+		t.Errorf("%+v", p)
+	}
+	if p := tree(t, "json", "any"); p.Whole != "" {
+		t.Errorf("%+v", p)
+	}
+	for _, value := range []string{`""`, `true`} {
+		if p := whole(value); p != nil {
+			t.Errorf("%s: %+v", value, p)
+		}
+	}
+}
+
 func TestTheRouteWrapsARootAndEmbedsIntoASchema(t *testing.T) {
 	o := DefaultOptions()
 	toml := tree(t, "toml", "object")
