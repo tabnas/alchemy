@@ -54,6 +54,28 @@ const CSV_OPTIONS = V.record([
 const sel = (s: Selector): Val => ({ v: 'selector', selector: s })
 
 describe('explain', () => {
+  // A rewritten tree: the items a scan-emit hands back, said to be events,
+  // are JSON events for the host, and the report names the protocol.
+  it('a rewritten tree is JSON events for the host', () => {
+    const src =
+      'def step [s event]\n  match event\n    case (scalar "secret") (transition s [(scalar "***")])\n    case _ (transition s [event])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (events input))'
+    const p = compile(src, 'check')
+    assert.equal(p.output, 'JsonEvents/1')
+    assert.equal(p.planOutput(), 'JsonEvents/1')
+    const j: any = p.explainJson()
+    assert.deepStrictEqual(j.chain, ['events', 'scan-emit', 'as-events'])
+    assert.deepStrictEqual(j.protocol, ['JsonEvents/1', 'Stream<Event>', 'Stream<Value>', 'JsonEvents/1', 'Text'])
+    assert.deepStrictEqual(j.renderer, { name: 'json', indent: null, trailing_newline: true, host: true })
+    assert.equal(j.confidence, 'conditional')
+    const report = p.explain()
+    assert.ok(report.startsWith('export: events → scan-emit → as-events\n\n'), report)
+    assert.ok(report.includes('Protocol:              JsonEvents/1 → Stream<Event> → Stream<Value> → JsonEvents/1 → Text\n'), report)
+    // The stream `events` yields is a rewritten tree as it is.
+    const tree = compile('def export [input] (events input)', 'check')
+    assert.equal(tree.output, 'JsonEvents/1')
+    assert.deepStrictEqual(tree.explainJson().protocol, ['JsonEvents/1', 'Stream<Event>', 'Text'])
+  })
+
   it('the worked example reports in the spec layout', () => {
     const src =
       'def column-from-meta [source]\n  record\n    entry :label (get "title" source)\n    entry :source\n      as-path\n        get "path" source\n\ndef api-binding\n  record\n    entry :columns\n      path "response" "metadata" "fields"\n    entry :rows\n      path "response" "payload" "deep" "records" each-index\n    entry :column column-from-meta\n\ndef api-table [input]\n  table-from-json api-binding input\n\ndef export [input]\n  pipe input\n    api-table\n    csv csv-options'
@@ -122,7 +144,7 @@ describe('explain', () => {
 
   it('the JSON echo, the identity and a text of its own', () => {
     const echo = 'def export [input]\n  json input'
-    assert.equal(explain(program(echo, text({ p: 'json', source: INPUT }))), pinned(echo))
+    assert.equal(explain(program(echo, text({ p: 'json', source: INPUT, nonFinite: 'reject' }))), pinned(echo))
     const identity = 'def export [input] input'
     const id = program(identity, stream(INPUT))
     assert.equal(explain(id), pinned(identity))

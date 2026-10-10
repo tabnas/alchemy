@@ -28,8 +28,11 @@
 // with transduce and render are declared in its shared package
 // (github.com/tabnas/alchemy/go/shared), which those two build on, and the
 // host hands Compile their implementations of the shared Routers and
-// Renderers, so this package depends on neither. The `alchemy` command is
-// in the alchemy-cli repository (github.com/tabnas/alchemy-cli/go).
+// Renderers, so this package depends on neither. The translate package
+// (github.com/tabnas/alchemy/go/translate) composes a translation between
+// formats from the formats' parts on this API, as a host would. The
+// `alchemy` command is in the alchemy-cli repository
+// (github.com/tabnas/alchemy-cli/go).
 //
 // A program's sink takes any source's events. `alchemy run` reads its
 // document as the Rust command does, with the JSON grammar through
@@ -236,7 +239,7 @@ const grammarText = `
       "protocol_mismatch": "{what} must be {expected}, not {actual}\n{what} must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events\ncsv renders table events; the program's result is JSON events (render it as json, or make a table of it with table-from-json)\n{operator} yields a stream of items where JSON events were expected\ntable events were expected, not JSON events (table-from-json makes a table of them)\nJSON events cannot be read item by item; select or route what the stream should yield, or read its events",
       "no_export": "the program has no ` + "`" + `def export [input]` + "`" + `",
       "bad_output": "export answers a Stream<{item}>; render it as a text (join, concat-map), or make table events of it\nexport answers a {type}; it must answer a text, table events or JSON events",
-      "unknown_output": "the result of export cannot be typed; it must be a text, table events or JSON events",
+      "unknown_output": "the result of export cannot be typed; it must be a text, table events or JSON events\nexport answers a stream of items whose type is not known; as-events says they are events, or render them as a text (join, concat-map), or make table events of them",
       "reused": "{name} is a stream and is used {count} times; a stream is consumed once\nconcat was given two live texts; the input is consumed once",
       "captured": "{name} is a stream and is captured by a fn; a function may run more than once, and a stream is consumed once",
       "dynamic": "{what} must be a fn, a definition, a native or a partial of one, so the plan can be analyzed; strict mode refuses a function obtained at run time",

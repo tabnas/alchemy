@@ -76,12 +76,15 @@ import { SourceSpan } from './ast'
 import { csvDialect, isInferred } from './effects'
 import { isFail } from './fail'
 import type { Bounds, Runtime } from './interp'
-import { captureBudget, getField, numberText, truth } from './stdlib/natives'
+import type { Output } from './output'
+import { captureBudget, getField, noColumnsEmpty, nonFinite, numberText, truth } from './stdlib/natives'
 import { G, run } from './trampoline'
 import {
   Func,
   NULL,
+  NonFinite,
   Plan,
+  Protocol,
   Val,
   bool,
   debugText,
@@ -93,6 +96,7 @@ import {
   keyword,
   kindText,
   missing,
+  nonFiniteWord,
   num,
   planName,
   protocol,
@@ -149,7 +153,8 @@ export function isTableBinding(v: Val): boolean {
 // The renderer's dialect for a `csv-options` record, when every field has a
 // value the renderer accepts: `:delimiter` one character, `:newline` CRLF
 // or LF, `:header` a boolean, `:null-text` a string, `:missing` `:error` or
-// a string (the report's `csvDialect`, which reads the same record). Any
+// a string, and `:non-finite` and `:no-columns`, when the record has them,
+// a policy (the report's `csvDialect`, which reads the same record). Any
 // other record runs the library's own `csv`.
 export function csvOptions(v: Val): CsvOptions | undefined {
   const dialect = csvDialect(v)
@@ -161,6 +166,93 @@ export function csvOptions(v: Val): CsvOptions | undefined {
     header: dialect.header,
     nullText: dialect.nullText,
     missing: 'error' === dialect.missing.kind ? MissingText.error : MissingText.text(dialect.missing.text),
+  }
+}
+
+// The `json` renderer's adapter for `:non-finite :null`: a number that is
+// not finite goes on as null, everything else as it came.
+class NullNonFinite implements Sink {
+  constructor(private readonly next: Sink) {}
+
+  event(ev: JsonEvent): Flow {
+    if ('number' === ev.type && !Number.isFinite(ev.value)) return this.next.event(Ev.null)
+    return this.next.event(ev)
+  }
+}
+
+// The CSV renderer's adapter for `:no-columns :empty`: a table of no
+// columns is the empty document, so its schema, its rows (each of no
+// cells) and its end go no further, and the renderer, which refuses such a
+// schema, writes nothing; a table of columns passes as it came. The table
+// it keeps back is held to what the library's `csv-table` holds it to,
+// with the same codes and texts, so the native and the interpreted `csv`
+// fail alike: a row of any cell, a second schema, and anything after the
+// end are PROTOCOL_ORDER_ERROR. Exported for the tests, not from the
+// package.
+export class NoColumns implements TableSink {
+  // Where the adapter is in its table: no schema yet, a table of columns
+  // passed to the renderer, a table of no columns kept back, or that
+  // table ended.
+  private kept: 'before' | 'passed' | 'rows' | 'ended' = 'before'
+  // The rows the kept-back table has had, each of no cells.
+  private rows = 0
+
+  constructor(private readonly next: TableSink) {}
+
+  tableEvent(ev: TableEvent): Flow {
+    switch (this.kept) {
+      case 'before':
+        if ('schema' === ev.type) {
+          if (0 === ev.columns.length) {
+            this.kept = 'rows'
+            return 'continue'
+          }
+          this.kept = 'passed'
+        }
+        return this.next.tableEvent(ev)
+      case 'passed':
+        return this.next.tableEvent(ev)
+      case 'rows':
+        if ('schema' === ev.type) throw Fail.protocol('a second schema')
+        if ('row' === ev.type) {
+          if (0 !== ev.cells.length) {
+            throw Fail.protocol(`row ${this.rows + 1} has ${ev.cells.length} cells; the schema has 0 columns`)
+          }
+          this.rows += 1
+          return 'continue'
+        }
+        this.kept = 'ended'
+        return 'continue'
+      case 'ended':
+        if ('schema' === ev.type) throw Fail.protocol('a schema after the end')
+        if ('row' === ev.type) throw Fail.protocol('a row after the end')
+        throw Fail.protocol('a second end')
+    }
+  }
+}
+
+// Whether a cell is a number that is not finite.
+function isNonFiniteCell(c: Cell): c is Extract<Cell, { type: 'number' }> {
+  return 'number' === c.type && !Number.isFinite(c.value)
+}
+
+// The CSV renderer's adapter for `:non-finite` `:null` or `:literal`: a
+// number cell that is not finite goes on as a null cell, which the renderer
+// writes as the null text, or as the string `Infinity`, `-Infinity` or
+// `NaN`, as `scalar-text` writes it under the same options.
+class NonFiniteCells implements TableSink {
+  constructor(
+    private readonly policy: NonFinite,
+    private readonly next: TableSink,
+  ) {}
+
+  tableEvent(ev: TableEvent): Flow {
+    if ('row' !== ev.type || !ev.cells.some(isNonFiniteCell)) return this.next.tableEvent(ev)
+    const cells = ev.cells.map((c) => {
+      if (!isNonFiniteCell(c)) return c
+      return 'null' === this.policy ? Cell.null : Cell.string(nonFiniteWord(c.value))
+    })
+    return this.next.tableEvent({ type: 'row', cells })
   }
 }
 
@@ -758,6 +850,9 @@ class CsvTableStage implements ItemSink {
   constructor(
     private readonly rt: Runtime,
     private readonly metrics: Metrics,
+    // The options say `(entry :no-columns :empty)`: a table of no columns
+    // passes, for the text to write as the empty document.
+    private readonly noColumns: boolean,
     // Whether this stage counts the rows in `metrics.rows`: when no later
     // table stage does (`Lowering.items`).
     private readonly countRows: boolean,
@@ -770,7 +865,7 @@ class CsvTableStage implements ItemSink {
       const columns = schemaColumns(this.rt, v.fields)
       if ('rows' === this.phase) throw Fail.protocol('a second schema')
       if ('done' === this.phase) throw Fail.protocol('a schema after the end')
-      if (0 === columns.length) {
+      if (0 === columns.length && !this.noColumns) {
         throw new Fail('TARGET_VALUE_UNREPRESENTABLE', 'a table with no columns has no CSV form')
       }
       this.width = columns.length
@@ -952,12 +1047,24 @@ export class Lowering {
 
   // The sink for a program's result over `out`. `render` is the host's
   // choice for a stream result; a text result takes none
-  // (`render_of_text`).
+  // (`render_of_text`). A stream of items is taken for a table's rows, as
+  // the runtime cannot tell an item's shape before it arrives; `sinkAs`
+  // takes the checker's word instead.
   sink(result: Val, out: TextOut, render?: Renderer): Sink {
+    const output: Output =
+      'stream' === result.v ? ('JsonEvents' === protocol(result.plan) ? 'JsonEvents/1' : 'TableRows/1') : 'Text'
+    return this.sinkAs(result, out, render, output)
+  }
+
+  // `sink` with `output`, what the checker decided the result is: a stream
+  // of items the runtime cannot tell the protocol of is JSON events when
+  // the checker typed every item an event (a rewritten tree), and a
+  // table's rows otherwise.
+  sinkAs(result: Val, out: TextOut, render: Renderer | undefined, output: Output): Sink {
     switch (result.v) {
       // A string is a text where a text is expected (spec 10.4).
       case 'str':
-        return this.sink(textVal({ p: 'lit', text: result.value }), out, render)
+        return this.sinkAs(textVal({ p: 'lit', text: result.value }), out, render, output)
       case 'text':
         if (undefined !== render) {
           throw new Fail(
@@ -968,7 +1075,9 @@ export class Lowering {
         return this.text(result.plan, out)
       case 'stream': {
         const plan = result.plan
-        const proto = protocol(plan)
+        const built = protocol(plan)
+        // A rewritten tree: the checker saw every item an event.
+        const proto: Protocol = 'Items' === built && 'JsonEvents/1' === output ? 'JsonEvents' : built
         const chosen: Renderer = render ?? ('JsonEvents' === proto ? 'json' : 'csv')
         const renderers = this.rt.renderers
         if ('JsonEvents' === proto) {
@@ -993,10 +1102,17 @@ export class Lowering {
         if (undefined === options) {
           throw typeError("csv: the options record does not map to the renderer's dialect")
         }
-        return this.table(plan.source, this.rt.renderers.csv(out, options), false)
+        let renderer: TableSink = this.rt.renderers.csv(out, options)
+        if (noColumnsEmpty(plan.options)) renderer = new NoColumns(renderer)
+        const policy = nonFinite(plan.options)
+        if ('reject' === policy) return this.table(plan.source, renderer, false)
+        return this.table(plan.source, new NonFiniteCells(policy, renderer), false)
       }
-      case 'json':
-        return this.events(plan.source, this.rt.renderers.json(out, jsonOptions()))
+      case 'json': {
+        const json = this.rt.renderers.json(out, jsonOptions())
+        if ('null' === plan.nonFinite) return this.events(plan.source, new NullNonFinite(json))
+        return this.events(plan.source, json)
+      }
       case 'concat-map':
         if ('stream' !== plan.items.seq) break
         return this.items(plan.items.plan, new ConcatMapStage(this.rt, plan.f, plan.at, out, this.limits), false)
@@ -1027,6 +1143,10 @@ export class Lowering {
       // a later table makes rows of its own.
       case 'records':
         return this.table(plan.source, this.rt.renderers.recordsToJson(sink), false)
+      // `as-events` names what the arm below does for any items plan: the
+      // program's items, each an event, as JSON events.
+      case 'as-events':
+        return this.events(plan.source, sink)
       // A stream whose items may be events (`events` itself, or a
       // `scan-emit`, `map` or `filter` over anything): each item is turned
       // back into an event as the stream runs, the reverse of `events`, so
@@ -1072,6 +1192,7 @@ export class Lowering {
       }
       case 'input':
       case 'records':
+      case 'as-events':
         throw protocolMismatch(
           'table events were expected, not JSON events (table-from-json makes a table of them)',
         )
@@ -1138,11 +1259,14 @@ export class Lowering {
         return this.items(plan.source, new FilterStage(this.rt, plan.f, plan.at, down), countedLater)
       case 'table-from-json':
         return this.table(plan, new TableToTagged(down), true)
-      case 'csv-table':
+      case 'csv-table': {
         checkDelimiter(plan.options)
-        return this.items(plan.source, new CsvTableStage(this.rt, this.metrics, !countedLater, down), true)
+        const noColumns = noColumnsEmpty(plan.options)
+        return this.items(plan.source, new CsvTableStage(this.rt, this.metrics, noColumns, !countedLater, down), true)
+      }
       case 'input':
       case 'records':
+      case 'as-events':
         throw protocolMismatch(
           'JSON events cannot be read item by item; select or route what the stream should yield, or read its events',
         )

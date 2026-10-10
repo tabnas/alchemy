@@ -571,9 +571,15 @@ ERROR:dynamic@1:30
 `JsonEvents`, and its result decides the output: a `Text` (or a string)
 is written as it is; `TableEvents` are rendered by the host (CSV by
 default, or JSON records with `--render json`); `JsonEvents` are
-rendered as JSON. A program without one is `no_export`; a result of
-another type is `bad_output`; one that cannot be typed is
-`STREAMABILITY_UNKNOWN` (`unknown_output`).
+rendered as JSON, and so is a stream whose every item the checker typed
+an event (`(events input)` itself, or a `map` over it with a typed
+function): a rewritten tree, handed to the host as JSON events. A
+program without one is `no_export`; a result of another type is
+`bad_output`; one that cannot be typed is `STREAMABILITY_UNKNOWN`
+(`unknown_output`), and so is a stream of items whose type the checker
+could not tell, such as a `scan-emit` whose step hands the matched item
+back: `as-events` says the items are events, and the run holds each
+item to that where it arrives.
 
 ## The standard library
 
@@ -592,7 +598,12 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `top` | `top vector -> Value` | the last item; an empty vector is a type error |
 | `count` | `count vector -> Number` | how many items the vector holds |
 | `keys` | `keys record -> Vector` | the record's keys as strings, in its order, which for a captured object is the document's |
+| `indices` | `indices vector -> Vector<Number>` | the positions of the vector's items, 0 to one less than its count, as numbers: the labels the inferred table gives an array row's cells; a bounded operation over one vector |
 | `length` | `length string -> Number` | how many characters the string holds |
+| `unquoted` | `unquoted string -> String` | the string a double-quoted form spells, the reverse of `quoted`: JSON's escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`) read, a surrogate pair as the one character it names; `INPUT_INVALID` for any other text (no quotes, a quote or a control character unescaped inside, another escape, a surrogate on its own) |
+| `chars-within` | `chars-within ranges string -> Bool` | whether every character of the string lies within one of the ranges, each a vector `[low high]` of code points, both included; `true` for the empty string. A part tests a string with it against what its format can carry (XML's `Char` production, a name's characters) and chooses its convention where it cannot |
+| `number` | `number string -> Number` | the number the string spells: a JSON number, its text kept as the lexeme, or `Infinity`, `-Infinity` or `NaN`; `INPUT_INVALID` for any other text |
+| `is-number` | `is-number string -> Bool` | whether `number` reads the string: a JSON number, or `Infinity`, `-Infinity` or `NaN`; `false` for any other text, where `number` fails. A program cannot catch a failure, so a part tests a string with it before it calls `number` |
 | `compare` | `compare a b -> Keyword` | how two numbers are ordered: `:less`, `:equal` or `:greater`, and `:unordered` when either is NaN |
 | `number-class` | `number-class number -> Keyword` | `:finite`, `:infinity`, `:negative-infinity` or `:nan` |
 | `kind` | `kind value -> Keyword` | the kind of a value as a keyword: `:null`, `:boolean`, `:number`, `:string`, `:keyword`, `:vector`, `:record`, `:missing`, `:tagged`, `:function`, `:selector` or `:capture`; a stream or a text cannot be asked |
@@ -602,6 +613,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `capture` | `capture :tag selector [:limit] -> CaptureSpec` | materialize each selected scope under `max_capture_bytes`, or under the `Limits` field the keyword names (`:max_metadata_bytes`, `:max_record_bytes`), the host's value for it |
 | `route` | `route captures input -> Stream<Selected>` | one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap |
 | `select` | `select selector input -> Stream<Value>` | route with one capture, delivering the values |
+| `as-events` | `as-events items -> JsonEvents` | a stream of items the program built, each an event, as `JsonEvents`: what every taker of JSON events applies to such a stream, said by the program where the checker cannot type the items (an export, say); an item that is not an event fails where it arrives |
 | `events` | `events input -> Stream<Event>` | every event of `JsonEvents` as one item, as it arrives: the container events as constants, `key` and `scalar` with their one field; `End` ends the stream and is no item; nothing is retained between events |
 | `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its `concat-map` applies included): at most `max_metadata_bytes`, no deeper than `max_depth`, reported in `retained_bytes_high`; ready after each item; finish runs once at the validated end |
 | `transition` | `transition state outputs -> Transition` | one step's result: the next state and a vector of outputs |
@@ -612,11 +624,12 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `concat` | `concat item... -> Text` | in order, without assembling the result |
 | `text` | `text string -> Text` | a string as a text |
 | `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length |
-| `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
-| `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F as `\u00XX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past `max_scalar_bytes`, before it is built |
+| `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' `:non-finite` is `:null`, the null text, or `:literal`, the word `Infinity`, `-Infinity` or `NaN`), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
+| `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F, U+FFFE and U+FFFF as `\uXXXX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls and the two noncharacters its printable set excludes, which XML's characters exclude too); refused past `max_scalar_bytes`, before it is built |
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `string-join` | `string-join separator strings -> String` | the strings of a vector joined into one string, the separator between them; refused past `max_scalar_bytes`, before it is built |
-| `fail` | `fail message -> Never` | `INPUT_INVALID` with the message and the form's position |
+| `split` | `split separator string -> Vector` | the strings between the separator's occurrences in the string, found from the front, none overlapping another: one more than it occurs, an empty one where two occurrences meet or at either end, and the string itself where it does not occur (`split "." "a..b"` is `["a" "" "b"]`, `split "." ""` is `[""]`); the separator is a literal, not a pattern, and must not be empty. A part reads a dotted string's parts with it to check each one |
+| `fail` | `fail [code] message -> Never` | `INPUT_INVALID` with the message and the form's position; with a code first, `:unrepresentable` is `TARGET_VALUE_UNREPRESENTABLE` (a value the target cannot carry), `:protocol-order` is `PROTOCOL_ORDER_ERROR` (a stream that breaks its protocol) and `:invalid` is `INPUT_INVALID` |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema, of at most `max_columns` columns, refused where it is built past them; one row, as wide as the schema; the end, after the source validated |
 | `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |
@@ -627,7 +640,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `array-end` | `array-end -> Event` | an array ends |
 | `key` | `key name -> Event` | the name of the member whose value follows, inside an object |
 | `scalar` | `scalar value -> Event` | one scalar of the source: `null`, a boolean, a number with its lexeme, or a string |
-| `json` | `json events -> Text` | `JsonEvents`, or a `Stream<Event>` a program built, as compact JSON text, event by event, with a final newline |
+| `json` | `json [options] events -> Text` | `JsonEvents`, or a `Stream<Event>` a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (`TARGET_VALUE_UNREPRESENTABLE`), unless an options record first says `(entry :non-finite :null)`: then it is written as `null`. The record holds `:non-finite` and nothing else, `:reject` (the default) or `:null` |
 | `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
 | `csv-table` | `csv-table options events -> TableEvents` | the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most `max_columns`, labels strings, numbers or booleans; rows as wide as the schema; one `table-end`; a delimiter that holds the quote, a line break or NUL is refused before anything runs |
 
@@ -759,8 +772,9 @@ fail "Required metadata was not found"
 ### The library's own definitions
 
 The rest of the library is written in alchemy, embedded from
-[`stdlib/table.alc`](../stdlib/table.alc) and
-[`stdlib/csv.alc`](../stdlib/csv.alc), and checked against its declared
+[`stdlib/table.alc`](../stdlib/table.alc),
+[`stdlib/csv.alc`](../stdlib/csv.alc) and
+[`stdlib/root.alc`](../stdlib/root.alc), and checked against its declared
 signatures as it loads. The blocks below are those files' text, word for
 word (`rs/tests/spec_test.rs` holds the two together), and they are the
 reference: the runtime runs `table-from-json` and `csv` natively when
@@ -781,8 +795,11 @@ native renderer fails it rather than being printed. And the binding may
 take its columns from the first row rather than from metadata
 (`:columns :infer`), which the spec leaves to the host: `table-captures`
 routes only the rows then, `table-first-row` binds the columns from the
-first row's keys (`keys`), and `table-finish-for` writes the schema of
-no columns for a document with no rows, leaving `table-finish` as the
+first row (`table-inferred-columns`: an object's members by name, an
+array's cells by position, a scalar as the one column `value`; a later
+row of another kind projects through those sources and is missing where
+a path does not apply to it), and `table-finish-for` writes the schema
+of no columns for a document with no rows, leaving `table-finish` as the
 spec has it.
 
 The table transducer, metadata first or inferred from the first row,
@@ -820,26 +837,53 @@ def table-row [columns raw]
 ```
 
 ```alchemy
+def table-positional-column [i]
+  record
+    entry :label (scalar-text csv-options i)
+    entry :source (path i)
+```
+```core
+(def table-positional-column (fn [i] (record (entry :label (scalar-text csv-options i)) (entry :source (path i)))))
+```
+
+```alchemy
+def table-value-column
+  record
+    entry :label "value"
+    entry :source root
+```
+```core
+(def table-value-column (record (entry :label "value") (entry :source root)))
+```
+
+```alchemy
+def table-inferred-columns [raw]
+  match (kind raw)
+    case :record (map table-inferred-column (keys raw))
+    case :vector (map table-positional-column (indices raw))
+    case _ (vector table-value-column)
+```
+```core
+(def table-inferred-columns (fn [raw] (match (kind raw) (case :record (map table-inferred-column (keys raw))) (case :vector (map table-positional-column (indices raw))) (case _ (vector table-value-column)))))
+```
+
+```alchemy
 def table-first-row [binding state raw]
   match (get :columns binding)
     case :infer
-      match (kind raw)
-        case :record
-          let [columns (map table-inferred-column (keys raw))]
-            transition (ready columns)
-              vector
-                schema
-                  map public-column columns
-                table-row columns raw
-        case _
-          fail "The first row is not an object, so no columns can be inferred from it"
+      let [columns (table-inferred-columns raw)]
+        transition (ready columns)
+          vector
+            schema
+              map public-column columns
+            table-row columns raw
     case _
       transition state
         vector
           table-row (require-columns state) raw
 ```
 ```core
-(def table-first-row (fn [binding state raw] (match (get :columns binding) (case :infer (match (kind raw) (case :record (let [columns (map table-inferred-column (keys raw))] (transition (ready columns) (vector (schema (map public-column columns)) (table-row columns raw))))) (case _ (fail "The first row is not an object, so no columns can be inferred from it")))) (case _ (transition state (vector (table-row (require-columns state) raw)))))))
+(def table-first-row (fn [binding state raw] (match (get :columns binding) (case :infer (let [columns (table-inferred-columns raw)] (transition (ready columns) (vector (schema (map public-column columns)) (table-row columns raw))))) (case _ (transition state (vector (table-row (require-columns state) raw)))))))
 ```
 
 ```alchemy
@@ -983,29 +1027,44 @@ def csv [options events]
     fn [event]
       match event
         case (schema columns)
-          if (get :header options)
-            csv-row options
-              map
-                fn [column]
-                  get :label column
-                columns
-            ""
+          match (count columns)
+            case 0 ""
+            case _
+              if (get :header options)
+                csv-row options
+                  map
+                    fn [column]
+                      get :label column
+                    columns
+                ""
         case (row cells)
-          csv-row options cells
+          match (count cells)
+            case 0 ""
+            case _ (csv-row options cells)
         case table-end
           ""
     csv-table options events
 ```
 ```core
-(def csv (fn [options events] (concat-map (fn [event] (match event (case (schema columns) (if (get :header options) (csv-row options (map (fn [column] (get :label column)) columns)) "")) (case (row cells) (csv-row options cells)) (case table-end ""))) (csv-table options events))))
+(def csv (fn [options events] (concat-map (fn [event] (match event (case (schema columns) (match (count columns) (case 0 "") (case _ (if (get :header options) (csv-row options (map (fn [column] (get :label column)) columns)) "")))) (case (row cells) (match (count cells) (case 0 "") (case _ (csv-row options cells)))) (case table-end ""))) (csv-table options events))))
 ```
 
 The native path substitutes transduce's `TableFromJson` for
 `table-from-json` when the binding has the standard shape, and render's
 `CsvRenderer` for `csv` when every option maps onto the renderer's
 dialect (`:delimiter` one character, `:newline` CRLF or LF, `:header` a
-boolean, `:null-text` a string, `:missing` `:error` or a string); any
-other options run the text above. The two paths agree on more than the
+boolean, `:null-text` a string, `:missing` `:error` or a string, and
+`:non-finite`, when the record has it, `:reject`, `:null` or
+`:literal`, and `:no-columns`, when it has it, `:refuse` or `:empty`);
+any other options run the text above. `:non-finite` is what a number
+cell that is not finite becomes, as `scalar-text` writes it: refused
+(`:reject`, the default, `TARGET_VALUE_UNREPRESENTABLE`), the null text
+(`:null`), or the word `Infinity`, `-Infinity` or `NaN` (`:literal`).
+`:no-columns` is what a table of no columns becomes (the table of a
+document with no rows, or whose first row has no members): refused
+(`:refuse`, the default, `TARGET_VALUE_UNREPRESENTABLE`), or written as
+the empty document (`:empty`), with no header and no record, since a
+record of no fields is no line a reader could tell from none. The two paths agree on more than the
 standard shapes, and alchemy-cli's `rs/tests/stdlib_test.rs` pins each
 agreement:
 
@@ -1037,6 +1096,115 @@ and is pinned: metadata selected twice (a `:columns` selector naming
 several locations) is `INPUT_ORDER_VIOLATION` natively, since a table has
 one schema, and `INPUT_INVALID` interpreted, the text's own `fail`.
 
+
+The root adapters, `JsonEvents` in and `JsonEvents` out: a render that
+writes from a tree may need the root to be an object (TOML, INI) or an
+array (JSON Lines, and a records target, whose rows are its elements).
+`wrap-object name input` passes an object root through and wraps an
+array or a scalar as the one member `name` of an object; `wrap-array
+input` passes an array root through and wraps an object or a scalar as
+the one element of an array. Each decides at the first event, retains
+one marker and, while it wraps a container, one marker per open
+container, and is a rewritten tree (`as-events`), so any taker of JSON
+events takes it. A stream that begins with an end or a key, ends inside
+a container, or holds more after a wrapped root is refused as no tree's
+(`PROTOCOL_ORDER_ERROR`).
+
+```alchemy
+def wrap-object-close [stack event]
+  let [rest (pop stack)]
+    match (count rest)
+      case 0 (transition [:done] [event object-end])
+      case _ (transition [:wrap rest] [event])
+```
+```core
+(def wrap-object-close (fn [stack event] (let [rest (pop stack)] (match (count rest) (case 0 (transition [:done] [event object-end])) (case _ (transition [:wrap rest] [event]))))))
+```
+
+```alchemy
+def wrap-object-step [name state event]
+  match state
+    case [:start]
+      match event
+        case object-start (transition [:pass] [event])
+        case array-start (transition [:wrap [:open]] [object-start (key name) event])
+        case (scalar value) (transition [:done] [object-start (key name) event object-end])
+        case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")
+    case [:pass] (transition state [event])
+    case [:wrap stack]
+      match event
+        case array-start (transition [:wrap (push :open stack)] [event])
+        case object-start (transition [:wrap (push :open stack)] [event])
+        case array-end (wrap-object-close stack event)
+        case object-end (wrap-object-close stack event)
+        case _ (transition state [event])
+    case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")
+```
+```core
+(def wrap-object-step (fn [name state event] (match state (case [:start] (match event (case object-start (transition [:pass] [event])) (case array-start (transition [:wrap [:open]] [object-start (key name) event])) (case (scalar value) (transition [:done] [object-start (key name) event object-end])) (case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")))) (case [:pass] (transition state [event])) (case [:wrap stack] (match event (case array-start (transition [:wrap (push :open stack)] [event])) (case object-start (transition [:wrap (push :open stack)] [event])) (case array-end (wrap-object-close stack event)) (case object-end (wrap-object-close stack event)) (case _ (transition state [event])))) (case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")))))
+```
+
+```alchemy
+def wrap-finish [state]
+  match state
+    case [:start] (fail :protocol-order "the events hold no value, where a tree's hold one")
+    case [:pass] []
+    case [:done] []
+    case _ (fail :protocol-order "the events ended inside a container, which a tree's never do")
+```
+```core
+(def wrap-finish (fn [state] (match state (case [:start] (fail :protocol-order "the events hold no value, where a tree's hold one")) (case [:pass] []) (case [:done] []) (case _ (fail :protocol-order "the events ended inside a container, which a tree's never do")))))
+```
+
+```alchemy
+def wrap-object [name input]
+  as-events (scan-emit [:start] (partial wrap-object-step name) wrap-finish (events input))
+```
+```core
+(def wrap-object (fn [name input] (as-events (scan-emit [:start] (partial wrap-object-step name) wrap-finish (events input)))))
+```
+
+```alchemy
+def wrap-array-close [stack event]
+  let [rest (pop stack)]
+    match (count rest)
+      case 0 (transition [:done] [event array-end])
+      case _ (transition [:wrap rest] [event])
+```
+```core
+(def wrap-array-close (fn [stack event] (let [rest (pop stack)] (match (count rest) (case 0 (transition [:done] [event array-end])) (case _ (transition [:wrap rest] [event]))))))
+```
+
+```alchemy
+def wrap-array-step [state event]
+  match state
+    case [:start]
+      match event
+        case array-start (transition [:pass] [event])
+        case object-start (transition [:wrap [:open]] [array-start event])
+        case (scalar value) (transition [:done] [array-start event array-end])
+        case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")
+    case [:pass] (transition state [event])
+    case [:wrap stack]
+      match event
+        case array-start (transition [:wrap (push :open stack)] [event])
+        case object-start (transition [:wrap (push :open stack)] [event])
+        case array-end (wrap-array-close stack event)
+        case object-end (wrap-array-close stack event)
+        case _ (transition state [event])
+    case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")
+```
+```core
+(def wrap-array-step (fn [state event] (match state (case [:start] (match event (case array-start (transition [:pass] [event])) (case object-start (transition [:wrap [:open]] [array-start event])) (case (scalar value) (transition [:done] [array-start event array-end])) (case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")))) (case [:pass] (transition state [event])) (case [:wrap stack] (match event (case array-start (transition [:wrap (push :open stack)] [event])) (case object-start (transition [:wrap (push :open stack)] [event])) (case array-end (wrap-array-close stack event)) (case object-end (wrap-array-close stack event)) (case _ (transition state [event])))) (case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")))))
+```
+
+```alchemy
+def wrap-array [input]
+  as-events (scan-emit [:start] wrap-array-step wrap-finish (events input))
+```
+```core
+(def wrap-array (fn [input] (as-events (scan-emit [:start] wrap-array-step wrap-finish (events input)))))
+```
 ## Programs
 
 The spec's worked example (sections 5, 12.1 and 13.4): an application

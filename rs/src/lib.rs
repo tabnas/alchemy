@@ -82,6 +82,8 @@ pub mod resolve;
 #[cfg(feature = "language")]
 pub mod stdlib;
 #[cfg(feature = "language")]
+pub mod translate;
+#[cfg(feature = "language")]
 pub mod types;
 #[cfg(feature = "language")]
 pub mod value;

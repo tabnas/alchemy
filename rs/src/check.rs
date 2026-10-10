@@ -69,6 +69,22 @@ pub fn stdlib_signature(name: &str) -> Option<Type> {
     Some(match name {
         "public-column" => Type::func(vec![Record], Record),
         "table-inferred-column" => Type::func(vec![Type::String], Record),
+        "table-positional-column" => Type::func(vec![Number], Record),
+        "table-value-column" => Record,
+        "table-inferred-columns" => Type::func(vec![Value], Type::vector(Record)),
+        // The root adapters (stdlib/root.alc): a state and an event in, a
+        // transition out; the entries answer JSON events, since each is a
+        // stream of events said to be so (`as-events`).
+        "wrap-object-close" => Type::func(vec![Unknown, Unknown], Type::tagged("transition")),
+        "wrap-object-step" => Type::func(
+            vec![Type::String, Unknown, Unknown],
+            Type::tagged("transition"),
+        ),
+        "wrap-finish" => Type::func(vec![Unknown], Type::vector(Event)),
+        "wrap-object" => Type::func(vec![Type::String, JsonEvents], JsonEvents),
+        "wrap-array-close" => Type::func(vec![Unknown, Unknown], Type::tagged("transition")),
+        "wrap-array-step" => Type::func(vec![Unknown, Unknown], Type::tagged("transition")),
+        "wrap-array" => Type::func(vec![JsonEvents], JsonEvents),
         "table-row" => Type::func(vec![Unknown, Value], Type::tagged("row")),
         "table-first-row" => Type::func(vec![Record, Unknown, Value], Type::tagged("transition")),
         "table-step" => Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition")),
@@ -1068,6 +1084,28 @@ impl Checker<'_> {
                 self.expect("the string of length", &String, t(0), at(0))?;
                 Number
             }
+            "number" => {
+                self.expect("the string of number", &String, t(0), at(0))?;
+                Number
+            }
+            "is-number" => {
+                self.expect("the string of is-number", &String, t(0), at(0))?;
+                Bool
+            }
+            "unquoted" => {
+                self.expect("the string of unquoted", &String, t(0), at(0))?;
+                String
+            }
+            "chars-within" => {
+                self.expect(
+                    "the ranges of chars-within",
+                    &Type::vector(Unknown),
+                    t(0),
+                    at(0),
+                )?;
+                self.expect("the string of chars-within", &String, t(1), at(1))?;
+                Bool
+            }
             "compare" => {
                 self.expect("the first number of compare", &Number, t(0), at(0))?;
                 self.expect("the second number of compare", &Number, t(1), at(1))?;
@@ -1134,6 +1172,19 @@ impl Checker<'_> {
                 self.expect("the input of events", &JsonEvents, t(0), at(0))?;
                 Type::events()
             }
+            "as-events" => {
+                self.expect(
+                    "the items of as-events",
+                    &Type::stream(Unknown),
+                    t(0),
+                    at(0),
+                )?;
+                JsonEvents
+            }
+            "indices" => {
+                self.expect("the vector of indices", &Type::vector(Unknown), t(0), at(0))?;
+                Type::vector(Number)
+            }
             "transition" => {
                 no_stream(self, 0, "a state")?;
                 self.expect(
@@ -1163,7 +1214,15 @@ impl Checker<'_> {
                     }
                     Type::func(params[args.len() - 1..].to_vec(), (**result).clone())
                 }
-                Unknown | Never => Unknown,
+                // A function of more than one arity (`json`, `fail`) or
+                // of a type only the run knows: its arguments are still
+                // held, so none may be a stream.
+                Unknown | Never => {
+                    for i in 1..args.len() {
+                        no_stream(self, i, "a partial application")?;
+                    }
+                    Unknown
+                }
                 other => {
                     return Err(self.mismatch(
                         "the function of partial",
@@ -1221,8 +1280,34 @@ impl Checker<'_> {
                 )?;
                 String
             }
+            "split" => {
+                self.expect("the separator of split", &String, t(0), at(0))?;
+                self.expect("the string of split", &String, t(1), at(1))?;
+                Type::vector(String)
+            }
             "fail" => {
-                self.expect("the message of fail", &String, t(0), at(0))?;
+                // `(fail message)` is INPUT_INVALID; `(fail :code message)`
+                // names the code: a literal keyword is held to the three
+                // here, any other keyword at run time.
+                let message = args.len() - 1;
+                if args.len() == 2 {
+                    self.expect("the code of fail", &Keyword, t(0), at(0))?;
+                    if let Expr::Keyword { name, span } = &args[0] {
+                        if !matches!(
+                            name.as_str(),
+                            "invalid" | "unrepresentable" | "protocol-order"
+                        ) {
+                            return Err(self.type_error(
+                                "type_mismatch",
+                                format!(
+                                    "the code of fail must be :invalid, :unrepresentable or :protocol-order, not :{name}"
+                                ),
+                                span,
+                            ));
+                        }
+                    }
+                }
+                self.expect("the message of fail", &String, t(message), at(message))?;
                 Never
             }
             "is-ready" => Bool,
@@ -1263,7 +1348,11 @@ impl Checker<'_> {
                 Type::tagged("scalar")
             }
             "json" => {
-                self.expect("the events of json", &JsonEvents, t(0), at(0))?;
+                let events = args.len() - 1;
+                if args.len() == 2 {
+                    self.expect("the options of json", &Record, t(0), at(0))?;
+                }
+                self.expect("the events of json", &JsonEvents, t(events), at(events))?;
                 Text
             }
             "csv-table" => {
@@ -1313,7 +1402,18 @@ fn output_of(export: &Type) -> Result<Output, (Code, &'static str, String)> {
     match export {
         Type::Text | Type::String => Ok(Output::Text),
         Type::JsonEvents => Ok(Output::JsonEvents),
+        // Items the checker could not type could be anything, and
+        // `Unknown` is accepted everywhere: asked first, so that such a
+        // stream is never taken for a table's rows.
+        Type::Stream(item) if **item == Type::Unknown => Err((
+            Code::StreamabilityUnknown,
+            "unknown_output",
+            "export answers a stream of items whose type is not known; as-events says they are events, or render them as a text (join, concat-map), or make table events of them"
+                .to_string(),
+        )),
         Type::Stream(item) if Type::TableEvent.accepts(item) => Ok(Output::TableRows),
+        // A rewritten tree: every item an event, handed on as JSON events.
+        Type::Stream(item) if Type::Event.accepts(item) => Ok(Output::JsonEvents),
         Type::Stream(item) => Err((
             Code::DslTypeError,
             "bad_output",
@@ -1520,10 +1620,43 @@ mod tests {
         let records =
             format!("{BINDING}def export [input] (records (table-from-json api-binding input))");
         assert_eq!(check(&records).unwrap().output, Output::JsonEvents);
-        // A user's own scan-emit is a stream of unknown items: rendered as
-        // a table, checked at run time.
+        // A user's own scan-emit is a stream of unknown items: not an
+        // output, since Unknown is accepted everywhere and the items could
+        // as well be events; `as-events` says which, and the run checks it.
         let scan = "def step [s x] (transition s [(row [x])])\ndef fin [s] [table-end]\ndef export [input] (scan-emit null step fin (select (path each-index) input))";
-        assert_eq!(check(scan).unwrap().output, Output::TableRows);
+        let (c, finer, _, _) = code(scan);
+        assert_eq!(
+            (c, finer.as_str()),
+            (Code::StreamabilityUnknown, "unknown_output")
+        );
+        let said = "def step [s x] (transition s [x])\ndef fin [s] []\ndef export [input] (as-events (scan-emit null step fin (events input)))";
+        assert_eq!(check(said).unwrap().output, Output::JsonEvents);
+        // A stream the checker typed as events is a rewritten tree.
+        assert_eq!(
+            check("def export [input] (events input)").unwrap().output,
+            Output::JsonEvents
+        );
+        assert_eq!(
+            code("def export [input] (as-events input)").1,
+            "protocol_mismatch",
+            "as-events takes a stream of items, not the input's events"
+        );
+        // fail's code: a literal keyword is held to the three at the
+        // checker; the message is the last argument either way.
+        let (c, finer, row, col) = code("def export [input] (join \"\" (map (fn [x] (fail :nope \"x\")) (select (path each-index) input)))");
+        assert_eq!((c, finer.as_str()), (Code::DslTypeError, "type_mismatch"));
+        assert_eq!((row, col), (Some(1), Some(48)));
+        assert_eq!(
+            check("def export [input] (join \"\" (map (fn [x] (fail :unrepresentable \"x\")) (select (path each-index) input)))")
+                .unwrap()
+                .output,
+            Output::Text
+        );
+        assert_eq!(
+            code("def export [input] (join \"\" (map (fn [x] (fail \"x\" \"y\")) (select (path each-index) input)))").1,
+            "type_mismatch",
+            "the code is a keyword"
+        );
         assert_eq!(
             code("def export [input] (select (path each-index) input)").1,
             "bad_output"
@@ -1542,7 +1675,7 @@ mod tests {
 
     #[test]
     fn arity_type_and_protocol_mismatches() {
-        assert_eq!(code("def export [input] (json input 1)").1, "arity");
+        assert_eq!(code("def export [input] (json input 1 2)").1, "arity");
         assert_eq!(code("def export [input] (csv csv-options)").1, "arity");
         assert_eq!(
             code("def f [a b] a\ndef export [input] (json (f input))").1,
@@ -1868,7 +2001,11 @@ mod tests {
                 (Arc::from("p"), Type::vector(Type::Keyword)),
             ])
         );
-        assert_eq!(code("def export [input] (events input)").1, "bad_output");
+        assert_eq!(
+            check("def export [input] (events input)").unwrap().output,
+            Output::JsonEvents,
+            "a stream of events is a rewritten tree"
+        );
         // A stream of events reaches a taker of JSON events; a stream of
         // values does not, nor do events reach a taker of table events.
         assert_eq!(

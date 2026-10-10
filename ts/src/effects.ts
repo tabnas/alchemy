@@ -24,6 +24,7 @@ import type { Duplicates } from './shared'
 import { Expr, symbolOf } from './ast'
 import { Output } from './output'
 import { Resolved } from './resolve'
+import { noColumnsEmpty, nonFinite } from './stdlib/natives'
 import { Func, Plan, Val, field, isLive } from './value'
 
 // What the report reads of a compiled program.
@@ -91,8 +92,11 @@ export function defaultCsvDialect(): CsvDialect {
 // The renderer's dialect for a `csv-options` record, when every field has
 // a value the renderer accepts: `:delimiter` one character, `:newline`
 // CRLF or LF, `:header` a boolean, `:null-text` a string, `:missing`
-// `:error` or a string (rs/src/lower.rs `csv_options`). Any other record
-// runs the library's own `csv`.
+// `:error` or a string, `:non-finite`, when the record has it, `:reject`,
+// `:null` or `:literal`, and `:no-columns`, when it has it, `:refuse` or
+// `:empty` (rs/src/lower.rs `csv_options`). Any other record runs the
+// library's own `csv`, which refuses a policy that is none where it is
+// read.
 export function csvDialect(options: Val): CsvDialect | undefined {
   if ('record' !== options.v) return undefined
   const f = options.fields
@@ -111,6 +115,12 @@ export function csvDialect(options: Val): CsvDialect | undefined {
   if (undefined !== miss && 'keyword' === miss.v && 'error' === miss.name) missing = { kind: 'error' }
   else if (undefined !== miss && 'str' === miss.v) missing = { kind: 'text', text: miss.value }
   else return undefined
+  try {
+    nonFinite(options)
+    noColumnsEmpty(options)
+  } catch {
+    return undefined
+  }
   return { delimiter: delimiter.value, newline: newline.value as '\r\n' | '\n', header: header.value, nullText: nullText.value, missing }
 }
 
@@ -172,6 +182,7 @@ function stages(plan: Plan): Plan[] {
       case 'route':
       case 'select':
       case 'events':
+      case 'as-events':
       case 'scan-emit':
       case 'map':
       case 'filter':
@@ -206,6 +217,7 @@ function protocolOf(stage: Plan): string {
   switch (stage.p) {
     case 'input':
     case 'records':
+    case 'as-events':
       return 'JsonEvents/1'
     case 'table-from-json':
     case 'csv-table':

@@ -9,9 +9,12 @@
 //!
 //! `table.alc` is the metadata-first table transducer (design document
 //! section 12.2: `public-column`, `table-step`, `table-finish`,
-//! `table-from-json`) and `csv.alc` the always-quoted CSV renderer
-//! (sections 13.1 and 13.2: `csv-options`, `csv-field`, `csv-row`, `csv`).
-//! Both are parsed, desugared and resolved once, on first use, and their
+//! `table-from-json`), `csv.alc` the always-quoted CSV renderer
+//! (sections 13.1 and 13.2: `csv-options`, `csv-field`, `csv-row`, `csv`)
+//! and `root.alc` the root adapters a translation runs before a render
+//! that needs an object or an array at the root (`wrap-object`,
+//! `wrap-array`). Each is parsed, desugared and resolved once, on first
+//! use, and their
 //! names are usable from any program; a program's own `def` of the same
 //! name shadows the library's for that program, never for the library
 //! itself, whose definitions resolve in their own scope.
@@ -39,6 +42,7 @@ use registry::Kind;
 pub const SOURCES: &[(&str, &str)] = &[
     ("stdlib/table.alc", include_str!("../../stdlib/table.alc")),
     ("stdlib/csv.alc", include_str!("../../stdlib/csv.alc")),
+    ("stdlib/root.alc", include_str!("../../stdlib/root.alc")),
 ];
 
 /// The library, loaded: each file's resolved definitions, and all of them
@@ -203,6 +207,9 @@ mod tests {
                 "public-column",
                 "table-inferred-column",
                 "table-row",
+                "table-positional-column",
+                "table-value-column",
+                "table-inferred-columns",
                 "table-first-row",
                 "table-step",
                 "table-finish",
@@ -213,9 +220,16 @@ mod tests {
                 "csv-field",
                 "csv-row",
                 "csv",
+                "wrap-object-close",
+                "wrap-object-step",
+                "wrap-finish",
+                "wrap-object",
+                "wrap-array-close",
+                "wrap-array-step",
+                "wrap-array",
             ]
         );
-        assert_eq!(lib.files.len(), 2);
+        assert_eq!(lib.files.len(), 3);
         assert_eq!(
             lib.get("table-from-json").unwrap().params(),
             Some(vec!["binding", "input"])

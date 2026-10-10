@@ -376,6 +376,12 @@ const (
 	// PlanEvents is `events input`: every event of JsonEvents/1 as one
 	// tagged item; End is the stream's end, not an item.
 	PlanEvents
+	// PlanAsEvents is `as-events items`: a stream of items the program
+	// built, each an event, as JsonEvents/1: the reverse of `events`,
+	// which any taker of JSON events already applies to such a stream;
+	// here the program says so, where the checker could not tell the
+	// items' type.
+	PlanAsEvents
 	// PlanScanEmit is `scan-emit init step finish stream`.
 	PlanScanEmit
 	PlanMap
@@ -402,20 +408,66 @@ const (
 	PlanReplace
 	// PlanCsv is the standard CSV renderer, run natively.
 	PlanCsv
-	// PlanJSON is `json events`.
+	// PlanJSON is `json events`, or `json options events`.
 	PlanJSON
 )
+
+// NonFinite is what a renderer does with a number that is not finite
+// (infinity, negative infinity or NaN), which JSON has no spelling for and
+// CSV no type: the :non-finite option of `json` and of a CSV options
+// record.
+type NonFinite uint8
+
+// The policies.
+const (
+	// NonFiniteReject is :reject, the default:
+	// TARGET_VALUE_UNREPRESENTABLE.
+	NonFiniteReject NonFinite = iota
+	// NonFiniteNull is :null: written as null, `null` in JSON and the null
+	// text in CSV.
+	NonFiniteNull
+	// NonFiniteLiteral is :literal (CSV only): the cell's text is the word
+	// Infinity, -Infinity or NaN.
+	NonFiniteLiteral
+)
+
+// NonFiniteNamed is the policy a keyword names.
+func NonFiniteNamed(name string) (NonFinite, bool) {
+	switch name {
+	case "reject":
+		return NonFiniteReject, true
+	case "null":
+		return NonFiniteNull, true
+	case "literal":
+		return NonFiniteLiteral, true
+	}
+	return NonFiniteReject, false
+}
+
+// NonFiniteWord is the word :literal writes for a number that is not
+// finite.
+func NonFiniteWord(value float64) string {
+	switch {
+	case math.IsNaN(value):
+		return "NaN"
+	case value > 0:
+		return "Infinity"
+	}
+	return "-Infinity"
+}
 
 // Plan is a stream or a text, as a description of how to produce it. Kind
 // says which fields apply:
 //
-//   - Source: the plan a stage reads (route, select, events, scan-emit,
-//     map, filter, table-from-json, records, csv-table, csv, json);
+//   - Source: the plan a stage reads (route, select, events, as-events,
+//     scan-emit, map, filter, table-from-json, records, csv-table, csv,
+//     json);
 //   - Specs: a route's captures; Selector: a select's;
 //   - Init, Step and Finish: a scan-emit's; F: a map's, a filter's or a
 //     concat-map's function; At: the form a scan-emit, map, filter,
 //     concat-map or native table was built at, for diagnostics;
 //   - Binding: the native table's; Options: a csv-table's or a csv's;
+//   - NonFinite: a json's policy for a number that is not finite;
 //   - Lit: a literal's text;
 //   - Items and Live: a concat's items and the position of the one item
 //     that reaches the input (-1 for none), found once when the plan is
@@ -427,25 +479,26 @@ const (
 //   - From, To and Text: a replace-text's literal, its replacement and
 //     the string or text it reads.
 type Plan struct {
-	Kind     PlanKind
-	Source   *Plan
-	Specs    []shared.CaptureSpec
-	Selector shared.Selector
-	Init     Val
-	Step     Fn
-	Finish   Fn
-	F        Fn
-	At       SourceSpan
-	Binding  Val
-	Options  Val
-	Lit      string
-	Items    []Val
-	Live     int
-	Sep      string
-	Seq      Seq
-	From     string
-	To       string
-	Text     Val
+	Kind      PlanKind
+	Source    *Plan
+	Specs     []shared.CaptureSpec
+	Selector  shared.Selector
+	Init      Val
+	Step      Fn
+	Finish    Fn
+	F         Fn
+	At        SourceSpan
+	Binding   Val
+	Options   Val
+	NonFinite NonFinite
+	Lit       string
+	Items     []Val
+	Live      int
+	Sep       string
+	Seq       Seq
+	From      string
+	To        string
+	Text      Val
 }
 
 // inputPlan is the host's input.
@@ -511,7 +564,7 @@ const (
 // JsonEvents, TableRows (natively), or Items.
 func (p *Plan) Protocol() Protocol {
 	switch p.Kind {
-	case PlanInput, PlanRecords:
+	case PlanInput, PlanRecords, PlanAsEvents:
 		return ProtocolJSONEvents
 	case PlanTableFromJSON:
 		return ProtocolTableRows
@@ -532,6 +585,8 @@ func PlanName(p *Plan) string {
 		return "select"
 	case PlanEvents:
 		return "events"
+	case PlanAsEvents:
+		return "as-events"
 	case PlanScanEmit:
 		return "scan-emit"
 	case PlanMap:

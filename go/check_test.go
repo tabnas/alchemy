@@ -385,9 +385,12 @@ func TestOutputs(t *testing.T) {
 		{"def export [input] \"x\"", OutputText},
 		{binding + "def export [input] (table-from-json api-binding input)", OutputTableRows},
 		{binding + "def export [input] (records (table-from-json api-binding input))", OutputJsonEvents},
-		// A user's own scan-emit is a stream of unknown items: rendered as
-		// a table, checked at run time.
-		{"def step [s x] (transition s [(row [x])])\ndef fin [s] [table-end]\ndef export [input] (scan-emit null step fin (select (path each-index) input))", OutputTableRows},
+		// A stream the checker typed as events is a rewritten tree, and so
+		// are a scan-emit's items said to be events.
+		{"def export [input] (events input)", OutputJsonEvents},
+		{"def export [input] (map (fn [e] e) (events input))", OutputJsonEvents},
+		{"def step [s x] (transition s [x])\ndef fin [s] []\ndef export [input] (as-events (scan-emit null step fin (events input)))", OutputJsonEvents},
+		{"def export [input] (join \"\" (map (fn [x] (fail :unrepresentable \"x\")) (select (path each-index) input)))", OutputText},
 	} {
 		if got := mustCheck(t, c.src).Output; got != c.want {
 			t.Errorf("%q: %s", c.src, got)
@@ -400,6 +403,10 @@ func TestOutputs(t *testing.T) {
 		{"def x 1", "no_export"},
 		{"def export 1", "type_mismatch"},
 		{"def export [a b] a", "arity"},
+		// as-events takes a stream of items, not the input's events.
+		{"def export [input] (as-events input)", "protocol_mismatch"},
+		// The code of fail is a keyword.
+		{"def export [input] (join \"\" (map (fn [x] (fail \"x\" \"y\")) (select (path each-index) input)))", "type_mismatch"},
 	} {
 		if got := checkCode(t, c[0]).finer; got != c[1] {
 			t.Errorf("%q: %s, want %s", c[0], got, c[1])
@@ -408,11 +415,27 @@ func TestOutputs(t *testing.T) {
 	if c := checkCode(t, "def export [input] (get :x csv-options)"); c.code != CodeStreamabilityUnknown || c.finer != "unknown_output" {
 		t.Errorf("%+v", c)
 	}
+	// A user's own scan-emit is a stream of unknown items: not an output,
+	// since Unknown is accepted everywhere and the items could as well be
+	// events; as-events says which, and the run checks it.
+	scan := "def step [s x] (transition s [(row [x])])\ndef fin [s] [table-end]\ndef export [input] (scan-emit null step fin (select (path each-index) input))"
+	if c := checkCode(t, scan); c.code != CodeStreamabilityUnknown || c.finer != "unknown_output" {
+		t.Errorf("%+v", c)
+	}
+	// fail's code: a literal keyword is held to the three at the checker,
+	// at the keyword; the message is the last argument either way.
+	if c := checkCode(t, "def export [input] (join \"\" (map (fn [x] (fail :nope \"x\")) (select (path each-index) input)))"); c != (coded{CodeDSLTypeError, "type_mismatch", 1, 48}) {
+		t.Errorf("%+v", c)
+	}
+	if _, f := checked(t, "def export [input] (join \"\" (map (fn [x] (fail :nope \"x\")) (select (path each-index) input)))"); f == nil ||
+		f.Message != "type_mismatch: the code of fail must be :invalid, :unrepresentable or :protocol-order, not :nope" {
+		t.Errorf("%v", f)
+	}
 }
 
 func TestArityTypeAndProtocolMismatches(t *testing.T) {
 	for _, c := range [][2]string{
-		{"def export [input] (json input 1)", "arity"},
+		{"def export [input] (json input 1 2)", "arity"},
 		{"def export [input] (csv csv-options)", "arity"},
 		{"def f [a b] a\ndef export [input] (json (f input))", "arity"},
 		{"def export [input] (text 1 (json input))", "arity"},
@@ -437,6 +460,16 @@ func TestArityTypeAndProtocolMismatches(t *testing.T) {
 		}
 	}
 	if c := checkCode(t, "def export [input] (json (text 1))"); c != (coded{CodeDSLTypeError, "type_mismatch", 1, 32}) {
+		t.Errorf("%+v", c)
+	}
+	// json takes an options record before its events.
+	if c := mustCheck(t, "def export [input] (json (record (entry :non-finite :null)) input)"); c.Output != OutputText {
+		t.Errorf("%v", c.Output)
+	}
+	if c := checkCode(t, "def export [input] (json 1 input)"); c != (coded{CodeDSLTypeError, "type_mismatch", 1, 26}) {
+		t.Errorf("%+v", c)
+	}
+	if c := checkCode(t, "def export [input] (json (record) 1)"); c != (coded{CodeDSLTypeError, "type_mismatch", 1, 35}) {
 		t.Errorf("%+v", c)
 	}
 }
@@ -499,6 +532,9 @@ func TestAStreamPassedToADefinitionIsAffineInItsBody(t *testing.T) {
 	}
 	for _, c := range [][2]string{
 		{"def mk [s] (partial json s)\ndef export [input]\n  let [g (mk input)]\n    concat (g) (g)", "type_mismatch"},
+		// A native of more than one arity has no type a partial can read,
+		// and still holds what it is given.
+		{"def mk [s] (partial fail s)\ndef export [input]\n  let [g (mk input)]\n    concat (g) (g)", "type_mismatch"},
 		{"def mk [s] (record (entry :s s))\ndef export [input]\n  let [r (mk input)]\n    concat (json (get :s r)) (json (get :s r))", "type_mismatch"},
 		{"def twice [t] (concat t t)\ndef export [input] (twice (json input))", "reused"},
 		{"def export [input] ((fn [s] (concat (json s) (json s))) input)", "reused"},
@@ -644,8 +680,30 @@ func TestEventsAndTheStackOperators(t *testing.T) {
 	if got := mustCheck(t, "def export [input] (json (events input))").Export; !got.Equal(TextT) {
 		t.Errorf("%s", got)
 	}
+	if got := mustCheck(t, "def export [input] (events input)").Output; got != OutputJsonEvents {
+		t.Errorf("a stream of events is a rewritten tree: %s", got)
+	}
+	// indices gives a vector's positions, as numbers.
+	if got := mustCheck(t, "def i (indices [:a :b])\ndef export [input] (json input)").Defs["i"]; !got.Equal(VectorOf(NumberT)) {
+		t.Errorf("%s", got)
+	}
+	if c := checkCode(t, "def i (indices \"ab\")\ndef export [input] (json input)"); c != (coded{CodeDSLTypeError, "type_mismatch", 1, 16}) {
+		t.Errorf("%+v", c)
+	}
+	// The root adapters answer JSON events, through the signatures the
+	// library declares for them.
+	for _, src := range []string{"def export [input] (wrap-object \"doc\" input)", "def export [input] (wrap-array input)"} {
+		if got := mustCheck(t, src).Output; got != OutputJsonEvents {
+			t.Errorf("%s: %s", src, got)
+		}
+	}
+	if got := mustCheck(t, "def export [input] (json (wrap-array input))").Export; !got.Equal(TextT) {
+		t.Errorf("%s", got)
+	}
+	if c := checkCode(t, "def export [input] (wrap-object :doc input)"); c.finer != "type_mismatch" {
+		t.Errorf("%+v", c)
+	}
 	for _, c := range [][2]string{
-		{"def export [input] (events input)", "bad_output"},
 		{"def export [input] (json (select (path each-index) input))", "protocol_mismatch"},
 		{"def export [input] (csv csv-options (events input))", "protocol_mismatch"},
 		{"def export [input] (events (select (path each-index) input))", "protocol_mismatch"},

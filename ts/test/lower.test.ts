@@ -20,7 +20,9 @@ import {
   run,
   value,
 } from '../dist/alchemy'
+import { NoColumns } from '../dist/lower'
 import { CsvOptions } from '../dist/shared'
+import type { TableEvent, TableSink } from '../dist/shared'
 
 import { OPTIONS, PROGRAM, compile, thrown } from './common'
 
@@ -51,6 +53,37 @@ describe('lower', () => {
     assert.equal(csvOptions(bad), undefined)
     assert.equal(csvOptions(V.NULL), undefined)
   })
+
+  // `:non-finite` and `:no-columns`, when the record has them, are
+  // policies, which the lowering applies around the renderer; one that is
+  // none maps to no dialect, and the library's `csv` runs, which refuses
+  // it where it is read.
+  it('a csv options record maps with a non-finite policy and not with another value', () => {
+    const base = '(entry :delimiter ",") (entry :newline "\\r\\n") (entry :header true) (entry :null-text "") (entry :missing :error)'
+    const rt = runtime(
+      `def lit (record ${base} (entry :non-finite :literal))\ndef nul (record ${base} (entry :non-finite :null))\ndef nope (record ${base} (entry :non-finite :nope))\ndef one (record ${base} (entry :non-finite 1))\ndef empty (record ${base} (entry :no-columns :empty))\ndef refuse (record ${base} (entry :no-columns :refuse))\ndef nocols (record ${base} (entry :no-columns :nope))`,
+      true,
+    )
+    const options = (name: string) => csvOptions(run(rt.defValue('program', name)) as value.Val)
+    assert.deepStrictEqual(options('lit'), CsvOptions.default())
+    assert.deepStrictEqual(options('nul'), CsvOptions.default())
+    assert.equal(options('nope'), undefined)
+    assert.equal(options('one'), undefined)
+    // `:no-columns` the same way: a policy maps, anything else does not.
+    assert.deepStrictEqual(options('empty'), CsvOptions.default())
+    assert.deepStrictEqual(options('refuse'), CsvOptions.default())
+    assert.equal(options('nocols'), undefined)
+    // The fast path takes the first two, and declines the others for the
+    // library's text.
+    const binding = 'def b\n  record\n    entry :columns (path "m")\n    entry :rows (path "r" each-index)\n    entry :column (fn [d] d)\n'
+    for (const [policy, fast] of [[':literal', true], [':null', true], [':nope', false]] as const) {
+      const result = compile(
+        `${binding}def o (record ${base} (entry :non-finite ${policy}))\ndef export [input] (csv o (table-from-json b input))`,
+        't.alc',
+      ).result
+      assert.equal('text' === result.v && 'csv' === result.plan.p, fast, policy)
+    }
+  })
 })
 
 describe('program', () => {
@@ -70,8 +103,27 @@ describe('program', () => {
     const select = compile('def export [input] (join "," (select (path "a" each-index) input))', 't.alc')
     assert.equal(select.output, 'Text')
     assert.equal(select.rowSelector()!.toString(), '.a[*]')
+    // A rewritten tree the program says is events: the rows are still the
+    // select's, behind as-events.
+    const rewritten = compile(
+      'def export [input] (as-events (map (fn [x] (scalar x)) (select (path "a" each-index) input)))',
+      't.alc',
+    )
+    assert.equal(rewritten.output, 'JsonEvents/1')
+    assert.equal(rewritten.rowSelector()!.toString(), '.a[*]')
+    // A rewritten tree: a stream of items the checker typed as events, or
+    // one the program said are events, is JSON events for the host.
+    const tree = compile('def export [input] (map (fn [e] e) (events input))', 't.alc')
+    assert.equal(tree.output, 'JsonEvents/1')
+    const said = compile(
+      'def step [s x] (transition s [x])\ndef fin [s] []\ndef export [input] (as-events (scan-emit null step fin (events input)))',
+      't.alc',
+    )
+    assert.equal(said.output, 'JsonEvents/1')
     // The checker's output and the plan's agree.
-    for (const program of [p, slow, table, echo, select]) assert.equal(program.planOutput(), program.output)
+    for (const program of [p, slow, table, echo, select, tree, said]) {
+      assert.equal(program.planOutput(), program.output)
+    }
   })
 
   it('compile reports reader, resolver and export failures', () => {
@@ -80,5 +132,53 @@ describe('program', () => {
     assert.ok(f.message.startsWith('unknown_name: '), String(f))
     f = thrown(() => compile('def x 1', 't.alc'))
     assert.ok(f.message.startsWith('no_export: '), String(f))
+  })
+
+  // The table `:no-columns :empty` keeps back from the renderer is held to
+  // what the library's `csv-table` holds it to, with its texts: a clean
+  // empty table reaches the renderer not at all, and a table of columns
+  // reaches it whole, a later schema too, for the renderer to refuse.
+  it('no-columns holds the table it keeps back', () => {
+    // The events through a fresh adapter: what reached the renderer, an
+    // event to a line, or the failure's text.
+    const run = (events: TableEvent[]): string[] | string => {
+      const seen: string[] = []
+      const log: TableSink = {
+        tableEvent(ev: TableEvent) {
+          seen.push(
+            'schema' === ev.type ? `schema ${ev.columns.length}` : 'row' === ev.type ? `row ${ev.cells.length}` : 'end',
+          )
+          return 'continue'
+        },
+      }
+      const n = new NoColumns(log)
+      try {
+        for (const ev of events) n.tableEvent(ev)
+      } catch (e: any) {
+        assert.equal(e.code, 'PROTOCOL_ORDER_ERROR', String(e))
+        return e.message
+      }
+      return seen
+    }
+    const schema = (...labels: string[]): TableEvent => ({
+      type: 'schema',
+      columns: labels.map((label) => ({ label })),
+    })
+    const row = (...cells: number[]): TableEvent => ({
+      type: 'row',
+      cells: cells.map((value) => ({ type: 'number', value, lexeme: null })),
+    })
+    const end: TableEvent = { type: 'end' }
+    // A clean empty table: nothing reaches the renderer.
+    assert.deepStrictEqual(run([schema(), row(), row(), end]), [])
+    // Each refusal, with the library's text.
+    assert.equal(run([schema(), row(), row(1)]), 'row 2 has 1 cells; the schema has 0 columns')
+    assert.equal(run([schema(), schema('a')]), 'a second schema')
+    assert.equal(run([schema(), end, schema()]), 'a schema after the end')
+    assert.equal(run([schema(), end, row()]), 'a row after the end')
+    assert.equal(run([schema(), end, end]), 'a second end')
+    // A table of columns passes as it came, and so does a later empty
+    // schema, for the renderer to refuse.
+    assert.deepStrictEqual(run([schema('a'), row(1), end, schema()]), ['schema 1', 'row 1', 'end', 'schema 0'])
   })
 })

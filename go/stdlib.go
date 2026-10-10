@@ -13,14 +13,16 @@ import (
 //
 // The module embeds its copies under go/stdlib/*.alc, because a published
 // Go module holds nothing above its own root; `go run ./internal/embed`
-// writes them from the canonical stdlib/*.alc, and
-// shared_sources_test.go holds each copy byte for byte to its file.
+// (or the repository's `make embed`) writes them from the canonical
+// stdlib/*.alc, and shared_sources_test.go holds each copy byte for byte
+// to its file.
 //
-// table.alc is the metadata-first table transducer and csv.alc the
-// always-quoted CSV renderer. Both are parsed, desugared, resolved and
-// checked once, on first use, and their names are usable from any
-// program; a program's own def of the same name shadows the library's for
-// that program, never for the library itself.
+// table.alc is the metadata-first table transducer, csv.alc the
+// always-quoted CSV renderer and root.alc the root adapters (wrap-object,
+// wrap-array). Each is parsed, desugared, resolved and checked once, on
+// first use, and their names are usable from any program; a program's own
+// def of the same name shadows the library's for that program, never for
+// the library itself.
 
 //go:embed stdlib/*.alc
 var stdlibFS embed.FS
@@ -28,7 +30,7 @@ var stdlibFS embed.FS
 // StdlibFiles are the embedded sources, by the file name their spans
 // carry, in load order (the order the Rust crate's SOURCES lists them).
 // TestTheEmbeddedStdlibIsEveryFile holds the list to the directory.
-var StdlibFiles = []string{"stdlib/table.alc", "stdlib/csv.alc"}
+var StdlibFiles = []string{"stdlib/table.alc", "stdlib/csv.alc", "stdlib/root.alc"}
 
 // StdlibSource is the source text of an embedded file, by the name its
 // spans carry.

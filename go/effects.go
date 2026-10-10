@@ -35,6 +35,7 @@ const (
 	StageRoute
 	StageSelect
 	StageEvents
+	StageAsEvents
 	StageScanEmit
 	StageMap
 	StageFilter
@@ -248,7 +249,7 @@ type EffectSummary struct {
 // protocolOf is the protocol a stage produces, as the report names it.
 func protocolOf(s StageKind) string {
 	switch s {
-	case StageInput, StageRecords:
+	case StageInput, StageRecords, StageAsEvents:
 		return "JsonEvents/1"
 	case StageTableFromJSON, StageCsvTable:
 		return "TableRows/1"

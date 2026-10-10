@@ -216,6 +216,11 @@ pub enum Plan {
     /// the container events as constants and `key` and `scalar` with
     /// their one field; `End` is the stream's end, not an item.
     Events { source: Arc<Plan> },
+    /// `as-events items`: a stream of items the program built, each an
+    /// event, as `JsonEvents/1`: the reverse of `events`, which any taker
+    /// of JSON events already applies to such a stream; here the program
+    /// says so, where the checker could not tell the items' type.
+    AsEvents { source: Arc<Plan> },
     /// `scan-emit init step finish stream`.
     ScanEmit {
         init: Val,
@@ -270,8 +275,48 @@ pub enum Plan {
     },
     /// The standard CSV renderer, run natively.
     Csv { options: Val, source: Arc<Plan> },
-    /// `json events`.
-    Json { source: Arc<Plan> },
+    /// `json events`, or `json options events`.
+    Json {
+        source: Arc<Plan>,
+        non_finite: NonFinite,
+    },
+}
+
+/// What a renderer does with a number that is not finite (infinity,
+/// negative infinity or NaN), which JSON has no spelling for and CSV no
+/// type: the `:non-finite` option of `json` and of a CSV options record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NonFinite {
+    /// `:reject`, the default: TARGET_VALUE_UNREPRESENTABLE.
+    Reject,
+    /// `:null`: written as null, `null` in JSON and the null text in CSV.
+    Null,
+    /// `:literal` (CSV only): the cell's text is the word `Infinity`,
+    /// `-Infinity` or `NaN`.
+    Literal,
+}
+
+impl NonFinite {
+    /// The policy a keyword names.
+    pub fn named(name: &str) -> Option<NonFinite> {
+        match name {
+            "reject" => Some(NonFinite::Reject),
+            "null" => Some(NonFinite::Null),
+            "literal" => Some(NonFinite::Literal),
+            _ => None,
+        }
+    }
+
+    /// The word `:literal` writes for a number that is not finite.
+    pub fn word(value: f64) -> &'static str {
+        if value.is_nan() {
+            "NaN"
+        } else if value > 0.0 {
+            "Infinity"
+        } else {
+            "-Infinity"
+        }
+    }
 }
 
 impl Plan {
@@ -289,6 +334,7 @@ impl Plan {
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
+            | Plan::AsEvents { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
@@ -296,7 +342,7 @@ impl Plan {
             | Plan::Records { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
-            | Plan::Json { source } => source.is_live(),
+            | Plan::Json { source, .. } => source.is_live(),
             Plan::Lit(_) => false,
             Plan::Concat { live, .. } => live.is_some(),
             Plan::Join { items, .. } | Plan::ConcatMap { items, .. } => {
@@ -325,7 +371,7 @@ impl Plan {
     /// shape the runtime learns item by item.
     pub fn protocol(&self) -> Protocol {
         match self {
-            Plan::Input | Plan::Records { .. } => Protocol::JsonEvents,
+            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Protocol::JsonEvents,
             Plan::TableFromJson { .. } => Protocol::TableRows,
             Plan::Route { .. }
             | Plan::Select { .. }
@@ -629,6 +675,7 @@ pub fn plan_name(plan: &Plan) -> &'static str {
         Plan::Route { .. } => "route",
         Plan::Select { .. } => "select",
         Plan::Events { .. } => "events",
+        Plan::AsEvents { .. } => "as-events",
         Plan::ScanEmit { .. } => "scan-emit",
         Plan::Map { .. } => "map",
         Plan::Filter { .. } => "filter",

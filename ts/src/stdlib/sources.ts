@@ -12,7 +12,10 @@ export const SOURCES: ReadonlyArray<readonly [string, string]> = [
 ; RFC 4180 profile (design document sections 13.1 and 13.2). \`csv-table\`
 ; is the protocol validator section 13.2 asks for (one schema first, rows
 ; as wide as it, one end), with the renderer's own refusals: a table of no
-; columns, and a delimiter no reader could take. The runtime runs \`csv\`
+; columns, unless the options say \`(entry :no-columns :empty)\`, and a
+; delimiter no reader could take. A table of no columns that the options
+; let through is written as the empty document: no header and no record,
+; since a record of no fields is no line a reader could tell from none. The runtime runs \`csv\`
 ; natively when the options record maps onto the renderer's dialect, and
 ; the differential test proves that path and this text produce the same
 ; bytes, or fail with the same code.
@@ -46,18 +49,113 @@ def csv [options events]
     fn [event]
       match event
         case (schema columns)
-          if (get :header options)
-            csv-row options
-              map
-                fn [column]
-                  get :label column
-                columns
-            ""
+          match (count columns)
+            case 0 ""
+            case _
+              if (get :header options)
+                csv-row options
+                  map
+                    fn [column]
+                      get :label column
+                    columns
+                ""
         case (row cells)
-          csv-row options cells
+          match (count cells)
+            case 0 ""
+            case _ (csv-row options cells)
         case table-end
           ""
     csv-table options events
+`,
+  ],
+  [
+    "stdlib/root.alc",
+    `; The root adapters: a tree's events with the root the target needs.
+;
+; A render that writes from a tree may need the root to be an object
+; (TOML, INI: a document is a table) or an array (JSON Lines, and a
+; records target: the rows are its elements). \`wrap-object name input\`
+; passes an object root through, and wraps an array or a scalar as the
+; one member \`name\` of an object; \`wrap-array input\` passes an array root
+; through, and wraps an object or a scalar as the one element of an
+; array. Each decides at the first event and retains one marker and, while
+; it wraps a container, a stack of one marker per open container, so that
+; the wrap closes when the wrapped root does: nothing grows with the
+; document's width or length, only with its nesting. The events are a
+; tree's: a stream that begins with an end or a key, ends inside a
+; container, or holds more after the root is refused as no tree's
+; (PROTOCOL_ORDER_ERROR), where the adapter can see it; what it passes
+; through unexamined is the host's tree contract to hold.
+;
+; The state is [:start] before the first event, [:pass] while a matching
+; root passes through, [:wrap stack] while a container is wrapped, with
+; one marker per open container, and [:done] once a wrapped root has
+; closed.
+
+def wrap-object-close [stack event]
+  let [rest (pop stack)]
+    match (count rest)
+      case 0 (transition [:done] [event object-end])
+      case _ (transition [:wrap rest] [event])
+
+def wrap-object-step [name state event]
+  match state
+    case [:start]
+      match event
+        case object-start (transition [:pass] [event])
+        case array-start (transition [:wrap [:open]] [object-start (key name) event])
+        case (scalar value) (transition [:done] [object-start (key name) event object-end])
+        case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")
+    case [:pass] (transition state [event])
+    case [:wrap stack]
+      match event
+        case array-start (transition [:wrap (push :open stack)] [event])
+        case object-start (transition [:wrap (push :open stack)] [event])
+        case array-end (wrap-object-close stack event)
+        case object-end (wrap-object-close stack event)
+        case _ (transition state [event])
+    case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")
+
+def wrap-finish [state]
+  match state
+    case [:start] (fail :protocol-order "the events hold no value, where a tree's hold one")
+    case [:pass] []
+    case [:done] []
+    case _ (fail :protocol-order "the events ended inside a container, which a tree's never do")
+
+; An object root as it is; an array or a scalar root as the member \`name\`
+; of an object.
+def wrap-object [name input]
+  as-events (scan-emit [:start] (partial wrap-object-step name) wrap-finish (events input))
+
+def wrap-array-close [stack event]
+  let [rest (pop stack)]
+    match (count rest)
+      case 0 (transition [:done] [event array-end])
+      case _ (transition [:wrap rest] [event])
+
+def wrap-array-step [state event]
+  match state
+    case [:start]
+      match event
+        case array-start (transition [:pass] [event])
+        case object-start (transition [:wrap [:open]] [array-start event])
+        case (scalar value) (transition [:done] [array-start event array-end])
+        case _ (fail :protocol-order "the events begin with an end or a key, which a tree's never do")
+    case [:pass] (transition state [event])
+    case [:wrap stack]
+      match event
+        case array-start (transition [:wrap (push :open stack)] [event])
+        case object-start (transition [:wrap (push :open stack)] [event])
+        case array-end (wrap-array-close stack event)
+        case object-end (wrap-array-close stack event)
+        case _ (transition state [event])
+    case _ (fail :protocol-order "the events hold more after the root value, which a tree's never do")
+
+; An array root as it is; an object or a scalar root as the one element
+; of an array.
+def wrap-array [input]
+  as-events (scan-emit [:start] wrap-array-step wrap-finish (events input))
 `,
   ],
   [
@@ -90,19 +188,37 @@ def table-row [columns raw]
         get-path (get :source column) raw
       columns
 
+; A column of an array row, labelled by its position.
+def table-positional-column [i]
+  record
+    entry :label (scalar-text csv-options i)
+    entry :source (path i)
+
+; The one column of a scalar row: the row itself.
+def table-value-column
+  record
+    entry :label "value"
+    entry :source root
+
+; The columns the first row gives: an object's members by name, an
+; array's cells by position, a scalar as the one column \`value\`; a later
+; row of another kind projects through these sources and is missing
+; where a path does not apply to it.
+def table-inferred-columns [raw]
+  match (kind raw)
+    case :record (map table-inferred-column (keys raw))
+    case :vector (map table-positional-column (indices raw))
+    case _ (vector table-value-column)
+
 def table-first-row [binding state raw]
   match (get :columns binding)
     case :infer
-      match (kind raw)
-        case :record
-          let [columns (map table-inferred-column (keys raw))]
-            transition (ready columns)
-              vector
-                schema
-                  map public-column columns
-                table-row columns raw
-        case _
-          fail "The first row is not an object, so no columns can be inferred from it"
+      let [columns (table-inferred-columns raw)]
+        transition (ready columns)
+          vector
+            schema
+              map public-column columns
+            table-row columns raw
     case _
       transition state
         vector

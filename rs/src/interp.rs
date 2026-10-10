@@ -873,6 +873,7 @@ impl Runtime {
                     } => sep.len(),
                     Plan::Input
                     | Plan::Events { .. }
+                    | Plan::AsEvents { .. }
                     | Plan::Records { .. }
                     | Plan::Json { .. } => 0,
                 },

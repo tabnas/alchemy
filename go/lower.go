@@ -4,6 +4,7 @@ package tabnasalchemy
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -133,7 +134,10 @@ func isInferred(binding Val) bool {
 // csvOptions is the renderer's dialect for a `csv-options` record, when
 // every field has a value the renderer accepts: :delimiter one character,
 // :newline CRLF or LF, :header a boolean, :null-text a string, :missing
-// :error or a string. Any other record runs the library's own csv.
+// :error or a string, :non-finite, when the record has it, :reject, :null
+// or :literal, and :no-columns, when it has it, :refuse or :empty. Any
+// other record runs the library's own csv, which refuses a policy that is
+// none where it is read.
 func csvOptions(v Val) (shared.CSVOptions, bool) {
 	r, ok := v.(*RecordVal)
 	if !ok {
@@ -179,7 +183,141 @@ func csvOptions(v Val) (shared.CSVOptions, bool) {
 	default:
 		return shared.CSVOptions{}, false
 	}
+	if _, f := NonFinitePolicy(v); f != nil {
+		return shared.CSVOptions{}, false
+	}
+	if _, f := NoColumnsEmpty(v); f != nil {
+		return shared.CSVOptions{}, false
+	}
 	return options, true
+}
+
+// nullNonFinite is the json renderer's adapter for :non-finite :null: a
+// number that is not finite goes on as null, everything else as it came.
+type nullNonFinite struct {
+	next shared.Sink
+}
+
+func (n *nullNonFinite) Event(ev shared.Event) (shared.Flow, *Fail) {
+	if ev.Kind == shared.Number && (math.IsNaN(ev.Value) || math.IsInf(ev.Value, 0)) {
+		return n.next.Event(shared.EvNull())
+	}
+	return n.next.Event(ev)
+}
+
+// noColumns is the CSV renderer's adapter for :no-columns :empty: a table
+// of no columns is the empty document, so its schema, its rows (each of no
+// cells) and its end go no further, and the renderer, which refuses such a
+// schema, writes nothing; a table of columns passes as it came. The table
+// it keeps back is held to what the library's `csv-table` holds it to,
+// with the same codes and texts, so the native and the interpreted `csv`
+// fail alike: a row of any cell, a second schema, and anything after the
+// end are PROTOCOL_ORDER_ERROR.
+type noColumns struct {
+	kept kept
+	// rows is how many rows the kept-back table has had, each of no cells.
+	rows uint64
+	next shared.TableSink
+}
+
+// kept is where a noColumns is in its table.
+type kept uint8
+
+const (
+	// keptBefore: no schema has come.
+	keptBefore kept = iota
+	// keptPassed: a table of columns, which the renderer holds to the
+	// protocol.
+	keptPassed
+	// keptRows: a table of no columns, kept back.
+	keptRows
+	// keptEnded: the kept-back table has ended.
+	keptEnded
+)
+
+func (n *noColumns) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
+	switch n.kept {
+	case keptBefore:
+		if ev.Kind == shared.TableSchema {
+			if len(ev.Columns) == 0 {
+				n.kept = keptRows
+				return shared.Continue, nil
+			}
+			n.kept = keptPassed
+		}
+		return n.next.TableEvent(ev)
+	case keptPassed:
+		return n.next.TableEvent(ev)
+	case keptRows:
+		switch ev.Kind {
+		case shared.TableSchema:
+			return shared.Continue, shared.ProtocolFail("a second schema")
+		case shared.TableRow:
+			if len(ev.Cells) != 0 {
+				return shared.Continue, shared.ProtocolFail(fmt.Sprintf("row %d has %d cells; the schema has 0 columns",
+					n.rows+1, len(ev.Cells)))
+			}
+			n.rows++
+			return shared.Continue, nil
+		default:
+			n.kept = keptEnded
+			return shared.Continue, nil
+		}
+	default:
+		switch ev.Kind {
+		case shared.TableSchema:
+			return shared.Continue, shared.ProtocolFail("a schema after the end")
+		case shared.TableRow:
+			return shared.Continue, shared.ProtocolFail("a row after the end")
+		default:
+			return shared.Continue, shared.ProtocolFail("a second end")
+		}
+	}
+}
+
+// isNonFiniteCell is whether a cell is a number that is not finite.
+func isNonFiniteCell(c *shared.Cell) bool {
+	return c.Kind == shared.CellNumber && (math.IsNaN(c.Value) || math.IsInf(c.Value, 0))
+}
+
+// nonFiniteCells is the CSV renderer's adapter for :non-finite :null or
+// :literal: a number cell that is not finite goes on as a null cell, which
+// the renderer writes as the null text, or as the string Infinity,
+// -Infinity or NaN, as `scalar-text` writes it under the same options. A
+// row with such a cell is copied into cells, which the next row reuses.
+type nonFiniteCells struct {
+	policy NonFinite
+	next   shared.TableSink
+	cells  []shared.Cell
+}
+
+func (n *nonFiniteCells) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
+	if ev.Kind != shared.TableRow {
+		return n.next.TableEvent(ev)
+	}
+	found := false
+	for i := range ev.Cells {
+		if isNonFiniteCell(&ev.Cells[i]) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return n.next.TableEvent(ev)
+	}
+	n.cells = append(n.cells[:0], ev.Cells...)
+	for i := range n.cells {
+		c := &n.cells[i]
+		if !isNonFiniteCell(c) {
+			continue
+		}
+		if n.policy == NonFiniteNull {
+			*c = shared.Cell{Kind: shared.CellNull}
+		} else {
+			*c = shared.Cell{Kind: shared.CellString, Text: NonFiniteWord(c.Value)}
+		}
+	}
+	return n.next.TableEvent(shared.TableEvent{Kind: shared.TableRow, Cells: n.cells})
 }
 
 // csvProfile is a CSV dialect as the report prints it.
@@ -868,6 +1006,10 @@ const (
 type csvTableStage struct {
 	rt      *Runtime
 	metrics *shared.Metrics
+	// noColumns is whether the options say (entry :no-columns :empty): a
+	// table of no columns passes, for the text to write as the empty
+	// document.
+	noColumns bool
 	// countRows is whether this stage counts the rows in metrics.Rows:
 	// when no later table stage does (Lowering.items).
 	countRows bool
@@ -895,7 +1037,7 @@ func (c *csvTableStage) Item(v Val) (shared.Flow, *Fail) {
 		case phaseDone:
 			return shared.Continue, shared.ProtocolFail("a schema after the end")
 		}
-		if len(columns) == 0 {
+		if len(columns) == 0 && !c.noColumns {
 			return shared.Continue, NewFail(CodeTargetValueUnrepresentable, "a table with no columns has no CSV form")
 		}
 		c.width = len(columns)
@@ -1117,11 +1259,29 @@ func NewLowering(rt *Runtime, limits shared.Limits, metrics *shared.Metrics) *Lo
 
 // Sink is the sink for a program's result over out. render is the host's
 // choice for a stream result; a text result takes none (`render_of_text`).
+// A stream of items is taken for a table's rows, as the runtime cannot
+// tell an item's shape before it arrives; SinkAs takes the checker's word
+// instead.
 func (l *Lowering) Sink(result Val, out shared.TextOut, render Renderer) (shared.Sink, *Fail) {
+	output := OutputText
+	if x, ok := result.(StreamVal); ok {
+		output = OutputTableRows
+		if x.Plan.Protocol() == ProtocolJSONEvents {
+			output = OutputJsonEvents
+		}
+	}
+	return l.SinkAs(result, out, render, output)
+}
+
+// SinkAs is Sink with output, what the checker decided the result is: a
+// stream of items the runtime cannot tell the protocol of is JSON events
+// when the checker typed every item an event (a rewritten tree), and a
+// table's rows otherwise.
+func (l *Lowering) SinkAs(result Val, out shared.TextOut, render Renderer, output Output) (shared.Sink, *Fail) {
 	switch x := result.(type) {
 	// A string is a text where a text is expected (spec 10.4).
 	case StrVal:
-		return l.Sink(TextVal{Plan: litPlan(string(x))}, out, render)
+		return l.SinkAs(TextVal{Plan: litPlan(string(x))}, out, render, output)
 	case TextVal:
 		if render != RenderDefault {
 			return nil, NewFail(CodeDSLTypeError,
@@ -1130,6 +1290,10 @@ func (l *Lowering) Sink(result Val, out shared.TextOut, render Renderer) (shared
 		return l.text(x.Plan, out)
 	case StreamVal:
 		protocol := x.Plan.Protocol()
+		// A rewritten tree: the checker saw every item an event.
+		if protocol == ProtocolItems && output == OutputJsonEvents {
+			protocol = ProtocolJSONEvents
+		}
 		if render == RenderDefault {
 			render = RenderCSV
 			if protocol == ProtocolJSONEvents {
@@ -1168,9 +1332,27 @@ func (l *Lowering) text(p *Plan, out shared.TextOut) (shared.Sink, *Fail) {
 		if f != nil {
 			return nil, f
 		}
-		return l.table(p.Source, renderer, false)
+		empty, f := NoColumnsEmpty(p.Options)
+		if f != nil {
+			return nil, f
+		}
+		if empty {
+			renderer = &noColumns{next: renderer}
+		}
+		policy, f := NonFinitePolicy(p.Options)
+		if f != nil {
+			return nil, f
+		}
+		if policy == NonFiniteReject {
+			return l.table(p.Source, renderer, false)
+		}
+		return l.table(p.Source, &nonFiniteCells{policy: policy, next: renderer}, false)
 	case p.Kind == PlanJSON:
-		return l.events(p.Source, l.rt.Renderers().JSON(out, jsonOptions()))
+		json := l.rt.Renderers().JSON(out, jsonOptions())
+		if p.NonFinite == NonFiniteNull {
+			return l.events(p.Source, &nullNonFinite{next: json})
+		}
+		return l.events(p.Source, json)
 	case p.Kind == PlanConcatMap && p.Seq.IsStream():
 		return l.items(p.Seq.Stream, &concatMapStage{rt: l.rt, f: p.F, at: p.At, out: out, scratch: newScratch(l.limits)}, false)
 	case p.Kind == PlanJoin && p.Seq.IsStream():
@@ -1203,6 +1385,10 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 	// a later table makes rows of its own.
 	case PlanRecords:
 		return l.table(p.Source, l.rt.Renderers().RecordsToJSON(sink), false)
+	// `as-events` names what the arm below does for any items plan: the
+	// program's items, each an event, as JSON events.
+	case PlanAsEvents:
+		return l.events(p.Source, sink)
 	// A stream whose items may be events (`events` itself, or a
 	// `scan-emit`, `map` or `filter` over anything): each item is turned
 	// back into an event as the stream runs, the reverse of `events`, so a
@@ -1240,7 +1426,7 @@ func (l *Lowering) table(p *Plan, table shared.TableSink, countedLater bool) (sh
 			return nil, f
 		}
 		return l.events(p.Source, transducer)
-	case PlanInput, PlanRecords:
+	case PlanInput, PlanRecords, PlanAsEvents:
 		return nil, protocolMismatch("table events were expected, not JSON events (table-from-json makes a table of them)")
 	}
 	return l.items(p, &taggedToTable{rt: l.rt, metrics: l.metrics, countRows: !countedLater, table: table}, true)
@@ -1304,8 +1490,12 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 		if f := checkDelimiter(p.Options); f != nil {
 			return nil, f
 		}
-		return l.items(p.Source, &csvTableStage{rt: l.rt, metrics: l.metrics, countRows: !countedLater, down: down}, true)
-	case PlanInput, PlanRecords:
+		empty, f := NoColumnsEmpty(p.Options)
+		if f != nil {
+			return nil, f
+		}
+		return l.items(p.Source, &csvTableStage{rt: l.rt, metrics: l.metrics, noColumns: empty, countRows: !countedLater, down: down}, true)
+	case PlanInput, PlanRecords, PlanAsEvents:
 		return nil, protocolMismatch("JSON events cannot be read item by item; select or route what the stream should yield, or read its events")
 	}
 	return nil, typeError(PlanName(p) + " is a text, not a stream")

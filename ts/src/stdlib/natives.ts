@@ -22,7 +22,7 @@
 // evaluator drives on its own stack (`./trampoline`), so a function that
 // maps itself is the evaluator's `recursion`, never JavaScript's stack.
 
-import { CaptureSpec, Fail, Limits, Selector, isJsonNumber, utf8Bytes } from '../shared'
+import { CaptureSpec, Code, Fail, Limits, Selector, isJsonNumber, utf8Bytes } from '../shared'
 import type { Renderers } from '../shared'
 
 import { SourceSpan } from '../ast'
@@ -30,6 +30,7 @@ import type { Runtime } from '../interp'
 import { G } from '../trampoline'
 import {
   Func,
+  NonFinite,
   Plan,
   Seq,
   Val,
@@ -46,6 +47,8 @@ import {
   kindText,
   liveKind,
   missing as missingVal,
+  nonFiniteNamed,
+  nonFiniteWord,
   num,
   record as recordVal,
   selectorSegments,
@@ -370,8 +373,107 @@ function keys(rt: Runtime, a: ReadonlyArray<Val>): Val {
   return vectorVal(out)
 }
 
+// `indices vector`: the positions of a vector's items, as numbers: what
+// the interpreted inferred table labels an array row's cells by. A bounded
+// operation over one vector, like `keys` over one record.
+function indices(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const v = a[0]
+  if ('vector' !== v.v) throw typeError(`indices: a vector was expected, not ${kindText(v)}`)
+  // A step per item, as `keys` takes one per key, so the host's abort flag
+  // stops a long vector's count like any evaluation.
+  const out: Val[] = []
+  for (let i = 0; i < v.items.length; i++) {
+    rt.tick()
+    out.push(num(i))
+  }
+  return vectorVal(out)
+}
+
 // How many bytes of a string `length` counts per evaluation step.
 export const LENGTH_CHUNK = 64 * 1024
+
+// `number string`: the number a string spells. A JSON number keeps the
+// text as its lexeme, so a renderer writes it as it was spelled; the three
+// non-finite numbers are spelled `Infinity`, `-Infinity` and `NaN`. The
+// string is read by `readNumber`, as `is-number` reads it.
+function number(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const s = asStr('number', 'the string', a[0])
+  const value = readNumber(rt, s)
+  if (undefined === value) throw Fail.input(`number: ${JSON.stringify(s)} spells no number`)
+  return value
+}
+
+// `is-number string`: whether `number` reads the string, without failing:
+// a JSON number, or `Infinity`, `-Infinity` or `NaN`. A program cannot
+// catch a failure, so a format's part tests a string with it before it
+// calls `number` (zon's render, a big integer's digits; XML's reverse, a
+// number's text). The two read with `readNumber`, so `number` fails
+// exactly where this answers false.
+function isNumber(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const s = asStr('is-number', 'the string', a[0])
+  return bool(undefined !== readNumber(rt, s))
+}
+
+// How many characters of its input `number` and `is-number` read per
+// evaluation step.
+export const NUMBER_STEP = 4096
+
+// What `readNumber` has read of a spelling: nothing, the minus sign, an
+// integer part `0` (which no digit follows) or of a digit from 1 to 9 and
+// the digits after it, a decimal point (before the fraction's first digit),
+// the fraction, the exponent's `e` or `E`, its sign, its digits, or a word
+// begun.
+type Spelled = 'start' | 'minus' | 'zero' | 'integer' | 'point' | 'fraction' | 'e' | 'sign' | 'exponent' | 'word'
+
+// The number `number` answers for a string, or undefined where it fails: a
+// JSON number (`-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`), its text
+// kept as the lexeme, or `Infinity`, `-Infinity` or `NaN`. The string is
+// read from the front, an evaluation step before the first of each
+// `NUMBER_STEP` characters, and refused at the first character no spelling
+// goes on with, so the host's abort flag stops the read of a long one, a
+// number or not.
+function readNumber(rt: Runtime, s: string): Val | undefined {
+  let at: Spelled = 'start'
+  // A word begun: the characters it still wants, and the number it spells.
+  let word = ''
+  let spelled = NaN
+  const begin = (rest: string, value: number): Spelled => {
+    word = rest
+    spelled = value
+    return 'word'
+  }
+  // A spelling is ASCII, so a code unit read is a character read up to the
+  // first that is not, where the reading ends.
+  for (let i = 0; i < s.length; i++) {
+    if (0 === i % NUMBER_STEP) rt.tick()
+    const c = s[i]
+    const digit = '0' <= c && c <= '9'
+    if ('start' === at && '-' === c) at = 'minus'
+    else if (('start' === at || 'minus' === at) && '0' === c) at = 'zero'
+    else if ((('start' === at || 'minus' === at) && '1' <= c && c <= '9') || ('integer' === at && digit)) at = 'integer'
+    else if (('zero' === at || 'integer' === at) && '.' === c) at = 'point'
+    else if (('point' === at || 'fraction' === at) && digit) at = 'fraction'
+    else if (('zero' === at || 'integer' === at || 'fraction' === at) && ('e' === c || 'E' === c)) at = 'e'
+    else if ('e' === at && ('+' === c || '-' === c)) at = 'sign'
+    else if (('e' === at || 'sign' === at || 'exponent' === at) && digit) at = 'exponent'
+    else if ('start' === at && 'I' === c) at = begin('nfinity', Infinity)
+    else if ('minus' === at && 'I' === c) at = begin('nfinity', -Infinity)
+    else if ('start' === at && 'N' === c) at = begin('aN', NaN)
+    else if ('word' === at && c === word[0]) word = word.slice(1)
+    else return undefined
+  }
+  switch (at) {
+    case 'zero':
+    case 'integer':
+    case 'fraction':
+    case 'exponent':
+      return num(Number(s), s)
+    case 'word':
+      return '' === word ? num(spelled) : undefined
+    default:
+      return undefined
+  }
+}
 
 // `length string`: how many characters the string holds, as a column
 // counts them (Unicode scalar values; a surrogate pair is one). A long
@@ -391,6 +493,215 @@ function length(rt: Runtime, a: ReadonlyArray<Val>): Val {
     n++
   }
   return num(n)
+}
+
+// `unquoted string`: the string a double-quoted form spells, the reverse
+// of `quoted`: a leading and a trailing quote around characters and JSON's
+// escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX`, a
+// surrogate pair as the one character it names). Any other text is
+// INPUT_INVALID: no quotes, a quote or a control character unescaped
+// inside, another escape, or a surrogate on its own. A format's reverse
+// reads back with it what its embedding wrote with `quoted`. The input is
+// read an evaluation step per `UNQUOTED_STEP` characters, as `length`
+// counts a long string in steps, so the host's abort flag stops the read
+// of a long one.
+function unquoted(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const s = asStr('unquoted', 'the string', a[0])
+  const text = readQuoted(s, () => rt.tick())
+  if (undefined === text) throw Fail.input(`unquoted: ${JSON.stringify(s)} is not a double-quoted string`)
+  return str(text)
+}
+
+// How many characters of its input `unquoted` reads per evaluation step.
+export const UNQUOTED_STEP = 4096
+
+// The string a double-quoted form spells, or undefined. A `\u` escape of a
+// surrogate on its own is refused, as the Rust crate refuses it, although
+// a JavaScript string could hold one: a surrogate is no character. One
+// written as itself, which only a JavaScript string can hold, is passed on
+// as `quote` wrote it.
+export function unquote(s: string): string | undefined {
+  return readQuoted(s, () => {})
+}
+
+// `unquote`, read from the front with a `step` before the first of each
+// `UNQUOTED_STEP` characters (a surrogate pair is one), so a string read
+// to its end takes a step per `UNQUOTED_STEP` characters or part of them:
+// the opening quote, the characters and escapes, and a closing quote that
+// ends the input.
+function readQuoted(s: string, step: () => void): string | undefined {
+  let i = 0
+  let read = 0
+  // The character at `i`, read: a step first when it is the first of
+  // `UNQUOTED_STEP`, then `i` past it. Its first code unit, or -1 at the
+  // end.
+  const next = (): number => {
+    if (i >= s.length) return -1
+    if (0 === read % UNQUOTED_STEP) step()
+    read++
+    const c = s.charCodeAt(i++)
+    if (0xd800 <= c && c <= 0xdbff && i < s.length) {
+      const d = s.charCodeAt(i)
+      if (0xdc00 <= d && d <= 0xdfff) i++
+    }
+    return c
+  }
+  // Four hex digits, either case, as the code unit they spell.
+  const hex4 = (): number | undefined => {
+    let v = 0
+    for (let k = 0; k < 4; k++) {
+      const c = next()
+      const lower = c | 0x20
+      if (0x30 <= c && c <= 0x39) v = v * 16 + (c - 0x30)
+      else if (0x61 <= lower && lower <= 0x66) v = v * 16 + (lower - 0x57)
+      else return undefined
+    }
+    return v
+  }
+  if (0x22 !== next()) return undefined
+  let out = ''
+  for (;;) {
+    const start = i
+    const c = next()
+    // No closing quote.
+    if (-1 === c) return undefined
+    // The closing quote, which must end the input.
+    if (0x22 === c) return i === s.length ? out : undefined
+    if (c < 0x20) return undefined
+    if (0x5c !== c) {
+      // A run of characters written as themselves, taken whole.
+      while (i < s.length) {
+        const d = s.charCodeAt(i)
+        if (0x22 === d || d < 0x20 || 0x5c === d) break
+        next()
+      }
+      out += s.substring(start, i)
+      continue
+    }
+    switch (next()) {
+      case 0x22:
+        out += '"'
+        break
+      case 0x5c:
+        out += '\\'
+        break
+      case 0x2f:
+        out += '/'
+        break
+      case 0x62:
+        out += '\b'
+        break
+      case 0x66:
+        out += '\f'
+        break
+      case 0x6e:
+        out += '\n'
+        break
+      case 0x72:
+        out += '\r'
+        break
+      case 0x74:
+        out += '\t'
+        break
+      case 0x75: {
+        const high = hex4()
+        if (undefined === high) return undefined
+        if (0xd800 <= high && high <= 0xdbff) {
+          // A high surrogate names a character only with the low one after
+          // it, as a second escape.
+          if (0x5c !== next() || 0x75 !== next()) return undefined
+          const low = hex4()
+          if (undefined === low || low < 0xdc00 || low > 0xdfff) return undefined
+          out += String.fromCharCode(high, low)
+        } else if (0xdc00 <= high && high <= 0xdfff) {
+          return undefined
+        } else {
+          out += String.fromCharCode(high)
+        }
+        break
+      }
+      default:
+        return undefined
+    }
+  }
+}
+
+// How many comparisons, or ranges read, `chars-within` makes per
+// evaluation step.
+export const CHARS_WITHIN_STEP = 4096
+
+// `chars-within ranges string`: whether every character of the string
+// lies within one of the ranges, each a vector `[low high]` of code
+// points, both included. The empty string is within any ranges. A format's
+// part tests a string with it against the characters the format can carry
+// (XML's `Char` production, a name's characters) before it writes the
+// string, and chooses its convention when it cannot. The ranges may come
+// from data, so the work is counted in comparisons, an evaluation step per
+// `CHARS_WITHIN_STEP` of them and per as many ranges read, and the host's
+// abort flag stops a long test as it stops any long evaluation.
+function charsWithin(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const ranges = asItems('chars-within', a[0])
+  const point = (v: Val): number => {
+    if ('num' !== v.v) {
+      throw typeError(`chars-within: a range's bound must be a number, not ${kindText(v)}`)
+    }
+    const value = v.value
+    if (0 === value % 1 && 0 <= value && value <= 1114111) return value
+    // The bound as it was spelled, or as Rust's `Display` writes a value
+    // that has no number text (`inf`, `NaN`).
+    let spelled: string
+    try {
+      spelled = numberText(value, v.lexeme)
+    } catch {
+      spelled = displayNumber(value)
+    }
+    throw typeError(`chars-within: a range's bound must be a code point from 0 to 1114111, not ${spelled}`)
+  }
+  const bounds: Array<readonly [number, number]> = []
+  for (let i = 0; i < ranges.length; i++) {
+    if (CHARS_WITHIN_STEP - 1 === i % CHARS_WITHIN_STEP) rt.tick()
+    const range = ranges[i]
+    if ('vector' !== range.v || 2 !== range.items.length) {
+      const what = 'vector' === range.v ? `a vector of ${range.items.length} items` : kindText(range)
+      throw typeError(`chars-within: a range must be a vector [low high], not ${what}`)
+    }
+    const low = point(range.items[0])
+    const high = point(range.items[1])
+    if (low > high) {
+      throw typeError(
+        `chars-within: a range must be a vector [low high] with low at most high, not [${low} ${high}]`,
+      )
+    }
+    bounds.push([low, high])
+  }
+  const s = asStr('chars-within', 'the string', a[1])
+  // Comparisons made since the last step; a character costs at least one,
+  // so an empty range vector still counts its characters.
+  let work = 0
+  for (const c of s) {
+    const code = c.codePointAt(0) as number
+    let within = false
+    for (const [low, high] of bounds) {
+      work += 1
+      if (work >= CHARS_WITHIN_STEP) {
+        rt.tick()
+        work = 0
+      }
+      if (low <= code && code <= high) {
+        within = true
+        break
+      }
+    }
+    if (0 === bounds.length) {
+      work += 1
+      if (work >= CHARS_WITHIN_STEP) {
+        rt.tick()
+        work = 0
+      }
+    }
+    if (!within) return bool(false)
+  }
+  return bool(true)
 }
 
 // `compare a b`: how two numbers are ordered, `:less`, `:equal` or
@@ -660,7 +971,9 @@ function replaceText(_rt: Runtime, a: ReadonlyArray<Val>): Val {
 
 // The text of a scalar cell under the options' policies: what the CSV
 // renderer writes for the same cell, so that the interpreted and the native
-// `csv` agree byte for byte.
+// `csv` agree byte for byte. A number that is not finite is refused, as
+// the renderer refuses it, unless the options' `:non-finite` says to write
+// the null text (`:null`) or the word (`:literal`) instead.
 function scalarText(rt: Runtime, a: ReadonlyArray<Val>): Val {
   const options = a[0]
   const cell = a[1]
@@ -670,6 +983,13 @@ function scalarText(rt: Runtime, a: ReadonlyArray<Val>): Val {
     case 'bool':
       return str(cell.value ? 'true' : 'false')
     case 'num':
+      if (!Number.isFinite(cell.value)) {
+        const policy = nonFinite(options)
+        if ('null' === policy) {
+          return str(asStr('scalar-text', ':null-text', option('scalar-text', options, 'null-text')))
+        }
+        if ('literal' === policy) return str(nonFiniteWord(cell.value))
+      }
       return str(numberText(cell.value, cell.lexeme))
     case 'str':
       return cell
@@ -688,6 +1008,40 @@ function scalarText(rt: Runtime, a: ReadonlyArray<Val>): Val {
       throw typeError(`scalar-text: a scalar was expected, not ${kindText(cell)}`)
     }
   }
+}
+
+// The `:non-finite` policy of an options record: `reject` (the default,
+// when the record has none), `null` or `literal`; any other value is a
+// type error. What is not a record has none.
+export function nonFinite(options: Val): NonFinite {
+  const v = field(options, 'non-finite')
+  if (undefined === v || isMissing(v)) return 'reject'
+  if ('keyword' === v.v) {
+    const policy = nonFiniteNamed(v.name)
+    if (undefined === policy) throw typeError(`:non-finite must be :reject, :null or :literal, not :${v.name}`)
+    return policy
+  }
+  throw typeError(`:non-finite must be :reject, :null or :literal, not ${kindText(v)}`)
+}
+
+// Whether a CSV options record lets a table of no columns through, to be
+// written as the empty document: its `:no-columns` is `:empty`, where
+// `:refuse`, the default when the record has none, refuses it.
+export function noColumnsEmpty(options: Val): boolean {
+  const v = field(options, 'no-columns')
+  if (undefined === v || isMissing(v)) return false
+  if ('keyword' === v.v) {
+    if ('refuse' === v.name) return false
+    if ('empty' === v.name) return true
+    throw typeError(`:no-columns must be :refuse or :empty, not :${v.name}`)
+  }
+  throw typeError(`:no-columns must be :refuse or :empty, not ${kindText(v)}`)
+}
+
+// Whether `quote` writes the code point `c` as `\uXXXX`: U+0000 to U+001F
+// but the five with short escapes, U+007F to U+009F, U+FFFE and U+FFFF.
+function escapedAsCode(c: number): boolean {
+  return c < 0x20 || (0x7f <= c && c <= 0x9f) || 0xfffe === c || 0xffff === c
 }
 
 // The escape `quote` writes for the code point `c`, or undefined when it
@@ -709,16 +1063,17 @@ function quoteEscape(c: number): string | undefined {
     case 0x0c:
       return '\\f'
     default:
-      return c < 0x20 || (0x7f <= c && c <= 0x9f) ? '\\u' + c.toString(16).padStart(4, '0') : undefined
+      return escapedAsCode(c) ? '\\u' + c.toString(16).padStart(4, '0') : undefined
   }
 }
 
 // The double-quoted form of `s`: the JSON string form (RFC 8259's escapes
 // for the quote, the backslash and U+0000 to U+001F, the short ones where
 // they exist, `\u00xx` otherwise, in the render package's lowercase) with
-// U+007F to U+009F escaped the same way, since YAML's double-quoted style
-// reads JSON's escapes but its printable set excludes the C1 controls.
-// Every other character is written as itself.
+// U+007F to U+009F, U+FFFE and U+FFFF escaped the same way, since YAML's
+// double-quoted style reads JSON's escapes but its printable set excludes
+// the C1 controls and those two noncharacters, which XML's characters
+// exclude too. Every other character is written as itself.
 export function quote(s: string): string {
   let out = '"'
   for (const c of s) {
@@ -729,7 +1084,7 @@ export function quote(s: string): string {
 
 // The length of `quote`'s result in UTF-8 bytes, counted before it is
 // built: two quotes, and each character as itself, as a two-byte escape,
-// or as the six bytes of `\u00XX`.
+// or as the six bytes of `\uXXXX`.
 export function quotedLen(s: string): number {
   let n = 2
   for (const c of s) {
@@ -775,6 +1130,56 @@ function stringJoin(rt: Runtime, a: ReadonlyArray<Val>): Val {
   return str(parts.join(separator))
 }
 
+// How many characters of its input `split` reads per evaluation step.
+export const SPLIT_STEP = 4096
+
+// `split separator string`: the strings between the separator's occurrences
+// in the string, found from the front, none overlapping another: one more
+// than it occurs, an empty one where two occurrences meet or at either end,
+// and the string itself where it does not occur. The separator is a
+// literal, not a pattern, and must not be empty. A format's part, which
+// cannot read a string a character at a time, reads a dotted string's parts
+// with it to check each one (semver's prerelease and build identifiers).
+// The string takes an evaluation step for each `SPLIT_STEP` characters read
+// (a surrogate pair is one), or part of them, as `unquoted` reads its
+// input, and each part one more, as `keys` takes one for each key, so the
+// fuel and the host's abort flag bound a long split; every part is a piece
+// of the string, so together they hold no more than it does.
+function split(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const separator = asStr('split', 'the separator', a[0])
+  if ('' === separator) throw typeError('split: the separator must be a non-empty string, not the empty string')
+  const s = asStr('split', 'the string', a[1])
+  const separatorChars = charsIn(separator, 0, separator.length)
+  // The characters read so far, and the steps taken for them.
+  let read = 0
+  let stepped = 0
+  const parts: Val[] = []
+  for (let from = 0; ; ) {
+    const at = s.indexOf(separator, from)
+    const end = -1 === at ? s.length : at
+    read += charsIn(s, from, end) + (0 < parts.length ? separatorChars : 0)
+    for (; stepped < Math.ceil(read / SPLIT_STEP); stepped++) rt.tick()
+    rt.tick()
+    parts.push(str(s.substring(from, end)))
+    if (-1 === at) return vectorVal(parts)
+    from = at + separator.length
+  }
+}
+
+// How many characters `s` holds from `from` to `to`, a surrogate pair one.
+function charsIn(s: string, from: number, to: number): number {
+  let n = 0
+  for (let i = from; i < to; i++) {
+    const c = s.charCodeAt(i)
+    if (0xd800 <= c && c <= 0xdbff && i + 1 < to) {
+      const d = s.charCodeAt(i + 1)
+      if (0xdc00 <= d && d <= 0xdfff) i++
+    }
+    n++
+  }
+  return n
+}
+
 // `repeat count string`: the string `count` times over. The result is one
 // scalar of the output (a line's indentation), so it is held to
 // `max_scalar_bytes`, refused before it is built.
@@ -800,8 +1205,36 @@ function repeat(rt: Runtime, a: ReadonlyArray<Val>): Val {
 }
 
 function fail(rt: Runtime, a: ReadonlyArray<Val>, at: SourceSpan): Val {
-  const message = asStr('fail', 'the message', a[0])
-  throw rt.failAt(Fail.input(message), at)
+  // `(fail message)` is INPUT_INVALID, the code of a document the program
+  // refuses; `(fail :code message)` names what the failure is: a value the
+  // target cannot carry, or a stream that breaks its protocol.
+  let code: Code
+  let message: Val
+  if (1 === a.length) {
+    code = 'INPUT_INVALID'
+    message = a[0]
+  } else if (2 === a.length) {
+    const k = a[0]
+    if ('keyword' !== k.v) throw typeError(`fail: the code must be a keyword, not ${kindText(k)}`)
+    switch (k.name) {
+      case 'invalid':
+        code = 'INPUT_INVALID'
+        break
+      case 'unrepresentable':
+        code = 'TARGET_VALUE_UNREPRESENTABLE'
+        break
+      case 'protocol-order':
+        code = 'PROTOCOL_ORDER_ERROR'
+        break
+      default:
+        throw typeError(`the code of fail must be :invalid, :unrepresentable or :protocol-order, not :${k.name}`)
+    }
+    message = a[1]
+  } else {
+    throw typeError('fail takes a message, or a code and a message')
+  }
+  const text = asStr('fail', 'the message', message)
+  throw rt.failAt(new Fail(code, text), at)
 }
 
 function isReadyValue(v: Val): boolean {
@@ -857,13 +1290,45 @@ function events(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   return streamVal({ p: 'events', source: asStream('events', a[0]) })
 }
 
+function asEvents(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  return streamVal({ p: 'as-events', source: asStream('as-events', a[0]) })
+}
+
 function csvTable(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   const source = asStream('csv-table', a[1])
   return streamVal({ p: 'csv-table', options: a[0], source })
 }
 
+// `json events`, or `json options events`: the options, when given, are
+// read before the events.
 function json(_rt: Runtime, a: ReadonlyArray<Val>): Val {
-  return textVal({ p: 'json', source: asStream('json', a[0]) })
+  let policy: NonFinite
+  let events: Val
+  if (1 === a.length) {
+    policy = 'reject'
+    events = a[0]
+  } else if (2 === a.length) {
+    policy = jsonNonFinite(a[0])
+    events = a[1]
+  } else {
+    throw typeError('json takes events, or an options record and events')
+  }
+  return textVal({ p: 'json', source: asStream('json', events), nonFinite: policy })
+}
+
+// The policy `json`'s options record names (the Rust crate's
+// `json_options`): it holds `:non-finite` and nothing else, `:reject` or
+// `:null`, since JSON has no other spelling.
+function jsonNonFinite(options: Val): NonFinite {
+  if ('record' !== options.v) {
+    throw typeError(`json: the options must be a record, not ${kindText(options)}`)
+  }
+  for (const k of options.fields.keys()) {
+    if ('non-finite' !== k) throw typeError(`json: an option must be :non-finite, not :${k}`)
+  }
+  const policy = nonFinite(options)
+  if ('literal' === policy) throw typeError('json: :non-finite must be :reject or :null, not :literal')
+  return policy
 }
 
 function records(_rt: Runtime, a: ReadonlyArray<Val>): Val {
@@ -885,6 +1350,10 @@ const IMPLS: Record<string, NativeImpl> = {
   count,
   keys,
   length,
+  unquoted,
+  'chars-within': charsWithin,
+  number,
+  'is-number': isNumber,
   compare,
   'number-class': numberClass,
   kind,
@@ -899,6 +1368,8 @@ const IMPLS: Record<string, NativeImpl> = {
   route,
   select,
   events,
+  indices,
+  'as-events': asEvents,
   'scan-emit': scanEmit,
   transition,
   partial,
@@ -912,6 +1383,7 @@ const IMPLS: Record<string, NativeImpl> = {
   'scalar-text': scalarText,
   quoted,
   'string-join': stringJoin,
+  split,
   repeat,
   fail,
   'is-ready': isReady,

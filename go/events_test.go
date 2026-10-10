@@ -31,16 +31,20 @@ func TestEventsOverTheInputIsAffine(t *testing.T) {
 		t.Errorf("%v", f)
 	}
 	// The stream events yields is a stream of items: events, which json
-	// takes back, but not table events for csv and not the output; a
-	// stream of values is not events.
+	// takes back and which the host renders as JSON when it is the output
+	// (a rewritten tree), but not table events for csv; a stream of values
+	// is not events.
 	for _, c := range []struct{ src, finer string }{
 		{"def export [input] (json (select (path each-index) input))", "protocol_mismatch"},
 		{"def export [input] (csv csv-options (events input))", "protocol_mismatch"},
 		{"def export [input] (events (select (path each-index) input))", "protocol_mismatch"},
-		{"def export [input] (events input)", "bad_output"},
+		{"def export [input] (as-events input)", "protocol_mismatch"},
 	} {
 		if _, f := Compile(c.src, "bad.alc", routers, renderers); f == nil || f.Code != CodeDSLTypeError || !strings.HasPrefix(f.Message, c.finer+": ") {
 			t.Errorf("%s: %v", c.src, f)
 		}
+	}
+	if tree, f := Compile("def export [input] (events input)", "tree.alc", routers, renderers); f != nil || tree.Output() != OutputJsonEvents {
+		t.Errorf("%v %v", tree, f)
 	}
 }

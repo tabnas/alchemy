@@ -782,6 +782,7 @@ export class Runtime {
               break
             case 'input':
             case 'events':
+            case 'as-events':
             case 'records':
             case 'json':
               break

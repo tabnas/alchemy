@@ -38,17 +38,19 @@ describe('events', () => {
     assert.equal(fail.code, 'STREAM_REUSED', String(fail))
     assert.ok(fail.message.startsWith('captured: '), String(fail))
     // The stream `events` yields is a stream of items: events, which `json`
-    // takes back, but not table events for `csv` and not the output; a
-    // stream of values is not events.
+    // takes back and which the host renders as JSON when it is the output
+    // (a rewritten tree), but not table events for `csv`; a stream of
+    // values is not events.
     for (const [src, finer] of [
       ['def export [input] (json (select (path each-index) input))', 'protocol_mismatch'],
       ['def export [input] (csv csv-options (events input))', 'protocol_mismatch'],
       ['def export [input] (events (select (path each-index) input))', 'protocol_mismatch'],
-      ['def export [input] (events input)', 'bad_output'],
+      ['def export [input] (as-events input)', 'protocol_mismatch'],
     ]) {
       fail = thrown(() => compile(src, 'bad.alc'))
       assert.equal(fail.code, 'DSL_TYPE_ERROR', `${src}: ${fail}`)
       assert.ok(fail.message.startsWith(`${finer}: `), `${src}: ${fail}`)
     }
+    assert.equal(compile('def export [input] (events input)', 'tree.alc').output, 'JsonEvents/1')
   })
 })

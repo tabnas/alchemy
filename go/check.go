@@ -72,6 +72,29 @@ func StdlibSignature(name string) (Type, bool) {
 		return Func([]Type{RecordT}, RecordT), true
 	case "table-inferred-column":
 		return Func([]Type{StringT}, RecordT), true
+	case "table-positional-column":
+		return Func([]Type{NumberT}, RecordT), true
+	case "table-value-column":
+		return RecordT, true
+	case "table-inferred-columns":
+		return Func([]Type{ValueT}, VectorOf(RecordT)), true
+	// The root adapters (stdlib/root.alc): a state and an event in, a
+	// transition out; the entries answer JSON events, since each is a
+	// stream of events said to be so (`as-events`).
+	case "wrap-object-close":
+		return Func([]Type{Unknown, Unknown}, Tagged("transition")), true
+	case "wrap-object-step":
+		return Func([]Type{StringT, Unknown, Unknown}, Tagged("transition")), true
+	case "wrap-finish":
+		return Func([]Type{Unknown}, VectorOf(EventT)), true
+	case "wrap-object":
+		return Func([]Type{StringT, JsonEvents}, JsonEvents), true
+	case "wrap-array-close":
+		return Func([]Type{Unknown, Unknown}, Tagged("transition")), true
+	case "wrap-array-step":
+		return Func([]Type{Unknown, Unknown}, Tagged("transition")), true
+	case "wrap-array":
+		return Func([]Type{JsonEvents}, JsonEvents), true
 	case "table-row":
 		return Func([]Type{Unknown, ValueT}, Tagged("row")), true
 	case "table-first-row":
@@ -1150,6 +1173,14 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(VectorOf(StringT), exp("the record of keys", RecordT, 0)())
 	case "length":
 		return ret(NumberT, exp("the string of length", StringT, 0)())
+	case "number":
+		return ret(NumberT, exp("the string of number", StringT, 0)())
+	case "is-number":
+		return ret(BoolT, exp("the string of is-number", StringT, 0)())
+	case "unquoted":
+		return ret(StringT, exp("the string of unquoted", StringT, 0)())
+	case "chars-within":
+		return ret(BoolT, first(exp("the ranges of chars-within", VectorOf(Unknown), 0), exp("the string of chars-within", StringT, 1)))
 	case "compare":
 		return ret(KeywordT, first(exp("the first number of compare", NumberT, 0), exp("the second number of compare", NumberT, 1)))
 	case "number-class":
@@ -1190,6 +1221,10 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(StreamOf(ValueT), first(exp("the selector of select", SelectorT, 0), exp("the input of select", JsonEvents, 1)))
 	case "events":
 		return ret(Events(), exp("the input of events", JsonEvents, 0)())
+	case "as-events":
+		return ret(JsonEvents, exp("the items of as-events", StreamOf(Unknown), 0)())
+	case "indices":
+		return ret(VectorOf(NumberT), exp("the vector of indices", VectorOf(Unknown), 0)())
 	case "transition":
 		return ret(Tagged("transition"), first(func() *Fail { return noStream(0, "a state") }, exp("the outputs of transition", VectorOf(Unknown), 1)))
 	case "partial":
@@ -1210,6 +1245,14 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 			}
 			return Func(append([]Type(nil), params[len(args)-1:]...), *t(0).Result), nil
 		case TUnknown, TNever:
+			// A function of more than one arity (`json`, `fail`) or of a
+			// type only the run knows: its arguments are still held, so
+			// none may be a stream.
+			for i := 1; i < len(args); i++ {
+				if f := noStream(i, "a partial application"); f != nil {
+					return Type{}, f
+				}
+			}
 			return Unknown, nil
 		}
 		return Type{}, c.mismatch("the function of partial", FuncOf(1), t(0), at(0))
@@ -1245,8 +1288,27 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(StringT, first(exp("the count of repeat", NumberT, 0), exp("the string of repeat", StringT, 1)))
 	case "string-join":
 		return ret(StringT, first(exp("the separator of string-join", StringT, 0), exp("the strings of string-join", VectorOf(Unknown), 1)))
+	case "split":
+		return ret(VectorOf(StringT), first(exp("the separator of split", StringT, 0), exp("the string of split", StringT, 1)))
 	case "fail":
-		return ret(Never, exp("the message of fail", StringT, 0)())
+		// `(fail message)` is INPUT_INVALID; `(fail :code message)` names
+		// the code: a literal keyword is held to the three here, any other
+		// keyword at run time.
+		message := len(args) - 1
+		if len(args) == 2 {
+			if f := exp("the code of fail", KeywordT, 0)(); f != nil {
+				return Type{}, f
+			}
+			if args[0].Kind == ExprKeyword {
+				switch args[0].Text {
+				case "invalid", "unrepresentable", "protocol-order":
+				default:
+					return Type{}, c.typeError("type_mismatch",
+						"the code of fail must be :invalid, :unrepresentable or :protocol-order, not :"+args[0].Text, args[0].Span)
+				}
+			}
+		}
+		return ret(Never, exp("the message of fail", StringT, message)())
 	case "is-ready":
 		return BoolT, nil
 	case "require-columns":
@@ -1270,7 +1332,14 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		}
 		return Tagged("scalar"), nil
 	case "json":
-		return ret(TextT, exp("the events of json", JsonEvents, 0)())
+		// `json events`, or `json options events`.
+		events := len(args) - 1
+		if len(args) == 2 {
+			if f := exp("the options of json", RecordT, 0)(); f != nil {
+				return Type{}, f
+			}
+		}
+		return ret(TextT, exp("the events of json", JsonEvents, events)())
 	case "csv-table":
 		return ret(TableEvents(), first(exp("the options of csv-table", RecordT, 0), exp("the table events of csv-table", TableEvents(), 1)))
 	case "records":
@@ -1290,8 +1359,19 @@ func outputOf(export Type) (Output, Code, string, string) {
 	case TJsonEvents:
 		return OutputJsonEvents, 0, "", ""
 	case TStream:
+		// Items the checker could not type could be anything, and Unknown
+		// is accepted everywhere: asked first, so that such a stream is
+		// never taken for a table's rows.
+		if export.Item.Kind == TUnknown {
+			return 0, CodeStreamabilityUnknown, "unknown_output",
+				"export answers a stream of items whose type is not known; as-events says they are events, or render them as a text (join, concat-map), or make table events of them"
+		}
 		if TableEventT.Accepts(*export.Item) {
 			return OutputTableRows, 0, "", ""
+		}
+		// A rewritten tree: every item an event, handed on as JSON events.
+		if EventT.Accepts(*export.Item) {
+			return OutputJsonEvents, 0, "", ""
 		}
 		return 0, CodeDSLTypeError, "bad_output",
 			fmt.Sprintf("export answers a Stream<%s>; render it as a text (join, concat-map), or make table events of it", export.Item)

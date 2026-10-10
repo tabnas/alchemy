@@ -43,6 +43,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::ast::SourceSpan;
 use crate::interp::{Bounds, Runtime};
+use crate::program::Output;
 use crate::shared::limits::NODE_BYTES;
 use crate::shared::{
     BoundColumn, CaptureSpec, Cell, Code, CsvOptions, Datum, Fail, Flow, JoinOut, JsonEvent,
@@ -51,7 +52,7 @@ use crate::shared::{
     TableEvent, TableSink, TextOut, Transition,
 };
 use crate::stdlib::registry::{capture_budget, get_field, number_text, truth};
-use crate::value::{selector_segments, type_error, Func, Plan, Protocol, Seq, Val};
+use crate::value::{selector_segments, type_error, Func, NonFinite, Plan, Protocol, Seq, Val};
 
 /// The output every text stage writes to.
 pub type Out = Box<dyn TextOut + Send>;
@@ -159,6 +160,8 @@ pub fn csv_options(v: &Val) -> Option<CsvOptions> {
         Val::Str(s) => MissingText::Text(Box::from(&**s)),
         _ => return None,
     };
+    crate::stdlib::registry::non_finite(v).ok()?;
+    crate::stdlib::registry::no_columns_empty(v).ok()?;
     Some(CsvOptions {
         delimiter,
         newline,
@@ -167,6 +170,116 @@ pub fn csv_options(v: &Val) -> Option<CsvOptions> {
         missing,
         ..CsvOptions::default()
     })
+}
+
+/// The `json` renderer's adapter for `:non-finite :null`: a number that
+/// is not finite goes on as null, everything else as it came.
+struct NullNonFinite(Box<dyn Sink + Send>);
+
+impl Sink for NullNonFinite {
+    fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
+        match ev {
+            JsonEvent::Number(n) if !n.value.is_finite() => self.0.event(JsonEvent::Null),
+            ev => self.0.event(ev),
+        }
+    }
+}
+
+/// The CSV renderer's adapter for `:no-columns :empty`: a table of no
+/// columns is the empty document, so its schema, its rows (each of no
+/// cells) and its end go no further, and the renderer, which refuses such
+/// a schema, writes nothing; a table of columns passes as it came. The
+/// table it keeps back is held to what the library's `csv-table` holds it
+/// to, with the same codes and texts, so the native and the interpreted
+/// `csv` fail alike: a row of any cell, a second schema, and anything after
+/// the end are PROTOCOL_ORDER_ERROR.
+struct NoColumns {
+    kept: Kept,
+    next: Box<dyn TableSink + Send>,
+}
+
+/// Where [`NoColumns`] is in its table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// No schema has come.
+    Before,
+    /// A table of columns, which the renderer holds to the protocol.
+    Passed,
+    /// A table of no columns, kept back: the rows it has had, each of no
+    /// cells.
+    Rows(u64),
+    /// The kept-back table has ended.
+    Ended,
+}
+
+impl TableSink for NoColumns {
+    fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
+        match (self.kept, ev) {
+            (Kept::Before, TableEvent::Schema([])) => {
+                self.kept = Kept::Rows(0);
+                Ok(Flow::Continue)
+            }
+            (Kept::Before, ev @ TableEvent::Schema(_)) => {
+                self.kept = Kept::Passed;
+                self.next.table_event(ev)
+            }
+            (Kept::Before | Kept::Passed, ev) => self.next.table_event(ev),
+            (Kept::Rows(_), TableEvent::Schema(_)) => Err(Fail::protocol("a second schema")),
+            (Kept::Rows(rows), TableEvent::Row(cells)) if !cells.is_empty() => {
+                Err(Fail::protocol(format!(
+                    "row {} has {} cells; the schema has 0 columns",
+                    rows + 1,
+                    cells.len()
+                )))
+            }
+            (Kept::Rows(rows), TableEvent::Row(_)) => {
+                self.kept = Kept::Rows(rows + 1);
+                Ok(Flow::Continue)
+            }
+            (Kept::Rows(_), TableEvent::End) => {
+                self.kept = Kept::Ended;
+                Ok(Flow::Continue)
+            }
+            (Kept::Ended, TableEvent::Schema(_)) => Err(Fail::protocol("a schema after the end")),
+            (Kept::Ended, TableEvent::Row(_)) => Err(Fail::protocol("a row after the end")),
+            (Kept::Ended, TableEvent::End) => Err(Fail::protocol("a second end")),
+        }
+    }
+}
+
+/// The CSV renderer's adapter for `:non-finite` `:null` or `:literal`: a
+/// number cell that is not finite goes on as a null cell, which the
+/// renderer writes as the null text, or as the string `Infinity`,
+/// `-Infinity` or `NaN`, as `scalar-text` writes it under the same
+/// options.
+struct NonFiniteCells {
+    policy: NonFinite,
+    next: Box<dyn TableSink + Send>,
+}
+
+impl TableSink for NonFiniteCells {
+    fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
+        match ev {
+            TableEvent::Row(cells)
+                if cells
+                    .iter()
+                    .any(|c| matches!(c, Cell::Number { value, .. } if !value.is_finite())) =>
+            {
+                let cells: Vec<Cell> = cells
+                    .iter()
+                    .map(|c| match c {
+                        Cell::Number { value, .. } if !value.is_finite() => match self.policy {
+                            NonFinite::Null => Cell::Null,
+                            _ => Cell::String(NonFinite::word(*value).into()),
+                        },
+                        c => c.clone(),
+                    })
+                    .collect();
+                self.next.table_event(TableEvent::Row(&cells))
+            }
+            ev => self.next.table_event(ev),
+        }
+    }
 }
 
 /// A cell as the table protocol carries it, from the value a program
@@ -856,6 +969,9 @@ enum Phase {
 struct CsvTableStage {
     rt: Arc<Runtime>,
     metrics: Arc<Metrics>,
+    /// The options say `(entry :no-columns :empty)`: a table of no columns
+    /// passes, for the text to write as the empty document.
+    no_columns: bool,
     /// Whether this stage counts the rows in `metrics.rows`: when no later
     /// table stage does ([`Lowering::items`]).
     count_rows: bool,
@@ -882,7 +998,7 @@ impl ItemSink for CsvTableStage {
                     Phase::Rows => return Err(Fail::protocol("a second schema")),
                     Phase::Done => return Err(Fail::protocol("a schema after the end")),
                 }
-                if columns.is_empty() {
+                if columns.is_empty() && !self.no_columns {
                     return Err(Fail::new(
                         Code::TargetValueUnrepresentable,
                         "a table with no columns has no CSV form",
@@ -1103,16 +1219,44 @@ impl<'a> Lowering<'a> {
 
     /// The sink for a program's result over `out`. `render` is the host's
     /// choice for a stream result; a text result takes none
-    /// (`render_of_text`).
+    /// (`render_of_text`). A stream of items is taken for a table's rows,
+    /// as the runtime cannot tell an item's shape before it arrives;
+    /// [`Lowering::sink_as`] takes the checker's word instead.
     pub fn sink(
         &self,
         result: &Val,
         out: Out,
         render: Option<Renderer>,
     ) -> Result<EventSink, Fail> {
+        let output = match result {
+            Val::Stream(plan) => match plan.protocol() {
+                Protocol::JsonEvents => Output::JsonEvents,
+                _ => Output::TableRows,
+            },
+            _ => Output::Text,
+        };
+        self.sink_as(result, out, render, output)
+    }
+
+    /// [`Lowering::sink`] with `output`, what the checker decided the
+    /// result is: a stream of items the runtime cannot tell the protocol
+    /// of is JSON events when the checker typed every item an event (a
+    /// rewritten tree), and a table's rows otherwise.
+    pub fn sink_as(
+        &self,
+        result: &Val,
+        out: Out,
+        render: Option<Renderer>,
+        output: Output,
+    ) -> Result<EventSink, Fail> {
         match result {
             // A string is a text where a text is expected (spec 10.4).
-            Val::Str(s) => self.sink(&Val::Text(Arc::new(Plan::Lit(s.clone()))), out, render),
+            Val::Str(s) => self.sink_as(
+                &Val::Text(Arc::new(Plan::Lit(s.clone()))),
+                out,
+                render,
+                output,
+            ),
             Val::Text(plan) => {
                 if render.is_some() {
                     return Err(Fail::new(
@@ -1123,7 +1267,11 @@ impl<'a> Lowering<'a> {
                 self.text(plan, out)
             }
             Val::Stream(plan) => {
-                let protocol = plan.protocol();
+                let protocol = match (plan.protocol(), output) {
+                    // A rewritten tree: the checker saw every item an event.
+                    (Protocol::Items, Output::JsonEvents) => Protocol::JsonEvents,
+                    (protocol, _) => protocol,
+                };
                 let render = render.unwrap_or(match protocol {
                     Protocol::JsonEvents => Renderer::Json,
                     _ => Renderer::Csv,
@@ -1163,13 +1311,36 @@ impl<'a> Lowering<'a> {
         }
         match &**plan {
             Plan::Csv { options, source } => {
+                let options_val = options;
                 let options = csv_options(options).ok_or_else(|| {
                     type_error("csv: the options record does not map to the renderer's dialect")
                 })?;
-                let renderer = self.renderers.csv(out, options)?;
-                self.table(source, renderer, false)
+                let mut renderer = self.renderers.csv(out, options.clone())?;
+                if crate::stdlib::registry::no_columns_empty(options_val)? {
+                    renderer = Box::new(NoColumns {
+                        kept: Kept::Before,
+                        next: renderer,
+                    });
+                }
+                match crate::stdlib::registry::non_finite(options_val)? {
+                    NonFinite::Reject => self.table(source, renderer, false),
+                    policy => self.table(
+                        source,
+                        Box::new(NonFiniteCells {
+                            policy,
+                            next: renderer,
+                        }),
+                        false,
+                    ),
+                }
             }
-            Plan::Json { source } => self.events(source, self.renderers.json(out, json_options())),
+            Plan::Json { source, non_finite } => {
+                let json = self.renderers.json(out, json_options());
+                match non_finite {
+                    NonFinite::Null => self.events(source, Box::new(NullNonFinite(json))),
+                    _ => self.events(source, json),
+                }
+            }
             Plan::ConcatMap {
                 f,
                 items: Seq::Stream(source),
@@ -1235,6 +1406,9 @@ impl<'a> Lowering<'a> {
             Plan::Records { source } => {
                 self.table(source, self.renderers.records_to_json(sink), false)
             }
+            // `as-events` names what the arm below does for any items
+            // plan: the program's items, each an event, as JSON events.
+            Plan::AsEvents { source } => self.events(source, sink),
             // A stream whose items may be events (`events` itself, or a
             // `scan-emit`, `map` or `filter` over anything): each item is
             // turned back into an event as the stream runs, the reverse of
@@ -1296,7 +1470,7 @@ impl<'a> Lowering<'a> {
                 )?;
                 self.events(source, transducer)
             }
-            Plan::Input | Plan::Records { .. } => Err(protocol_mismatch(
+            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Err(protocol_mismatch(
                 "table events were expected, not JSON events (table-from-json makes a table of them)",
             )),
             _ => self.items(
@@ -1415,11 +1589,13 @@ impl<'a> Lowering<'a> {
             }
             Plan::CsvTable { options, source } => {
                 check_delimiter(options)?;
+                let no_columns = crate::stdlib::registry::no_columns_empty(options)?;
                 self.items(
                     source,
                     Box::new(CsvTableStage {
                         rt: self.rt.clone(),
                         metrics: self.metrics.clone(),
+                        no_columns,
                         count_rows: !counted_later,
                         down,
                         phase: Phase::BeforeSchema,
@@ -1430,7 +1606,7 @@ impl<'a> Lowering<'a> {
                     true,
                 )
             }
-            Plan::Input | Plan::Records { .. } => Err(protocol_mismatch(
+            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Err(protocol_mismatch(
                 "JSON events cannot be read item by item; select or route what the stream should yield, or read its events",
             )),
             other => Err(type_error(format!(
@@ -1650,5 +1826,111 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(csv_options(&bad), None);
         assert_eq!(csv_options(&Val::Null), None);
+    }
+
+    /// The table `:no-columns :empty` keeps back from the renderer is held
+    /// to what the library's `csv-table` holds it to, with its texts: a
+    /// clean empty table reaches the renderer not at all, and a table of
+    /// columns reaches it whole, a later schema too, for the renderer to
+    /// refuse.
+    #[test]
+    fn no_columns_holds_the_table_it_keeps_back() {
+        use std::sync::Mutex;
+
+        /// What reaches the renderer, an event to a line.
+        struct Log(Arc<Mutex<Vec<String>>>);
+        impl TableSink for Log {
+            fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
+                self.0.lock().unwrap().push(match ev {
+                    TableEvent::Schema(columns) => format!("schema {}", columns.len()),
+                    TableEvent::Row(cells) => format!("row {}", cells.len()),
+                    TableEvent::End => "end".to_string(),
+                });
+                Ok(Flow::Continue)
+            }
+        }
+        // The events through a fresh adapter: what reached the renderer,
+        // or the failure's text.
+        let run = |events: &[TableEvent<'_>]| -> Result<Vec<String>, String> {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let mut n = NoColumns {
+                kept: Kept::Before,
+                next: Box::new(Log(log.clone())),
+            };
+            for ev in events {
+                if let Err(f) = n.table_event(*ev) {
+                    assert_eq!(f.code, Code::ProtocolOrderError, "{f}");
+                    return Err(f.message);
+                }
+            }
+            let seen = log.lock().unwrap().clone();
+            Ok(seen)
+        };
+        let empty: &[PublicColumn] = &[];
+        let a = [PublicColumn { label: "a".into() }];
+        let one = [Cell::Number {
+            value: 1.0,
+            lexeme: None,
+        }];
+        // A clean empty table: nothing reaches the renderer.
+        assert_eq!(
+            run(&[
+                TableEvent::Schema(empty),
+                TableEvent::Row(&[]),
+                TableEvent::Row(&[]),
+                TableEvent::End
+            ]),
+            Ok(vec![])
+        );
+        // Each refusal, with the library's text.
+        let refused = |events: &[TableEvent<'_>]| run(events).unwrap_err();
+        assert_eq!(
+            refused(&[
+                TableEvent::Schema(empty),
+                TableEvent::Row(&[]),
+                TableEvent::Row(&one)
+            ]),
+            "row 2 has 1 cells; the schema has 0 columns"
+        );
+        assert_eq!(
+            refused(&[TableEvent::Schema(empty), TableEvent::Schema(&a)]),
+            "a second schema"
+        );
+        assert_eq!(
+            refused(&[
+                TableEvent::Schema(empty),
+                TableEvent::End,
+                TableEvent::Schema(empty)
+            ]),
+            "a schema after the end"
+        );
+        assert_eq!(
+            refused(&[
+                TableEvent::Schema(empty),
+                TableEvent::End,
+                TableEvent::Row(&[])
+            ]),
+            "a row after the end"
+        );
+        assert_eq!(
+            refused(&[TableEvent::Schema(empty), TableEvent::End, TableEvent::End]),
+            "a second end"
+        );
+        // A table of columns passes as it came, and so does a later empty
+        // schema, for the renderer to refuse.
+        assert_eq!(
+            run(&[
+                TableEvent::Schema(&a),
+                TableEvent::Row(&one),
+                TableEvent::End,
+                TableEvent::Schema(empty)
+            ]),
+            Ok(vec![
+                "schema 1".to_string(),
+                "row 1".to_string(),
+                "end".to_string(),
+                "schema 0".to_string()
+            ])
+        );
     }
 }

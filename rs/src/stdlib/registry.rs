@@ -23,7 +23,7 @@ use crate::ast::SourceSpan;
 use crate::interp::Runtime;
 use crate::lex::is_json_number;
 use crate::shared::{CaptureSpec, Code, Fail, Selector};
-use crate::value::{type_error, Func, Partial, Plan, Seq, Val, MISSING};
+use crate::value::{type_error, Func, NonFinite, Partial, Plan, Seq, Val, MISSING};
 
 /// How many arguments an operator takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -500,6 +500,327 @@ fn length(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::num(count as f64))
 }
 
+/// `number string`: the number a string spells. A JSON number keeps the
+/// text as its lexeme, so a renderer writes it as it was spelled; the three
+/// non-finite numbers are spelled `Infinity`, `-Infinity` and `NaN`, as
+/// JavaScript spells them. A format's reverse reads its numbers back with
+/// it (XML's embedding writes a number as text). The string is read by
+/// [`read_number`], as `is-number` reads it.
+fn number(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("number", "the string", &a[0])?;
+    read_number(rt, s)?.ok_or_else(|| input_invalid(format!("number: {s:?} spells no number")))
+}
+
+/// `is-number string`: whether `number` reads the string, without
+/// failing: a JSON number, or `Infinity`, `-Infinity` or `NaN`. A program
+/// cannot catch a failure, so a format's part tests a string with it
+/// before it calls `number` (zon's render, a big integer's digits; XML's
+/// reverse, a number's text). The two read with [`read_number`], so
+/// `number` fails exactly where this answers false.
+fn is_number(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("is-number", "the string", &a[0])?;
+    Ok(Val::Bool(read_number(rt, s)?.is_some()))
+}
+
+/// How many characters of its input `number` and `is-number` read per
+/// evaluation step.
+pub const NUMBER_STEP: usize = 4096;
+
+/// What [`read_number`] has read of a spelling.
+#[derive(Clone, Copy)]
+enum Spelled {
+    Start,
+    Minus,
+    /// An integer part `0`, which no digit follows.
+    Zero,
+    /// An integer part of a digit from 1 to 9 and the digits after it.
+    Integer,
+    /// A decimal point, before the fraction's first digit.
+    Point,
+    Fraction,
+    /// The exponent's `e` or `E`.
+    E,
+    /// The exponent's sign.
+    Sign,
+    Exponent,
+    /// A word begun: the characters it still wants, and the number it
+    /// spells.
+    Word(&'static [u8], f64),
+}
+
+/// The number `number` answers for a string, or `None` where it fails: a
+/// JSON number (`-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`), its
+/// text kept as the lexeme while the value is finite, or `Infinity`,
+/// `-Infinity` or `NaN`. The string is read from the front, an evaluation
+/// step before the first of each [`NUMBER_STEP`] characters, and refused
+/// at the first character no spelling goes on with, so the host's abort
+/// flag stops the read of a long one, a number or not.
+fn read_number(rt: &Runtime, s: &Arc<str>) -> Result<Option<Val>, Fail> {
+    use Spelled::*;
+    let mut at = Start;
+    // A spelling is ASCII, so a byte read is a character read up to the
+    // first that is not, where the reading ends.
+    for (i, &c) in s.as_bytes().iter().enumerate() {
+        if i % NUMBER_STEP == 0 {
+            rt.tick()?;
+        }
+        at = match (at, c) {
+            (Start, b'-') => Minus,
+            (Start | Minus, b'0') => Zero,
+            (Start | Minus, b'1'..=b'9') | (Integer, b'0'..=b'9') => Integer,
+            (Zero | Integer, b'.') => Point,
+            (Point | Fraction, b'0'..=b'9') => Fraction,
+            (Zero | Integer | Fraction, b'e' | b'E') => E,
+            (E, b'+' | b'-') => Sign,
+            (E | Sign | Exponent, b'0'..=b'9') => Exponent,
+            (Start, b'I') => Word(b"nfinity", f64::INFINITY),
+            (Minus, b'I') => Word(b"nfinity", f64::NEG_INFINITY),
+            (Start, b'N') => Word(b"aN", f64::NAN),
+            (Word(word, value), c) if word.first() == Some(&c) => Word(&word[1..], value),
+            _ => return Ok(None),
+        };
+    }
+    let value = match at {
+        // Every JSON number reads as an f64, one too large as an infinity.
+        Zero | Integer | Fraction | Exponent => match s.parse::<f64>() {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        },
+        Word([], value) => value,
+        _ => return Ok(None),
+    };
+    let lexeme = if value.is_finite() {
+        Some(s.clone())
+    } else {
+        None
+    };
+    Ok(Some(Val::Num { value, lexeme }))
+}
+
+/// `unquoted string`: the string a double-quoted form spells, the reverse
+/// of `quoted`: a leading and a trailing quote around characters and
+/// JSON's escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and
+/// `\uXXXX`, a surrogate pair as the one character it names). Any other
+/// text is INPUT_INVALID: no quotes, a quote or a control character
+/// unescaped inside, another escape, or a surrogate on its own. A format's
+/// reverse reads back with it what its embedding wrote with `quoted`. The
+/// input is read an evaluation step per [`UNQUOTED_STEP`] characters, as
+/// `length` counts a long string in steps, so the host's abort flag stops
+/// the read of a long one.
+fn unquoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str("unquoted", "the string", &a[0])?;
+    match read_quoted(s, || rt.tick())? {
+        Some(text) => Ok(Val::Str(Arc::from(text))),
+        None => Err(input_invalid(format!(
+            "unquoted: {s:?} is not a double-quoted string"
+        ))),
+    }
+}
+
+/// How many characters of its input `unquoted` reads per evaluation step.
+pub const UNQUOTED_STEP: usize = 4096;
+
+/// The string a double-quoted form spells, or `None`.
+pub fn unquote(s: &str) -> Option<String> {
+    match read_quoted(s, || Ok::<(), std::convert::Infallible>(())) {
+        Ok(text) => text,
+        Err(never) => match never {},
+    }
+}
+
+/// A string's characters, read with a `step` before the first of each
+/// [`UNQUOTED_STEP`] of them, so a string read to its end takes one step
+/// per [`UNQUOTED_STEP`] characters or part of them.
+struct Counted<'s, F> {
+    chars: std::str::Chars<'s>,
+    read: usize,
+    step: F,
+}
+
+impl<E, F: FnMut() -> Result<(), E>> Counted<'_, F> {
+    fn next(&mut self) -> Result<Option<char>, E> {
+        if self.read % UNQUOTED_STEP == 0 && !self.chars.as_str().is_empty() {
+            (self.step)()?;
+        }
+        let c = self.chars.next();
+        if c.is_some() {
+            self.read += 1;
+        }
+        Ok(c)
+    }
+
+    /// Four hex digits, either case, as the code unit they spell.
+    fn hex4(&mut self) -> Result<Option<u32>, E> {
+        let mut v = 0;
+        for _ in 0..4 {
+            match self.next()?.and_then(|c| c.to_digit(16)) {
+                Some(d) => v = v * 16 + d,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(v))
+    }
+}
+
+/// [`unquote`], read from the front with a `step` per [`UNQUOTED_STEP`]
+/// characters: the opening quote, the characters and escapes, and a
+/// closing quote that ends the input.
+fn read_quoted<E>(s: &str, step: impl FnMut() -> Result<(), E>) -> Result<Option<String>, E> {
+    let mut r = Counted {
+        chars: s.chars(),
+        read: 0,
+        step,
+    };
+    if r.next()? != Some('"') {
+        return Ok(None);
+    }
+    let mut out = String::with_capacity(s.len());
+    loop {
+        let Some(c) = r.next()? else {
+            // No closing quote.
+            return Ok(None);
+        };
+        match c {
+            // The closing quote, which must end the input.
+            '"' => return Ok(r.chars.as_str().is_empty().then_some(out)),
+            c if (c as u32) < 0x20 => return Ok(None),
+            '\\' => {
+                let Some(escape) = r.next()? else {
+                    return Ok(None);
+                };
+                match escape {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
+                    'b' => out.push('\u{8}'),
+                    'f' => out.push('\u{c}'),
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    'u' => {
+                        let Some(high) = r.hex4()? else {
+                            return Ok(None);
+                        };
+                        let code = match high {
+                            0xD800..=0xDBFF => {
+                                // A high surrogate names a character only
+                                // with the low one after it, as a second
+                                // escape.
+                                if r.next()? != Some('\\') || r.next()? != Some('u') {
+                                    return Ok(None);
+                                }
+                                let Some(low) = r.hex4()? else {
+                                    return Ok(None);
+                                };
+                                if !(0xDC00..=0xDFFF).contains(&low) {
+                                    return Ok(None);
+                                }
+                                0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+                            }
+                            0xDC00..=0xDFFF => return Ok(None),
+                            v => v,
+                        };
+                        match char::from_u32(code) {
+                            Some(c) => out.push(c),
+                            None => return Ok(None),
+                        }
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            c => out.push(c),
+        }
+    }
+}
+
+/// `chars-within ranges string`: whether every character of the string
+/// lies within one of the ranges, each a vector `[low high]` of code
+/// points, both included. The empty string is within any ranges. A
+/// format's part tests a string with it against the characters the format
+/// can carry (XML's `Char` production, a name's characters) before it
+/// writes the string, and chooses its convention when it cannot. The
+/// ranges may come from data, so the work is counted in comparisons, an
+/// evaluation step per [`CHARS_WITHIN_STEP`] of them and per as many
+/// ranges read, and the host's abort flag stops a long test as it stops
+/// any long evaluation.
+fn chars_within(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let ranges = as_items("chars-within", &a[0])?;
+    let mut bounds: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for (i, range) in ranges.iter().enumerate() {
+        if i % CHARS_WITHIN_STEP == CHARS_WITHIN_STEP - 1 {
+            rt.tick()?;
+        }
+        let pair = match range {
+            Val::Vector(pair) if pair.len() == 2 => pair,
+            other => {
+                return Err(type_error(format!(
+                    "chars-within: a range must be a vector [low high], not {}",
+                    match other {
+                        Val::Vector(v) => format!("a vector of {} items", v.len()),
+                        other => other.kind().to_string(),
+                    }
+                )))
+            }
+        };
+        let point = |v: &Val| match v {
+            Val::Num { value, .. }
+                if value.fract() == 0.0 && (0.0..=1_114_111.0).contains(value) =>
+            {
+                Ok(*value as u32)
+            }
+            Val::Num { value, lexeme } => Err(type_error(format!(
+                "chars-within: a range's bound must be a code point from 0 to 1114111, not {}",
+                number_text(*value, lexeme.as_deref()).unwrap_or_else(|_| value.to_string())
+            ))),
+            other => Err(type_error(format!(
+                "chars-within: a range's bound must be a number, not {}",
+                other.kind()
+            ))),
+        };
+        let (low, high) = (point(&pair[0])?, point(&pair[1])?);
+        if low > high {
+            return Err(type_error(format!(
+                "chars-within: a range must be a vector [low high] with low at most high, not [{low} {high}]"
+            )));
+        }
+        bounds.push((low, high));
+    }
+    let s = as_str("chars-within", "the string", &a[1])?;
+    // Comparisons made since the last step; a character costs at least
+    // one, so an empty range vector still counts its characters.
+    let mut work = 0usize;
+    for c in s.chars() {
+        let c = c as u32;
+        let mut within = false;
+        for &(low, high) in &bounds {
+            work += 1;
+            if work >= CHARS_WITHIN_STEP {
+                rt.tick()?;
+                work = 0;
+            }
+            if (low..=high).contains(&c) {
+                within = true;
+                break;
+            }
+        }
+        if bounds.is_empty() {
+            work += 1;
+            if work >= CHARS_WITHIN_STEP {
+                rt.tick()?;
+                work = 0;
+            }
+        }
+        if !within {
+            return Ok(Val::Bool(false));
+        }
+    }
+    Ok(Val::Bool(true))
+}
+
+/// How many comparisons, or ranges read, `chars-within` makes per
+/// evaluation step.
+pub const CHARS_WITHIN_STEP: usize = 4096;
+
 /// `compare a b`: how two numbers are ordered, `:less`, `:equal` or
 /// `:greater`, and `:unordered` when either is NaN; -0 and 0 are equal.
 fn compare(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -840,6 +1161,19 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         .clone(),
         Val::Bool(true) => Arc::from("true"),
         Val::Bool(false) => Arc::from("false"),
+        Val::Num { value, .. }
+            if !value.is_finite() && non_finite(options)? != NonFinite::Reject =>
+        {
+            match non_finite(options)? {
+                NonFinite::Null => as_str(
+                    "scalar-text",
+                    ":null-text",
+                    &option("scalar-text", options, "null-text")?,
+                )?
+                .clone(),
+                _ => Arc::from(NonFinite::word(*value)),
+            }
+        }
         Val::Num { value, lexeme } => Arc::from(number_text(*value, lexeme.as_deref())?),
         Val::Str(s) => s.clone(),
         v if v.is_missing() => match option("scalar-text", options, "missing")? {
@@ -868,12 +1202,53 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Str(text))
 }
 
+/// The `:non-finite` policy of an options record: `:reject` (the default,
+/// when the record has none), `:null` or `:literal`.
+pub fn non_finite(options: &Val) -> Result<NonFinite, Fail> {
+    match options.field("non-finite") {
+        None => Ok(NonFinite::Reject),
+        Some(v) if v.is_missing() => Ok(NonFinite::Reject),
+        Some(Val::Keyword(k)) => NonFinite::named(&k).ok_or_else(|| {
+            type_error(format!(
+                ":non-finite must be :reject, :null or :literal, not :{k}"
+            ))
+        }),
+        Some(other) => Err(type_error(format!(
+            ":non-finite must be :reject, :null or :literal, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+/// Whether a CSV options record lets a table of no columns through, to be
+/// written as the empty document: its `:no-columns` is `:empty`, where
+/// `:refuse`, the default when the record has none, refuses it.
+pub fn no_columns_empty(options: &Val) -> Result<bool, Fail> {
+    match options.field("no-columns") {
+        None => Ok(false),
+        Some(v) if v.is_missing() => Ok(false),
+        Some(Val::Keyword(k)) => match &*k {
+            "refuse" => Ok(false),
+            "empty" => Ok(true),
+            other => Err(type_error(format!(
+                ":no-columns must be :refuse or :empty, not :{other}"
+            ))),
+        },
+        Some(other) => Err(type_error(format!(
+            ":no-columns must be :refuse or :empty, not {}",
+            other.kind()
+        ))),
+    }
+}
+
 /// The double-quoted form of `s`: the JSON string form (RFC 8259's
 /// escapes for the quote, the backslash and U+0000 to U+001F, the short
 /// ones where they exist, `\u00xx` otherwise, in the render crate's
-/// lowercase) with U+007F to U+009F escaped the same way, since YAML's
-/// double-quoted style reads JSON's escapes but its printable set excludes
-/// the C1 controls. Every other character is written as itself.
+/// lowercase) with U+007F to U+009F, U+FFFE and U+FFFF escaped the same
+/// way, since YAML's double-quoted style reads JSON's escapes but its
+/// printable set excludes the C1 controls and those two noncharacters,
+/// which XML's characters exclude too. Every other character is written
+/// as itself.
 pub fn quote(s: &str) -> String {
     let mut out = String::with_capacity(quoted_len(s));
     out.push('"');
@@ -886,7 +1261,7 @@ pub fn quote(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => {
+            c if escaped_as_code(c) => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => out.push(c),
@@ -894,6 +1269,13 @@ pub fn quote(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Whether [`quote`] writes a character as `\uXXXX`: U+0000 to U+001F but
+/// the five with short escapes, U+007F to U+009F, U+FFFE and U+FFFF.
+fn escaped_as_code(c: char) -> bool {
+    let c = c as u32;
+    c < 0x20 || (0x7f..=0x9f).contains(&c) || c == 0xfffe || c == 0xffff
 }
 
 /// The length of [`quote`]'s result, counted before it is built: two
@@ -904,7 +1286,7 @@ pub fn quoted_len(s: &str) -> usize {
         .chars()
         .map(|c| match c {
             '"' | '\\' | '\n' | '\t' | '\r' | '\u{8}' | '\u{c}' => 2,
-            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => 6,
+            c if escaped_as_code(c) => 6,
             c => c.len_utf8(),
         })
         .sum::<usize>()
@@ -965,6 +1347,45 @@ fn string_join(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Str(Arc::from(out)))
 }
 
+/// `split separator string`: the strings between the separator's
+/// occurrences in the string, found from the front, none overlapping
+/// another: one more than it occurs, an empty one where two occurrences
+/// meet or at either end, and the string itself where it does not occur.
+/// The separator is a literal, not a pattern, and must not be empty. A
+/// format's part, which cannot read a string a character at a time, reads
+/// a dotted string's parts with it to check each one (semver's prerelease
+/// and build identifiers). The string takes an evaluation step for each
+/// [`SPLIT_STEP`] characters read, or part of them, as `unquoted` reads
+/// its input, and each part one more, as `keys` takes one for each key, so
+/// the fuel and the host's abort flag bound a long split; every part is a
+/// piece of the string, so together they hold no more than it does.
+fn split(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let separator = as_str("split", "the separator", &a[0])?;
+    if separator.is_empty() {
+        return Err(type_error(
+            "split: the separator must be a non-empty string, not the empty string",
+        ));
+    }
+    let s = as_str("split", "the string", &a[1])?;
+    let separator_chars = separator.chars().count();
+    // The characters read so far, and the steps taken for them.
+    let (mut read, mut stepped) = (0usize, 0usize);
+    let mut parts = Vec::new();
+    for (i, part) in s.split(&**separator).enumerate() {
+        read += part.chars().count() + if i > 0 { separator_chars } else { 0 };
+        while stepped < read.div_ceil(SPLIT_STEP) {
+            rt.tick()?;
+            stepped += 1;
+        }
+        rt.tick()?;
+        parts.push(Val::Str(Arc::from(part)));
+    }
+    Ok(Val::vector(parts))
+}
+
+/// How many characters of its input `split` reads per evaluation step.
+pub const SPLIT_STEP: usize = 4096;
+
 /// `repeat count string`: the string `count` times over. The result is one
 /// scalar of the output (a line's indentation), so it is held to
 /// `max_scalar_bytes`, refused before it is built.
@@ -1004,8 +1425,63 @@ fn repeat(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 }
 
 fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
-    let message = as_str("fail", "the message", &a[0])?;
-    Err(rt.fail_at(Fail::new(Code::InputInvalid, message.to_string()), at))
+    // `(fail message)` is INPUT_INVALID, the code of a document the
+    // program refuses; `(fail :code message)` names what the failure is: a
+    // value the target cannot carry, or a stream that breaks its protocol.
+    let (code, message) = match a {
+        [message] => (Code::InputInvalid, message),
+        [code, message] => {
+            let code = match code {
+                Val::Keyword(k) => match &**k {
+                    "invalid" => Code::InputInvalid,
+                    "unrepresentable" => Code::TargetValueUnrepresentable,
+                    "protocol-order" => Code::ProtocolOrderError,
+                    other => {
+                        return Err(type_error(format!(
+                            "the code of fail must be :invalid, :unrepresentable or :protocol-order, not :{other}"
+                        )))
+                    }
+                },
+                other => {
+                    return Err(type_error(format!(
+                        "fail: the code must be a keyword, not {}",
+                        other.kind()
+                    )))
+                }
+            };
+            (code, message)
+        }
+        _ => return Err(type_error("fail takes a message, or a code and a message")),
+    };
+    let message = as_str("fail", "the message", message)?;
+    Err(rt.fail_at(Fail::new(code, message.to_string()), at))
+}
+
+fn as_events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("as-events", &a[0])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::AsEvents { source })))
+}
+
+/// The positions of a vector's items, as numbers: what the interpreted
+/// inferred table labels an array row's cells by. A bounded operation
+/// over one vector, like `keys` over one record.
+fn indices(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Vector(items) => {
+            // A step per item, as `keys` takes one per key, so the host's
+            // abort flag stops a long vector's count like any evaluation.
+            let mut out = Vec::with_capacity(items.len());
+            for i in 0..items.len() {
+                rt.tick()?;
+                out.push(Val::num(i as f64));
+            }
+            Ok(Val::vector(out))
+        }
+        other => Err(type_error(format!(
+            "indices: a vector was expected, not {}",
+            other.kind()
+        ))),
+    }
 }
 
 fn is_ready_value(v: &Val) -> bool {
@@ -1125,8 +1601,43 @@ fn csv_table(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 }
 
 fn json(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let source = as_stream("json", &a[0])?.clone();
-    Ok(Val::Text(Arc::new(Plan::Json { source })))
+    let (options, events) = match a {
+        [events] => (None, events),
+        [options, events] => (Some(options), events),
+        _ => {
+            return Err(type_error(
+                "json takes events, or an options record and events",
+            ))
+        }
+    };
+    let non_finite = match options {
+        None => NonFinite::Reject,
+        Some(options) => json_options(options)?,
+    };
+    let source = as_stream("json", events)?.clone();
+    Ok(Val::Text(Arc::new(Plan::Json { source, non_finite })))
+}
+
+/// The policy `json`'s options record names: it holds `:non-finite` and
+/// nothing else, `:reject` or `:null`, since JSON has no other spelling.
+fn json_options(options: &Val) -> Result<NonFinite, Fail> {
+    let Val::Record(fields) = options else {
+        return Err(type_error(format!(
+            "json: the options must be a record, not {}",
+            options.kind()
+        )));
+    };
+    if let Some(other) = fields.keys().find(|k| &***k != "non-finite") {
+        return Err(type_error(format!(
+            "json: an option must be :non-finite, not :{other}"
+        )));
+    }
+    match non_finite(options)? {
+        NonFinite::Literal => Err(type_error(
+            "json: :non-finite must be :reject or :null, not :literal",
+        )),
+        policy => Ok(policy),
+    }
 }
 
 fn records(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -1205,6 +1716,10 @@ static NATIVES: &[Native] = &[
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
     f("keys", Exact(1), keys, "keys record -> Vector", "the record's keys as strings, in its order, which for a captured object is the document's"),
     f("length", Exact(1), length, "length string -> Number", "how many characters the string holds"),
+    f("unquoted", Exact(1), unquoted, "unquoted string -> String", "the string a double-quoted form spells, the reverse of quoted: JSON's escapes (\\\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, \\uXXXX) read, a surrogate pair as the one character it names; INPUT_INVALID for any other text (no quotes, a quote or a control character unescaped inside, another escape, a surrogate on its own)"),
+    f("chars-within", Exact(2), chars_within, "chars-within ranges string -> Bool", "whether every character of the string lies within one of the ranges, each a vector [low high] of code points, both included; true for the empty string. A part tests a string with it against what its format can carry (XML's Char production, a name's characters) and chooses its convention where it cannot"),
+    f("number", Exact(1), number, "number string -> Number", "the number the string spells: a JSON number, its text kept as the lexeme, or Infinity, -Infinity or NaN; INPUT_INVALID for any other text"),
+    f("is-number", Exact(1), is_number, "is-number string -> Bool", "whether number reads the string: a JSON number, or Infinity, -Infinity or NaN; false for any other text, where number fails. A program cannot catch a failure, so a part tests a string with it before it calls number"),
     f("compare", Exact(2), compare, "compare a b -> Keyword", "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"),
     f("number-class", Exact(1), number_class, "number-class number -> Keyword", ":finite, :infinity, :negative-infinity or :nan"),
     f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
@@ -1221,6 +1736,8 @@ static NATIVES: &[Native] = &[
     f("route", Exact(2), route, "route captures input -> Stream<Selected>", "one pass, a shared prefix matcher; retains one selected scope at a time; captures may not overlap"),
     f("select", Exact(2), select, "select selector input -> Stream<Value>", "route with one capture, delivering the values"),
     f("events", Exact(1), events, "events input -> Stream<Event>", "every event of JsonEvents as one item, as it arrives: the container events as constants, key and scalar with their one field; End ends the stream and is no item; nothing is retained between events"),
+    f("indices", Exact(1), indices, "indices vector -> Vector<Number>", "the positions of the vector's items, 0 to one less than its count, as numbers: the labels the inferred table gives an array row's cells; a bounded operation over one vector"),
+    f("as-events", Exact(1), as_events, "as-events items -> JsonEvents", "a stream of items the program built, each an event, as JsonEvents: what every taker of JSON events applies to such a stream, said by the program where the checker cannot type the items (an export, say); an item that is not an event fails where it arrives"),
     f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its concat-map applies included): at most max_metadata_bytes, no deeper than max_depth, reported in retained_bytes_high; ready after each item; finish runs once at the validated end"),
     k("transition", Exact(2), transition, "transition state outputs -> Transition", "one step's result: the next state and a vector of outputs"),
     f("partial", AtLeast(1), partial, "partial f arg... -> Fn", "f with its first arguments supplied"),
@@ -1232,11 +1749,12 @@ static NATIVES: &[Native] = &[
     f("concat", AtLeast(0), concat, "concat item... -> Text", "in order, without assembling the result"),
     f("text", Exact(1), text, "text string -> Text", "a string as a text"),
     f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),
-    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null and missing policies: a string as it is, a number by its lexeme, a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
-    f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F as \\u00XX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls its printable set excludes); refused past max_scalar_bytes, before it is built"),
+    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' :non-finite is :null, the null text, or :literal, the word Infinity, -Infinity or NaN), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
+    f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F, U+FFFE and U+FFFF as \\uXXXX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls and the two noncharacters its printable set excludes, which XML's characters exclude too); refused past max_scalar_bytes, before it is built"),
     f("string-join", Exact(2), string_join, "string-join separator strings -> String", "the strings of a vector joined into one string, the separator between them; refused past max_scalar_bytes, before it is built"),
+    f("split", Exact(2), split, "split separator string -> Vector", "the strings between the separator's occurrences in the string, found from the front, none overlapping another: one more than it occurs, an empty one where two occurrences meet or at either end, and the string itself where it does not occur (split \".\" \"a..b\" is [\"a\" \"\" \"b\"], split \".\" \"\" is [\"\"]); the separator is a literal, not a pattern, and must not be empty. A part reads a dotted string's parts with it to check each one"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
-    f("fail", Exact(1), fail, "fail message -> Never", "INPUT_INVALID with the message and the form's position"),
+    f("fail", Between(1, 2), fail, "fail [code] message -> Never", "INPUT_INVALID with the message and the form's position; with a code first, :unrepresentable is TARGET_VALUE_UNREPRESENTABLE (a value the target cannot carry), :protocol-order is PROTOCOL_ORDER_ERROR (a stream that breaks its protocol) and :invalid is INPUT_INVALID"),
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),
@@ -1255,7 +1773,7 @@ static NATIVES: &[Native] = &[
     k("key", Exact(1), key, "key name -> Event", "the name of the member whose value follows, inside an object"),
     k("scalar", Exact(1), scalar, "scalar value -> Event", "one scalar of the source: null, a boolean, a number with its lexeme, or a string"),
     // Renderers and protocol adapters.
-    f("json", Exact(1), json, "json events -> Text", "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline"),
+    f("json", Between(1, 2), json, "json [options] events -> Text", "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (TARGET_VALUE_UNREPRESENTABLE), unless an options record first says (entry :non-finite :null): then it is written as null. The record holds :non-finite and nothing else, :reject (the default) or :null"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
     f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most max_columns, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that holds the quote, a line break or NUL is refused before anything runs"),
 ];
@@ -1315,7 +1833,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 42);
+        assert_eq!(compared, 49);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
@@ -1342,9 +1860,339 @@ mod tests {
             "plain",
             "q\" \\ \n \u{1f} é",
             "del\u{7f} pad\u{80} 日本 🚀",
+            "nonchar\u{fffe}\u{ffff}\u{fffd}",
         ] {
             assert_eq!(quoted_len(s), quote(s).len(), "{s:?}");
         }
+        // The two noncharacters YAML's printable set and XML's characters
+        // exclude are escaped; U+FFFD, a character, is not.
+        assert_eq!(
+            quote("\u{fffe}\u{ffff}\u{fffd}"),
+            "\"\\ufffe\\uffff\u{fffd}\""
+        );
+    }
+
+    /// `chars-within` counts its work in comparisons, so ranges from data
+    /// as many as they are take evaluation steps, and a bound on steps
+    /// (the fuel, the abort flag) stops a test that has not yet read 4,096
+    /// characters.
+    #[test]
+    fn chars_within_takes_a_step_per_comparisons() {
+        // A runtime of its own for each case, with ten steps of fuel.
+        let fueled = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match std::sync::Arc::try_unwrap(rt) {
+                Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
+        };
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let range = Val::vector(vec![Val::num(5.0), Val::num(5.0)]);
+        let ranges = Val::vector(vec![range; 100_000]);
+        let s = Val::Str(Arc::from("a"));
+        let fail = chars_within(&fueled(), &[ranges, s], &span).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().map(|l| l.name),
+            Some("max_plan_steps"),
+            "{fail}"
+        );
+        // A long string against a few ranges is counted the same way: two
+        // ranges read take no step, and the comparisons alone, two for each
+        // character, exhaust the fuel.
+        let few = Val::vector(vec![
+            Val::vector(vec![Val::num(0.0), Val::num(1.0)]),
+            Val::vector(vec![Val::num(97.0), Val::num(97.0)]),
+        ]);
+        let long = Val::Str(Arc::from("a".repeat(CHARS_WITHIN_STEP * 6)));
+        let fail = chars_within(&fueled(), &[few, long], &span).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().map(|l| l.name),
+            Some("max_plan_steps"),
+            "{fail}"
+        );
+    }
+
+    #[test]
+    fn unquote_reads_back_what_quote_writes() {
+        for s in [
+            "",
+            "plain",
+            "q\" b\\ n\n r\r t\t bs\u{8} ff\u{c} nul\0 us\u{1f}",
+            "del\u{7f} pad\u{80} apc\u{9f} nbsp\u{a0} é 日本 🚀 /",
+            "\u{fffe}\u{ffff}",
+        ] {
+            assert_eq!(unquote(&quote(s)).as_deref(), Some(s), "{s:?}");
+        }
+        // JSON's other spellings: the solidus, uppercase hex, a surrogate
+        // pair.
+        assert_eq!(
+            unquote(r#""\/\u00E9\ud83d\ude80""#).as_deref(),
+            Some("/é🚀")
+        );
+        // Not a double-quoted form.
+        for text in [
+            "",
+            "\"",
+            "plain",
+            "\"open",
+            "\"in\"side\"",
+            "\"raw\nline\"",
+            "\"bad \\x escape\"",
+            "\"short \\u12\"",
+            "\"lone \\ud800\"",
+            "\"low \\udc00 first\"",
+            "\"pair \\ud800\\u0041\"",
+        ] {
+            assert_eq!(unquote(text), None, "{text:?}");
+        }
+    }
+
+    /// `unquoted` reads its input an evaluation step per [`UNQUOTED_STEP`]
+    /// characters as it goes, as `length` counts a long string in steps:
+    /// ten steps of fuel read ten times that many characters and no more,
+    /// whether or not the string turns out to be a quoted form, and a
+    /// string refused at its start costs no more than its first step.
+    #[test]
+    fn unquoted_takes_a_step_per_characters_read() {
+        // A runtime of its own for each case, with ten steps of fuel.
+        let fueled = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match std::sync::Arc::try_unwrap(rt) {
+                Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
+        };
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let run = |text: String| unquoted(&fueled(), &[Val::Str(Arc::from(text))], &span);
+        // A quoted form `n` characters long, its quotes included.
+        let quoted = |n: usize, c: &str| format!("\"{}\"", c.repeat(n - 2));
+        let limit = |fail: &Fail| fail.limit.as_ref().map(|l| l.name);
+        // A character is a character, however many bytes it takes.
+        for c in ["a", "\u{1f680}"] {
+            assert_eq!(
+                run(quoted(10 * UNQUOTED_STEP, c)).unwrap(),
+                Val::str(&c.repeat(10 * UNQUOTED_STEP - 2)),
+                "{c}"
+            );
+        }
+        // One character more takes an eleventh step.
+        let fail = run(quoted(10 * UNQUOTED_STEP + 1, "a")).unwrap_err();
+        assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+        // A string with no closing quote is read as far before it is
+        // refused.
+        let fail = run(format!("\"{}", "a".repeat(10 * UNQUOTED_STEP))).unwrap_err();
+        assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+        let fail = run(format!("x{}", "a".repeat(100 * UNQUOTED_STEP))).unwrap_err();
+        assert_eq!(fail.code, Code::InputInvalid, "{fail}");
+    }
+
+    /// `is-number` answers whether `number` reads a string, and `number`
+    /// fails exactly where it answers false; a string that is not one is
+    /// the same type error to both.
+    #[test]
+    fn is_number_answers_whether_number_reads_the_string() {
+        let rt = crate::lower::tests::runtime("", true);
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let numbers = [
+            "0",
+            "-0",
+            "12",
+            "1.5",
+            "-1.5e10",
+            "2E-3",
+            "1e+5",
+            "0e0",
+            "1e5",
+            "1e999",
+            "12345678901234567890",
+            "Infinity",
+            "-Infinity",
+            "NaN",
+        ];
+        let others = [
+            "",
+            "-",
+            "01",
+            "-01",
+            "1.",
+            ".5",
+            "+1",
+            "1e",
+            "1e+",
+            "1-2",
+            " 1",
+            "1 ",
+            "0x10",
+            "1_000",
+            "1.5e",
+            "-NaN",
+            "nan",
+            "infinity",
+            "Inf",
+            "Infinityx",
+            "NaNN",
+            "١",
+        ];
+        for (text, reads) in numbers
+            .iter()
+            .map(|t| (t, true))
+            .chain(others.iter().map(|t| (t, false)))
+        {
+            let s = Val::str(text);
+            assert_eq!(
+                is_number(&rt, std::slice::from_ref(&s), &at).unwrap(),
+                Val::Bool(reads),
+                "{text:?}"
+            );
+            match number(&rt, &[s], &at) {
+                Ok(_) => assert!(reads, "{text:?} is read"),
+                Err(fail) => {
+                    assert!(!reads, "{text:?}: {fail}");
+                    assert_eq!(fail.code, Code::InputInvalid, "{fail}");
+                }
+            }
+        }
+        // A finite number keeps its text as the lexeme; the non-finite
+        // ones have none.
+        let read = |text: &str| match number(&rt, &[Val::str(text)], &at).unwrap() {
+            Val::Num { value, lexeme } => (value, lexeme.map(|l| l.to_string())),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(read("1.50"), (1.5, Some("1.50".to_string())));
+        assert_eq!(read("-Infinity"), (f64::NEG_INFINITY, None));
+        assert_eq!(read("1e999"), (f64::INFINITY, None));
+        for (name, op) in [("is-number", is_number as Call), ("number", number)] {
+            let fail = op(&rt, &[Val::num(1.0)], &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(
+                fail.message,
+                format!("type_mismatch: {name}: the string must be a string, not a number")
+            );
+        }
+    }
+
+    /// `number` and `is-number` read their input an evaluation step per
+    /// [`NUMBER_STEP`] characters as they go, as `unquoted` reads its own:
+    /// ten steps of fuel read ten times that many characters and no more,
+    /// whether or not the string turns out to spell a number, and a string
+    /// refused at its start costs no more than its first step.
+    #[test]
+    fn number_and_is_number_take_a_step_per_characters_read() {
+        // A runtime of its own for each case, with ten steps of fuel.
+        let fueled = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match std::sync::Arc::try_unwrap(rt) {
+                Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
+        };
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let is = |text: &str| is_number(&fueled(), &[Val::str(text)], &span);
+        let read = |text: &str| number(&fueled(), &[Val::str(text)], &span);
+        let limit = |fail: &Fail| fail.limit.as_ref().map(|l| l.name);
+        // A number `n` characters long.
+        let long = |n: usize| format!("0.{}", "5".repeat(n - 2));
+        assert_eq!(is(&long(10 * NUMBER_STEP)).unwrap(), Val::Bool(true));
+        let n = read(&long(10 * NUMBER_STEP)).unwrap();
+        assert!(
+            matches!(
+                n,
+                Val::Num {
+                    lexeme: Some(_),
+                    ..
+                }
+            ),
+            "{n:?}"
+        );
+        // One character more takes an eleventh step, and so does a
+        // character after as many that ends the spelling: the string is
+        // read as far before it is refused.
+        for text in [
+            long(10 * NUMBER_STEP + 1),
+            format!("{}x", long(10 * NUMBER_STEP)),
+        ] {
+            for fail in [is(&text).unwrap_err(), read(&text).unwrap_err()] {
+                assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+            }
+        }
+        let early = format!("x{}", long(100 * NUMBER_STEP));
+        assert_eq!(is(&early).unwrap(), Val::Bool(false));
+        assert_eq!(read(&early).unwrap_err().code, Code::InputInvalid);
+    }
+
+    /// `split` answers the strings between a separator's occurrences,
+    /// found from the front, none overlapping another: one more than it
+    /// occurs, an empty one where two meet or at either end. The separator
+    /// is a literal that must not be empty.
+    #[test]
+    fn split_answers_the_strings_between_the_separators() {
+        let rt = crate::lower::tests::runtime("", true);
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let parts = |separator: &str, s: &str| -> Vec<String> {
+            match split(&rt, &[Val::str(separator), Val::str(s)], &at).unwrap() {
+                Val::Vector(items) => items
+                    .iter()
+                    .map(|v| match v {
+                        Val::Str(s) => s.to_string(),
+                        other => panic!("{other:?}"),
+                    })
+                    .collect(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(parts(".", "a..b"), ["a", "", "b"]);
+        assert_eq!(parts(".", ""), [""]);
+        assert_eq!(parts(".", "abc"), ["abc"]);
+        assert_eq!(parts(".", ".a."), ["", "a", ""]);
+        assert_eq!(parts("::", "a::b::c"), ["a", "b", "c"]);
+        assert_eq!(parts("aa", "aaa"), ["", "a"]);
+        assert_eq!(parts("→", "α→β→γ"), ["α", "β", "γ"]);
+        for (args, message) in [
+            (
+                [Val::str(""), Val::str("a")],
+                "the separator must be a non-empty string, not the empty string",
+            ),
+            (
+                [Val::num(1.0), Val::str("a")],
+                "the separator must be a string, not a number",
+            ),
+            (
+                [Val::str("."), Val::num(1.0)],
+                "the string must be a string, not a number",
+            ),
+        ] {
+            let fail = split(&rt, &args, &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(fail.message, format!("type_mismatch: split: {message}"));
+        }
+    }
+
+    /// `split` takes an evaluation step for each [`SPLIT_STEP`] characters
+    /// it reads, or part of them, and one for each part: ten steps of fuel
+    /// read nine times that many characters into one part, or split nine
+    /// parts off eight separators, and no more.
+    #[test]
+    fn split_takes_a_step_per_characters_read_and_per_part() {
+        // A runtime of its own for each case, with ten steps of fuel.
+        let fueled = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match std::sync::Arc::try_unwrap(rt) {
+                Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
+        };
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let run = |s: String| split(&fueled(), &[Val::str("."), Val::str(&s)], &span);
+        let limit = |fail: &Fail| fail.limit.as_ref().map(|l| l.name);
+        // A character is a character, however many bytes it takes.
+        for c in ["a", "\u{1f680}"] {
+            assert!(run(c.repeat(9 * SPLIT_STEP)).is_ok(), "{c}");
+            let fail = run(c.repeat(9 * SPLIT_STEP + 1)).unwrap_err();
+            assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+        }
+        assert!(run(".".repeat(8)).is_ok());
+        let fail = run(".".repeat(9)).unwrap_err();
+        assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
     }
 
     /// `kind` names every retained value's kind by one keyword, the word
