@@ -8,8 +8,9 @@
 // descriptor (translate() in each runtime): its manifest,
 // tabnas.plugin.json, whose translate object names the shapes the format
 // reads as and writes from, the root its render needs, the schema its
-// events carry when they are not a plain tree, and the loss its render
-// declares; and the alchemy text of its lift, its embed and its render.
+// events carry when they are not a plain tree, the loss its render
+// declares, and, where its documents are read whole, why; and the alchemy
+// text of its lift, its embed and its render.
 // This package reads a descriptor into a Part and composes the program that
 // translates a document of one format into another:
 //
@@ -208,6 +209,10 @@ type Part struct {
 	Render Render
 	// Loss is what a written document does not keep, a sentence each.
 	Loss []string
+	// Whole is why the format's documents are read whole, never streamed,
+	// where the format says so: a sentence a host shows beside the loss
+	// ("" where it says nothing).
+	Whole string
 }
 
 // member is a member of a JSON object, as the manifest holds it, and
@@ -279,6 +284,14 @@ func PartFromDescriptor(d Descriptor) *Part {
 		}
 		schema = s
 	}
+	whole := ""
+	if wholeText, present := member(t, "whole"); present {
+		s, ok := wholeText.(string)
+		if !ok || s == "" {
+			return nil
+		}
+		whole = s
+	}
 	file := func(path string) string { return d.Package + "/" + path }
 	// alc is the alchemy part the manifest names under key, as the package
 	// hands it over: nil when neither names one, the part when both do and
@@ -346,6 +359,7 @@ func PartFromDescriptor(d Descriptor) *Part {
 		Embed:  embed,
 		Render: render,
 		Loss:   loss,
+		Whole:  whole,
 	}
 }
 

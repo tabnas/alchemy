@@ -8,8 +8,9 @@
 // descriptor (`translate()` in each runtime): its manifest,
 // `tabnas.plugin.json`, whose `translate` object names the shapes the
 // format reads as and writes from, the root its render needs, the schema
-// its events carry when they are not a plain tree, and the loss its render
-// declares; and the alchemy text of its lift, its embed and its render.
+// its events carry when they are not a plain tree, the loss its render
+// declares, and, where its documents are read whole, why; and the alchemy
+// text of its lift, its embed and its render.
 // This module reads a descriptor into a `Part` and composes the program
 // that translates a document of one format into another:
 //
@@ -118,6 +119,9 @@ export type Part = {
   readonly render: Render
   // What a written document does not keep, a sentence each.
   readonly loss: ReadonlyArray<string>
+  // Why the format's documents are read whole, never streamed, where the
+  // format says so: a sentence a host shows beside the loss.
+  readonly whole?: string
 }
 
 // A member of a JSON object, as the manifest holds it; undefined for an
@@ -171,6 +175,9 @@ export const Part = Object.freeze({
     const schemaName = member(t, 'schema')
     if (undefined !== schemaName && ('string' !== typeof schemaName || '' === schemaName)) return undefined
     const schema = schemaName as string | undefined
+    const wholeText = member(t, 'whole')
+    if (undefined !== wholeText && ('string' !== typeof wholeText || '' === wholeText)) return undefined
+    const whole = wholeText as string | undefined
     const file = (path: string) => `${d.package}/${path}`
     // The alchemy part the manifest names under `key`, as the package hands
     // it over: `{}` when neither names one, `{ alc }` when both do and it is
@@ -214,6 +221,7 @@ export const Part = Object.freeze({
       ...(undefined === embed.alc ? {} : { embed: embed.alc }),
       render,
       loss,
+      ...(undefined === whole ? {} : { whole }),
     }
   },
 
