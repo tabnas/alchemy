@@ -7,7 +7,7 @@ go 1.24.7
 // Renderers (transduce's and render's), and the tests that run programs on
 // them are alchemy-cli's (github.com/tabnas/alchemy-cli/go/e2e).
 require (
-	github.com/tabnas/json/go v0.5.16
+	github.com/tabnas/json/go v0.5.17
 	github.com/tabnas/parser/go v0.12.11
 )
 
