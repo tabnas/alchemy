@@ -1130,6 +1130,56 @@ function stringJoin(rt: Runtime, a: ReadonlyArray<Val>): Val {
   return str(parts.join(separator))
 }
 
+// How many characters of its input `split` reads per evaluation step.
+export const SPLIT_STEP = 4096
+
+// `split separator string`: the strings between the separator's occurrences
+// in the string, found from the front, none overlapping another: one more
+// than it occurs, an empty one where two occurrences meet or at either end,
+// and the string itself where it does not occur. The separator is a
+// literal, not a pattern, and must not be empty. A format's part, which
+// cannot read a string a character at a time, reads a dotted string's parts
+// with it to check each one (semver's prerelease and build identifiers).
+// The string takes an evaluation step for each `SPLIT_STEP` characters read
+// (a surrogate pair is one), or part of them, as `unquoted` reads its
+// input, and each part one more, as `keys` takes one for each key, so the
+// fuel and the host's abort flag bound a long split; every part is a piece
+// of the string, so together they hold no more than it does.
+function split(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const separator = asStr('split', 'the separator', a[0])
+  if ('' === separator) throw typeError('split: the separator must be a non-empty string, not the empty string')
+  const s = asStr('split', 'the string', a[1])
+  const separatorChars = charsIn(separator, 0, separator.length)
+  // The characters read so far, and the steps taken for them.
+  let read = 0
+  let stepped = 0
+  const parts: Val[] = []
+  for (let from = 0; ; ) {
+    const at = s.indexOf(separator, from)
+    const end = -1 === at ? s.length : at
+    read += charsIn(s, from, end) + (0 < parts.length ? separatorChars : 0)
+    for (; stepped < Math.ceil(read / SPLIT_STEP); stepped++) rt.tick()
+    rt.tick()
+    parts.push(str(s.substring(from, end)))
+    if (-1 === at) return vectorVal(parts)
+    from = at + separator.length
+  }
+}
+
+// How many characters `s` holds from `from` to `to`, a surrogate pair one.
+function charsIn(s: string, from: number, to: number): number {
+  let n = 0
+  for (let i = from; i < to; i++) {
+    const c = s.charCodeAt(i)
+    if (0xd800 <= c && c <= 0xdbff && i + 1 < to) {
+      const d = s.charCodeAt(i + 1)
+      if (0xdc00 <= d && d <= 0xdfff) i++
+    }
+    n++
+  }
+  return n
+}
+
 // `repeat count string`: the string `count` times over. The result is one
 // scalar of the output (a line's indentation), so it is held to
 // `max_scalar_bytes`, refused before it is built.
@@ -1333,6 +1383,7 @@ const IMPLS: Record<string, NativeImpl> = {
   'scalar-text': scalarText,
   quoted,
   'string-join': stringJoin,
+  split,
   repeat,
   fail,
   'is-ready': isReady,

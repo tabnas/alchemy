@@ -1347,6 +1347,45 @@ fn string_join(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Str(Arc::from(out)))
 }
 
+/// `split separator string`: the strings between the separator's
+/// occurrences in the string, found from the front, none overlapping
+/// another: one more than it occurs, an empty one where two occurrences
+/// meet or at either end, and the string itself where it does not occur.
+/// The separator is a literal, not a pattern, and must not be empty. A
+/// format's part, which cannot read a string a character at a time, reads
+/// a dotted string's parts with it to check each one (semver's prerelease
+/// and build identifiers). The string takes an evaluation step for each
+/// [`SPLIT_STEP`] characters read, or part of them, as `unquoted` reads
+/// its input, and each part one more, as `keys` takes one for each key, so
+/// the fuel and the host's abort flag bound a long split; every part is a
+/// piece of the string, so together they hold no more than it does.
+fn split(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let separator = as_str("split", "the separator", &a[0])?;
+    if separator.is_empty() {
+        return Err(type_error(
+            "split: the separator must be a non-empty string, not the empty string",
+        ));
+    }
+    let s = as_str("split", "the string", &a[1])?;
+    let separator_chars = separator.chars().count();
+    // The characters read so far, and the steps taken for them.
+    let (mut read, mut stepped) = (0usize, 0usize);
+    let mut parts = Vec::new();
+    for (i, part) in s.split(&**separator).enumerate() {
+        read += part.chars().count() + if i > 0 { separator_chars } else { 0 };
+        while stepped < read.div_ceil(SPLIT_STEP) {
+            rt.tick()?;
+            stepped += 1;
+        }
+        rt.tick()?;
+        parts.push(Val::Str(Arc::from(part)));
+    }
+    Ok(Val::vector(parts))
+}
+
+/// How many characters of its input `split` reads per evaluation step.
+pub const SPLIT_STEP: usize = 4096;
+
 /// `repeat count string`: the string `count` times over. The result is one
 /// scalar of the output (a line's indentation), so it is held to
 /// `max_scalar_bytes`, refused before it is built.
@@ -1713,6 +1752,7 @@ static NATIVES: &[Native] = &[
     f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' :non-finite is :null, the null text, or :literal, the word Infinity, -Infinity or NaN), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
     f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F, U+FFFE and U+FFFF as \\uXXXX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls and the two noncharacters its printable set excludes, which XML's characters exclude too); refused past max_scalar_bytes, before it is built"),
     f("string-join", Exact(2), string_join, "string-join separator strings -> String", "the strings of a vector joined into one string, the separator between them; refused past max_scalar_bytes, before it is built"),
+    f("split", Exact(2), split, "split separator string -> Vector", "the strings between the separator's occurrences in the string, found from the front, none overlapping another: one more than it occurs, an empty one where two occurrences meet or at either end, and the string itself where it does not occur (split \".\" \"a..b\" is [\"a\" \"\" \"b\"], split \".\" \"\" is [\"\"]); the separator is a literal, not a pattern, and must not be empty. A part reads a dotted string's parts with it to check each one"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Between(1, 2), fail, "fail [code] message -> Never", "INPUT_INVALID with the message and the form's position; with a code first, :unrepresentable is TARGET_VALUE_UNREPRESENTABLE (a value the target cannot carry), :protocol-order is PROTOCOL_ORDER_ERROR (a stream that breaks its protocol) and :invalid is INPUT_INVALID"),
     // The table protocol.
@@ -1793,7 +1833,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 48);
+        assert_eq!(compared, 49);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
@@ -2078,6 +2118,81 @@ mod tests {
         let early = format!("x{}", long(100 * NUMBER_STEP));
         assert_eq!(is(&early).unwrap(), Val::Bool(false));
         assert_eq!(read(&early).unwrap_err().code, Code::InputInvalid);
+    }
+
+    /// `split` answers the strings between a separator's occurrences,
+    /// found from the front, none overlapping another: one more than it
+    /// occurs, an empty one where two meet or at either end. The separator
+    /// is a literal that must not be empty.
+    #[test]
+    fn split_answers_the_strings_between_the_separators() {
+        let rt = crate::lower::tests::runtime("", true);
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let parts = |separator: &str, s: &str| -> Vec<String> {
+            match split(&rt, &[Val::str(separator), Val::str(s)], &at).unwrap() {
+                Val::Vector(items) => items
+                    .iter()
+                    .map(|v| match v {
+                        Val::Str(s) => s.to_string(),
+                        other => panic!("{other:?}"),
+                    })
+                    .collect(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(parts(".", "a..b"), ["a", "", "b"]);
+        assert_eq!(parts(".", ""), [""]);
+        assert_eq!(parts(".", "abc"), ["abc"]);
+        assert_eq!(parts(".", ".a."), ["", "a", ""]);
+        assert_eq!(parts("::", "a::b::c"), ["a", "b", "c"]);
+        assert_eq!(parts("aa", "aaa"), ["", "a"]);
+        assert_eq!(parts("→", "α→β→γ"), ["α", "β", "γ"]);
+        for (args, message) in [
+            (
+                [Val::str(""), Val::str("a")],
+                "the separator must be a non-empty string, not the empty string",
+            ),
+            (
+                [Val::num(1.0), Val::str("a")],
+                "the separator must be a string, not a number",
+            ),
+            (
+                [Val::str("."), Val::num(1.0)],
+                "the string must be a string, not a number",
+            ),
+        ] {
+            let fail = split(&rt, &args, &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(fail.message, format!("type_mismatch: split: {message}"));
+        }
+    }
+
+    /// `split` takes an evaluation step for each [`SPLIT_STEP`] characters
+    /// it reads, or part of them, and one for each part: ten steps of fuel
+    /// read nine times that many characters into one part, or split nine
+    /// parts off eight separators, and no more.
+    #[test]
+    fn split_takes_a_step_per_characters_read_and_per_part() {
+        // A runtime of its own for each case, with ten steps of fuel.
+        let fueled = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match std::sync::Arc::try_unwrap(rt) {
+                Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
+        };
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let run = |s: String| split(&fueled(), &[Val::str("."), Val::str(&s)], &span);
+        let limit = |fail: &Fail| fail.limit.as_ref().map(|l| l.name);
+        // A character is a character, however many bytes it takes.
+        for c in ["a", "\u{1f680}"] {
+            assert!(run(c.repeat(9 * SPLIT_STEP)).is_ok(), "{c}");
+            let fail = run(c.repeat(9 * SPLIT_STEP + 1)).unwrap_err();
+            assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+        }
+        assert!(run(".".repeat(8)).is_ok());
+        let fail = run(".".repeat(9)).unwrap_err();
+        assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
     }
 
     /// `kind` names every retained value's kind by one keyword, the word

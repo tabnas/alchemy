@@ -1000,6 +1000,10 @@ class Checker {
         this.expect('the separator of string-join', Str, t(0), at(0))
         this.expect('the strings of string-join', vectorOf(Unknown), t(1), at(1))
         return Str
+      case 'split':
+        this.expect('the separator of split', Str, t(0), at(0))
+        this.expect('the string of split', Str, t(1), at(1))
+        return vectorOf(Str)
       case 'fail': {
         // `(fail message)` is INPUT_INVALID; `(fail :code message)` names
         // the code: a literal keyword is held to the three here, any other

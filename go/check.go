@@ -1288,6 +1288,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(StringT, first(exp("the count of repeat", NumberT, 0), exp("the string of repeat", StringT, 1)))
 	case "string-join":
 		return ret(StringT, first(exp("the separator of string-join", StringT, 0), exp("the strings of string-join", VectorOf(Unknown), 1)))
+	case "split":
+		return ret(VectorOf(StringT), first(exp("the separator of split", StringT, 0), exp("the string of split", StringT, 1)))
 	case "fail":
 		// `(fail message)` is INPUT_INVALID; `(fail :code message)` names
 		// the code: a literal keyword is held to the three here, any other

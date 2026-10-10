@@ -136,6 +136,7 @@ export {
   CHARS_WITHIN_STEP,
   LENGTH_CHUNK,
   NUMBER_STEP,
+  SPLIT_STEP,
   UNQUOTED_STEP,
   captureBudget,
   getField,

@@ -313,6 +313,71 @@ func TestNumberAndIsNumberTakeAStepPerCharactersRead(t *testing.T) {
 	}
 }
 
+// split answers the strings between a separator's occurrences, found from
+// the front, none overlapping another: one more than it occurs, an empty
+// one where two meet or at either end. The separator is a literal that must
+// not be empty.
+func TestSplitAnswersTheStringsBetweenTheSeparators(t *testing.T) {
+	at := SourceSpan{File: NewFile("t")}
+	for _, c := range []struct {
+		separator, s string
+		want         []string
+	}{
+		{".", "a..b", []string{"a", "", "b"}},
+		{".", "", []string{""}},
+		{".", "abc", []string{"abc"}},
+		{".", ".a.", []string{"", "a", ""}},
+		{"::", "a::b::c", []string{"a", "b", "c"}},
+		{"aa", "aaa", []string{"", "a"}},
+		{"→", "α→β→γ", []string{"α", "β", "γ"}},
+	} {
+		v, f := nSplit(runtimeOf(t, ""), []Val{StrVal(c.separator), StrVal(c.s)}, at)
+		want := make([]Val, len(c.want))
+		for i, s := range c.want {
+			want[i] = StrVal(s)
+		}
+		if f != nil || !Equal(v, Vector(want...)) {
+			t.Errorf("split %q %q: %v %v", c.separator, c.s, DebugString(v), f)
+		}
+	}
+	for _, c := range []struct{ expr, message string }{
+		{`split "" "a"`, "the separator must be a non-empty string, not the empty string"},
+		{`split 1 "a"`, "the separator must be a string, not a number"},
+		{`split "." 1`, "the string must be a string, not a number"},
+	} {
+		if f := mustFail(t, "", c.expr); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: split: "+c.message {
+			t.Errorf("%s: %v", c.expr, f)
+		}
+	}
+}
+
+// split takes an evaluation step for each SplitStep characters it reads, or
+// part of them, and one for each part: ten steps of fuel read nine times
+// that many characters into one part, or split nine parts off eight
+// separators, and no more.
+func TestSplitTakesAStepPerCharactersReadAndPerPart(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	run := func(s string) (Val, *Fail) {
+		return nSplit(runtimeOf(t, "").WithFuel(10), []Val{StrVal("."), StrVal(s)}, at)
+	}
+	limit := func(f *Fail) bool { return f != nil && f.Limit != nil && f.Limit.Name == "max_plan_steps" }
+	// A character is a rune: one of four bytes is one.
+	for _, c := range []string{"a", "\U0001F680"} {
+		if _, f := run(strings.Repeat(c, 9*SplitStep)); f != nil {
+			t.Errorf("%q: %v", c, f)
+		}
+		if _, f := run(strings.Repeat(c, 9*SplitStep+1)); !limit(f) {
+			t.Errorf("%q: %v", c, f)
+		}
+	}
+	if _, f := run(strings.Repeat(".", 8)); f != nil {
+		t.Errorf("%v", f)
+	}
+	if _, f := run(strings.Repeat(".", 9)); !limit(f) {
+		t.Errorf("%v", f)
+	}
+}
+
 // A CSV options record's :no-columns: :refuse, the default, or :empty; any
 // other value is a type error where it is read.
 func TestNoColumnsNamesAPolicyForATableOfNoColumns(t *testing.T) {

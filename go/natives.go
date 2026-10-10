@@ -87,6 +87,7 @@ func init() {
 		"scalar-text":     nScalarText,
 		"quoted":          nQuoted,
 		"string-join":     nStringJoin,
+		"split":           nSplit,
 		"repeat":          nRepeat,
 		"fail":            nFail,
 		"is-ready":        nIsReady,
@@ -1620,6 +1621,65 @@ func nStringJoin(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		b.WriteString(string(item.(StrVal)))
 	}
 	return StrVal(b.String()), nil
+}
+
+// SplitStep is how many characters of its input `split` reads per
+// evaluation step.
+const SplitStep = 4096
+
+// nSplit is `split separator string`: the strings between the separator's
+// occurrences in the string, found from the front, none overlapping
+// another: one more than it occurs, an empty one where two occurrences meet
+// or at either end, and the string itself where it does not occur. The
+// separator is a literal, not a pattern, and must not be empty. A format's
+// part, which cannot read a string a character at a time, reads a dotted
+// string's parts with it to check each one (semver's prerelease and build
+// identifiers). The string takes an evaluation step for each SplitStep
+// characters read, or part of them, as `unquoted` reads its input, and
+// each part one more, as `keys` takes one for each key, so the fuel and the
+// host's abort flag bound a long split; every part is a piece of the
+// string, so together they hold no more than it does.
+func nSplit(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	separator, f := asStr("split", "the separator", a[0])
+	if f != nil {
+		return nil, f
+	}
+	if separator == "" {
+		return nil, typeError("split: the separator must be a non-empty string, not the empty string")
+	}
+	s, f := asStr("split", "the string", a[1])
+	if f != nil {
+		return nil, f
+	}
+	separatorChars := utf8.RuneCountInString(separator)
+	// read is the characters read so far, and stepped the steps taken for
+	// them.
+	read, stepped := 0, 0
+	parts := []Val{}
+	for rest := s; ; {
+		at := strings.Index(rest, separator)
+		part := rest
+		if at >= 0 {
+			part = rest[:at]
+		}
+		read += utf8.RuneCountInString(part)
+		if len(parts) > 0 {
+			read += separatorChars
+		}
+		for ; stepped < (read+SplitStep-1)/SplitStep; stepped++ {
+			if f := rt.Tick(); f != nil {
+				return nil, f
+			}
+		}
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+		parts = append(parts, StrVal(part))
+		if at < 0 {
+			return Vector(parts...), nil
+		}
+		rest = rest[at+len(separator):]
+	}
 }
 
 // nRepeat is `repeat count string`: the string count times over. The

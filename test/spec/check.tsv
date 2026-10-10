@@ -109,3 +109,9 @@ def export [input] (join "," (map (fn [x] (if (is-number) "y" "n")) (select (pat
 def export [input] (join "," (map (fn [x] (unquoted 1)) (select (path each-index) input)))	ERROR:type_mismatch@1:53
 def export [input] (join "," (map (fn [x] (if (chars-within 1 x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:61
 def export [input] (json 1 input)	ERROR:type_mismatch@1:26
+# split takes a separator and a string, both strings, and answers a vector of strings.
+def export [input] (join "," (map (fn [x] (string-join "|" (split 1 x))) (select (path each-index) input)))	ERROR:type_mismatch@1:67
+def export [input] (join "," (map (fn [x] (string-join "|" (split "." 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:71
+def export [input] (join "," (map (fn [x] (string-join "|" (split "."))) (select (path each-index) input)))	ERROR:arity@1:60
+def export [input] (join "," (map (fn [x] (string-join "|" (split "." x x))) (select (path each-index) input)))	ERROR:arity@1:60
+def export [input] (join "," (map (fn [x] (number (split "." x))) (select (path each-index) input)))	ERROR:type_mismatch@1:51

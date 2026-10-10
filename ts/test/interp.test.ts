@@ -17,6 +17,7 @@ import {
   CHARS_WITHIN_STEP,
   LENGTH_CHUNK,
   NUMBER_STEP,
+  SPLIT_STEP,
   UNQUOTED_STEP,
   native,
   numberText,
@@ -862,6 +863,55 @@ describe('natives', () => {
     const early = `x${long(100 * NUMBER_STEP)}`
     same(is(early), V.bool(false))
     assert.equal(thrown(() => read(early)).code, 'INPUT_INVALID')
+  })
+
+  // `split` answers the strings between a separator's occurrences, found
+  // from the front, none overlapping another: one more than it occurs, an
+  // empty one where two meet or at either end. The separator is a literal
+  // that must not be empty.
+  it('split answers the strings between the separators', () => {
+    const parts = (separator: string, s: string): string[] => {
+      const v = evalIn('', `split ${JSON.stringify(separator)} ${JSON.stringify(s)}`)
+      assert.equal(v.v, 'vector')
+      return (v as any).items.map((item: Val) => {
+        assert.equal(item.v, 'str')
+        return (item as any).value
+      })
+    }
+    assert.deepStrictEqual(parts('.', 'a..b'), ['a', '', 'b'])
+    assert.deepStrictEqual(parts('.', ''), [''])
+    assert.deepStrictEqual(parts('.', 'abc'), ['abc'])
+    assert.deepStrictEqual(parts('.', '.a.'), ['', 'a', ''])
+    assert.deepStrictEqual(parts('::', 'a::b::c'), ['a', 'b', 'c'])
+    assert.deepStrictEqual(parts('aa', 'aaa'), ['', 'a'])
+    assert.deepStrictEqual(parts('\u2192', '\u03b1\u2192\u03b2\u2192\u03b3'), ['\u03b1', '\u03b2', '\u03b3'])
+    for (const [expr, message] of [
+      ['split "" "a"', 'the separator must be a non-empty string, not the empty string'],
+      ['split 1 "a"', 'the separator must be a string, not a number'],
+      ['split "." 1', 'the string must be a string, not a number'],
+    ]) {
+      const f = evalFail('', expr)
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: split: ${message}`], expr)
+    }
+  })
+
+  // `split` takes an evaluation step for each `SPLIT_STEP` characters it
+  // reads, or part of them, and one for each part: ten steps of fuel read
+  // nine times that many characters into one part, or split nine parts off
+  // eight separators, and no more.
+  it('split takes a step per characters read and per part', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const split: value.Func = { fn: 'native', native: native('split')! }
+    const run = (s: string) => runtime('').withFuel(10).applyNow(split, [V.str('.'), V.str(s)], at)
+    // A character is a code point: a surrogate pair is one.
+    for (const c of ['a', '\u{1f680}']) {
+      assert.equal(run(c.repeat(9 * SPLIT_STEP)).v, 'vector', c)
+      const f = thrown(() => run(c.repeat(9 * SPLIT_STEP + 1)))
+      assert.equal(f.limit?.name, 'max_plan_steps', String(f))
+    }
+    assert.equal(run('.'.repeat(8)).v, 'vector')
+    const f = thrown(() => run('.'.repeat(9)))
+    assert.equal(f.limit?.name, 'max_plan_steps', String(f))
   })
 
   // A CSV options record's `:no-columns`: `:refuse`, the default, or
