@@ -1332,10 +1332,12 @@ transition s [(quoted name) "\n" :record-end]
 A record longer than the writer will hold is written as it comes, and a
 failure inside it cuts it (render's `WriteOut` says how much it holds).
 Among the items of a `join`, over a stream or a vector, `:record-end`
-writes nothing, no separator either, and marks the end of a record.
-Elsewhere it is the keyword it is: `concat` refuses it as it refuses any
-keyword, `concat-map` hands it to its function, and a taker of events or
-rows refuses it.
+writes nothing, no separator either, and marks the end of a record; one
+that an item holds (a `join` inside it) marks nothing, since an item of
+a `join` or a `concat-map` is written whole and the text's records end
+between its items. Elsewhere it is the keyword it is: `concat` refuses
+it as it refuses any keyword, `concat-map` hands it to its function, and
+a taker of events or rows refuses it.
 
 A program that leaves the table to the host (`def export [input]
 (api-table input)`) is rendered as CSV by default, or as JSON records

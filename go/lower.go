@@ -511,7 +511,7 @@ func writeFinite(rt *Runtime, v Val, out shared.TextOut) *Fail {
 				if f := join.ItemStart(); f != nil {
 					return f
 				}
-				if f := writeFinite(rt, item, join); f != nil {
+				if f := writeFinite(rt, item, unmarked{join}); f != nil {
 					return f
 				}
 				if f := join.ItemEnd(); f != nil {
@@ -525,7 +525,10 @@ func writeFinite(rt *Runtime, v Val, out shared.TextOut) *Fail {
 				if f != nil {
 					return f
 				}
-				if f := writeFinite(rt, text, out); f != nil {
+				if f := writeFinite(rt, text, unmarked{out}); f != nil {
+					return f
+				}
+				if f := shared.RecordEnd(out); f != nil {
 					return f
 				}
 			}
@@ -554,6 +557,17 @@ func (h held) WriteStr(s string) *Fail { return h.out.WriteStr(s) }
 func (h held) Flush() *Fail            { return nil }
 func (h held) HasCommitted() bool      { return h.out.HasCommitted() }
 func (h held) RecordEnd() *Fail        { return shared.RecordEnd(h.out) }
+
+// unmarked is an item of a join or a concat-map over a vector, written
+// through to the output beneath with its own record ends dropped (it is
+// no shared.RecordEnder), as the stream stages' scratch drops them: an
+// item is written whole, and the marks of the text are the ones between
+// its items. Its flush is kept, as held's is.
+type unmarked struct{ out shared.TextOut }
+
+func (u unmarked) WriteStr(s string) *Fail { return u.out.WriteStr(s) }
+func (u unmarked) Flush() *Fail            { return nil }
+func (u unmarked) HasCommitted() bool      { return u.out.HasCommitted() }
 
 // scratch is one item's text, assembled whole before it is written, so a
 // failure half way through an item (a missing cell in a row) leaves

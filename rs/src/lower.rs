@@ -440,7 +440,7 @@ pub fn write_finite(
                         continue;
                     }
                     join.item_start()?;
-                    write_finite(rt, renderers, item, &mut join)?;
+                    write_finite(rt, renderers, item, &mut Unmarked(&mut join))?;
                     join.item_end()?;
                 }
                 Ok(())
@@ -452,7 +452,8 @@ pub fn write_finite(
             } => {
                 for item in items.iter() {
                     let text = rt.apply(f, vec![item.clone()], at)?;
-                    write_finite(rt, renderers, &text, out)?;
+                    write_finite(rt, renderers, &text, &mut Unmarked(&mut *out))?;
+                    out.record_end()?;
                 }
                 Ok(())
             }
@@ -496,6 +497,27 @@ impl TextOut for Held<'_> {
 
     fn record_end(&mut self) -> Result<(), Fail> {
         self.0.record_end()
+    }
+}
+
+/// An item of a `join` or a `concat-map` over a vector, written through to
+/// the output beneath with its own record ends dropped (the default
+/// [`TextOut::record_end`]), as the stream stages' [`Scratch`] drops them:
+/// an item is written whole, and the marks of the text are the ones
+/// between its items. Its flush is kept, as [`Held`]'s is.
+struct Unmarked<'o>(&'o mut (dyn TextOut + Send));
+
+impl TextOut for Unmarked<'_> {
+    fn write_str(&mut self, s: &str) -> Result<(), Fail> {
+        self.0.write_str(s)
+    }
+
+    fn flush(&mut self) -> Result<(), Fail> {
+        Ok(())
+    }
+
+    fn has_committed(&self) -> bool {
+        self.0.has_committed()
     }
 }
 

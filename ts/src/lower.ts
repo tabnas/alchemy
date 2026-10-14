@@ -394,7 +394,7 @@ export function* writeFinite(rt: Runtime, v: Val, out: TextOut): G<void> {
               continue
             }
             join.itemStart()
-            yield writeFinite(rt, item, join)
+            yield writeFinite(rt, item, new Unmarked(join, rt.renderers))
             join.itemEnd()
           }
         }
@@ -403,7 +403,8 @@ export function* writeFinite(rt: Runtime, v: Val, out: TextOut): G<void> {
         if ('vector' !== plan.items.seq) break
         for (const item of plan.items.items) {
           const text: Val = yield rt.apply(plan.f, [item], plan.at)
-          yield writeFinite(rt, text, out)
+          yield writeFinite(rt, text, new Unmarked(out, rt.renderers))
+          out.recordEnd?.()
         }
         return
       // Streamed through the replacer, as a live text is: it holds at most
@@ -445,6 +446,28 @@ class Held implements TextOut {
 
   recordEnd(): void {
     this.inner.recordEnd?.()
+  }
+}
+
+// An item of a `join` or a `concat-map` over a vector, written through to
+// the output beneath with its own record ends dropped (it has no
+// `recordEnd`), as the stream stages' `Scratch` drops them: an item is
+// written whole, and the marks of the text are the ones between its items.
+// Its flush is kept, as `Held`'s is.
+class Unmarked implements TextOut {
+  constructor(
+    private readonly inner: TextOut,
+    private readonly renderers: Renderers,
+  ) {}
+
+  writeStr(s: string): void {
+    this.inner.writeStr(s)
+  }
+
+  flush(): void {}
+
+  hasCommitted(): boolean {
+    return this.renderers.hasCommitted(this.inner)
   }
 }
 
