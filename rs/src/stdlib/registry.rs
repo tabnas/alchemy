@@ -1110,7 +1110,8 @@ fn join(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let sep = as_str("join", "the separator", &a[0])?.clone();
     let items = as_seq("join", &a[1])?;
     if let Seq::Vector(items) = &items {
-        for item in items.iter() {
+        // `:record-end` is no item: it marks the end of a record.
+        for item in items.iter().filter(|item| !item.is_record_end()) {
             textlike("join", item)?;
         }
     }
@@ -1739,13 +1740,13 @@ static NATIVES: &[Native] = &[
     f("indices", Exact(1), indices, "indices vector -> Vector<Number>", "the positions of the vector's items, 0 to one less than its count, as numbers: the labels the inferred table gives an array row's cells; a bounded operation over one vector"),
     f("as-events", Exact(1), as_events, "as-events items -> JsonEvents", "a stream of items the program built, each an event, as JsonEvents: what every taker of JSON events applies to such a stream, said by the program where the checker cannot type the items (an export, say); an item that is not an event fails where it arrives"),
     f("scan-emit", Exact(4), scan_emit, "scan-emit init step finish stream -> Stream<Output>", "retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its concat-map applies included): at most max_metadata_bytes, no deeper than max_depth, reported in retained_bytes_high; ready after each item; finish runs once at the validated end"),
-    k("transition", Exact(2), transition, "transition state outputs -> Transition", "one step's result: the next state and a vector of outputs"),
+    k("transition", Exact(2), transition, "transition state outputs -> Transition", "one step's result: the next state and a vector of outputs; :record-end among them marks where a record of the text join writes ends (Record ends, below)"),
     f("partial", AtLeast(1), partial, "partial f arg... -> Fn", "f with its first arguments supplied"),
     f("map", Exact(2), map, "map f items -> Vector | Stream", "eager over a vector; per item over a stream, retaining nothing"),
     f("filter", Exact(2), filter, "filter predicate items -> Vector | Stream", "eager over a vector; per item over a stream"),
     // Text.
-    f("concat-map", Exact(2), concat_map, "concat-map f items -> Text", "f answers a string or a text per item; each item's text is assembled whole, under max_output_bytes, and written as items arrive, so a failure leaves no half item"),
-    f("join", Exact(2), join, "join separator items -> Text", "the separator between items, never between the fragments of one; each item assembled as concat-map's is"),
+    f("concat-map", Exact(2), concat_map, "concat-map f items -> Text", "f answers a string or a text per item; each item's text is assembled whole, under max_output_bytes, and written as items arrive, so a failure leaves no half item; each item is a record of the text"),
+    f("join", Exact(2), join, "join separator items -> Text", "the separator between items, never between the fragments of one; each item assembled as concat-map's is; :record-end among the items is no item and writes nothing, no separator either, but marks the end of a record"),
     f("concat", AtLeast(0), concat, "concat item... -> Text", "in order, without assembling the result"),
     f("text", Exact(1), text, "text string -> Text", "a string as a text"),
     f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),

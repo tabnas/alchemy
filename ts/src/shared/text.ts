@@ -32,6 +32,20 @@ export interface TextOut {
   // fragment that is still buffered is not committed, and `intoInner`
   // drops it rather than sending it after the fact.
   hasCommitted?(): boolean
+
+  // Mark the end of a record: the text written so far ends with a whole
+  // record. A text that is a sequence of records marks the end of each
+  // one: a CSV row, a value directly inside a JSON document's root
+  // container, an item `concat-map` writes, or wherever a step of
+  // `scan-emit` answers `:record-end` among its outputs. render's
+  // `WriteOut` holds a record's text until its end is marked, so a run
+  // that fails part way leaves whole records behind and none half
+  // written. An output that leaves it out ignores the mark (call it as
+  // `out.recordEnd?.()`), which is right for an output that is the
+  // destination itself or holds the whole text. A combinator passes the
+  // mark on, after any text it holds that comes before it. Throws a
+  // `Fail` to fail the run.
+  recordEnd?(): void
 }
 
 // Where a `WriteOut` sends its bytes: the counterpart of Rust's

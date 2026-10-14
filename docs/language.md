@@ -616,11 +616,11 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `as-events` | `as-events items -> JsonEvents` | a stream of items the program built, each an event, as `JsonEvents`: what every taker of JSON events applies to such a stream, said by the program where the checker cannot type the items (an export, say); an item that is not an event fails where it arrives |
 | `events` | `events input -> Stream<Event>` | every event of `JsonEvents` as one item, as it arrives: the container events as constants, `key` and `scalar` with their one field; `End` ends the stream and is no item; nothing is retained between events |
 | `scan-emit` | `scan-emit init step finish stream -> Stream<Output>` | retains its initial state and the state the step returns, measured when the stage is built and as the state changes, through every closure, partial and finite text it holds (a text's items and the function its `concat-map` applies included): at most `max_metadata_bytes`, no deeper than `max_depth`, reported in `retained_bytes_high`; ready after each item; finish runs once at the validated end |
-| `transition` | `transition state outputs -> Transition` | one step's result: the next state and a vector of outputs |
+| `transition` | `transition state outputs -> Transition` | one step's result: the next state and a vector of outputs; `:record-end` among them marks where a record of the text `join` writes ends (Record ends, below) |
 | `partial` | `partial f arg... -> Fn` | `f` with its first arguments supplied |
 | `map`, `filter` | `map f items`, `filter predicate items -> Vector \| Stream` | eager over a vector; per item over a stream, retaining nothing |
-| `concat-map` | `concat-map f items -> Text` | `f` answers a string or a text per item; each item's text is assembled whole, under `max_output_bytes`, and written as items arrive, so a failure leaves no half item |
-| `join` | `join separator items -> Text` | the separator between items, never between the fragments of one; each item assembled as `concat-map`'s is |
+| `concat-map` | `concat-map f items -> Text` | `f` answers a string or a text per item; each item's text is assembled whole, under `max_output_bytes`, and written as items arrive, so a failure leaves no half item; each item is a record of the text |
+| `join` | `join separator items -> Text` | the separator between items, never between the fragments of one; each item assembled as `concat-map`'s is; `:record-end` among the items is no item and writes nothing, no separator either, but marks the end of a record |
 | `concat` | `concat item... -> Text` | in order, without assembling the result |
 | `text` | `text string -> Text` | a string as a text |
 | `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length |
@@ -1306,6 +1306,39 @@ Qualification:
   A later error can occur after earlier output has been written.
 ```
 
+**Record ends.** A run can fail part way, on a bad record late in the
+input or at a limit, when some of its text is already written. So that
+what it leaves behind is whole records, a text marks where each of its
+records ends: the CSV renderer after the header and each row, the JSON
+renderer after the root array or object opens and after each value
+directly inside it, `concat-map` after each item. The host's writer
+holds a record's text until its end is marked, and a failure drops what
+it holds, so a record half written when the failure arrives is not
+written at all. A text that a program writes with `join` marks its
+records itself: a step answers the keyword `:record-end` among its
+outputs where a record ends, and `join` writes it as no item, no
+separator and no text. A renderer of a document marks the end of each
+value directly inside its root, and one at the start, after any
+preamble, since before the first mark the writer sends text as it
+comes:
+
+```alchemy
+transition s [(quoted name) "\n" :record-end]
+```
+```canonical
+(transition s [(quoted name) "\n" :record-end])
+```
+
+A record longer than the writer will hold is written as it comes, and a
+failure inside it cuts it (render's `WriteOut` says how much it holds).
+Among the items of a `join`, over a stream or a vector, `:record-end`
+writes nothing, no separator either, and marks the end of a record; one
+that an item holds (a `join` inside it) marks nothing, since an item of
+a `join` or a `concat-map` is written whole and the text's records end
+between its items. Elsewhere it is the keyword it is: `concat` refuses
+it as it refuses any keyword, `concat-map` hands it to its function, and
+a taker of events or rows refuses it.
+
 A program that leaves the table to the host (`def export [input]
 (api-table input)`) is rendered as CSV by default, or as JSON records
 with `--render json`. The echo, whose result is the source's own events:
@@ -1513,8 +1546,9 @@ The TypeScript and Go ports take the same two implementations:
 - `sink(out, render, limits, metrics)` returns the `Sink + Send` the
   host pushes `JsonEvent`s into, then one `End`; the output reaches
   `out` through a coalescing writer that enforces `limits.
-  max_output_bytes` and counts `output_bytes` in `metrics`, and is
-  flushed at `End`. `sink_out` takes any `TextOut` instead. `render` is
+  max_output_bytes` and counts `output_bytes` in `metrics`, holds a
+  record's text until its end is marked (Record ends), and is flushed
+  at `End`. `sink_out` takes any `TextOut` instead. `render` is
   `Some(Renderer::Csv | Renderer::Json)` for a table or JSON-events
   result; for a `Text` result it must be `None` (`render_of_text`).
 - A failure comes back from the event call that found it, with

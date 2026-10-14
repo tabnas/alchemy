@@ -404,7 +404,9 @@ pub fn brief(v: &Val) -> String {
 /// the host's abort flag stops a text of exponentially many fragments, and
 /// a `concat-map` whose function answers a text that applies it again is
 /// the `recursion` failure rather than a stack overflow. A `join` and a
-/// `replace-text` inside the text are the host's [`Renderers`]'.
+/// `replace-text` inside the text are the host's [`Renderers`]'. A
+/// `join` writes `:record-end` among its items as
+/// [`TextOut::record_end`], no item and no text.
 pub fn write_finite(
     rt: &Runtime,
     renderers: &dyn Renderers,
@@ -433,8 +435,12 @@ pub fn write_finite(
             } => {
                 let mut join = renderers.join(Box::new(&mut *out), sep);
                 for item in items.iter() {
+                    if item.is_record_end() {
+                        join.record_end()?;
+                        continue;
+                    }
                     join.item_start()?;
-                    write_finite(rt, renderers, item, &mut join)?;
+                    write_finite(rt, renderers, item, &mut Unmarked(&mut join))?;
                     join.item_end()?;
                 }
                 Ok(())
@@ -446,7 +452,8 @@ pub fn write_finite(
             } => {
                 for item in items.iter() {
                     let text = rt.apply(f, vec![item.clone()], at)?;
-                    write_finite(rt, renderers, &text, out)?;
+                    write_finite(rt, renderers, &text, &mut Unmarked(&mut *out))?;
+                    out.record_end()?;
                 }
                 Ok(())
             }
@@ -487,6 +494,31 @@ impl TextOut for Held<'_> {
     fn has_committed(&self) -> bool {
         self.0.has_committed()
     }
+
+    fn record_end(&mut self) -> Result<(), Fail> {
+        self.0.record_end()
+    }
+}
+
+/// An item of a `join` or a `concat-map` over a vector, written through to
+/// the output beneath with its own record ends dropped (the default
+/// [`TextOut::record_end`]), as the stream stages' [`Scratch`] drops them:
+/// an item is written whole, and the marks of the text are the ones
+/// between its items. Its flush is kept, as [`Held`]'s is.
+struct Unmarked<'o>(&'o mut (dyn TextOut + Send));
+
+impl TextOut for Unmarked<'_> {
+    fn write_str(&mut self, s: &str) -> Result<(), Fail> {
+        self.0.write_str(s)
+    }
+
+    fn flush(&mut self) -> Result<(), Fail> {
+        Ok(())
+    }
+
+    fn has_committed(&self) -> bool {
+        self.0.has_committed()
+    }
 }
 
 /// One item's text, assembled whole before it is written, so a failure
@@ -494,7 +526,8 @@ impl TextOut for Held<'_> {
 /// it behind. It is bounded by `max_output_bytes`: an item longer than the
 /// whole output may be could never be written, and assembling it anyway
 /// is what would let a small program exhaust memory under an output
-/// limit.
+/// limit. A record end inside an item marks nothing (the default
+/// [`TextOut::record_end`]): the item is written whole.
 struct Scratch {
     text: String,
     max: Option<u64>,
@@ -1073,7 +1106,8 @@ fn check_delimiter(options: &Val) -> Result<(), Fail> {
 // Text stages
 // ---------------------------------------------------------------------------
 
-/// `concat-map` over a stream: each item's text, rendered whole.
+/// `concat-map` over a stream: each item's text, rendered whole, and the
+/// end of a record after it.
 struct ConcatMapStage {
     rt: Arc<Runtime>,
     renderers: Arc<dyn Renderers>,
@@ -1090,6 +1124,7 @@ impl ItemSink for ConcatMapStage {
         write_finite(&self.rt, &*self.renderers, &text, &mut self.scratch)
             .map_err(|f| self.rt.fail_at(f, &self.at))?;
         self.out.write_str(&self.scratch.text)?;
+        self.out.record_end()?;
         Ok(Flow::Continue)
     }
 
@@ -1099,7 +1134,8 @@ impl ItemSink for ConcatMapStage {
     }
 }
 
-/// `join` over a stream: each item is one logical item of the join.
+/// `join` over a stream: each item is one logical item of the join;
+/// `:record-end` is none, and marks the end of a record.
 struct JoinStage {
     rt: Arc<Runtime>,
     renderers: Arc<dyn Renderers>,
@@ -1109,6 +1145,10 @@ struct JoinStage {
 
 impl ItemSink for JoinStage {
     fn item(&mut self, v: Val) -> Result<Flow, Fail> {
+        if v.is_record_end() {
+            self.join.record_end()?;
+            return Ok(Flow::Continue);
+        }
         self.scratch.text.clear();
         write_finite(&self.rt, &*self.renderers, &v, &mut self.scratch)?;
         self.join.item_start()?;
@@ -1124,8 +1164,9 @@ impl ItemSink for JoinStage {
 }
 
 /// `concat` around one live text: the finite items before it are written
-/// before its first fragment (or at the flush, when it wrote nothing), the
-/// items after it at the flush, before the output beneath is flushed.
+/// before its first fragment or record end (or at the flush, when it
+/// wrote nothing), the items after it at the flush, before the output
+/// beneath is flushed.
 struct Framed {
     rt: Arc<Runtime>,
     renderers: Arc<dyn Renderers>,
@@ -1163,6 +1204,11 @@ impl TextOut for Framed {
 
     fn has_committed(&self) -> bool {
         self.inner.has_committed()
+    }
+
+    fn record_end(&mut self) -> Result<(), Fail> {
+        self.start()?;
+        self.inner.record_end()
     }
 }
 

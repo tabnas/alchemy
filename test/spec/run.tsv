@@ -44,6 +44,10 @@ def export [input] (concat-map (fn [x] (concat (quoted (get "name" x)) "\\n")) (
 def step [seen x]\n  let [now (push x seen)]\n    transition now [(concat (scalar-text csv-options (count now)) ":" (scalar-text csv-options x) "\\n")]\n\ndef export [input]\n  join ""\n    scan-emit [] step (fn [seen] [(concat "total " (scalar-text csv-options (count seen)) "\\n")]) (select (path each-index) input)	"1:a\n2:b\n3:c\ntotal 3\n"	["a","b","c"]	
 # The events program of docs/language.md: the keys of every object, one per line.
 def key-lines [s event]\n  match event\n    case (key name) (transition s [(quoted name) "\\n"])\n    case _ (transition s [])\n\ndef export [input]\n  join ""\n    scan-emit [] key-lines (fn [s] []) (events input)	"\"a\"\n\"b\"\n\"c\"\n\"d\"\n\"e\\\"f\"\n"	{"a":1,"b":{"c":[{"d":null}]},"e\\"f":2}	
+# Record ends: a step answers :record-end where a record of its text ends, and join writes it as no item, no separator and no text, over a vector as over a stream; a host's writer holds a record's text until its end, so a run that fails part way leaves whole records.
+def key-lines [s event]\n  match event\n    case (key name) (transition s [(quoted name) :record-end])\n    case _ (transition s [])\n\ndef export [input]\n  join ", "\n    scan-emit [] key-lines (fn [s] [:record-end]) (events input)	"\"a\", \"b\""	{"a":1,"b":2}	
+def export [input] (join ", " [:record-end "a" :record-end :record-end "b" :record-end])	"a, b"	0	
+def export [input] (join ", " [(join "" ["a" :record-end "b"]) "c" (concat-map (fn [x] (join "" [x :record-end x])) ["d" "e"])])	"ab, c, ddee"	0	
 # A stream of events a program built reaches a taker of JSON events: each scalar "secret" replaced, the rest copied, then written as JSON.
 def step [s event]\n  match event\n    case (scalar "secret") (transition s [(scalar "***")])\n    case _ (transition s [event])\n\ndef export [input]\n  json (scan-emit [] step (fn [s] []) (events input))	"{\"user\":\"ann\",\"pass\":\"***\",\"list\":[\"***\",1]}\n"	{"user":"ann","pass":"secret","list":["secret",1]}	
 # The text algebra: concat, replace-text, quoted, repeat, string-join.
