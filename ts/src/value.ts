@@ -340,6 +340,13 @@ export function keyword(name: string): Val {
   return { v: 'keyword', name }
 }
 
+// Whether `v` is `:record-end`, which among the items of a `join` is no
+// item: it writes nothing and marks the end of a record (a step of
+// `scan-emit` answers it among its outputs).
+export function isRecordEnd(v: Val): boolean {
+  return 'keyword' === v.v && 'record-end' === v.name
+}
+
 export function num(value: number, lexeme?: string): Val {
   return undefined === lexeme ? { v: 'num', value } : { v: 'num', value, lexeme }
 }

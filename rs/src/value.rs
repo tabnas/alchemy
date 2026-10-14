@@ -453,6 +453,13 @@ impl Val {
         }
     }
 
+    /// Whether this is `:record-end`, which among the items of a `join`
+    /// is no item: it writes nothing and marks the end of a record (a
+    /// step of `scan-emit` answers it among its outputs).
+    pub fn is_record_end(&self) -> bool {
+        matches!(self, Val::Keyword(k) if &**k == "record-end")
+    }
+
     /// A one-word name of the value's kind, for messages.
     pub fn kind(&self) -> &'static str {
         match self {

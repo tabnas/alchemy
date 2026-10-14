@@ -33,6 +33,21 @@ pub trait TextOut {
     fn has_committed(&self) -> bool {
         true
     }
+
+    /// Mark the end of a record: the text written so far ends with a
+    /// whole record. A text that is a sequence of records marks the end of
+    /// each one: a CSV row, a value directly inside a JSON document's root
+    /// container, an item `concat-map` writes, or wherever a step of
+    /// `scan-emit` answers `:record-end` among its outputs. render's
+    /// `WriteOut` holds a record's text until its end is marked, so a run
+    /// that fails part way leaves whole records behind and none half
+    /// written. The default does nothing, which is right for an output
+    /// that is the destination itself or holds the whole text. A
+    /// combinator passes the mark on, after any text it holds that comes
+    /// before it.
+    fn record_end(&mut self) -> Result<(), Fail> {
+        Ok(())
+    }
 }
 
 impl<O: TextOut + ?Sized> TextOut for &mut O {
@@ -47,6 +62,10 @@ impl<O: TextOut + ?Sized> TextOut for &mut O {
     fn has_committed(&self) -> bool {
         (**self).has_committed()
     }
+
+    fn record_end(&mut self) -> Result<(), Fail> {
+        (**self).record_end()
+    }
 }
 
 impl<O: TextOut + ?Sized> TextOut for Box<O> {
@@ -60,6 +79,10 @@ impl<O: TextOut + ?Sized> TextOut for Box<O> {
 
     fn has_committed(&self) -> bool {
         (**self).has_committed()
+    }
+
+    fn record_end(&mut self) -> Result<(), Fail> {
+        (**self).record_end()
     }
 }
 

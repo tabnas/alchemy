@@ -1348,6 +1348,10 @@ func nJoin(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		return nil, f
 	}
 	for _, item := range seq.Vector {
+		// :record-end is no item: it marks the end of a record.
+		if isRecordEnd(item) {
+			continue
+		}
 		if f := textlike("join", item); f != nil {
 			return nil, f
 		}

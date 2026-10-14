@@ -470,7 +470,8 @@ func brief(v Val) string {
 // takes an evaluation step and a level (Runtime.Tick, Runtime.enter), so
 // the host's abort flag stops a text of exponentially many fragments, and
 // a concat-map whose function answers a text that applies it again is the
-// `recursion` failure rather than an unbounded recursion.
+// `recursion` failure rather than an unbounded recursion. A join writes
+// :record-end among its items as shared.RecordEnd, no item and no text.
 func writeFinite(rt *Runtime, v Val, out shared.TextOut) *Fail {
 	if f := rt.Tick(); f != nil {
 		return f
@@ -501,6 +502,12 @@ func writeFinite(rt *Runtime, v Val, out shared.TextOut) *Fail {
 		case p.Kind == PlanJoin && !p.Seq.IsStream():
 			join := rt.Renderers().Join(out, p.Sep)
 			for _, item := range p.Seq.Vector {
+				if isRecordEnd(item) {
+					if f := shared.RecordEnd(join); f != nil {
+						return f
+					}
+					continue
+				}
 				if f := join.ItemStart(); f != nil {
 					return f
 				}
@@ -546,13 +553,15 @@ type held struct{ out shared.TextOut }
 func (h held) WriteStr(s string) *Fail { return h.out.WriteStr(s) }
 func (h held) Flush() *Fail            { return nil }
 func (h held) HasCommitted() bool      { return h.out.HasCommitted() }
+func (h held) RecordEnd() *Fail        { return shared.RecordEnd(h.out) }
 
 // scratch is one item's text, assembled whole before it is written, so a
 // failure half way through an item (a missing cell in a row) leaves
 // nothing of it behind. It is bounded by max_output_bytes: an item longer
 // than the whole output may be could never be written, and assembling it
 // anyway is what would let a small program exhaust memory under an output
-// limit.
+// limit. A record end inside an item marks nothing (it is no
+// shared.RecordEnder): the item is written whole.
 type scratch struct {
 	text strings.Builder
 	max  *uint64
@@ -1102,7 +1111,7 @@ func checkDelimiter(options Val) *Fail {
 // ---------------------------------------------------------------------------
 
 // concatMapStage is `concat-map` over a stream: each item's text, rendered
-// whole.
+// whole, and the end of a record after it.
 type concatMapStage struct {
 	rt      *Runtime
 	f       Fn
@@ -1123,6 +1132,9 @@ func (c *concatMapStage) Item(v Val) (shared.Flow, *Fail) {
 	if f := c.out.WriteStr(c.scratch.text.String()); f != nil {
 		return shared.Continue, f
 	}
+	if f := shared.RecordEnd(c.out); f != nil {
+		return shared.Continue, f
+	}
 	return shared.Continue, nil
 }
 
@@ -1134,7 +1146,7 @@ func (c *concatMapStage) End() (shared.Flow, *Fail) {
 }
 
 // joinStage is `join` over a stream: each item is one logical item of the
-// join.
+// join; :record-end is none, and marks the end of a record.
 type joinStage struct {
 	rt      *Runtime
 	join    shared.JoinOut
@@ -1142,6 +1154,9 @@ type joinStage struct {
 }
 
 func (j *joinStage) Item(v Val) (shared.Flow, *Fail) {
+	if isRecordEnd(v) {
+		return shared.Continue, shared.RecordEnd(j.join)
+	}
 	j.scratch.text.Reset()
 	if f := writeFinite(j.rt, v, j.scratch); f != nil {
 		return shared.Continue, f
@@ -1166,9 +1181,9 @@ func (j *joinStage) End() (shared.Flow, *Fail) {
 }
 
 // framed is `concat` around one live text: the finite items before it are
-// written before its first fragment (or at the flush, when it wrote
-// nothing), the items after it at the flush, before the output beneath is
-// flushed.
+// written before its first fragment or record end (or at the flush, when
+// it wrote nothing), the items after it at the flush, before the output
+// beneath is flushed.
 type framed struct {
 	rt     *Runtime
 	inner  shared.TextOut
@@ -1215,6 +1230,13 @@ func (fr *framed) Flush() *Fail {
 }
 
 func (fr *framed) HasCommitted() bool { return fr.inner.HasCommitted() }
+
+func (fr *framed) RecordEnd() *Fail {
+	if f := fr.start(); f != nil {
+		return f
+	}
+	return shared.RecordEnd(fr.inner)
+}
 
 // finiteTextSink is a text that never reaches the input: the events are
 // consumed and the text is written at the end.

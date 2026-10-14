@@ -93,6 +93,7 @@ import {
   isLive,
   isLiveVal,
   isMissing,
+  isRecordEnd,
   keyword,
   kindText,
   missing,
@@ -363,7 +364,8 @@ export function brief(v: Val): string {
 // stops a text of exponentially many fragments, and a `concat-map` whose
 // function answers a text that applies it again is the `recursion` failure
 // rather than a stack overflow. A walk on the evaluator's explicit stack:
-// `run(writeFinite(...))` writes it.
+// `run(writeFinite(...))` writes it. A `join` writes `:record-end` among
+// its items as `TextOut.recordEnd`, no item and no text.
 export function* writeFinite(rt: Runtime, v: Val, out: TextOut): G<void> {
   rt.tick()
   const at = 'text' === v.v && 'concat-map' === v.plan.p ? v.plan.at : undefined
@@ -387,6 +389,10 @@ export function* writeFinite(rt: Runtime, v: Val, out: TextOut): G<void> {
         {
           const join = rt.renderers.join(out, plan.sep)
           for (const item of plan.items.items) {
+            if (isRecordEnd(item)) {
+              join.recordEnd?.()
+              continue
+            }
             join.itemStart()
             yield writeFinite(rt, item, join)
             join.itemEnd()
@@ -436,13 +442,19 @@ class Held implements TextOut {
   hasCommitted(): boolean {
     return this.renderers.hasCommitted(this.inner)
   }
+
+  recordEnd(): void {
+    this.inner.recordEnd?.()
+  }
 }
 
 // One item's text, assembled whole before it is written, so a failure half
 // way through an item (a missing cell in a row) leaves nothing of it
 // behind. It is bounded by `max_output_bytes`: an item longer than the
 // whole output may be could never be written, and assembling it anyway is
-// what would let a small program exhaust memory under an output limit.
+// what would let a small program exhaust memory under an output limit. A
+// record end inside an item marks nothing (it has no `recordEnd`): the item
+// is written whole.
 class Scratch implements TextOut {
   text = ''
   private bytes = 0
@@ -913,7 +925,8 @@ function checkDelimiter(options: Val): void {
 // Text stages
 // ---------------------------------------------------------------------------
 
-// `concat-map` over a stream: each item's text, rendered whole.
+// `concat-map` over a stream: each item's text, rendered whole, and the end
+// of a record after it.
 class ConcatMapStage implements ItemSink {
   private readonly scratch: Scratch
 
@@ -936,6 +949,7 @@ class ConcatMapStage implements ItemSink {
       throw positioned(this.rt, err, this.at)
     }
     this.out.writeStr(this.scratch.text)
+    this.out.recordEnd?.()
     return 'continue'
   }
 
@@ -945,7 +959,8 @@ class ConcatMapStage implements ItemSink {
   }
 }
 
-// `join` over a stream: each item is one logical item of the join.
+// `join` over a stream: each item is one logical item of the join;
+// `:record-end` is none, and marks the end of a record.
 class JoinStage implements ItemSink {
   private readonly scratch: Scratch
   private readonly join: JoinOut
@@ -961,6 +976,10 @@ class JoinStage implements ItemSink {
   }
 
   item(v: Val): Flow {
+    if (isRecordEnd(v)) {
+      this.join.recordEnd?.()
+      return 'continue'
+    }
     this.scratch.clear()
     run(writeFinite(this.rt, v, this.scratch))
     this.join.itemStart()
@@ -976,8 +995,9 @@ class JoinStage implements ItemSink {
 }
 
 // `concat` around one live text: the finite items before it are written
-// before its first fragment (or at the flush, when it wrote nothing), the
-// items after it at the flush, before the output beneath is flushed.
+// before its first fragment or record end (or at the flush, when it wrote
+// nothing), the items after it at the flush, before the output beneath is
+// flushed.
 class Framed implements TextOut {
   constructor(
     private readonly rt: Runtime,
@@ -1010,6 +1030,11 @@ class Framed implements TextOut {
 
   hasCommitted(): boolean {
     return this.rt.renderers.hasCommitted(this.inner)
+  }
+
+  recordEnd(): void {
+    this.start()
+    this.inner.recordEnd?.()
   }
 }
 

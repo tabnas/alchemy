@@ -43,6 +43,7 @@ import {
   getPath as valGetPath,
   isLiveVal,
   isMissing,
+  isRecordEnd,
   keyword,
   kindText,
   liveKind,
@@ -945,7 +946,8 @@ function join(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   const sep = asStr('join', 'the separator', a[0])
   const items = asSeq('join', a[1])
   if ('vector' === items.seq) {
-    for (const item of items.items) textlike('join', item)
+    // `:record-end` is no item: it marks the end of a record.
+    for (const item of items.items) if (!isRecordEnd(item)) textlike('join', item)
   }
   return textVal({ p: 'join', sep, items })
 }

@@ -648,6 +648,14 @@ func Same(a, b Val) bool {
 	return false
 }
 
+// isRecordEnd reports whether v is :record-end, which among the items of
+// a join is no item: it writes nothing and marks the end of a record (a
+// step of scan-emit answers it among its outputs).
+func isRecordEnd(v Val) bool {
+	k, ok := v.(KeywordVal)
+	return ok && k == "record-end"
+}
+
 // IsLive reports whether this value holds a live stream or text: the
 // one-shot resources a vector may not hide and a fn may not capture.
 func IsLive(v Val) bool {
