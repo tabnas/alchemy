@@ -424,3 +424,108 @@ func TestTheAdaptersNameThemselvesAndTheirLoss(t *testing.T) {
 		t.Error(ShapeRecords, RootObject, RootAny)
 	}
 }
+
+// jsonDescriptor is the json grammar's descriptor, naming a transducer
+// part; jsonTransduce is its text.
+func jsonDescriptor(manifest string) Descriptor {
+	if manifest == "" {
+		manifest = `{"languageId": "json", "translate": {"reads": "tree", "writes": "tree", "transduce": "alchemy/transduce.alc", "render": "json"}}`
+	}
+	return Descriptor{Package: "tabnas-json", Manifest: manifest, Render: CarriedPartText("json")}
+}
+
+const jsonTransduce = "def json-transduce [input]\n  transduce-tree\n    record\n      entry :map (record (entry :container :object))\n      entry :list (record (entry :container :array))\n      entry :pair (record (entry :key 0))\n      entry :val (record (entry :scalar 0))\n    input\n"
+
+// A manifest's transducer part is read with the text the package hands
+// over, as a lift is, and only by PartTransducer: PartFromDescriptor
+// composes as it did whatever the manifest names.
+func TestATransducerPartIsReadBesideTheDescriptor(t *testing.T) {
+	d := jsonDescriptor("")
+	if p := PartFromDescriptor(d); p == nil || p.Render.Kind != RenderJSON {
+		t.Fatalf("%+v", p)
+	}
+	text := NewPartText("json-transduce", jsonTransduce)
+	tr, ok := PartTransducer(d, text)
+	if !ok || tr == nil || tr.File != "tabnas-json/alchemy/transduce.alc" || tr.Entry != "json-transduce" {
+		t.Fatalf("%+v %v", tr, ok)
+	}
+	if _, ok := PartTransducer(d, nil); ok {
+		t.Error("named and not handed over")
+	}
+	plain := jsonDescriptor(`{"languageId": "json", "translate": {"reads": "tree", "writes": "tree", "render": "json"}}`)
+	if tr, ok := PartTransducer(plain, nil); !ok || tr != nil {
+		t.Error("neither named nor handed over")
+	}
+	if _, ok := PartTransducer(plain, text); ok {
+		t.Error("handed over and not named")
+	}
+	if _, ok := PartTransducer(jsonDescriptor(strings.Replace(d.Manifest, "transduce.alc", "transduce.txt", 1)), text); ok {
+		t.Error("not an alchemy file")
+	}
+}
+
+// Over the parser's rule passes the main reads them, the transducer makes
+// the format's events, and the tree's contract holds them where a host
+// would hold a source's in front: nothing is in front, and no host renders
+// them itself.
+func TestATransducerComposesOverTheParsersRulePasses(t *testing.T) {
+	o := DefaultOptions()
+	d := jsonDescriptor("")
+	json := PartFromDescriptor(d)
+	tr, _ := PartTransducer(d, NewPartText("json-transduce", jsonTransduce))
+	compose := func(target *Part) *Composition {
+		t.Helper()
+		c, f := ComposeParsed(json, tr, target, o, "main")
+		if f != nil {
+			t.Fatal(f)
+		}
+		return c
+	}
+	yaml := tree(t, "yaml", "any")
+	c := compose(yaml)
+	if c.Main != "def export [input] (yaml-render (tree-contract (json-transduce input)))" {
+		t.Errorf("%s", c.Main)
+	}
+	if c.Front != FrontNone || c.Native != NativeNone || c.Input != alchemy.InputParserEvents {
+		t.Errorf("%v %v %v", c.Front, c.Native, c.Input)
+	}
+	if c.Sources[len(c.Sources)-1].File != "tabnas-json/alchemy/transduce.alc" {
+		t.Errorf("%v", c.Sources)
+	}
+	program, f := c.Compile(nil, nil, nil)
+	if f != nil {
+		t.Fatal(f)
+	}
+	report := program.Explain()
+	for _, line := range []string{
+		"Protocol:              ParserEvents/1 → Stream<ParserEvent> → Stream<Value> → JsonEvents/1 → Text",
+		"Tree contract:         the keys of each open object, each dropped as its object closes",
+		"Duplicate members:     rejected where a tree's contract holds the events (DUPLICATE_MEMBER)",
+	} {
+		if !strings.Contains(report, line) {
+			t.Errorf("no %q in\n%s", line, report)
+		}
+	}
+	if c := compose(json); c.Main != `def export [input] (json (record (entry :non-finite :null)) (tree-contract (json-transduce input)))` || c.Native != NativeNone {
+		t.Errorf("%s %v", c.Main, c.Native)
+	}
+	if c := compose(tree(t, "toml", "object")); c.Main != `def export [input] (toml-render (wrap-object "items" (tree-contract (json-transduce input))))` {
+		t.Errorf("%s", c.Main)
+	}
+	csv := full(t, "csv", `{"reads": "records", "writes": "records", "root": "array", "render": "csv"}`, nil, nil)
+	if c := compose(csv); strings.Contains(c.Main, "tree-contract") || !strings.Contains(c.Main, "(json-transduce input)") {
+		t.Errorf("%s", c.Main)
+	} else if _, f := c.Compile(nil, nil, nil); f != nil {
+		t.Error(f)
+	}
+	c, f = ComposeProgramParsed(alchemy.OutputJsonEvents, tr, yaml, o, "main")
+	if f != nil {
+		t.Fatal(f)
+	}
+	if c.Main != "def export [input] (yaml-render (program-export (json-transduce input)))" || c.Front != FrontNone || c.Input != alchemy.InputParserEvents {
+		t.Errorf("%s %v %v", c.Main, c.Front, c.Input)
+	}
+	if p, f := c.Compile(&alchemy.Source{File: "p.alc", Text: "def export [input] (events input)"}, nil, nil); f != nil || p.Input() != alchemy.InputParserEvents {
+		t.Errorf("%v", f)
+	}
+}

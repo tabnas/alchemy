@@ -616,7 +616,12 @@ has returned the document's value: a document is complete only when it
 validated. Containers never travel in a rule pass, so a transducer that
 wants one emits its start and its end from the passes that open and
 close it, and nothing in the stream grows with the document but what
-the transducer keeps.
+the transducer keeps. A transducer's events are the program's, so
+nothing holds them to a tree's until `tree-contract` does: a
+translation composed over a transducer (`compose_parsed` in the
+`translate` module, which reads a format's transducer part from its
+manifest's `translate.transduce`) puts it after the transducer, before
+the lift and the render.
 
 A transducer is a `scan-emit` over the rule passes, its outputs the
 event constructors and `as-events` making them `JsonEvents` for
@@ -734,6 +739,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `close` | `close rule -> ParserEvent` | a rule's close pass completed: the rule a record, its `:value` the node's when that is a scalar |
 | `json` | `json [options] events -> Text` | `JsonEvents`, or a `Stream<Event>` a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (`TARGET_VALUE_UNREPRESENTABLE`), unless an options record first says `(entry :non-finite :null)`: then it is written as `null`. The record holds `:non-finite` and nothing else, `:reject` (the default) or `:null` |
 | `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
+| `tree-contract` | `tree-contract events -> JsonEvents` | the events unchanged, held to a tree's contract as they pass: one root value, and in each object a key and then its value, each key once; a repeated key is `DUPLICATE_MEMBER`, and events no tree has (a value where a key is due, a key outside an object, an end with nothing open, a second root, the end inside a container) are `STREAMABILITY_UNKNOWN` (`not_a_tree`), each at the path concerned; retains the keys of each open object, dropped as it closes. A translation holds a transducer's events to it before a render that writes from a tree |
 | `csv-table` | `csv-table options events -> TableEvents` | the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most `max_columns`, labels strings, numbers or booleans; rows as wide as the schema; one `table-end`; a delimiter that holds the quote, a line break or NUL is refused before anything runs |
 
 Selecting, capturing and scanning:

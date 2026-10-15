@@ -52,6 +52,8 @@ export type RetentionScope =
   | 'subtree'
   // The state a `scan-emit` step returns.
   | 'state'
+  // The keys of each open object, which a tree's contract holds.
+  | 'keys'
 
 // One live retention requirement.
 export type Retention = {
@@ -193,6 +195,7 @@ function stages(plan: Plan): Plan[] {
       case 'filter':
       case 'table-from-json':
       case 'records':
+      case 'tree-contract':
       case 'csv-table':
       case 'csv':
       case 'json':
@@ -223,6 +226,7 @@ function protocolOf(stage: Plan): string {
     case 'input':
     case 'records':
     case 'as-events':
+    case 'tree-contract':
       return 'JsonEvents/1'
     case 'parser-input':
       return 'ParserEvents/1'
@@ -276,6 +280,9 @@ function tabular(stages: Plan[], output: Output): boolean {
 // object of the source repeats.
 function duplicatesOf(stages: Plan[], policy: Duplicates, finite: boolean): string {
   if (finite) return 'not examined; the input is only validated'
+  if (stages.some((s) => 'tree-contract' === s.p)) {
+    return "rejected where a tree's contract holds the events (DUPLICATE_MEMBER)"
+  }
   const captured = stages.some((s) => 'route' === s.p || 'select' === s.p || 'table-from-json' === s.p)
   if (!captured) return 'preserved; the events are copied as they arrive, not mapped by key'
   switch (policy) {
@@ -455,6 +462,15 @@ export function summarize(program: Explainable): EffectSummary {
       // its own summary.
       case 'events':
         if (PASS_THROUGH === selection) selection = 'none; every event is delivered as an item'
+        break
+      // The contract keeps each open object's keys, to refuse one
+      // repeated, and drops them as the object closes.
+      case 'tree-contract':
+        retention.push({
+          scope: 'keys',
+          label: 'Tree contract:',
+          reason: 'the keys of each open object, each dropped as its object closes',
+        })
         break
       // Every rule pass becomes one item as it arrives: a transducer's
       // input, whose step decides what is kept.

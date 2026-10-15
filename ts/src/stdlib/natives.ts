@@ -1370,6 +1370,12 @@ function jsonNonFinite(options: Val): NonFinite {
   return policy
 }
 
+// `tree-contract events`: the events unchanged, held to a tree's contract
+// where they pass.
+function treeContract(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  return streamVal({ p: 'tree-contract', source: asStream('tree-contract', a[0]) })
+}
+
 function records(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   return streamVal({ p: 'records', source: asStream('records', a[0]) })
 }
@@ -1445,6 +1451,7 @@ const IMPLS: Record<string, NativeImpl> = {
   close: rulePass('close'),
   json,
   records,
+  'tree-contract': treeContract,
   'csv-table': csvTable,
 }
 

@@ -1397,6 +1397,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(TableEvents(), first(exp("the options of csv-table", RecordT, 0), exp("the table events of csv-table", TableEvents(), 1)))
 	case "records":
 		return ret(JsonEvents, exp("the table events of records", TableEvents(), 0)())
+	case "tree-contract":
+		return ret(JsonEvents, exp("the events of tree-contract", JsonEvents, 0)())
 	}
 	// The constants are not calls; a call of one is an arity error above.
 	// Anything else is a native this table does not know.

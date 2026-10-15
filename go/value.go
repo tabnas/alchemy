@@ -413,6 +413,9 @@ const (
 	// PlanParserInput is the host's ParserEvents/1, when it declares a
 	// parser-events input: read by `parser-events` alone.
 	PlanParserInput
+	// PlanTreeContract is `tree-contract events`: the events unchanged,
+	// held to a tree's contract (shared.TreeContract) where they pass.
+	PlanTreeContract
 	// PlanParserEvents is `parser-events input`: every rule pass of
 	// ParserEvents/1 as one tagged item, (open rule) or (close rule); the
 	// parse's end is the stream's end, not an item. Its source is always
@@ -581,7 +584,7 @@ const (
 // (natively), or Items.
 func (p *Plan) Protocol() Protocol {
 	switch p.Kind {
-	case PlanInput, PlanRecords, PlanAsEvents:
+	case PlanInput, PlanRecords, PlanAsEvents, PlanTreeContract:
 		return ProtocolJSONEvents
 	case PlanParserInput:
 		return ProtocolParserEvents
@@ -618,6 +621,8 @@ func PlanName(p *Plan) string {
 		return "table-from-json"
 	case PlanRecords:
 		return "records"
+	case PlanTreeContract:
+		return "tree-contract"
 	case PlanCsvTable:
 		return "csv-table"
 	case PlanLit:

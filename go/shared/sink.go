@@ -140,7 +140,7 @@ func (t *TreeContract) path() Path {
 
 func (t *TreeContract) notATree(what string) *Fail {
 	return NewFail(CodeStreamabilityUnknown,
-		fmt.Sprintf("the stream holds %s, which a tree's events never do, so it is not a tree's", what)).
+		fmt.Sprintf("not_a_tree: the stream holds %s, which a tree's events never do, so it is not a tree's", what)).
 		AtPath(t.path().String())
 }
 

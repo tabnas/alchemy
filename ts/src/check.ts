@@ -1106,6 +1106,9 @@ class Checker {
       case 'records':
         this.expect('the table events of records', tableEvents(), t(0), at(0))
         return JsonEvents
+      case 'tree-contract':
+        this.expect('the events of tree-contract', JsonEvents, t(0), at(0))
+        return JsonEvents
       // The constants are not calls; a call of one is an arity error above.
       // Anything else is a native this table does not know.
       default:

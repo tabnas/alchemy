@@ -110,6 +110,7 @@ func init() {
 		"close":           nRulePass("close"),
 		"json":            nJSON,
 		"records":         nRecords,
+		"tree-contract":   nTreeContract,
 		"csv-table":       nCsvTable,
 	}
 }
@@ -1937,4 +1938,14 @@ func nRecords(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		return nil, f
 	}
 	return StreamVal{Plan: &Plan{Kind: PlanRecords, Source: source}}, nil
+}
+
+// nTreeContract is `tree-contract events`: the events unchanged, held to a
+// tree's contract where they pass.
+func nTreeContract(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	source, f := asStream("tree-contract", a[0])
+	if f != nil {
+		return nil, f
+	}
+	return StreamVal{Plan: &Plan{Kind: PlanTreeContract, Source: source}}, nil
 }

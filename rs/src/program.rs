@@ -691,6 +691,7 @@ fn root_stage(plan: &Plan) -> &Plan {
             | Plan::Filter { source, .. }
             | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
+            | Plan::TreeContract { source }
             | Plan::AsEvents { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }

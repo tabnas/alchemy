@@ -1401,6 +1401,10 @@ impl Checker<'_> {
                 self.expect("the events of json", &JsonEvents, t(events), at(events))?;
                 Text
             }
+            "tree-contract" => {
+                self.expect("the events of tree-contract", &JsonEvents, t(0), at(0))?;
+                JsonEvents
+            }
             "csv-table" => {
                 self.expect("the options of csv-table", &Record, t(0), at(0))?;
                 self.expect(

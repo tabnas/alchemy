@@ -1527,6 +1527,10 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 	// program's items, each an event, as JSON events.
 	case PlanAsEvents:
 		return l.events(p.Source, sink)
+	// The events as they are, held to a tree's contract in front of
+	// whatever takes them.
+	case PlanTreeContract:
+		return l.events(p.Source, shared.NewTreeContract(sink))
 	// A stream whose items may be events (`events` itself, or a
 	// `scan-emit`, `map` or `filter` over anything): each item is turned
 	// back into an event as the stream runs, the reverse of `events`, so a
@@ -1564,7 +1568,7 @@ func (l *Lowering) table(p *Plan, table shared.TableSink, countedLater bool) (sh
 			return nil, f
 		}
 		return l.events(p.Source, transducer)
-	case PlanInput, PlanRecords, PlanAsEvents:
+	case PlanInput, PlanRecords, PlanAsEvents, PlanTreeContract:
 		return nil, protocolMismatch("table events were expected, not JSON events (table-from-json makes a table of them)")
 	}
 	return l.items(p, &taggedToTable{rt: l.rt, metrics: l.metrics, countRows: !countedLater, table: table}, true)
@@ -1648,7 +1652,7 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 			return nil, f
 		}
 		return l.items(p.Source, &csvTableStage{rt: l.rt, metrics: l.metrics, noColumns: empty, countRows: !countedLater, down: down}, true)
-	case PlanInput, PlanRecords, PlanAsEvents:
+	case PlanInput, PlanRecords, PlanAsEvents, PlanTreeContract:
 		return nil, protocolMismatch("JSON events cannot be read item by item; select or route what the stream should yield, or read its events")
 	}
 	return nil, typeError(PlanName(p) + " is a text, not a stream")

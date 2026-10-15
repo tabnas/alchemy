@@ -790,6 +790,7 @@ export class Runtime {
             case 'parser-events':
             case 'as-events':
             case 'records':
+            case 'tree-contract':
             case 'json':
               break
           }

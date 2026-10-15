@@ -71,6 +71,7 @@ import {
   TableSink,
   TextOut,
   Transition,
+  TreeContract,
   boundColumn,
   utf8Bytes,
 } from './shared'
@@ -1290,6 +1291,10 @@ export class Lowering {
       // program's items, each an event, as JSON events.
       case 'as-events':
         return this.events(plan.source, sink)
+      // The events as they are, held to a tree's contract in front of
+      // whatever takes them.
+      case 'tree-contract':
+        return this.events(plan.source, new TreeContract(sink))
       // A stream whose items may be events (`events` itself, or a
       // `scan-emit`, `map` or `filter` over anything): each item is turned
       // back into an event as the stream runs, the reverse of `events`, so
@@ -1336,6 +1341,7 @@ export class Lowering {
       case 'input':
       case 'records':
       case 'as-events':
+      case 'tree-contract':
         throw protocolMismatch(
           'table events were expected, not JSON events (table-from-json makes a table of them)',
         )
@@ -1425,6 +1431,7 @@ export class Lowering {
       case 'input':
       case 'records':
       case 'as-events':
+      case 'tree-contract':
         throw protocolMismatch(
           'JSON events cannot be read item by item; select or route what the stream should yield, or read its events',
         )

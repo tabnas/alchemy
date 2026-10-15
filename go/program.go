@@ -262,7 +262,7 @@ func rootStage(plan *Plan) *Plan {
 		case PlanInput, PlanParserInput:
 			return here
 		case PlanRoute, PlanSelect, PlanEvents, PlanParserEvents, PlanScanEmit, PlanMap, PlanFilter,
-			PlanTableFromJSON, PlanRecords, PlanAsEvents, PlanCsvTable, PlanCsv, PlanJSON:
+			PlanTableFromJSON, PlanRecords, PlanTreeContract, PlanAsEvents, PlanCsvTable, PlanCsv, PlanJSON:
 			if here.Source.Kind == PlanInput || here.Source.Kind == PlanParserInput {
 				return here
 			}
@@ -307,7 +307,7 @@ func stagesOf(plan *Plan) []*Plan {
 		switch here.Kind {
 		case PlanInput, PlanParserInput, PlanLit:
 		case PlanRoute, PlanSelect, PlanEvents, PlanParserEvents, PlanAsEvents, PlanScanEmit, PlanMap, PlanFilter,
-			PlanTableFromJSON, PlanRecords, PlanCsvTable, PlanCsv, PlanJSON:
+			PlanTableFromJSON, PlanRecords, PlanTreeContract, PlanCsvTable, PlanCsv, PlanJSON:
 			next = here.Source
 		case PlanConcatMap, PlanJoin:
 			next = here.Seq.Stream
@@ -363,6 +363,7 @@ func stageOf(p *Plan) Stage {
 		PlanCsv: StageCsv, PlanJSON: StageJSON, PlanConcatMap: StageConcatMap, PlanJoin: StageJoin,
 		PlanConcat: StageConcat, PlanReplace: StageReplace,
 		PlanParserInput: StageParserInput, PlanParserEvents: StageParserEvents,
+		PlanTreeContract: StageTreeContract,
 	}
 	s := Stage{Kind: kinds[p.Kind]}
 	switch p.Kind {

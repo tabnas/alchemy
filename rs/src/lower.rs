@@ -56,6 +56,7 @@ use crate::shared::{
     JsonOptions, Limits, Metrics, MissingText, Newline, Number, ParserEvent, ParserSink,
     PublicColumn, Renderers, RouteSink, Routers, RulePass, ScanEmitter, ScanFinish, ScanOut,
     ScanStep, Schema, Selected, Sink, TableBinding, TableEvent, TableSink, TextOut, Transition,
+    TreeContract,
 };
 use crate::stdlib::registry::{capture_budget, get_field, number_text, truth};
 use crate::value::{selector_segments, type_error, Func, NonFinite, Plan, Protocol, Seq, Val};
@@ -1592,6 +1593,9 @@ impl<'a> Lowering<'a> {
             // `as-events` names what the arm below does for any items
             // plan: the program's items, each an event, as JSON events.
             Plan::AsEvents { source } => self.events(source, sink),
+            // The events as they are, held to a tree's contract in front
+            // of whatever takes them.
+            Plan::TreeContract { source } => self.events(source, Box::new(TreeContract::new(sink))),
             // A stream whose items may be events (`events` itself, or a
             // `scan-emit`, `map` or `filter` over anything): each item is
             // turned back into an event as the stream runs, the reverse of
@@ -1653,7 +1657,10 @@ impl<'a> Lowering<'a> {
                 )?;
                 self.events(source, transducer)
             }
-            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Err(protocol_mismatch(
+            Plan::Input
+            | Plan::Records { .. }
+            | Plan::AsEvents { .. }
+            | Plan::TreeContract { .. } => Err(protocol_mismatch(
                 "table events were expected, not JSON events (table-from-json makes a table of them)",
             )),
             _ => self.items(
@@ -1809,7 +1816,10 @@ impl<'a> Lowering<'a> {
                     true,
                 )
             }
-            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Err(protocol_mismatch(
+            Plan::Input
+            | Plan::Records { .. }
+            | Plan::AsEvents { .. }
+            | Plan::TreeContract { .. } => Err(protocol_mismatch(
                 "JSON events cannot be read item by item; select or route what the stream should yield, or read its events",
             )),
             Plan::ParserInput => Err(protocol_mismatch(

@@ -34,6 +34,8 @@ pub enum RetentionScope {
     Subtree,
     /// The state a `scan-emit` step returns.
     State,
+    /// The keys of each open object, which a tree's contract holds.
+    Keys,
 }
 
 impl RetentionScope {
@@ -43,6 +45,7 @@ impl RetentionScope {
             RetentionScope::Record => "record",
             RetentionScope::Subtree => "subtree",
             RetentionScope::State => "state",
+            RetentionScope::Keys => "keys",
         }
     }
 }
@@ -170,6 +173,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
             | Plan::Filter { source, .. }
             | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
+            | Plan::TreeContract { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
             | Plan::Json { source, .. } => source,
@@ -200,7 +204,9 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
 /// The protocol a stage produces, as the report names it.
 fn protocol_of(stage: &Plan) -> &'static str {
     match stage {
-        Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => "JsonEvents/1",
+        Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } | Plan::TreeContract { .. } => {
+            "JsonEvents/1"
+        }
         Plan::ParserInput => "ParserEvents/1",
         Plan::TableFromJson { .. } | Plan::CsvTable { .. } => "TableRows/1",
         Plan::Route { .. } => "Stream<Selected>",
@@ -257,6 +263,12 @@ fn duplicates_of(stages: &[&Plan], policy: Duplicates, finite: bool) -> String {
             Plan::Route { .. } | Plan::Select { .. } | Plan::TableFromJson { .. }
         )
     });
+    if stages
+        .iter()
+        .any(|s| matches!(s, Plan::TreeContract { .. }))
+    {
+        return "rejected where a tree's contract holds the events (DUPLICATE_MEMBER)".to_string();
+    }
     if captured {
         match policy {
             Duplicates::Reject => "rejected in captured scopes (DUPLICATE_MEMBER)",
@@ -474,6 +486,16 @@ pub fn summarize(program: &Program) -> EffectSummary {
                 selection = "none; every event is delivered as an item".to_string();
             }
             Plan::Events { .. } => {}
+            // The contract keeps each open object's keys, to refuse one
+            // repeated, and drops them as the object closes.
+            Plan::TreeContract { .. } => retention.push(Retention {
+                scope: RetentionScope::Keys,
+                label: "Tree contract:",
+                reason: "the keys of each open object, each dropped as its object closes"
+                    .to_string(),
+                selector: None,
+                limit: None,
+            }),
             // Every rule pass becomes one item as it arrives: a
             // transducer's input, whose step decides what is kept.
             Plan::ParserEvents { .. } => {

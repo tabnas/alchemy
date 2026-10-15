@@ -327,4 +327,73 @@ describe('translate', () => {
     assert.equal(fail.file, 'tabnas-x/alchemy/render.alc')
     assert.deepStrictEqual([fail.row, fail.col], [2, 4])
   })
+
+  // The json grammar's descriptor, naming a transducer part, and its text.
+  const jsonDescriptor = (manifest?: string): translate.Descriptor => ({
+    package: 'tabnas-json',
+    manifest:
+      manifest ??
+      '{"languageId": "json", "translate": {"reads": "tree", "writes": "tree", "transduce": "alchemy/transduce.alc", "render": "json"}}',
+    render: { entry: 'json' },
+  })
+  const JSON_TRANSDUCE =
+    'def json-transduce [input]\n  transduce-tree\n    record\n      entry :map (record (entry :container :object))\n      entry :list (record (entry :container :array))\n      entry :pair (record (entry :key 0))\n      entry :val (record (entry :scalar 0))\n    input\n'
+
+  // A manifest's transducer part is read with the text the package hands
+  // over, as a lift is, and only by `Part.transducer`: `fromDescriptor`
+  // composes as it did whatever the manifest names.
+  it('a transducer part is read beside the descriptor', () => {
+    const d = jsonDescriptor()
+    assert.deepStrictEqual(T.Part.fromDescriptor(d)!.render, { kind: 'json' })
+    const text = { entry: 'json-transduce', source: JSON_TRANSDUCE }
+    const t = T.Part.transducer(d, text)!.alc!
+    assert.deepStrictEqual([t.file, t.entry], ['tabnas-json/alchemy/transduce.alc', 'json-transduce'])
+    assert.equal(T.Part.transducer(d, undefined), undefined)
+    const plain = jsonDescriptor('{"languageId": "json", "translate": {"reads": "tree", "writes": "tree", "render": "json"}}')
+    assert.deepStrictEqual(T.Part.transducer(plain, undefined), {})
+    assert.equal(T.Part.transducer(plain, text), undefined)
+    assert.equal(T.Part.transducer(jsonDescriptor(d.manifest.replace('transduce.alc', 'transduce.txt')), text), undefined)
+  })
+
+  // Over the parser's rule passes the main reads them, the transducer makes
+  // the format's events, and the tree's contract holds them where a host
+  // would hold a source's in front: nothing is in front, and no host
+  // renders them itself.
+  it("a transducer composes over the parser's rule passes", () => {
+    const o = T.Options.default()
+    const d = jsonDescriptor()
+    const json = T.Part.fromDescriptor(d)!
+    const t = T.Part.transducer(d, { entry: 'json-transduce', source: JSON_TRANSDUCE })!.alc!
+    const yaml = tree('yaml', 'any')
+    let c = T.composeParsed(json, t, yaml, o, 'main')
+    assert.equal(c.main, 'def export [input] (yaml-render (tree-contract (json-transduce input)))')
+    assert.deepStrictEqual([c.front, c.native, c.input], ['none', undefined, 'ParserEvents/1'])
+    assert.equal(c.sources[c.sources.length - 1].file, 'tabnas-json/alchemy/transduce.alc')
+    const program = c.compile(undefined, OPTIONS)
+    assert.equal(program.input(), 'ParserEvents/1')
+    const report = program.explain()
+    assert.ok(
+      report.includes('Protocol:              ParserEvents/1 → Stream<ParserEvent> → Stream<Value> → JsonEvents/1 → Text'),
+      report,
+    )
+    assert.ok(report.includes('Tree contract:         the keys of each open object, each dropped as its object closes'), report)
+    assert.ok(
+      report.includes("Duplicate members:     rejected where a tree's contract holds the events (DUPLICATE_MEMBER)"),
+      report,
+    )
+    c = T.composeParsed(json, t, json, o, 'main')
+    assert.equal(c.main, 'def export [input] (json (record (entry :non-finite :null)) (tree-contract (json-transduce input)))')
+    assert.equal(c.native, undefined)
+    c = T.composeParsed(json, t, tree('toml', 'object'), o, 'main')
+    assert.equal(c.main, 'def export [input] (toml-render (wrap-object "items" (tree-contract (json-transduce input))))')
+    const csv = full('csv', '{"reads": "records", "writes": "records", "root": "array", "render": "csv"}')
+    c = T.composeParsed(json, t, csv, o, 'main')
+    assert.ok(!c.main.includes('tree-contract'), c.main)
+    assert.ok(c.main.includes('(json-transduce input)'), c.main)
+    c.compile(undefined, OPTIONS)
+    c = T.composeProgramParsed('JsonEvents/1', t, yaml, o, 'main')
+    assert.equal(c.main, 'def export [input] (yaml-render (program-export (json-transduce input)))')
+    assert.deepStrictEqual([c.front, c.input], ['none', 'ParserEvents/1'])
+    assert.equal(c.compile({ file: 'p.alc', text: 'def export [input] (events input)' }, OPTIONS).input(), 'ParserEvents/1')
+  })
 })

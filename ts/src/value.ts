@@ -190,6 +190,9 @@ export type Plan =
   | { readonly p: 'table-from-json'; readonly binding: Val; readonly source: Plan; readonly at: SourceSpan }
   // `records table-events`: `JsonEvents/1` from `TableRows/1`.
   | { readonly p: 'records'; readonly source: Plan }
+  // `tree-contract events`: the events unchanged, held to a tree's
+  // contract (the shared `TreeContract`) where they pass.
+  | { readonly p: 'tree-contract'; readonly source: Plan }
   // `csv-table options events`: the tagged table events, validated as the
   // CSV renderer validates them, passed on unchanged.
   | { readonly p: 'csv-table'; readonly options: Val; readonly source: Plan }
@@ -262,6 +265,7 @@ export function isLive(plan: Plan): boolean {
       case 'filter':
       case 'table-from-json':
       case 'records':
+      case 'tree-contract':
       case 'csv-table':
       case 'csv':
       case 'json':
@@ -306,6 +310,7 @@ export function protocol(plan: Plan): Protocol {
     case 'input':
     case 'records':
     case 'as-events':
+    case 'tree-contract':
       return 'JsonEvents'
     case 'parser-input':
       return 'ParserEvents'

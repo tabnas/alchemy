@@ -118,7 +118,7 @@ export class TreeContract<S extends Sink> implements Sink {
   notATree(what: string): Fail {
     return new Fail(
       'STREAMABILITY_UNKNOWN',
-      `the stream holds ${what}, which a tree's events never do, so it is not a tree's`,
+      `not_a_tree: the stream holds ${what}, which a tree's events never do, so it is not a tree's`,
     ).atPath(this.path().toString())
   }
 

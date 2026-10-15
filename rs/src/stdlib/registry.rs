@@ -1707,6 +1707,13 @@ fn json_options(options: &Val) -> Result<NonFinite, Fail> {
     }
 }
 
+/// `tree-contract events`: the events unchanged, held to a tree's
+/// contract where they pass.
+fn tree_contract(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("tree-contract", &a[0])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::TreeContract { source })))
+}
+
 fn records(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let source = as_stream("records", &a[0])?.clone();
     Ok(Val::Stream(Arc::new(Plan::Records { source })))
@@ -1846,6 +1853,7 @@ static NATIVES: &[Native] = &[
     // Renderers and protocol adapters.
     f("json", Between(1, 2), json, "json [options] events -> Text", "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (TARGET_VALUE_UNREPRESENTABLE), unless an options record first says (entry :non-finite :null): then it is written as null. The record holds :non-finite and nothing else, :reject (the default) or :null"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
+    f("tree-contract", Exact(1), tree_contract, "tree-contract events -> JsonEvents", "the events unchanged, held to a tree's contract as they pass: one root value, and in each object a key and then its value, each key once; a repeated key is DUPLICATE_MEMBER, and events no tree has (a value where a key is due, a key outside an object, an end with nothing open, a second root, the end inside a container) are STREAMABILITY_UNKNOWN (not_a_tree), each at the path concerned; retains the keys of each open object, dropped as it closes. A translation holds a transducer's events to it before a render that writes from a tree"),
     f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most max_columns, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that holds the quote, a line break or NUL is refused before anything runs"),
 ];
 
@@ -1904,7 +1912,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 52);
+        assert_eq!(compared, 53);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

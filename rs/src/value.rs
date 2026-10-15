@@ -256,6 +256,9 @@ pub enum Plan {
     },
     /// `records table-events`: `JsonEvents/1` from `TableRows/1`.
     Records { source: Arc<Plan> },
+    /// `tree-contract events`: the events unchanged, held to a tree's
+    /// contract (the shared `TreeContract`) where they pass.
+    TreeContract { source: Arc<Plan> },
     /// `csv-table options events`: the tagged table events, validated as
     /// the CSV renderer validates them, passed on unchanged.
     CsvTable { options: Val, source: Arc<Plan> },
@@ -349,6 +352,7 @@ impl Plan {
             | Plan::Filter { source, .. }
             | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
+            | Plan::TreeContract { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
             | Plan::Json { source, .. } => source.is_live(),
@@ -381,7 +385,10 @@ impl Plan {
     /// item by item.
     pub fn protocol(&self) -> Protocol {
         match self {
-            Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Protocol::JsonEvents,
+            Plan::Input
+            | Plan::Records { .. }
+            | Plan::AsEvents { .. }
+            | Plan::TreeContract { .. } => Protocol::JsonEvents,
             Plan::ParserInput => Protocol::ParserEvents,
             Plan::TableFromJson { .. } => Protocol::TableRows,
             Plan::Route { .. }
@@ -702,6 +709,7 @@ pub fn plan_name(plan: &Plan) -> &'static str {
         Plan::Filter { .. } => "filter",
         Plan::TableFromJson { .. } => "table-from-json",
         Plan::Records { .. } => "records",
+        Plan::TreeContract { .. } => "tree-contract",
         Plan::CsvTable { .. } => "csv-table",
         Plan::Lit(_) => "text",
         Plan::Concat { .. } => "concat",

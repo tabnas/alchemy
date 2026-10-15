@@ -252,6 +252,7 @@ function rootStage(plan: Plan): Plan {
       case 'filter':
       case 'table-from-json':
       case 'records':
+      case 'tree-contract':
       case 'as-events':
       case 'csv-table':
       case 'csv':

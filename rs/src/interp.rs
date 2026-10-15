@@ -890,6 +890,7 @@ impl Runtime {
                     | Plan::ParserEvents { .. }
                     | Plan::AsEvents { .. }
                     | Plan::Records { .. }
+                    | Plan::TreeContract { .. }
                     | Plan::Json { .. } => 0,
                 },
                 // A frame's value, and the frames outside it one level
