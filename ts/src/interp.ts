@@ -77,6 +77,7 @@ import {
   vectorVal,
 } from './value'
 import { brief, csvOptions, isTableBinding } from './lower'
+import type { Input } from './output'
 
 // How deep evaluation may nest: a form inside a form, a function's body
 // inside the call that applied it, a definition's value inside the form
@@ -640,7 +641,9 @@ export class Runtime {
 
   // The program's result: `export` applied to the host's input plan. A
   // stream or a text plan comes back; nothing has been consumed.
-  *export(): G<Val> {
+  // `input` is what the host declares: JSON events (the input plan) or the
+  // parser's rule passes (the parser input plan).
+  *export(input: Input = 'JsonEvents/1'): G<Val> {
     const exp: Val | undefined = yield this.defValue('program', 'export')
     if (undefined === exp) {
       throw new Fail('DSL_TYPE_ERROR', 'no_export: the program has no `def export [input]`')
@@ -653,7 +656,8 @@ export class Runtime {
     }
     const def = this.program.get('export')
     const at = undefined !== def ? def.span : spanOf(sourceFile(this.program.file), 0, 0)
-    return yield this.apply(exp.f, [streamVal({ p: 'input' })], at)
+    const plan: Plan = 'ParserEvents/1' === input ? { p: 'parser-input' } : { p: 'input' }
+    return yield this.apply(exp.f, [streamVal(plan)], at)
   }
 
   // Evaluate a standalone expression in the program's scope, for tests and
@@ -781,7 +785,9 @@ export class Runtime {
               payload = utf8Bytes(plan.selector.toString())
               break
             case 'input':
+            case 'parser-input':
             case 'events':
+            case 'parser-events':
             case 'as-events':
             case 'records':
             case 'json':

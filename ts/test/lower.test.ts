@@ -20,8 +20,8 @@ import {
   run,
   value,
 } from '../dist/alchemy'
-import { NoColumns } from '../dist/lower'
-import { CsvOptions } from '../dist/shared'
+import { Lowering, NoColumns, ParserEventsOnly } from '../dist/lower'
+import { CsvOptions, Limits, Metrics, parserEventFromJSON } from '../dist/shared'
 import type { TableEvent, TableSink } from '../dist/shared'
 
 import { OPTIONS, PROGRAM, compile, thrown } from './common'
@@ -180,5 +180,58 @@ describe('program', () => {
     // A table of columns passes as it came, and so does a later empty
     // schema, for the renderer to refuse.
     assert.deepStrictEqual(run([schema('a'), row(1), end, schema()]), ['schema 1', 'row 1', 'end', 'schema 0'])
+  })
+
+  // The host pushes the parser's rule passes into the head `parser-events`
+  // is lowered to: each pass reaches the items below as `(open rule)` or
+  // `(close rule)`, a field the pass lacks left out of the rule, and the
+  // parse's end as the stream's end. A program that reads nothing of its
+  // input hands the end alone to the sink that writes its text.
+  it('parser events are items pushed into the head', () => {
+    const passes = [
+      parserEventFromJSON([
+        'open',
+        { name: 'val', d: 1, i: 1, alt: { p: '', r: '', b: 0, g: ['json'] }, tokens: [['#NR', 2.5, '2.50', 1, 1]], forced: false, n: { dmap: 1 } },
+      ]),
+      parserEventFromJSON(['close', { name: 'val', d: 1, i: 1, tokens: [], forced: false, n: {}, value: 2.5 }]),
+      parserEventFromJSON(['end']),
+    ]
+    const plan = { p: 'parser-events', source: { p: 'parser-input' } }
+    const seen: string[] = []
+    const down = {
+      item(v: any) {
+        seen.push(V.debugText(v))
+        return 'continue'
+      },
+      end() {
+        seen.push('end')
+        return 'continue'
+      },
+    }
+    const here: any = new Lowering(runtime('def export [input] (parser-events input)', true), Limits.default(), new Metrics())
+    const events = here.items(plan, down, false)
+    // The parser events are read once.
+    assert.equal(thrown(() => here.items(plan, down, false)).code, 'STREAM_REUSED')
+    const head = here.parserHead(events)
+    for (const pass of passes) head.event(pass)
+    assert.deepStrictEqual(seen, [
+      '(open (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :alt (record (entry :p "") (entry :r "") (entry :b 0) (entry :g ["json"]))) (entry :tokens [(record (entry :name "#NR") (entry :val 2.5) (entry :src "2.50") (entry :row 1) (entry :col 1))]) (entry :forced false) (entry :n (record (entry :dmap 1)))))',
+      '(close (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :tokens []) (entry :forced false) (entry :n (record)) (entry :value 2.5)))',
+      'end',
+    ])
+    // The JSON-events side of a parser program is never driven.
+    const err = thrown(() => new ParserEventsOnly().event({ type: 'null' }))
+    assert.ok(err.message.startsWith('protocol_mismatch: '), String(err))
+
+    const text: string[] = []
+    const nothing: any = new Lowering(runtime('def export [input] "done"', true), Limits.default(), new Metrics())
+    const finite = nothing.parserHead({
+      event(ev: any) {
+        text.push(ev.type)
+        return 'continue'
+      },
+    })
+    for (const pass of passes) finite.event(pass)
+    assert.deepStrictEqual(text, ['end'])
   })
 })

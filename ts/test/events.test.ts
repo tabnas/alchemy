@@ -53,4 +53,42 @@ describe('events', () => {
     }
     assert.equal(compile('def export [input] (events input)', 'tree.alc').output, 'JsonEvents/1')
   })
+
+  // `parser-events`: a host that declares a parser-events input hands the
+  // program the parser's rule passes, which `parser-events` reads as items
+  // and nothing else reads. The stream is affine as `events`'s is, and a
+  // transducer's outputs are a rewritten tree, handed on as JSON events.
+  it('parser-events over a declared input', () => {
+    const transducer =
+      'def step [s pass]\n  match pass\n    case (close rule) (transition s [(scalar (get :name rule))])\n    case _ (transition s [])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (parser-events input))\n'
+    const program = compile(transducer, 't.alc', 'ParserEvents/1')
+    assert.equal(program.input(), 'ParserEvents/1')
+    assert.equal(program.output, 'JsonEvents/1')
+    assert.ok(program.explain().includes('Protocol:              ParserEvents/1 → Stream<ParserEvent>'))
+    // Compiled over the default input, JSON events, it reads the wrong
+    // protocol.
+    let fail = thrown(() => compile(transducer, 't.alc'))
+    assert.ok(fail.message.startsWith('protocol_mismatch: '), String(fail))
+    assert.equal(compile('def export [input] input', 'j.alc').input(), 'JsonEvents/1')
+
+    const twice =
+      'def export [input]\n  concat\n    join "" (map (fn [p] "a") (parser-events input))\n    join "" (map (fn [p] "b") (parser-events input))\n'
+    fail = thrown(() => compile(twice, 'twice.alc', 'ParserEvents/1'))
+    assert.equal(fail.code, 'STREAM_REUSED', String(fail))
+    const captured =
+      'def export [input]\n  concat-map (fn [x] (join "" (map (fn [p] "") (parser-events input)))) [1]\n'
+    fail = thrown(() => compile(captured, 'captured.alc', 'ParserEvents/1'))
+    assert.ok(fail.message.startsWith('captured: '), String(fail))
+
+    // The host drives the sink its declared input names, and is told so
+    // before anything runs when it does not.
+    const refused = (work: () => unknown) => {
+      const err = thrown(work)
+      assert.equal(err.code, 'DSL_TYPE_ERROR', String(err))
+      assert.ok(err.message.startsWith('protocol_mismatch: '), String(err))
+    }
+    refused(() => program.sink({ write() {}, flush() {} } as any))
+    const json = compile('def export [input] input', 'j.alc')
+    refused(() => json.parserSink({ write() {}, flush() {} } as any))
+  })
 })

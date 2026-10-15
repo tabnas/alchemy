@@ -47,9 +47,20 @@ export const OPTIONS: alchemy.CompileOptions = {
   },
 }
 
-// `compile` with the inert stages, `OPTIONS`.
-export function compile(src: string, file: string): alchemy.Program {
-  return alchemy.compile(src, file, OPTIONS)
+// `compile` with the inert stages, `OPTIONS`, over the input the host
+// declares (JSON events unless said).
+export function compile(src: string, file: string, input?: alchemy.Input): alchemy.Program {
+  return alchemy.compile(src, file, undefined === input ? OPTIONS : { ...OPTIONS, input })
+}
+
+// The input a `check.tsv` row's program is compiled over: its `protocol`
+// column, empty for JSON events (the default a host declares), `parser`
+// for the parser's rule passes.
+export function rowInput(row: { named(name: string): string; where(): string }): alchemy.Input {
+  const protocol = row.named('protocol')
+  if ('' === protocol) return 'JsonEvents/1'
+  if ('parser' === protocol) return 'ParserEvents/1'
+  throw new Error(`${row.where()}: the protocol is empty or parser, not ${JSON.stringify(protocol)}`)
 }
 
 // `compileSources` with the inert stages, `OPTIONS`.

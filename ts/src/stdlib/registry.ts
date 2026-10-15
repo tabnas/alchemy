@@ -153,6 +153,10 @@ const NATIVES: ReadonlyArray<Native> = [
   { name: "array-end", arity: exact(0), kind: 'constant', signature: "array-end -> Event", effect: "an array ends" },
   { name: "key", arity: exact(1), kind: 'constructor', signature: "key name -> Event", effect: "the name of the member whose value follows, inside an object" },
   { name: "scalar", arity: exact(1), kind: 'constructor', signature: "scalar value -> Event", effect: "one scalar of the source: null, a boolean, a number with its lexeme, or a string" },
+  // The parser's rule passes, as `parser-events` delivers them.
+  { name: "parser-events", arity: exact(1), kind: 'function', signature: "parser-events input -> Stream<ParserEvent>", effect: "every rule pass of the parser as one item, as it arrives, when the host declares a parser-events input: (open rule) once a rule's open pass has run, (close rule) once its close pass has; the rule a record of :name, :d, :i, :alt, :tokens, :forced, :n and :value; the end of the parse ends the stream and is no item; nothing is retained between passes" },
+  { name: "open", arity: exact(1), kind: 'constructor', signature: "open rule -> ParserEvent", effect: "a rule's open pass completed: the rule a record" },
+  { name: "close", arity: exact(1), kind: 'constructor', signature: "close rule -> ParserEvent", effect: "a rule's close pass completed: the rule a record, its :value the node's when that is a scalar" },
   // Renderers and protocol adapters.
   { name: "json", arity: between(1, 2), kind: 'function', signature: "json [options] events -> Text", effect: "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (TARGET_VALUE_UNREPRESENTABLE), unless an options record first says (entry :non-finite :null): then it is written as null. The record holds :non-finite and nothing else, :reject (the default) or :null" },
   { name: "records", arity: exact(1), kind: 'function', signature: "records table-events -> JsonEvents", effect: "one object per row keyed by label; retains the labels" },

@@ -91,4 +91,28 @@ describe('shared', () => {
       assert.ok(/routers, renderers/.test(err.message), err.message)
     }
   })
+
+  // The fixture encoding of a parser event round-trips, leaving an absent
+  // field out, and a malformed one says what is wrong with it.
+  it('the parser event encoding round-trips and leaves absent fields out', () => {
+    const texts = [
+      '["open",{"name":"map","d":1,"i":3,"alt":{"p":"pair","r":"","b":0,"g":["map","json"]},"tokens":[["#OB","{","{",1,1]],"forced":false,"n":{"pk":0}}]',
+      '["close",{"name":"val","d":2,"i":4,"tokens":[],"forced":true,"n":{},"value":null}]',
+      '["end"]',
+    ]
+    for (const text of texts) {
+      assert.equal(JSON.stringify(shared.parserEventToJSON(shared.parserEventFromJSON(JSON.parse(text)))), text)
+    }
+    const open = shared.parserEventFromJSON(JSON.parse(texts[0]))
+    assert.ok('open' === open.type && undefined === open.pass.value, 'an open pass has no value')
+    for (const text of [
+      '{"open":1}',
+      '["start"]',
+      '["open"]',
+      '["close",{"name":"x","d":-1,"i":0,"tokens":[],"forced":false,"n":{}}]',
+      '["close",{"name":"x","d":1,"i":0,"tokens":[["#ST"]],"forced":false,"n":{}}]',
+    ]) {
+      assert.throws(() => shared.parserEventFromJSON(JSON.parse(text)), Error, text)
+    }
+  })
 })

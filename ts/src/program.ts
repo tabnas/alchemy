@@ -4,6 +4,10 @@
 // `compileSources`, several files linked into one), ask it what it
 // produces, and take a `Sink` to push the source's events into.
 //
+// A program reads JSON events unless the host declares another input,
+// `{ input: 'ParserEvents/1' }` among the options: then it reads the
+// parser's rule passes, which the host pushes into `Program.parserSink`.
+//
 // The front end runs first (`analyze`, `analyzeSources`: one or several
 // sources parsed, desugared, linked into one namespace, resolved and
 // checked); then the plan is built: the evaluator applies `export` to the
@@ -26,6 +30,7 @@ import {
   Fail,
   Limits,
   Metrics,
+  ParserSink,
   Renderers,
   Routers,
   Selector,
@@ -42,13 +47,13 @@ import { isFail } from './fail'
 import { parseFile } from './grammar'
 import { MAX_PLAN_STEPS, Runtime } from './interp'
 import { Lowering, Renderer } from './lower'
-import { Output } from './output'
+import { Input, Output } from './output'
 import { Resolved, resolve } from './resolve'
 import { outer } from './stdlib'
 import { run } from './trampoline'
 import { Plan, Val, protocol as protocolOf } from './value'
 
-export type { Output } from './output'
+export type { Input, Output } from './output'
 export type { Renderer } from './lower'
 
 // What `compile` and `compileSources` take besides the program: the
@@ -56,9 +61,16 @@ export type { Renderer } from './lower'
 // `{ routers, renderers }`, from `@tabnas/transduce` and `@tabnas/render`.
 // A `Program` keeps them for every sink it makes, and so do the programs
 // its `with` methods answer.
+//
+// `input` is what `export [input]` reads, which the host declares: JSON
+// events (`'JsonEvents/1'`, the default) or the parser's rule passes
+// (`'ParserEvents/1'`). The checker holds the program to it: `events
+// input` over parser events, or `parser-events input` over JSON events, is
+// `protocol_mismatch`.
 export type CompileOptions = {
   readonly routers: Routers
   readonly renderers: Renderers
+  readonly input?: Input
 }
 
 // One of the sources a program is compiled from: the file it is named by
@@ -82,15 +94,16 @@ export type Analyzed = {
   readonly checked: Checked
 }
 
-// Parse, desugar, resolve and check `src`, named `file` in diagnostics.
-export function analyze(src: string, file: string): Analyzed {
-  return analyzeSources([{ file, text: src }])
+// Parse, desugar, resolve and check `src`, named `file` in diagnostics,
+// over the input the host declares.
+export function analyze(src: string, file: string, input: Input = 'JsonEvents/1'): Analyzed {
+  return analyzeSources([{ file, text: src }], input)
 }
 
 // Several sources linked into one namespace and checked as one program.
 // A failure is thrown as a `Fail` naming its file when the sources are
 // several.
-export function analyzeSources(sources: ReadonlyArray<Source>): Analyzed {
+export function analyzeSources(sources: ReadonlyArray<Source>, input: Input = 'JsonEvents/1'): Analyzed {
   const named: Array<[string, string]> = []
   for (const source of sources) {
     if (named.some(([file]) => file === source.file)) {
@@ -144,7 +157,7 @@ export function analyzeSources(sources: ReadonlyArray<Source>): Analyzed {
     forms.push(...own)
   }
   const resolved = resolve(forms, linked, outer)
-  const checked = checkProgram(resolved, linked)
+  const checked = checkProgram(resolved, linked, input)
   return { resolved, sources: linked, checked }
 }
 
@@ -208,7 +221,7 @@ export function compile(src: string, file: string, options: CompileOptions): Pro
 // under that name instead, so that the program's `export` can call it.
 // The program's stages are built from `options`' routers and renderers.
 export function compileSources(sources: ReadonlyArray<Source>, options: CompileOptions): Program {
-  const analyzed = analyzeSources(sources)
+  const analyzed = analyzeSources(sources, options?.input)
   return Program.build(
     analyzed.resolved,
     analyzed.sources,
@@ -228,10 +241,12 @@ function rootStage(plan: Plan): Plan {
     let next: Plan | undefined
     switch (here.p) {
       case 'input':
+      case 'parser-input':
         return here
       case 'route':
       case 'select':
       case 'events':
+      case 'parser-events':
       case 'scan-emit':
       case 'map':
       case 'filter':
@@ -241,7 +256,7 @@ function rootStage(plan: Plan): Plan {
       case 'csv-table':
       case 'csv':
       case 'json':
-        if ('input' === here.source.p) return here
+        if ('input' === here.source.p || 'parser-input' === here.source.p) return here
         next = here.source
         break
       case 'concat-map':
@@ -303,7 +318,7 @@ export class Program {
       .withDuplicates(duplicates)
       .withFuel(MAX_PLAN_STEPS)
       .withAbort(abort)
-    const result = run(rt.export())
+    const result = run(rt.export(options.input))
     return new Program(resolved, sources, output, native, duplicates, abort, result, options)
   }
 
@@ -336,6 +351,13 @@ export class Program {
       this.result,
       this.options,
     )
+  }
+
+  // What the host declared `export`'s input to be, and so which sink it
+  // pushes the source into: `sink` for JSON events, `parserSink` for
+  // parser events.
+  input(): Input {
+    return this.options.input ?? 'JsonEvents/1'
   }
 
   // The file name the program was compiled under: the first, of several.
@@ -411,7 +433,11 @@ export class Program {
   // JSON-events result is rendered (CSV or JSON; undefined for the
   // default); a program that renders its own text takes none
   // (`render_of_text`).
+  //
+  // A program compiled over parser events takes them through `parserSink`
+  // instead.
   sink(writer: Writer, render?: Renderer, limits: Limits = Limits.default(), metrics: Metrics = new Metrics()): Sink {
+    this.declared('JsonEvents/1')
     const out = this.options.renderers.writeOut(writer).withLimits(limits).withMetrics(metrics)
     return this.sinkOut(out, render, limits, metrics)
   }
@@ -419,11 +445,53 @@ export class Program {
   // `sink` over any text output: for a host that has its own writer stage,
   // and for tests that read the text back.
   sinkOut(out: TextOut, render?: Renderer, limits: Limits = Limits.default(), metrics: Metrics = new Metrics()): Sink {
+    this.declared('JsonEvents/1')
+    return this.lowering(limits, metrics).sinkAs(this.result, out, render, this.output)
+  }
+
+  // The sink for one run over parser events, for a program compiled over
+  // `'ParserEvents/1'`: the host pushes each rule pass into it and one
+  // `end`, once the parse has returned its value. The output is written as
+  // for `sink`.
+  parserSink(
+    writer: Writer,
+    render?: Renderer,
+    limits: Limits = Limits.default(),
+    metrics: Metrics = new Metrics(),
+  ): ParserSink {
+    this.declared('ParserEvents/1')
+    const out = this.options.renderers.writeOut(writer).withLimits(limits).withMetrics(metrics)
+    return this.parserSinkOut(out, render, limits, metrics)
+  }
+
+  // `parserSink` over any text output, as `sinkOut` is `sink`'s.
+  parserSinkOut(
+    out: TextOut,
+    render?: Renderer,
+    limits: Limits = Limits.default(),
+    metrics: Metrics = new Metrics(),
+  ): ParserSink {
+    this.declared('ParserEvents/1')
+    const lowering = this.lowering(limits, metrics)
+    const events = lowering.sinkAs(this.result, out, render, this.output)
+    return lowering.parserHead(events)
+  }
+
+  // Whether the host drives the sink the program's input was declared
+  // for: a host's mistake, not a program's, refused before anything runs.
+  private declared(input: Input): void {
+    if (this.input() === input) return
+    const [declared, sink] =
+      'JsonEvents/1' === this.input() ? ['JSON events', 'Program.sink'] : ['parser events', 'Program.parserSink']
+    throw new Fail('DSL_TYPE_ERROR', `protocol_mismatch: the program was compiled over ${declared}; push them into ${sink}`)
+  }
+
+  private lowering(limits: Limits, metrics: Metrics): Lowering {
     const rt = new Runtime(this.resolved, this.sources, this.options)
       .withNative(this.native)
       .withDuplicates(this.duplicates)
       .withLimits(limits)
       .withAbort(this.abort)
-    return new Lowering(rt, limits, metrics).sinkAs(this.result, out, render, this.output)
+    return new Lowering(rt, limits, metrics)
   }
 }

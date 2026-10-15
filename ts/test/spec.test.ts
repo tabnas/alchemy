@@ -31,7 +31,7 @@ import {
 } from '../dist/alchemy'
 import { isFail } from '../dist/fail'
 
-import { OWN_CODES, REPO_ROOT, SPEC_DIR, compile, failCode } from './common'
+import { OWN_CODES, REPO_ROOT, SPEC_DIR, compile, failCode, rowInput } from './common'
 
 // The finer code a row pins, and the position the failure names.
 const runnerOptions = {
@@ -74,6 +74,15 @@ describe('fixtures', () => {
     assert.deepStrictEqual(spec.header, ['input', 'expected', 'doc', 'render'])
     assert.ok(spec.rows.every((row: SpecRow) => -1 !== row.index_of('doc') && -1 !== row.index_of('render')))
   })
+
+  // The columns a check row is read by (alchemy-cli's catalogue test reads
+  // `protocol` too), so a renamed header fails here.
+  it('check.tsv has its columns', () => {
+    const spec = loadSpec(join(SPEC_DIR, 'check.tsv'))
+    assert.deepStrictEqual(spec.header, ['input', 'expected', 'protocol'])
+    assert.ok(spec.rows.some((row: SpecRow) => 'parser' === row.named('protocol')), 'no row reads parser events')
+    for (const row of spec.rows) rowInput(row)
+  })
 })
 
 makeRunner({
@@ -88,16 +97,17 @@ makeRunner({
 
 // A program that checks prints its plan report; one that does not fails
 // with the resolver's, the checker's or the plan evaluation's code, at the
-// position it names.
+// position it names. The row's `protocol` column is the input the host
+// declares.
 makeRunner({
   ...runnerOptions,
-  parse: (input: string) => compile(input, 'check').explain(),
+  parse: (input: string, row: SpecRow) => compile(input, 'check', rowInput(row)).explain(),
 }).file(join(SPEC_DIR, 'check.tsv'))
 
 // The failures a row's program meets: the reader's (reader.tsv), the
 // desugarer's (pipe.tsv) or compile's (check.tsv), as the runners above
 // meet them.
-function rowFailures(file: string, input: string): unknown[] {
+function rowFailures(file: string, input: string, row: SpecRow): unknown[] {
   const met = (work: () => unknown): unknown[] => {
     try {
       work()
@@ -112,7 +122,7 @@ function rowFailures(file: string, input: string): unknown[] {
     case 'pipe.tsv':
       return met(() => desugarProgram(parse(input), input))
     case 'check.tsv':
-      return met(() => compile(input, 'check'))
+      return met(() => compile(input, 'check', rowInput(row)))
     default:
       throw new Error(`${file} is not a fixture this file runs`)
   }
@@ -175,7 +185,7 @@ describe('the catalogue', () => {
       for (const row of spec.rows) {
         if (!isErrorExpect(row.col(1))) continue
         const input = row.unesc(row.resolve(0))
-        for (const fail of rowFailures(spec.file, input)) {
+        for (const fail of rowFailures(spec.file, input, row)) {
           if (!isFail(fail) || !OWN_CODES.includes(fail.code)) continue
           failures++
           const split = fail.message.indexOf(': ')
