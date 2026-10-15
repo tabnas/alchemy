@@ -639,10 +639,18 @@ type parserEventsToItems struct {
 }
 
 func (e *parserEventsToItems) ParserEvent(ev shared.ParserEvent) (shared.Flow, *Fail) {
-	if ev.Kind == shared.ParserEnd {
+	switch ev.Kind {
+	case shared.ParserEnd:
 		return e.down.End()
+	case shared.ParserOpen, shared.ParserClose:
+		// A host builds the event, and an open or a close without its
+		// pass (the struct's zero value is one) is refused, not read.
+		if ev.Pass == nil {
+			return shared.Continue, shared.ProtocolFail("a parser event's " + ev.Kind.String() + " carries no rule pass")
+		}
+		return e.down.Item(NewTagged(ev.Kind.String(), ruleRecord(ev.Pass)))
 	}
-	return e.down.Item(NewTagged(ev.Kind.String(), ruleRecord(ev.Pass)))
+	return shared.Continue, shared.ProtocolFail("an unknown parser event kind")
 }
 
 // ruleRecord is a rule pass as the record (open rule) and (close rule)

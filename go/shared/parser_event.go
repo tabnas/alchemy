@@ -49,15 +49,18 @@ const (
 	ParserEnd
 )
 
-// String is the event's name in the encoding: open, close or end.
+// String is the event's name in the encoding: open, close or end, and
+// unknown for a kind that is none of them.
 func (k ParserEventKind) String() string {
 	switch k {
 	case ParserOpen:
 		return "open"
 	case ParserClose:
 		return "close"
+	case ParserEnd:
+		return "end"
 	}
-	return "end"
+	return "unknown"
 }
 
 // ParserEvent is one item of ParserEvents/1; Pass is an Open's or a

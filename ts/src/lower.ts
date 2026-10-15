@@ -594,6 +594,10 @@ export class ParserEventsToItems implements ParserSink {
 
   event(ev: ParserEvent): Flow {
     if ('end' === ev.type) return this.down.end()
+    // A host builds the event, and one the types do not describe (from
+    // JavaScript, say) is refused, not read.
+    if ('open' !== ev.type && 'close' !== ev.type) throw Fail.protocol('an unknown parser event kind')
+    if (null == ev.pass) throw Fail.protocol(`a parser event's ${ev.type} carries no rule pass`)
     return this.down.item(taggedVal(ev.type, [ruleRecord(ev.pass)]))
   }
 }

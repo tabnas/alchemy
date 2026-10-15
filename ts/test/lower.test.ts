@@ -226,6 +226,12 @@ describe('program', () => {
     // The JSON-events side of a parser program is never driven.
     const err = thrown(() => new ParserEventsOnly().event({ type: 'null' }))
     assert.ok(err.message.startsWith('protocol_mismatch: '), String(err))
+    // A host's malformed event is refused, never read: an open or a close
+    // without its pass, and a kind that is none.
+    for (const bad of [{ type: 'open' }, { type: 'close', pass: null }, { type: 'nope', pass: {} }]) {
+      const fail = thrown(() => new ParserEventsToItems(down as any).event(bad as any))
+      assert.equal(fail.code, 'PROTOCOL_ORDER_ERROR', JSON.stringify(bad))
+    }
 
     const text: string[] = []
     const nothing: any = new Lowering(runtime('def export [input] "done"', true), Limits.default(), new Metrics())

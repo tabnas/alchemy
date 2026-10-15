@@ -213,6 +213,13 @@ func TestParserEventsAreItemsPushedIntoTheHead(t *testing.T) {
 	if _, f := (parserEventsOnly{}).Event(shared.Event{Kind: shared.Null}); f == nil || !strings.HasPrefix(f.Message, "protocol_mismatch: ") {
 		t.Errorf("%v", f)
 	}
+	// A host's malformed event is refused, never read: an open or a close
+	// without its pass (the zero value is one), and a kind that is none.
+	for _, bad := range []shared.ParserEvent{{}, {Kind: shared.ParserClose}, {Kind: shared.ParserEventKind(9), Pass: &shared.RulePass{}}} {
+		if _, f := (&parserEventsToItems{down: &itemLog{}}).ParserEvent(bad); f == nil || f.Code != shared.CodeProtocolOrderError {
+			t.Errorf("%+v: %v", bad, f)
+		}
+	}
 
 	text := &eventLog{}
 	nothing := NewLowering(runtimeOf(t, "def export [input] \"done\""), shared.DefaultLimits(), nil)
