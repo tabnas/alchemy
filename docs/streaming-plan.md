@@ -7,14 +7,16 @@ and its test cases come first; the other repositories follow in the
 order section 11 gives. Nothing here is implemented yet.
 
 On 2026-10-15 the maintainer confirmed section 1 as the ruling and took
-decisions 1, 2, 5 and 6 of section 10: a close pass carries its node's
-value when that value is a scalar; `LinesSource` stays until the engine
-can read its input in chunks; `ParserEvents/1` carries rule passes only
-in its first version; and the engine flags each pass made while a probe
-is open, which the source drops. The maintainer also ruled on the
-rollout: each format keeps the route it has today until its own part
-lands, and a format may still join transduce's incremental list in the
-meantime (section 7). The sections below are written to all of it.
+all six decisions of section 10: a close pass carries its node's value
+when that value is a scalar; `LinesSource` stays until the engine can
+read its input in chunks; a native `transduce-tree` may stand in for the
+snippet where the differential test holds the two equal; the generator
+of a custom grammar's part lives in tabnas-bnf; `ParserEvents/1` carries
+rule passes only in its first version; and the engine flags each pass
+made while a probe is open, which the source drops. The maintainer also
+ruled on the rollout: each format keeps the route it has today until
+its own part lands, and a format may still join transduce's incremental
+list in the meantime (section 7). The sections below are written to all of it.
 
 ## 1. The ruling
 
@@ -498,12 +500,36 @@ Acceptance, per part and for the whole:
    held equal by the differential test, is the fast path if the
    interpreted part costs more than the maintainer accepts; the snippet
    stays the specification.
+
+   Measured on 2026-10-15, before decision 3, with aless 0.4.4 on the
+   crates it pins (built with its `matrix` profile, release optimisation
+   without fat LTO), on an idle four-core container, the median of
+   three runs: 40,000 JSON records of eight members each, a nested
+   object and a short array among them, 6.5 MB and 1,020,002 JSON
+   events. The engine makes 2,240,004 rule passes over it, 5.6 a
+   member and 2.2 an event. The bare parse (`rule.history` 3) takes
+   4.57 s; an empty `rule_done` subscriber adds 29% (0.58 µs a pass,
+   the engine's copy of the rule for the notification), and building
+   an owned record of each pass as section 4 defines it adds 63% (1.29
+   µs a pass). Through aless, `--render json` takes 5.80 s; a program
+   that writes its input as JSON with no step of its own takes 6.86 s;
+   a minimal interpreted `scan-emit` (one marker per open container,
+   each event passed on) takes 9.56 s, 2.6 µs an event; and the YAML
+   render part, a full hand-written `scan-emit`, takes 22.58 s, about
+   15 µs an event. So an interpreted part over parser events costs at
+   least 1.3 + 2.6 µs for each of 2.2 passes an event: about twice
+   today's streaming time for the simplest step, and three to six
+   times for a step as heavy as a render's. A native `transduce-tree`
+   reads each pass in place, with no record built and no step
+   interpreted, at about what today's inference costs. The interpreter
+   was measured on today's events, which are smaller items than a
+   parser event's record, so the interpreted figures are a floor.
 4. Memory: recorded in `docs/BENCH.md` before and after, JSON Lines and
    CSV included, so that step 12 shows those two formats holding their
    flat memory on the general path before the line source goes.
 
-Decisions for the maintainer, in the order the work meets them.
-Decisions 1, 2, 5 and 6 were taken on 2026-10-15; 3 and 4 wait.
+Decisions for the maintainer, in the order the work meets them. All
+six were taken on 2026-10-15.
 
 1. **`:value` on a close pass** (section 4): include the node's scalar
    value, so a part takes the grammar's own scalar resolution (YAML's
@@ -523,8 +549,15 @@ Decisions 1, 2, 5 and 6 were taken on 2026-10-15; 3 and 4 wait.
 3. **The native fast path** for `transduce-tree`: permitted under the
    existing rule (a native stands in for a snippet only when a
    differential test holds the two equal), or interpreted only.
+   **Decided 2026-10-15: permitted.** The measurement under acceptance
+   3 puts an interpreted part at two to six times today's streaming
+   time, and a native one at about today's. The snippet stays the
+   specification, and alchemy-cli's differential test holds the native
+   `transduce-tree` to it on every fixture.
 4. **Where the generator lives**: tabnas-bnf, notation-neutral, with
-   abnf (and ebnf, gbnf) exposing it; or each front end.
+   abnf (and ebnf, gbnf) exposing it; or each front end. **Decided
+   2026-10-15: tabnas-bnf.** One generator where the annotations are
+   attached, which the three front ends expose.
 5. **Lexer events in `ParserEvents/1`**: rule passes only in the first
    version, or `(token t)` items from `subscribe_lex` as well, for parts
    that keep comments. **Decided 2026-10-15: rule passes only.** A
@@ -544,7 +577,7 @@ Decisions 1, 2, 5 and 6 were taken on 2026-10-15; 3 and 4 wait.
 | Step | Repository | Change | Depends on |
 |---|---|---|---|
 | 1 | alchemy | shared `parser_event.rs`; `Type::ParserEvent`; `parser-events`, `open`, `close`; input protocol; `explain`; `stdlib/transduce.alc`; `Part.transduce`; `check.tsv` rows; `docs/language.md`; in Rust, TypeScript and Go | decision 1 (taken) |
-| 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; a probe's flagged passes dropped (decision 6); `capability` and the inference kept until step 13; `LinesSource` kept (decision 2) | 1, the engine's probe flag (step 10) |
+| 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; a probe's flagged passes dropped (decision 6); a native `transduce-tree`, held to the snippet (decision 3); `capability` and the inference kept until step 13; `LinesSource` kept (decision 2) | 1, the engine's probe flag (step 10) |
 | 3 | alchemy-cli | `transduce.tsv` runner with the differential rule; parts test; `translate` and `run --grammar` on the new source | 1, 2 |
 | 4 | json | the first `alchemy/transduce.alc`, manifest, embed, descriptor | 1, 3 |
 | 5 | jsonl, jsonc, json5, zon, csv | parts, in that order | 4 |
