@@ -121,11 +121,11 @@ func TestTheLibraryLoads(t *testing.T) {
 
 func TestTheLibraryLoadsWithTheSpecDefinitions(t *testing.T) {
 	lib := StdlibLoaded()
-	want := "[public-column table-inferred-column table-row table-positional-column table-value-column table-inferred-columns table-first-row table-step table-finish table-finish-for table-captures table-from-json csv-options csv-field csv-row csv wrap-object-close wrap-object-step wrap-finish wrap-object wrap-array-close wrap-array-step wrap-array]"
+	want := "[public-column table-inferred-column table-row table-positional-column table-value-column table-inferred-columns table-first-row table-step table-finish table-finish-for table-captures table-from-json csv-options csv-field csv-row csv wrap-object-close wrap-object-step wrap-finish wrap-object wrap-array-close wrap-array-step wrap-array transduce-token transduce-key transduce-scalar transduce-value transduce-begin transduce-end transduce-open transduce-close transduce-step transduce-finish transduce-tree]"
 	if got := fmt.Sprint(lib.Names()); got != want {
 		t.Errorf("%s", got)
 	}
-	if len(lib.Files) != 3 {
+	if len(lib.Files) != 4 {
 		t.Errorf("%d files", len(lib.Files))
 	}
 	if p, ok := lib.Get("table-from-json").Params(); !ok || fmt.Sprint(p) != "[binding input]" {

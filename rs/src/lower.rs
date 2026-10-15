@@ -2224,4 +2224,142 @@ pub(crate) mod tests {
         }
         assert_eq!(*text.lock().unwrap(), ["end"]);
     }
+
+    /// tabnas-json's rule passes for `src`, as a parser-events source
+    /// makes them: each pass's own tokens (those its alternate gave back
+    /// are the next rule's to consume), a number token's value with its
+    /// source text as the lexeme, a close pass's scalar node as its
+    /// value, then one end.
+    fn json_passes(src: &str) -> Vec<ParserEvent> {
+        use crate::shared::{PassAlt, PassToken};
+        use tabnas::{RuleState, Value};
+        let passes = Arc::new(Mutex::new(Vec::new()));
+        let mut parser = tabnas_json::make();
+        {
+            let passes = passes.clone();
+            parser.subscribe_rule_done(move |r, _, done| {
+                let open = done.state == RuleState::Open;
+                let all = if open { &r.o } else { &r.c };
+                let b = done.alt.as_ref().map_or(0, |a| a.b);
+                let tokens = all[..all.len().saturating_sub(b)]
+                    .iter()
+                    .map(|t| PassToken {
+                        name: t.name.as_str().into(),
+                        val: match (&t.val, t.name.as_str()) {
+                            (Value::Number(n), "#NR") => Datum::Number {
+                                value: *n,
+                                lexeme: Some(t.src.as_str().into()),
+                            },
+                            (Value::Undefined, _) => Datum::Null,
+                            (v, _) => Datum::from_tabnas(v),
+                        },
+                        src: t.src.as_str().into(),
+                        row: t.site.ri as u64,
+                        col: t.site.ci as u64,
+                    })
+                    .collect();
+                let node = r.node.borrow();
+                let value = match &*node {
+                    _ if open => None,
+                    Value::Object(_) | Value::Array(_) | Value::Undefined => None,
+                    v => Some(Datum::from_tabnas(v)),
+                };
+                let mut n: Vec<(Box<str>, i64)> =
+                    r.n.iter()
+                        .map(|(k, v)| (k.as_str().into(), *v as i64))
+                        .collect();
+                n.sort();
+                let pass = RulePass {
+                    name: r.name.as_str().into(),
+                    d: r.d as u64,
+                    i: r.i as u64,
+                    alt: done.alt.as_ref().map(|a| PassAlt {
+                        p: a.p.as_str().into(),
+                        r: a.r.as_str().into(),
+                        b: a.b as u64,
+                        g: a.g.iter().map(|g| g.as_str().into()).collect(),
+                    }),
+                    tokens,
+                    forced: done.forced,
+                    n,
+                    value,
+                };
+                passes.lock().unwrap().push(if open {
+                    ParserEvent::Open(pass)
+                } else {
+                    ParserEvent::Close(pass)
+                });
+            });
+        }
+        parser.parse(src).expect("the document is JSON");
+        let mut out = passes.lock().unwrap().clone();
+        out.push(ParserEvent::End);
+        out
+    }
+
+    /// The json grammar's part, as the plan writes it: `transduce-tree`
+    /// over tabnas-json's own rule passes yields the document's events,
+    /// lexemes kept, in the order a walk of its value gives them. The
+    /// scan runs here by hand, the step applied to each item as
+    /// transduce's scan-emit applies it, since running the plan itself
+    /// needs transduce's stages.
+    #[test]
+    fn transduce_tree_makes_json_events_of_tabnas_jsons_rule_passes() {
+        use crate::value::Scope;
+        let rt = runtime(
+            "def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n\ndef export [input] (transduce-tree json-spec input)\n",
+            true,
+        );
+        let spec = rt.def_value(Scope::Program, "json-spec").unwrap().unwrap();
+        let Some(Val::Fn(step)) = rt.def_value(Scope::Stdlib, "transduce-step").unwrap() else {
+            panic!("transduce-step is a function");
+        };
+        let Some(Val::Fn(finish)) = rt.def_value(Scope::Stdlib, "transduce-finish").unwrap() else {
+            panic!("transduce-finish is a function");
+        };
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let run = |src: &str| -> Vec<String> {
+            let mut state = Val::vector(vec![Val::vector(vec![]), Val::Bool(false)]);
+            let mut out = Vec::new();
+            for ev in json_passes(src) {
+                let item = match &ev {
+                    ParserEvent::Open(pass) => Val::tagged("open", vec![rule_record(pass)]),
+                    ParserEvent::Close(pass) => Val::tagged("close", vec![rule_record(pass)]),
+                    ParserEvent::End => {
+                        let Val::Vector(tail) =
+                            rt.apply(&finish, vec![state.clone()], &at).unwrap()
+                        else {
+                            panic!("finish answers a vector");
+                        };
+                        out.extend(tail.iter().map(|v| format!("{v:?}")));
+                        break;
+                    }
+                };
+                let next = rt
+                    .apply(&step, vec![spec.clone(), state.clone(), item], &at)
+                    .unwrap_or_else(|f| panic!("{src}: {f}"));
+                let Val::Tagged { tag, fields } = &next else {
+                    panic!("the step answers a transition");
+                };
+                assert_eq!(&**tag, "transition");
+                let Val::Vector(outputs) = &fields[1] else {
+                    panic!("a transition's outputs are a vector");
+                };
+                out.extend(outputs.iter().map(|v| format!("{v:?}")));
+                state = fields[0].clone();
+            }
+            out
+        };
+        assert_eq!(
+            run(r#"{"a":[1,2.50,"x",{"b":null}],"c":{},"d":[],"e":1e21,"f":true}"#).join(" "),
+            r#"object-start (key "a") array-start (scalar 1) (scalar 2.50) (scalar "x") object-start (key "b") (scalar null) object-end array-end (key "c") object-start object-end (key "d") array-start array-end (key "e") (scalar 1e21) (key "f") (scalar true) object-end"#
+        );
+        assert_eq!(run("7").join(" "), "(scalar 7)");
+        assert_eq!(run(r#""s""#).join(" "), r#"(scalar "s")"#);
+        assert_eq!(run("[]").join(" "), "array-start array-end");
+        assert_eq!(
+            run("[[[{}]]]").join(" "),
+            "array-start array-start array-start object-start object-end array-end array-end array-end"
+        );
+    }
 }

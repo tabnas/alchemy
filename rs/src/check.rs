@@ -97,6 +97,28 @@ pub fn stdlib_signature(name: &str) -> Option<Type> {
         "csv-field" => Type::func(vec![Record, Value], Text),
         "csv-row" => Type::func(vec![Record, Type::vector(Value)], Text),
         "csv" => Type::func(vec![Record, Type::table_events()], Text),
+        // The declarative transducer (stdlib/transduce.alc): a spec and
+        // the rule passes in, a tree's JSON events out; its helpers thread
+        // a pass's outputs, a vector of events.
+        "transduce-token" => Type::func(vec![Unknown, Record], Value),
+        "transduce-key" | "transduce-scalar" | "transduce-value" => Type::func(
+            vec![Unknown, Record, Type::vector(Unknown)],
+            Type::vector(Unknown),
+        ),
+        "transduce-begin" => Type::func(
+            vec![Unknown, Unknown, Type::vector(Unknown)],
+            Type::tagged("transition"),
+        ),
+        "transduce-end" => Type::func(
+            vec![Record, Unknown, Record, Unknown],
+            Type::tagged("transition"),
+        ),
+        "transduce-open" | "transduce-close" => {
+            Type::func(vec![Record, Unknown, Record], Type::tagged("transition"))
+        }
+        "transduce-step" => Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition")),
+        "transduce-finish" => Type::func(vec![Unknown], Type::vector(Event)),
+        "transduce-tree" => Type::func(vec![Record, ParserEvents], JsonEvents),
         _ => return None,
     })
 }

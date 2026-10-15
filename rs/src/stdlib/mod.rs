@@ -11,9 +11,11 @@
 //! section 12.2: `public-column`, `table-step`, `table-finish`,
 //! `table-from-json`), `csv.alc` the always-quoted CSV renderer
 //! (sections 13.1 and 13.2: `csv-options`, `csv-field`, `csv-row`, `csv`)
-//! and `root.alc` the root adapters a translation runs before a render
+//! `root.alc` the root adapters a translation runs before a render
 //! that needs an object or an array at the root (`wrap-object`,
-//! `wrap-array`). Each is parsed, desugared and resolved once, on first
+//! `wrap-array`), and `transduce.alc` the declarative transducer a
+//! format's part writes its events with from the parser's rule passes
+//! (`transduce-tree`). Each is parsed, desugared and resolved once, on first
 //! use, and their
 //! names are usable from any program; a program's own `def` of the same
 //! name shadows the library's for that program, never for the library
@@ -43,6 +45,10 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("stdlib/table.alc", include_str!("../../stdlib/table.alc")),
     ("stdlib/csv.alc", include_str!("../../stdlib/csv.alc")),
     ("stdlib/root.alc", include_str!("../../stdlib/root.alc")),
+    (
+        "stdlib/transduce.alc",
+        include_str!("../../stdlib/transduce.alc"),
+    ),
 ];
 
 /// The library, loaded: each file's resolved definitions, and all of them
@@ -227,9 +233,20 @@ mod tests {
                 "wrap-array-close",
                 "wrap-array-step",
                 "wrap-array",
+                "transduce-token",
+                "transduce-key",
+                "transduce-scalar",
+                "transduce-value",
+                "transduce-begin",
+                "transduce-end",
+                "transduce-open",
+                "transduce-close",
+                "transduce-step",
+                "transduce-finish",
+                "transduce-tree",
             ]
         );
-        assert_eq!(lib.files.len(), 3);
+        assert_eq!(lib.files.len(), 4);
         assert_eq!(
             lib.get("table-from-json").unwrap().params(),
             Some(vec!["binding", "input"])

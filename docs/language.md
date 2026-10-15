@@ -865,8 +865,9 @@ fail "Required metadata was not found"
 
 The rest of the library is written in alchemy, embedded from
 [`stdlib/table.alc`](../stdlib/table.alc),
-[`stdlib/csv.alc`](../stdlib/csv.alc) and
-[`stdlib/root.alc`](../stdlib/root.alc), and checked against its declared
+[`stdlib/csv.alc`](../stdlib/csv.alc),
+[`stdlib/root.alc`](../stdlib/root.alc) and
+[`stdlib/transduce.alc`](../stdlib/transduce.alc), and checked against its declared
 signatures as it loads. The blocks below are those files' text, word for
 word (`rs/tests/spec_test.rs` holds the two together), and they are the
 reference: the runtime runs `table-from-json` and `csv` natively when
@@ -1296,6 +1297,172 @@ def wrap-array [input]
 ```
 ```core
 (def wrap-array (fn [input] (as-events (scan-emit [:start] wrap-array-step wrap-finish (events input)))))
+```
+
+The declarative transducer, `ParserEvents` in and `JsonEvents` out
+(Parser events, above): `transduce-tree spec input` makes a tree's JSON
+events of the parser's rule passes, as a spec keyed by rule name says,
+so that a format's transducer part writes no state machine of its own.
+Each entry of the spec is a record of what that rule's passes do, any
+of: `:container`, `:object` or `:array`, which the rule's open pass
+begins and its close pass ends; `:key`, the member name its open pass
+announces, a token's index (that token's `:val` names the member) or a
+string; `:scalar`, the scalar the rule yields, a token's index (that
+token of its open pass, when the pass consumed one: its `:val`, with the
+lexeme a number token carries) or `:value` (its close pass's own
+value). An open pass announces its key before it begins its container
+or yields its scalar; a pass of a rule the spec does not name yields
+nothing. A container whose rule is replaced by a rule the spec names a
+container (its close pass's alternate replaces it) is one container:
+that close yields no end and the replacing open no start. The state is
+`[stack carry]`, one `:open` marker per open container and whether a
+close handed its container on, so nothing grows with the document's
+width or length, only with its nesting. tabnas-json's part is the spec
+
+```text
+record
+  entry :map (record (entry :container :object))
+  entry :list (record (entry :container :array))
+  entry :pair (record (entry :key 0))
+  entry :val (record (entry :scalar 0))
+```
+
+and a unit test (`rs/src/lower.rs`) holds `transduce-tree` with it to
+the events of tabnas-json's own rule passes, lexemes kept.
+
+```alchemy
+def transduce-token [n rule]
+  get-path (path n) (get :tokens rule)
+```
+```core
+(def transduce-token (fn [n rule] (get-path (path n) (get :tokens rule))))
+```
+
+```alchemy
+def transduce-key [entry rule outputs]
+  match (get :key entry)
+    case missing outputs
+    case name
+      match (kind name)
+        case :string (push (key name) outputs)
+        case _
+          match (transduce-token name rule)
+            case missing outputs
+            case token (push (key (get :val token)) outputs)
+```
+```core
+(def transduce-key (fn [entry rule outputs] (match (get :key entry) (case missing outputs) (case name (match (kind name) (case :string (push (key name) outputs)) (case _ (match (transduce-token name rule) (case missing outputs) (case token (push (key (get :val token)) outputs)))))))))
+```
+
+```alchemy
+def transduce-scalar [from rule outputs]
+  match (kind from)
+    case :number
+      match (transduce-token from rule)
+        case missing outputs
+        case token (push (scalar (get :val token)) outputs)
+    case _ outputs
+```
+```core
+(def transduce-scalar (fn [from rule outputs] (match (kind from) (case :number (match (transduce-token from rule) (case missing outputs) (case token (push (scalar (get :val token)) outputs)))) (case _ outputs))))
+```
+
+```alchemy
+def transduce-value [from rule outputs]
+  match from
+    case :value
+      match (get :value rule)
+        case missing outputs
+        case value (push (scalar value) outputs)
+    case _ outputs
+```
+```core
+(def transduce-value (fn [from rule outputs] (match from (case :value (match (get :value rule) (case missing outputs) (case value (push (scalar value) outputs)))) (case _ outputs))))
+```
+
+```alchemy
+def transduce-begin [state start outputs]
+  match state
+    case [stack true] (transition [stack false] outputs)
+    case [stack carry] (transition [(push :open stack) false] (push start outputs))
+```
+```core
+(def transduce-begin (fn [state start outputs] (match state (case [stack true] (transition [stack false] outputs)) (case [stack carry] (transition [(push :open stack) false] (push start outputs))))))
+```
+
+```alchemy
+def transduce-end [spec state rule end]
+  match state
+    case [stack carry]
+      match (get :alt rule)
+        case missing (transition [(pop stack) false] [end])
+        case alt
+          match (get (get :r alt) spec)
+            case missing (transition [(pop stack) false] [end])
+            case next
+              match (get :container next)
+                case missing (transition [(pop stack) false] [end])
+                case _ (transition [stack true] [])
+```
+```core
+(def transduce-end (fn [spec state rule end] (match state (case [stack carry] (match (get :alt rule) (case missing (transition [(pop stack) false] [end])) (case alt (match (get (get :r alt) spec) (case missing (transition [(pop stack) false] [end])) (case next (match (get :container next) (case missing (transition [(pop stack) false] [end])) (case _ (transition [stack true] [])))))))))))
+```
+
+```alchemy
+def transduce-open [spec state rule]
+  match (get (get :name rule) spec)
+    case missing (transition state [])
+    case entry
+      let [outputs (transduce-key entry rule [])]
+        match (get :container entry)
+          case :object (transduce-begin state object-start outputs)
+          case :array (transduce-begin state array-start outputs)
+          case _ (transition state (transduce-scalar (get :scalar entry) rule outputs))
+```
+```core
+(def transduce-open (fn [spec state rule] (match (get (get :name rule) spec) (case missing (transition state [])) (case entry (let [outputs (transduce-key entry rule [])] (match (get :container entry) (case :object (transduce-begin state object-start outputs)) (case :array (transduce-begin state array-start outputs)) (case _ (transition state (transduce-scalar (get :scalar entry) rule outputs)))))))))
+```
+
+```alchemy
+def transduce-close [spec state rule]
+  match (get (get :name rule) spec)
+    case missing (transition state [])
+    case entry
+      match (get :container entry)
+        case :object (transduce-end spec state rule object-end)
+        case :array (transduce-end spec state rule array-end)
+        case _ (transition state (transduce-value (get :scalar entry) rule []))
+```
+```core
+(def transduce-close (fn [spec state rule] (match (get (get :name rule) spec) (case missing (transition state [])) (case entry (match (get :container entry) (case :object (transduce-end spec state rule object-end)) (case :array (transduce-end spec state rule array-end)) (case _ (transition state (transduce-value (get :scalar entry) rule []))))))))
+```
+
+```alchemy
+def transduce-step [spec state pass]
+  match pass
+    case (open rule) (transduce-open spec state rule)
+    case (close rule) (transduce-close spec state rule)
+```
+```core
+(def transduce-step (fn [spec state pass] (match pass (case (open rule) (transduce-open spec state rule)) (case (close rule) (transduce-close spec state rule)))))
+```
+
+```alchemy
+def transduce-finish [state]
+  match state
+    case [[] carry] []
+    case _ (fail :protocol-order "the rule passes ended inside a container, which a tree's never do")
+```
+```core
+(def transduce-finish (fn [state] (match state (case [[] carry] []) (case _ (fail :protocol-order "the rule passes ended inside a container, which a tree's never do")))))
+```
+
+```alchemy
+def transduce-tree [spec input]
+  as-events (scan-emit [[] false] (partial transduce-step spec) transduce-finish (parser-events input))
+```
+```core
+(def transduce-tree (fn [spec input] (as-events (scan-emit [[] false] (partial transduce-step spec) transduce-finish (parser-events input)))))
 ```
 ## Programs
 

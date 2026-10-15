@@ -30,7 +30,7 @@ var stdlibFS embed.FS
 // StdlibFiles are the embedded sources, by the file name their spans
 // carry, in load order (the order the Rust crate's SOURCES lists them).
 // TestTheEmbeddedStdlibIsEveryFile holds the list to the directory.
-var StdlibFiles = []string{"stdlib/table.alc", "stdlib/csv.alc", "stdlib/root.alc"}
+var StdlibFiles = []string{"stdlib/table.alc", "stdlib/csv.alc", "stdlib/root.alc", "stdlib/transduce.alc"}
 
 // StdlibSource is the source text of an embedded file, by the name its
 // spans carry.

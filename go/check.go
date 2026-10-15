@@ -141,6 +141,25 @@ func StdlibSignature(name string) (Type, bool) {
 		return Func([]Type{RecordT, VectorOf(ValueT)}, TextT), true
 	case "csv":
 		return Func([]Type{RecordT, TableEvents()}, TextT), true
+	// The declarative transducer (stdlib/transduce.alc): a spec and the
+	// rule passes in, a tree's JSON events out; its helpers thread a
+	// pass's outputs, a vector of events.
+	case "transduce-token":
+		return Func([]Type{Unknown, RecordT}, ValueT), true
+	case "transduce-key", "transduce-scalar", "transduce-value":
+		return Func([]Type{Unknown, RecordT, VectorOf(Unknown)}, VectorOf(Unknown)), true
+	case "transduce-begin":
+		return Func([]Type{Unknown, Unknown, VectorOf(Unknown)}, Tagged("transition")), true
+	case "transduce-end":
+		return Func([]Type{RecordT, Unknown, RecordT, Unknown}, Tagged("transition")), true
+	case "transduce-open", "transduce-close":
+		return Func([]Type{RecordT, Unknown, RecordT}, Tagged("transition")), true
+	case "transduce-step":
+		return Func([]Type{RecordT, Unknown, Unknown}, Tagged("transition")), true
+	case "transduce-finish":
+		return Func([]Type{Unknown}, VectorOf(EventT)), true
+	case "transduce-tree":
+		return Func([]Type{RecordT, ParserEventsT}, JsonEvents), true
 	}
 	return Type{}, false
 }

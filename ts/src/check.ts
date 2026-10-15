@@ -139,6 +139,28 @@ export function stdlibSignature(name: string): Type | undefined {
       return func([Record, vectorOf(Value)], Text)
     case 'csv':
       return func([Record, tableEvents()], Text)
+    // The declarative transducer (stdlib/transduce.alc): a spec and the
+    // rule passes in, a tree's JSON events out; its helpers thread a
+    // pass's outputs, a vector of events.
+    case 'transduce-token':
+      return func([Unknown, Record], Value)
+    case 'transduce-key':
+    case 'transduce-scalar':
+    case 'transduce-value':
+      return func([Unknown, Record, vectorOf(Unknown)], vectorOf(Unknown))
+    case 'transduce-begin':
+      return func([Unknown, Unknown, vectorOf(Unknown)], tagged('transition'))
+    case 'transduce-end':
+      return func([Record, Unknown, Record, Unknown], tagged('transition'))
+    case 'transduce-open':
+    case 'transduce-close':
+      return func([Record, Unknown, Record], tagged('transition'))
+    case 'transduce-step':
+      return func([Record, Unknown, Unknown], tagged('transition'))
+    case 'transduce-finish':
+      return func([Unknown], vectorOf(Event))
+    case 'transduce-tree':
+      return func([Record, ParserEvents], JsonEvents)
     default:
       return undefined
   }
