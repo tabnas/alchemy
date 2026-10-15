@@ -133,22 +133,49 @@ makes the stream general and streamed: nothing in it grows with the
 document except what the part chooses to retain, which `explain`
 reports.
 
+Not every pass is final. A grammar can rewind the tokens it has
+consumed (`Context::rewind`): tabnas-bnf compiles a choice its
+lookahead cannot settle into a probe, which marks the position as the
+rule opens (`ProbeInit`), parses ahead, and rewinds to the mark to take
+the branch it found (`ProbeDecide`), and the engine has the same probe
+built in for a serialized grammar's `pd_` keys. The passes made between
+a mark and its rewind are the probe's, not the document's, and
+`subscribe_rule_done` reports them as it reports any other. A part must
+never take them as committed, or a parse that validates could stream
+events its value contradicts. Telling them apart needs the engine: it
+reports where a probe starts and where it rewinds, so the source holds
+back the passes in between and drops them, or it marks each pass made
+while a probe is open, so the source withholds those. That is decision
+6; it blocks step 2, and every custom grammar that probes (section 8)
+depends on it.
+
 The source that produces this stream is transduce's: a
 `ParserEventSource` over one text and a `Tabnas`, installing one
 `rule_done` subscriber that relays each pass as an item, on the thread
 that parses, through `Guarded` for the abort flag and the metrics,
 handing the sink back when the parse returns, as `ParserSource::run_owned`
-does today. It knows no grammar. The fixture encoding of a parser event,
-for transduce's `test/spec/`, follows the events' encoding in
-`docs/reference.md`: an array whose first element names it,
-`["open", {"rule": "map", "d": 1, "i": 3, "alt": {"p": "pair", "r": "", "b": 0, "g": ["map", "json", "pair"]}, "tokens": [["#OB", "{", "{", 1, 1]], "forced": false, "n": {"pk": 0}, "value": null}]`.
+does today. It knows no grammar. It holds the source's limits as it
+builds each item, before the program sees it: a token's `:val` or
+`:src`, or a `:value`, longer than `max_scalar_bytes` is refused with
+that limit's name, as a JSON-events source refuses a scalar, so one
+huge token in a document reaches no program's step. `max_depth` and
+`max_key_bytes` hold where the part's outputs become `JsonEvents`, as
+on the events any program hands to a taker of them. The fixture
+encoding of a parser event, for transduce's `test/spec/`, follows the
+events' encoding in `docs/reference.md`: an array whose first element
+names it,
+`["open", {"rule": "map", "d": 1, "i": 3, "alt": {"p": "pair", "r": "", "b": 0, "g": ["map", "json", "pair"]}, "tokens": [["#OB", "{", "{", 1, 1]], "forced": false, "n": {"pk": 0}}]`.
+A field that is `missing` is left out of the item, so `"value": null`
+is always a null scalar; the open pass above has no value.
 
 ## 5. alchemy: the language changes
 
 This is the first phase and the one the maintainer asked to focus on.
 Everything below is alchemy's own, compiles with the inert stages its
 tests use, and is pinned by fixture rows; running it is alchemy-cli's,
-as `run.tsv` is (section 6).
+as `run.tsv` is (section 6). It lands in Rust, TypeScript and Go at
+once, since each runtime runs every row of `check.tsv`; the paths below
+are Rust's, and the ports follow their own layout.
 
 ### 5.1 Types and protocols
 
@@ -246,8 +273,14 @@ In `rs/src/translate.rs`:
   the loss note's `whole` sentence says why, as TOML's and INI's do
   today. A program's output (`compose_program`) is unchanged: the user's
   program takes the transduced events as it takes a source's.
-- `Front::Tree` and the tree contract stand in front of a tree's
-  render, whatever produced the events.
+- The tree contract holds a tree's render to its events whatever
+  produced them, but with a parser-events input it cannot stand in
+  front, where `Front::Tree` puts it today: the host's events are then
+  parser events, and `TreeContract` takes `JsonEvents`. The composition
+  puts it after the source's transducer instead, on the `JsonEvents`
+  its `as-events` makes and before the lift (the lowering wraps
+  `TaggedToJson`'s output in it), and `Front` is `None` for that input.
+  `Front::Tree` stays for a JSON-events input.
 
 ### 5.6 The test cases
 
@@ -262,8 +295,8 @@ The fixtures are the contract every runtime is held to
   `bad_pattern` for a malformed `(open …)` pattern. Each code with its
   position, `ERROR:<code>@row:col`, where it has one. The `check.tsv`
   runner needs the input protocol as a column, so the file gains an
-  optional `input` column (empty is `JsonEvents`), and
-  `tabnas_support::Runner` reads it.
+  optional `input` column (empty is `JsonEvents`), and each runtime's
+  runner reads it (Rust's through `tabnas_support::Runner`).
 - **`test/spec/transduce.tsv`**, a new file, run by alchemy-cli as
   `run.tsv` is: columns `input` (the program), `expected` (the bytes, or
   `ERROR:<code>`), `grammar` (the parser whose events the program reads:
@@ -282,9 +315,15 @@ The fixtures are the contract every runtime is held to
   so the ports agree on what the engine's passes look like before any
   program reads them. alchemy's fixtures assume it.
 - **The differential rows are a runner's rule, not rows**: alchemy-cli's
-  runner of `transduce.tsv` also compares, for every row, the
-  transducer's `JsonEvents` with `ValueSource` over the grammar's parsed
-  value, lexemes aside, and fails on any difference. That is the
+  runner of `transduce.tsv` also compares, for every row whose document
+  the grammar accepts and repeats no member, the transducer's
+  `JsonEvents` with `ValueSource` over the grammar's parsed value,
+  lexemes aside, and fails on any difference. The other rows have no
+  such oracle and are held by their `expected` column alone: a document
+  the grammar refuses has no value to walk, and its part must fail with
+  the declared code before `End`; a repeated member is streamed twice
+  where the value keeps one, and its row pins what `TreeContract` and
+  the `LastWins` router make of it. That is the
   verification `capability::INCREMENTAL` used to stand for, moved from
   a list of names to every part on every fixture.
 - **`docs/language.md`**: a section "Parser events and transducer
@@ -449,7 +488,7 @@ Acceptance, per part and for the whole:
    flat memory on the general path before the line source goes.
 
 Decisions for the maintainer, in the order the work meets them. The
-first two were taken on 2026-10-15; the other three wait.
+first two were taken on 2026-10-15; the others wait.
 
 1. **`:value` on a close pass** (section 4): include the node's scalar
    value, so a part takes the grammar's own scalar resolution (YAML's
@@ -474,13 +513,19 @@ first two were taken on 2026-10-15; the other three wait.
 5. **Lexer events in `ParserEvents/1`**: rule passes only in the first
    version, or `(token t)` items from `subscribe_lex` as well, for parts
    that keep comments.
+6. **Rewound passes** (section 4): how the source keeps a probe's
+   passes from a part. The engine reports where a probe starts and
+   where it rewinds, and the source holds the passes in between until
+   the probe decides, then drops them; or the engine marks each pass
+   made while a probe is open, and the source withholds those. Either
+   is an engine change in all three runtimes, and it blocks step 2.
 
 ## 11. Order of work
 
 | Step | Repository | Change | Depends on |
 |---|---|---|---|
-| 1 | alchemy | shared `parser_event.rs`; `Type::ParserEvent`; `parser-events`, `open`, `close`; input protocol; `explain`; `stdlib/transduce.alc`; `Part.transduce`; `check.tsv` rows; `docs/language.md` | decision 1 (taken) |
-| 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; `capability` and the inference retired; `LinesSource` kept (decision 2) | 1 |
+| 1 | alchemy | shared `parser_event.rs`; `Type::ParserEvent`; `parser-events`, `open`, `close`; input protocol; `explain`; `stdlib/transduce.alc`; `Part.transduce`; `check.tsv` rows; `docs/language.md`; in Rust, TypeScript and Go | decision 1 (taken) |
+| 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; a probe's passes held back (decision 6); `capability` and the inference retired; `LinesSource` kept (decision 2) | 1, decision 6 |
 | 3 | alchemy-cli | `transduce.tsv` runner with the differential rule; parts test; `translate` and `run --grammar` on the new source | 1, 2 |
 | 4 | json | the first `alchemy/transduce.alc`, manifest, embed, descriptor | 1, 3 |
 | 5 | jsonl, jsonc, json5, zon, csv | parts, in that order | 4 |
