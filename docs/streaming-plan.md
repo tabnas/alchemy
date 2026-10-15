@@ -7,9 +7,14 @@ and its test cases come first; the other repositories follow in the
 order section 11 gives. Nothing here is implemented yet.
 
 On 2026-10-15 the maintainer confirmed section 1 as the ruling and took
-decisions 1 and 2 of section 10: a close pass carries its node's value
-when that value is a scalar, and `LinesSource` stays until the engine
-can read its input in chunks. The sections below are written to both.
+decisions 1, 2, 5 and 6 of section 10: a close pass carries its node's
+value when that value is a scalar; `LinesSource` stays until the engine
+can read its input in chunks; `ParserEvents/1` carries rule passes only
+in its first version; and the engine flags each pass made while a probe
+is open, which the source drops. The maintainer also ruled on the
+rollout: each format keeps the route it has today until its own part
+lands, and a format may still join transduce's incremental list in the
+meantime (section 7). The sections below are written to all of it.
 
 ## 1. The ruling
 
@@ -50,8 +55,9 @@ and as the oracle every transducer is verified against.
 
 What the ruling removes, by repository:
 
-- transduce: `capability::INCREMENTAL` as a gate; the inference in
-  `rule_events.rs`; and, once the engine reads its input in chunks
+- transduce: `capability::INCREMENTAL` as a gate and the inference in
+  `rule_events.rs`, once every format on the list has its part
+  (section 7); and, once the engine reads its input in chunks
   (decision 2), `LinesSource` and `LineFormat`. What stays general and
   is kept: `Guarded`, `Prune` (the engine's tree is still built while
   events leave, and pruning the streamed elements is format-neutral),
@@ -124,7 +130,7 @@ delivers everything the parse produced and the program's sink receives
 only when it validated. Lexer events (`subscribe_lex`: every token,
 trivia included) are not in the first version; a part that needs them
 (comments, blank lines) is the case that adds a `(token t)` item later
-(decision 5).
+(decision 5, taken 2026-10-15: rule passes only).
 
 Containers never travel in parser events. A rule's node is handed on
 only as a scalar, so a transducer that wants a container has to emit its
@@ -142,12 +148,12 @@ built in for a serialized grammar's `pd_` keys. The passes made between
 a mark and its rewind are the probe's, not the document's, and
 `subscribe_rule_done` reports them as it reports any other. A part must
 never take them as committed, or a parse that validates could stream
-events its value contradicts. Telling them apart needs the engine: it
-reports where a probe starts and where it rewinds, so the source holds
-back the passes in between and drops them, or it marks each pass made
-while a probe is open, so the source withholds those. That is decision
-6; it blocks step 2, and every custom grammar that probes (section 8)
-depends on it.
+events its value contradicts. Telling them apart needs the engine,
+and by decision 6 the engine flags each pass made while a probe is
+open, so the source drops it before any part sees it. A probe always
+rewinds, so no pass in one is ever the document's, and nothing needs
+holding back. Step 2 depends on that engine change, in all three
+runtimes, and so does every custom grammar that probes (section 8).
 
 The source that produces this stream is transduce's: a
 `ParserEventSource` over one text and a `Tabnas`, installing one
@@ -402,8 +408,14 @@ one proves:
    keeps the game-at-a-time stream it has had through the inference
    since transduce 0.2.8 and tabnas-chess 0.1.17.
 
-A format is streamed the day its part lands, and read whole until then,
-so the order is also the rollout and nothing breaks in between.
+A format switches to its part the day the part lands, and keeps the
+route it has today until then (decided 2026-10-15): a format on
+transduce's incremental list streams through the inference as it does
+now, and any other is read whole, so the order is also the rollout and
+nothing streams less in between. The list and its inference go when
+every format on it has its part (step 13). A format may still join the
+list before its part lands, as PGN did in transduce 0.2.8, and then
+switches like the others.
 
 ## 8. Custom grammars: the part is generated
 
@@ -437,14 +449,17 @@ plan; it would be the same generator writing the reverse.
 ## 9. aless, and the engine
 
 **aless** (after sections 5 to 8): one plan, `parser → ParserEventSource
-→ composed program`, for every format but the two the line source
-serves. `export::plan` shrinks to that one choice, and goes, with
-`Plan` and `line_format`, when the line source does (step 12);
+→ composed program`, for every format whose package ships a part, but
+the two the line source serves. A format with no part yet keeps the
+route it has today: the incremental source where transduce lists it,
+the walk of its value otherwise. `export::plan` shrinks as parts land,
+and goes, with `Plan` and `line_format`, once the line source and the
+incremental list have both gone (steps 12 and 13);
 `translate::crates()` reads the `transduce` part; the whole-value route
-stays for a format without a part, chosen by the part's absence and not
-by a name. The fallback when a part refuses a document part way stays
-as it is: once to the walk when nothing was written, else
-`output: "partial"`. The agent tests that pin streaming behaviour
+stays for a format with no part and no place on the list. The fallback
+when a part refuses a document part way stays as it is: once to the
+walk when nothing was written, else `output: "partial"`. The agent
+tests that pin streaming behaviour
 (`whole_records_reach_standard_output_before_the_error`,
 `a_large_xml_document_streams_as_the_json_familys_do`) are the acceptance
 tests of the switch, and `tests/translate_matrix.rs` runs unchanged in
@@ -487,8 +502,8 @@ Acceptance, per part and for the whole:
    CSV included, so that step 12 shows those two formats holding their
    flat memory on the general path before the line source goes.
 
-Decisions for the maintainer, in the order the work meets them. The
-first two were taken on 2026-10-15; the others wait.
+Decisions for the maintainer, in the order the work meets them.
+Decisions 1, 2, 5 and 6 were taken on 2026-10-15; 3 and 4 wait.
 
 1. **`:value` on a close pass** (section 4): include the node's scalar
    value, so a part takes the grammar's own scalar resolution (YAML's
@@ -512,30 +527,35 @@ first two were taken on 2026-10-15; the others wait.
    abnf (and ebnf, gbnf) exposing it; or each front end.
 5. **Lexer events in `ParserEvents/1`**: rule passes only in the first
    version, or `(token t)` items from `subscribe_lex` as well, for parts
-   that keep comments.
+   that keep comments. **Decided 2026-10-15: rule passes only.** A
+   `(token t)` item is added when a part needs comments or blank lines.
 6. **Rewound passes** (section 4): how the source keeps a probe's
    passes from a part. The engine reports where a probe starts and
    where it rewinds, and the source holds the passes in between until
    the probe decides, then drops them; or the engine marks each pass
    made while a probe is open, and the source withholds those. Either
    is an engine change in all three runtimes, and it blocks step 2.
+   **Decided 2026-10-15: the engine flags each pass made while a probe
+   is open, and the source drops it.** A probe always rewinds, so this
+   needs no buffering and no new subscription.
 
 ## 11. Order of work
 
 | Step | Repository | Change | Depends on |
 |---|---|---|---|
 | 1 | alchemy | shared `parser_event.rs`; `Type::ParserEvent`; `parser-events`, `open`, `close`; input protocol; `explain`; `stdlib/transduce.alc`; `Part.transduce`; `check.tsv` rows; `docs/language.md`; in Rust, TypeScript and Go | decision 1 (taken) |
-| 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; a probe's passes held back (decision 6); `capability` and the inference retired; `LinesSource` kept (decision 2) | 1, decision 6 |
+| 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; a probe's flagged passes dropped (decision 6); `capability` and the inference kept until step 13; `LinesSource` kept (decision 2) | 1, the engine's probe flag (step 10) |
 | 3 | alchemy-cli | `transduce.tsv` runner with the differential rule; parts test; `translate` and `run --grammar` on the new source | 1, 2 |
 | 4 | json | the first `alchemy/transduce.alc`, manifest, embed, descriptor | 1, 3 |
 | 5 | jsonl, jsonc, json5, zon, csv | parts, in that order | 4 |
 | 6 | yaml, xml, markdown, jsonic | hand-written parts | 4 |
 | 7 | toml, ini, then the schema formats | buffering parts, or `whole` | 4, a path-insert operator if measured necessary |
 | 8 | bnf, abnf | the generated part and its differential test | 1, 3 |
-| 9 | aless | one plan over `ParserEventSource` for every format but JSON Lines and CSV; the generated part for `--grammar` | 2, 4, 8 |
-| 10 | parser | the chunked lexer source, the lighter notification, the per-rule cost | measured first; the maintainer's order |
-| 11 | admin | the ADR: translation between formats is composed from per-format parts, and every format's events come from its own alchemy transducer over the engine's parser events; no host or transducer knows a format by name, the line source excepted until step 12 | 1 |
-| 12 | transduce, alchemy-cli, aless | `LinesSource` and `LineFormat` retired; JSON Lines and CSV read through their parts; aless's `Plan::Lines` and `line_format` go, and with them `export::plan` | 5, 10 (decision 2) |
+| 9 | aless | one plan over `ParserEventSource` for every format with a part but JSON Lines and CSV, the current routes for the rest; the generated part for `--grammar` | 2, 4, 8 |
+| 10 | parser | first the probe flag (decision 6), which step 2 needs; then the chunked lexer source, the lighter notification, the per-rule cost | the flag first; the rest measured first, in the maintainer's order |
+| 11 | admin | the ADR: translation between formats is composed from per-format parts, and every format's events come from its own alchemy transducer over the engine's parser events; no host or transducer knows a format by name, the line source excepted until step 12 and the incremental list until step 13 | 1 |
+| 12 | transduce, alchemy-cli, aless | `LinesSource` and `LineFormat` retired; JSON Lines and CSV read through their parts; aless's `Plan::Lines` and `line_format` go | 5, 10 (decision 2) |
+| 13 | transduce, alchemy-cli, aless | `capability::INCREMENTAL` and the inference in `rule_events.rs` retired; aless's `export::plan` and `Plan` go once step 12 has landed too | every listed format's part (steps 4 to 7) |
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
