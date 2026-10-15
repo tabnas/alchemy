@@ -121,7 +121,7 @@ where `rule` is a record:
 | `:name` | `rule.name` | the rule's name (`map`, `pair`, `val`) |
 | `:d`, `:i` | `rule.d`, `rule.i` | the rule's depth and instance |
 | `:alt` | `done.alt` | the alternate that matched: `:p` (the rule pushed), `:r` (the rule replaced with), `:b` (tokens given back), `:g` (its groups); `missing` when the state declared none |
-| `:tokens` | `rule.o` or `rule.c` | the tokens the pass consumed, each a record of `:name`, `:val`, `:src`, `:row`, `:col` |
+| `:tokens` | `rule.o` or `rule.c` | the tokens the pass consumed, each a record of `:name`, `:val`, `:src`, `:row`, `:col`: those it matched, less the `b` its alternate gave back from their end (the next rule's to consume), and none when `b` is more than it recorded, since a close alternate can back up a token it did not record; a number token's `:val` carries its `:src` as the lexeme, and a token with no value (the end of the source) has `null` |
 | `:forced` | `done.forced` | a close synthesized by recovery |
 | `:n` | `rule.n` | the named counters |
 | `:value` | `rule.node` | the node's value when it is a scalar at a close pass; `missing` otherwise (decision 1, taken 2026-10-15) |
@@ -233,9 +233,10 @@ state machine at all:
   record of what that rule's passes do: `:container` (`:object` or
   `:array`), opened by its open pass and closed by its close pass;
   `:key`, the member name its open pass announces (a token's index, whose
-  `:val` names it, or a constant string); `:scalar`, the value its close
-  pass yields (`:value` for the pass's own, or a token's index, whose
-  `:val` and `:src` give the value and its lexeme). The step looks each
+  `:val` names it, or a constant string); `:scalar`, the value the rule
+  yields (a token's index, that token of its open pass when the pass
+  consumed one, its `:val` with the lexeme a number token carries; or
+  `:value`, its close pass's own). The step looks each
   pass's rule up with `get` by its `:name`, one lookup per pass whatever
   the spec's size, and a rule the spec does not name does nothing. The
   json grammar is the first user:
@@ -247,13 +248,15 @@ state machine at all:
         entry :map (record (entry :container :object))
         entry :list (record (entry :container :array))
         entry :pair (record (entry :key 0))
-        entry :val (record (entry :scalar :value))
+        entry :val (record (entry :scalar 0))
       input
   ```
 
-  The token indexes and which rule carries the key are the grammar's,
-  and the second of step 1's pull requests fixes them against
-  tabnas-json's rules and fixtures. The step keeps one marker per open
+  The token indexes and which rule carries the key are the grammar's:
+  for tabnas-json, `pair`'s open pass consumes the key string and the
+  colon, and a scalar `val`'s open pass consumes its token, while a
+  container `val` gives its opening token back to `map` or `list`, so
+  `:scalar 0` yields nothing for it. The step keeps one marker per open
   container, so its retention is the document's nesting and never its
   width or length.
 - `transduce-step`, `transduce-finish` and the small helpers the step
@@ -607,13 +610,14 @@ six were taken on 2026-10-15.
 | 13 | transduce, alchemy-cli, aless | `capability::INCREMENTAL` and the inference in `rule_events.rs` retired; aless's `export::plan` and `Plan` go once step 12 has landed too | every listed format's part (steps 4 to 7) |
 
 Under way: step 10's probe flag is tabnas/parser#309. Step 1 lands in
-three pull requests, each in all three runtimes. The first, the
+three increments, each in all three runtimes. tabnas/alchemy#66 carries
+the first two, with tabnas/alchemy-cli#33 for its catalogue test: the
 language (the shared types, the types, `parser-events`, `open` and
 `close`, the declared input, `explain`, the `check.tsv` rows and
-`docs/language.md`), is tabnas/alchemy#66, with tabnas/alchemy-cli#33
-for its catalogue test. The second is `stdlib/transduce.alc`. The third
-is `Part.transduce`, `TreeContract` after the transducer, and the
-`not_a_tree` finer code.
+`docs/language.md`) and `stdlib/transduce.alc`, whose `transduce-tree`
+each runtime's test holds, with the json spec of section 5.3, to the
+events of tabnas-json's own rule passes. The third is `Part.transduce`,
+`TreeContract` after the transducer, and the `not_a_tree` finer code.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
