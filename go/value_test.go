@@ -71,7 +71,7 @@ func TestEnvironmentsShadowInnermostFirst(t *testing.T) {
 }
 
 func TestLivenessFollowsTheInput(t *testing.T) {
-	live := &Plan{Kind: PlanMap, F: LookupNative("text"), Source: inputPlan(), At: SourceSpan{File: NewFile("t")}}
+	live := &Plan{Kind: PlanMap, F: LookupNative("text"), Source: inputPlan(InputJSONEvents), At: SourceSpan{File: NewFile("t")}}
 	if !live.IsLive() || live.Protocol() != ProtocolItems {
 		t.Error("a map over the input")
 	}
@@ -83,7 +83,7 @@ func TestLivenessFollowsTheInput(t *testing.T) {
 	if !mixed.IsLive() {
 		t.Error("a concat around a live text")
 	}
-	if inputPlan().Protocol() != ProtocolJSONEvents {
+	if inputPlan(InputJSONEvents).Protocol() != ProtocolJSONEvents {
 		t.Error("the input's protocol")
 	}
 }

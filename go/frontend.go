@@ -48,6 +48,11 @@ func Analyze(src, file string) (*Analysis, *Fail) {
 // export is defined under that name instead, so that the program's export
 // can call it.
 func AnalyzeSources(sources []Source) (*Analysis, *Fail) {
+	return AnalyzeSourcesWith(sources, InputJSONEvents)
+}
+
+// AnalyzeSourcesWith is AnalyzeSources over the input the host declares.
+func AnalyzeSourcesWith(sources []Source, input Input) (*Analysis, *Fail) {
 	names := make([]string, 0, len(sources))
 	texts := make([]string, 0, len(sources))
 	for _, s := range sources {
@@ -116,7 +121,7 @@ func AnalyzeSources(sources []Source) (*Analysis, *Fail) {
 	if f != nil {
 		return nil, f
 	}
-	checked, f := CheckProgram(resolved, linked)
+	checked, f := CheckProgramWith(resolved, linked, input)
 	if f != nil {
 		return nil, f
 	}

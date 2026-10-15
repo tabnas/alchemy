@@ -105,6 +105,9 @@ func init() {
 		"array-end":       constructor("array-end"),
 		"key":             nKey,
 		"scalar":          nScalar,
+		"parser-events":   nParserEvents,
+		"open":            nRulePass("open"),
+		"close":           nRulePass("close"),
 		"json":            nJSON,
 		"records":         nRecords,
 		"csv-table":       nCsvTable,
@@ -157,6 +160,9 @@ func asSelector(op, what string, v Val) (shared.Selector, *Fail) {
 
 func asStream(op string, v Val) (*Plan, *Fail) {
 	if s, ok := v.(StreamVal); ok {
+		if f := notParserInput(op, s.Plan); f != nil {
+			return nil, f
+		}
 		return s.Plan, nil
 	}
 	return nil, typeError(fmt.Sprintf("%s: the data must be a stream, not %s", op, KindOf(v)))
@@ -167,9 +173,23 @@ func asSeq(op string, v Val) (Seq, *Fail) {
 	case *VectorVal:
 		return Seq{Vector: x.Items}, nil
 	case StreamVal:
+		if f := notParserInput(op, x.Plan); f != nil {
+			return Seq{}, f
+		}
 		return Seq{Stream: x.Plan}, nil
 	}
 	return Seq{}, typeError(fmt.Sprintf("%s: the data must be a vector or a stream, not %s", op, KindOf(v)))
+}
+
+// notParserInput refuses the host's parser events where any operator but
+// parser-events reads them, as the plan is built. The checker refuses them
+// first wherever it sees them; a function read from data is what brings
+// them here.
+func notParserInput(op string, p *Plan) *Fail {
+	if p.Kind == PlanParserInput {
+		return protocolMismatch(op + ": the input is the parser's rule passes, which only parser-events reads")
+	}
+	return nil
 }
 
 // textlike is a string or a text: what the text algebra accepts as an
@@ -1817,6 +1837,35 @@ func nEvents(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		return nil, f
 	}
 	return StreamVal{Plan: &Plan{Kind: PlanEvents, Source: source}}, nil
+}
+
+// nParserEvents is `parser-events input`: the host's parser events, every
+// rule pass an item. Only the host's input is parser events: a JSON-events
+// input, or any stream a program made, is refused as the plan is built.
+func nParserEvents(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	s, ok := a[0].(StreamVal)
+	if !ok {
+		return nil, typeError("parser-events: the data must be a stream, not " + KindOf(a[0]))
+	}
+	if s.Plan.Kind == PlanParserInput {
+		return StreamVal{Plan: &Plan{Kind: PlanParserEvents, Source: s.Plan}}, nil
+	}
+	what := PlanName(s.Plan)
+	if s.Plan.Kind == PlanInput {
+		what = "JSON events"
+	}
+	return nil, protocolMismatch("parser-events reads the parser's rule passes, the input a host declares as parser events, not " + what)
+}
+
+// nRulePass is `(open rule)` or `(close rule)`: a rule pass, the rule a
+// record.
+func nRulePass(name string) nativeCall {
+	return func(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+		if _, ok := a[0].(*RecordVal); ok {
+			return NewTagged(name, a[0]), nil
+		}
+		return nil, typeError(name + ": the rule must be a record, not " + KindOf(a[0]))
+	}
 }
 
 func nAsEvents(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {

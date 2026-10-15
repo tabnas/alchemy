@@ -48,6 +48,10 @@ const (
 	StageJoin
 	StageConcat
 	StageReplace
+	// StageParserInput is the host's parser input; StageParserEvents
+	// `parser-events` over it.
+	StageParserInput
+	StageParserEvents
 )
 
 // Selector is a selector as the report prints it: transduce's Selector
@@ -117,6 +121,8 @@ const (
 // stream or text), the plan's stages from the input outward when it does,
 // and the duplicate-member policy.
 type PlanView struct {
+	// Input is what the host declared export's input to be.
+	Input      Input
 	Output     Output
 	Live       bool
 	Stages     []Stage
@@ -251,6 +257,8 @@ func protocolOf(s StageKind) string {
 	switch s {
 	case StageInput, StageRecords, StageAsEvents:
 		return "JsonEvents/1"
+	case StageParserInput:
+		return "ParserEvents/1"
 	case StageTableFromJSON, StageCsvTable:
 		return "TableRows/1"
 	case StageRoute:
@@ -259,6 +267,8 @@ func protocolOf(s StageKind) string {
 		return "Stream<Value>"
 	case StageEvents:
 		return "Stream<Event>"
+	case StageParserEvents:
+		return "Stream<ParserEvent>"
 	case StageScanEmit, StageMap, StageFilter:
 		return "Stream<Value>"
 	}
@@ -381,7 +391,8 @@ func Summarize(resolved *Resolved, view PlanView) *EffectSummary {
 		}
 	}
 
-	protocol := []string{"JsonEvents/1"}
+	// The input's protocol, which the host declares.
+	protocol := []string{view.Input.String()}
 	for i, stage := range stages {
 		if i == 0 {
 			continue
@@ -495,6 +506,10 @@ func Summarize(resolved *Resolved, view PlanView) *EffectSummary {
 			if selection == passThrough {
 				selection = "none; every event is delivered as an item"
 			}
+		case StageParserEvents:
+			// Every rule pass becomes one item as it arrives: a
+			// transducer's input, whose step decides what is kept.
+			selection = "none; every rule pass is delivered as an item"
 		case StageScanEmit:
 			confidence = Conditional
 			reason := "what the step returns, no deeper than max_depth"

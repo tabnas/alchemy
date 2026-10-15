@@ -9,9 +9,10 @@ import "strings"
 // The types tell three things apart that the syntax does not: a reusable
 // value, a single-use resource, and a protocol. Value is any data a
 // document can hold; Vector<T> a finite retained collection; Stream<T> an
-// ordered single-use sequence, of which TableEvents (Stream<TableEvent>)
-// and Stream<Event> are two; JsonEvents the single-use source; Text
-// single-use incremental text; String a finite retained string. Unknown
+// ordered single-use sequence, of which TableEvents (Stream<TableEvent>),
+// Stream<Event> and Stream<ParserEvent> are three; JsonEvents the
+// single-use source, or ParserEvents when the host declares a
+// parser-events input; Text single-use incremental text; String a finite retained string. Unknown
 // is what inference could not decide, accepted everywhere; Never is the
 // type of `fail`.
 
@@ -39,6 +40,12 @@ const (
 	TStream
 	TJsonEvents
 	TText
+	// One rule pass as parser-events delivers it: (open rule) or (close
+	// rule), the rule a record.
+	TParserEvent
+	// The single-use source when the host declares a parser-events input:
+	// the parser's rule passes (ParserEvents/1).
+	TParserEvents
 )
 
 // Type is a type. Item is a vector's or a stream's item type; Tag a tagged
@@ -68,6 +75,10 @@ var (
 	EventT      = Type{Kind: TEvent}
 	JsonEvents  = Type{Kind: TJsonEvents}
 	TextT       = Type{Kind: TText}
+	// ParserEventT is one rule pass; ParserEventsT the parser-events
+	// source.
+	ParserEventT  = Type{Kind: TParserEvent}
+	ParserEventsT = Type{Kind: TParserEvents}
 )
 
 // VectorOf is Vector<item>.
@@ -81,6 +92,10 @@ func TableEvents() Type { return StreamOf(TableEventT) }
 
 // Events is Stream<Event>: the source's events as items.
 func Events() Type { return StreamOf(EventT) }
+
+// ParserEvents is Stream<ParserEvent>: the parser's rule passes as items,
+// what parser-events yields.
+func ParserEvents() Type { return StreamOf(ParserEventT) }
 
 // Tagged is a constructor's value, by the constructor's name.
 func Tagged(name string) Type { return Type{Kind: TTagged, Tag: name} }
@@ -131,11 +146,11 @@ func (t Type) KindText() string {
 			return "missing"
 		}
 		return "a tagged value"
-	case TTableEvent, TEvent:
+	case TTableEvent, TEvent, TParserEvent:
 		return "a tagged value"
 	case TFn:
 		return "a function"
-	case TStream, TJsonEvents:
+	case TStream, TJsonEvents, TParserEvents:
 		return "a stream"
 	case TText:
 		return "a text"
@@ -146,7 +161,7 @@ func (t Type) KindText() string {
 
 // IsAffine is whether a binding of this type is used at most once.
 func (t Type) IsAffine() bool {
-	return t.Kind == TStream || t.Kind == TJsonEvents || t.Kind == TText
+	return t.Kind == TStream || t.Kind == TJsonEvents || t.Kind == TParserEvents || t.Kind == TText
 }
 
 // IsProtocol is whether this is one of the protocols, so a mismatch is
@@ -169,7 +184,7 @@ func (t Type) IsData() bool {
 // IsStreamOrSource is whether this is a stream or the source: what a
 // vector can never hold.
 func (t Type) IsStreamOrSource() bool {
-	return t.Kind == TStream || t.Kind == TJsonEvents
+	return t.Kind == TStream || t.Kind == TJsonEvents || t.Kind == TParserEvents
 }
 
 // IsStream is whether this type is a stream.
@@ -235,6 +250,8 @@ func (t Type) Accepts(actual Type) bool {
 			return true
 		}
 		return false
+	case t.Kind == TParserEvent && actual.Kind == TTagged:
+		return actual.Tag == "open" || actual.Tag == "close"
 	case t.Kind == TFn && actual.Kind == TFn:
 		return len(t.Params) == len(actual.Params) && t.Result.Accepts(*actual.Result)
 	case t.Kind == TJsonEvents && actual.Kind == TStream:
@@ -306,6 +323,8 @@ func (t Type) String() string {
 		return "TableEvent"
 	case TEvent:
 		return "Event"
+	case TParserEvent:
+		return "ParserEvent"
 	case TFn:
 		var b strings.Builder
 		b.WriteString("Fn(")
@@ -326,6 +345,8 @@ func (t Type) String() string {
 		return "Stream<" + t.Item.String() + ">"
 	case TJsonEvents:
 		return "JsonEvents"
+	case TParserEvents:
+		return "ParserEvents"
 	case TText:
 		return "Text"
 	}

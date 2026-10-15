@@ -51,6 +51,30 @@ func (o Output) String() string {
 	return "Text"
 }
 
+// Input is what a program's `export [input]` reads: the protocol the host
+// pushes into the program's sink, which the host declares when it compiles
+// the program (CompileWith).
+type Input uint8
+
+// The inputs.
+const (
+	// InputJSONEvents: JsonEvents/1, a document's events, into
+	// Program.Sink: the default.
+	InputJSONEvents Input = iota
+	// InputParserEvents: ParserEvents/1, the parser's rule passes, into
+	// Program.ParserSink: what a transducer part reads, through
+	// parser-events.
+	InputParserEvents
+)
+
+// String is the input's protocol, as the report names it.
+func (i Input) String() string {
+	if i == InputParserEvents {
+		return "ParserEvents/1"
+	}
+	return "JsonEvents/1"
+}
+
 // Checked is what the checker learned about a program.
 type Checked struct {
 	// Export is the type of export's result.
@@ -583,6 +607,8 @@ func (c *checker) pattern(p *Expr, matched Type, e *env) *Fail {
 			fields = []Type{StringT}
 		case "scalar":
 			fields = []Type{ValueT}
+		case "open", "close":
+			fields = []Type{RecordT}
 		default:
 			n := len(p.Items) - 1
 			if n < 0 {
@@ -949,6 +975,10 @@ func (c *checker) expectSeq(what string, t Type, span SourceSpan) (Type, bool, *
 		return Type{}, false, c.typeError("protocol_mismatch",
 			what+" must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events",
 			span)
+	case TParserEvents:
+		return Type{}, false, c.typeError("protocol_mismatch",
+			what+" must be a vector or a stream of items, not ParserEvents; parser-events reads the rule passes as items",
+			span)
 	}
 	return Type{}, false, c.mismatch(what, VectorOf(Unknown), t, span)
 }
@@ -1221,6 +1251,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(StreamOf(ValueT), first(exp("the selector of select", SelectorT, 0), exp("the input of select", JsonEvents, 1)))
 	case "events":
 		return ret(Events(), exp("the input of events", JsonEvents, 0)())
+	case "parser-events":
+		return ret(ParserEvents(), exp("the input of parser-events", ParserEventsT, 0)())
 	case "as-events":
 		return ret(JsonEvents, exp("the items of as-events", StreamOf(Unknown), 0)())
 	case "indices":
@@ -1323,6 +1355,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(Tagged("selected"), exp("the tag of selected", KeywordT, 0)())
 	case "key":
 		return ret(Tagged("key"), exp("the name of key", StringT, 0)())
+	case "open", "close":
+		return ret(Tagged(name), exp("the rule of "+name, RecordT, 0)())
 	case "scalar":
 		switch t(0).Kind {
 		case TNull, TBool, TNumber, TString, TValue, TUnknown, TNever:
@@ -1391,6 +1425,16 @@ func noExport() *Fail {
 // CheckProgram checks a resolved program: export with its input, then
 // every other definition.
 func CheckProgram(resolved *Resolved, sources *Sources) (*Checked, *Fail) {
+	return CheckProgramWith(resolved, sources, InputJSONEvents)
+}
+
+// CheckProgramWith is CheckProgram with export's input the protocol the
+// host declares.
+func CheckProgramWith(resolved *Resolved, sources *Sources, declared Input) (*Checked, *Fail) {
+	input := JsonEvents
+	if declared == InputParserEvents {
+		input = ParserEventsT
+	}
 	c := &checker{sources: sources, defs: resolved.Defs, memo: map[string]Type{}}
 	export := resolved.Get("export")
 	if export == nil {
@@ -1418,7 +1462,7 @@ func CheckProgram(resolved *Resolved, sources *Sources) (*Checked, *Fail) {
 			}
 		}
 	}
-	fn, f := c.fnType(export.Value.Items, []Type{JsonEvents}, &env{})
+	fn, f := c.fnType(export.Value.Items, []Type{input}, &env{})
 	if f != nil {
 		return nil, f
 	}
@@ -1427,7 +1471,7 @@ func CheckProgram(resolved *Resolved, sources *Sources) (*Checked, *Fail) {
 	if finer != "" {
 		return nil, c.fail(code, finer, message, export.Span)
 	}
-	c.memo["export"] = Func([]Type{JsonEvents}, exportType)
+	c.memo["export"] = Func([]Type{input}, exportType)
 	for _, name := range order {
 		if name != "export" {
 			if _, f := c.defType(name); f != nil {
