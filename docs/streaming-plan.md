@@ -172,7 +172,7 @@ on the events any program hands to a taker of them. The fixture
 encoding of a parser event, for transduce's `test/spec/`, follows the
 events' encoding in `docs/reference.md`: an array whose first element
 names it,
-`["open", {"rule": "map", "d": 1, "i": 3, "alt": {"p": "pair", "r": "", "b": 0, "g": ["map", "json", "pair"]}, "tokens": [["#OB", "{", "{", 1, 1]], "forced": false, "n": {"pk": 0}}]`.
+`["open", {"name": "map", "d": 1, "i": 3, "alt": {"p": "pair", "r": "", "b": 0, "g": ["map", "json", "pair"]}, "tokens": [["#OB", "{", "{", 1, 1]], "forced": false, "n": {"pk": 0}}]`.
 A field that is `missing` is left out of the item, so `"value": null`
 is always a null scalar; the open pass above has no value.
 
@@ -191,15 +191,19 @@ are Rust's, and the ports follow their own layout.
   `Stream<ParserEvent>`, beside `Type::Event` and `Type::events()` in
   `rs/src/types.rs`.
 - A protocol `ParserEvents/1` at the head of a chain, so a transducer's
-  report reads `ParserEvents/1 → JsonEvents/1 → Text`.
+  report reads `ParserEvents/1 → Stream<ParserEvent> → Stream<Value> →
+  JsonEvents/1 → Text`.
 - **The input's protocol is the host's to declare.** Today `export
   [input]` takes `JsonEvents`. A host that runs a program over a parser
-  compiles it with `Program::with_input(Protocol::ParserEvents)` (and
-  `compile_sources` takes the same option); the default stays
-  `JsonEvents`, so every existing program and fixture compiles
-  unchanged. The checker then refuses `events input` on a parser-events
-  input and `parser-events input` on a JSON-events input, both
-  `protocol_mismatch`, with the message naming which the host declared.
+  compiles it with `compile_with(src, file, Input::ParserEvents,
+  routers, renderers)` (and `compile_sources_with`; TypeScript's
+  `{ input: 'ParserEvents/1' }` option, Go's `CompileWith`), an
+  addition beside `compile`, which keeps `JsonEvents`, so every existing
+  host, program and fixture compiles unchanged. The checker then refuses
+  `events input` on a parser-events input and `parser-events input` on a
+  JSON-events input, both `protocol_mismatch`, with the message naming
+  which the host declared. (Landed in tabnas/alchemy#66, with
+  `Program::parser_sink`, the sink a host pushes the rule passes into.)
 
 ### 5.2 Natives
 
@@ -224,25 +228,34 @@ root file by `shared_sources_test.rs`, so that most formats write no
 state machine at all:
 
 - `transduce-tree spec input -> JsonEvents`: the declarative transducer
-  for a grammar whose rules map onto a tree. `spec` is a record naming,
-  by rule name, which passes open and close an object or an array, which
-  pass announces a key (and from which token or constant), and which
-  pass yields a scalar (from `:value`, or from a token's `:val` with its
-  `:src` as the lexeme). The json grammar is the first user:
+  for a grammar whose rules map onto a tree. `spec` is a record keyed by
+  rule name (taken 2026-10-15: key the spec by rule), each entry a
+  record of what that rule's passes do: `:container` (`:object` or
+  `:array`), opened by its open pass and closed by its close pass;
+  `:key`, the member name its open pass announces (a token's index, whose
+  `:val` names it, or a constant string); `:scalar`, the value its close
+  pass yields (`:value` for the pass's own, or a token's index, whose
+  `:val` and `:src` give the value and its lexeme). The step looks each
+  pass's rule up with `get` by its `:name`, one lookup per pass whatever
+  the spec's size, and a rule the spec does not name does nothing. The
+  json grammar is the first user:
 
   ```text
   def json-transduce [input]
     transduce-tree
       record
-        entry :object ["map"]
-        entry :array ["list"]
-        entry :key (record (entry :rule "pair") (entry :token 0))
-        entry :scalar ["val"]
+        entry :map (record (entry :container :object))
+        entry :list (record (entry :container :array))
+        entry :pair (record (entry :key 0))
+        entry :val (record (entry :scalar :value))
       input
   ```
 
-  Its step keeps one marker per open container, so its retention is the
-  document's nesting and never its width or length.
+  The token indexes and which rule carries the key are the grammar's,
+  and the second of step 1's pull requests fixes them against
+  tabnas-json's rules and fixtures. The step keeps one marker per open
+  container, so its retention is the document's nesting and never its
+  width or length.
 - `transduce-step`, `transduce-finish` and the small helpers the step
   uses, so a format whose grammar does not fit the declarative form
   (YAML, XML, Markdown, CSV) writes its own `scan-emit` over the same
@@ -300,11 +313,14 @@ The fixtures are the contract every runtime is held to
   for `events input` under a parser-events input and for `parser-events
   input` under the default; `reused` for a parser-events stream consumed
   twice; `type_mismatch` for a step not answering a `transition`;
-  `bad_pattern` for a malformed `(open …)` pattern. Each code with its
+  `arity` for an `(open …)` pattern of more than one field. Each code with its
   position, `ERROR:<code>@row:col`, where it has one. The `check.tsv`
   runner needs the input protocol as a column, so the file gains an
-  optional `input` column (empty is `JsonEvents`), and each runtime's
-  runner reads it (Rust's through `tabnas_support::Runner`).
+  optional `protocol` column (empty is `JsonEvents`, `parser` the rule
+  passes; `input` is already the program's column), and each runtime's
+  runner reads it, alchemy-cli's catalogue test included (Rust's through
+  `tabnas_support::Runner`). Landed in tabnas/alchemy#66 and
+  tabnas/alchemy-cli#33.
 - **`test/spec/transduce.tsv`**, a new file, run by alchemy-cli as
   `run.tsv` is: columns `input` (the program), `expected` (the bytes, or
   `ERROR:<code>`), `grammar` (the parser whose events the program reads:
@@ -589,6 +605,15 @@ six were taken on 2026-10-15.
 | 11 | admin | the ADR: translation between formats is composed from per-format parts, and every format's events come from its own alchemy transducer over the engine's parser events; no host or transducer knows a format by name, the line source excepted until step 12 and the incremental list until step 13 | 1 |
 | 12 | transduce, alchemy-cli, aless | `LinesSource` and `LineFormat` retired; JSON Lines and CSV read through their parts; aless's `Plan::Lines` and `line_format` go | 5, 10 (decision 2) |
 | 13 | transduce, alchemy-cli, aless | `capability::INCREMENTAL` and the inference in `rule_events.rs` retired; aless's `export::plan` and `Plan` go once step 12 has landed too | every listed format's part (steps 4 to 7) |
+
+Under way: step 10's probe flag is tabnas/parser#309. Step 1 lands in
+three pull requests, each in all three runtimes. The first, the
+language (the shared types, the types, `parser-events`, `open` and
+`close`, the declared input, `explain`, the `check.tsv` rows and
+`docs/language.md`), is tabnas/alchemy#66, with tabnas/alchemy-cli#33
+for its catalogue test. The second is `stdlib/transduce.alc`. The third
+is `Part.transduce`, `TreeContract` after the transducer, and the
+`not_a_tree` finer code.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
