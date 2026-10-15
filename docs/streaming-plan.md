@@ -609,15 +609,19 @@ six were taken on 2026-10-15.
 | 12 | transduce, alchemy-cli, aless | `LinesSource` and `LineFormat` retired; JSON Lines and CSV read through their parts; aless's `Plan::Lines` and `line_format` go | 5, 10 (decision 2) |
 | 13 | transduce, alchemy-cli, aless | `capability::INCREMENTAL` and the inference in `rule_events.rs` retired; aless's `export::plan` and `Plan` go once step 12 has landed too | every listed format's part (steps 4 to 7) |
 
-Under way: step 10's probe flag is tabnas/parser#309. Step 1 lands in
-three increments, each in all three runtimes. tabnas/alchemy#66 carries
-the first two, with tabnas/alchemy-cli#33 for its catalogue test: the
-language (the shared types, the types, `parser-events`, `open` and
-`close`, the declared input, `explain`, the `check.tsv` rows and
-`docs/language.md`) and `stdlib/transduce.alc`, whose `transduce-tree`
-each runtime's test holds, with the json spec of section 5.3, to the
-events of tabnas-json's own rule passes. The third is `Part.transduce`,
-`TreeContract` after the transducer, and the `not_a_tree` finer code.
+Under way: step 10's probe flag is tabnas/parser#309. Step 1 is
+tabnas/alchemy#66, in all three runtimes, with tabnas/alchemy-cli#33 for
+its catalogue test: the language (the shared types, the types,
+`parser-events`, `open` and `close`, the declared input, `explain`, the
+`check.tsv` rows and `docs/language.md`); `stdlib/transduce.alc`, whose
+`transduce-tree` each runtime's test holds, with the json spec of
+section 5.3, to the events of tabnas-json's own rule passes; and the
+translation over a transducer. Under the additive API decided for it,
+section 5.5's `Descriptor.transduce` and `Part.transduce` became
+`Part::transducer(descriptor, text)` beside `from_descriptor`, and
+`compose_parsed` and `compose_program_parsed` beside `compose` and
+`compose_program`. The tree contract is the native `tree-contract`, and
+its refusal leads with `not_a_tree`.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
