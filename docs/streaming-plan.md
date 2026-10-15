@@ -4,7 +4,12 @@ A plan, written on 2026-10-12 from the maintainer's ruling of the same
 day, for making every conversion in the tabnas fleet stream through one
 general path, with no format-specific streaming code anywhere. alchemy
 and its test cases come first; the other repositories follow in the
-order section 9 gives. Nothing here is implemented yet.
+order section 11 gives. Nothing here is implemented yet.
+
+On 2026-10-15 the maintainer confirmed section 1 as the ruling and took
+decisions 1 and 2 of section 10: a close pass carries its node's value
+when that value is a scalar, and `LinesSource` stays until the engine
+can read its input in chunks. The sections below are written to both.
 
 ## 1. The ruling
 
@@ -31,7 +36,7 @@ host from the format's name (`transduce/rs/src/source/mod.rs`):
 | Route | Code | Knows a format by |
 |---|---|---|
 | a record at a time from a reader | `LinesSource` in `source/lines.rs` | its syntax: JSON Lines' line breaks, CSV's quoting, header and separators |
-| events as the parse proceeds | the rule-event adapter in `source/rule_events.rs`, gated by `capability::INCREMENTAL` | a list of nine verified names; the adapter itself infers events by watching the value cells the rules build |
+| events as the parse proceeds | the rule-event adapter in `source/rule_events.rs`, gated by `capability::INCREMENTAL` | a list of ten verified names (`pgn` joined in transduce 0.2.8); the adapter itself infers events by watching the value cells the rules build |
 | the parsed value walked | `ValueSource`, `SourceMode::Materialize` | nothing; retains the whole value |
 
 The first is custom streaming and goes. The second is general in its
@@ -45,24 +50,31 @@ and as the oracle every transducer is verified against.
 
 What the ruling removes, by repository:
 
-- transduce: `LinesSource` and `LineFormat`; `capability::INCREMENTAL`
-  as a gate; the inference in `rule_events.rs`. What stays general and
+- transduce: `capability::INCREMENTAL` as a gate; the inference in
+  `rule_events.rs`; and, once the engine reads its input in chunks
+  (decision 2), `LinesSource` and `LineFormat`. What stays general and
   is kept: `Guarded`, `Prune` (the engine's tree is still built while
   events leave, and pruning the streamed elements is format-neutral),
   the router, the table transducer, `scan-emit`, the limits and metrics.
-- aless: `Plan::Lines`, `Plan::Incremental`, `Plan::Materialize` and
-  `line_format()` in `src/export.rs`; every `capability::incremental`
-  call; `--max-size` exemptions that exist only for the line source.
-- alchemy-cli: the same reads in `rs/src/translate.rs`.
+- aless: `Plan::Incremental`, `Plan::Materialize` and every
+  `capability::incremental` call in `src/export.rs`; with the line
+  source, `Plan::Lines`, `line_format()` and the `--max-size`
+  exemptions that exist only for it.
+- alchemy-cli: the same reads in `rs/src/translate.rs`, on the same
+  timing.
 
-One consequence must be said plainly. The line source is what holds
-JSON Lines and CSV at 11 MiB whatever the file's size (transduce's
-`docs/BENCH.md`, "Through aless"). The general path parses a whole text,
-because the engine does (`Tabnas::parse(&str)`), so until the engine
-can take its input from a reader (section 8) those two formats cost
+The line source is the one exception to the ruling, and it is kept
+for a time. It holds JSON Lines at 11 MiB and CSV at 46 MiB whatever
+the file's size (transduce's `docs/BENCH.md`, "Through aless"). The
+general path parses a whole text, because the engine does
+(`Tabnas::parse(&str)`), so on that path those two formats would cost
 what every other format costs: the parse's working set, about 300 to
-600 MiB for a 22 MB document with the rule history bound at 3. Section
-10 puts the timing of that removal to the maintainer.
+600 MiB for a 22 MB document with the rule history bound at 3. By
+decision 2 the line source stays until the engine can take its input
+from a reader (section 9; step 10 of section 11), and goes only then
+(step 12), so JSON Lines and CSV never regress. Until then their
+transducer parts are written and verified like every other format's,
+and hosts keep reading those two formats through the line source.
 
 ## 3. The common event stream
 
@@ -104,7 +116,7 @@ where `rule` is a record:
 | `:tokens` | `rule.o` or `rule.c` | the tokens the pass consumed, each a record of `:name`, `:val`, `:src`, `:row`, `:col` |
 | `:forced` | `done.forced` | a close synthesized by recovery |
 | `:n` | `rule.n` | the named counters |
-| `:value` | `rule.node` | the node's value when it is a scalar at a close pass; `missing` otherwise (section 10, decision 1) |
+| `:value` | `rule.node` | the node's value when it is a scalar at a close pass; `missing` otherwise (decision 1, taken 2026-10-15) |
 
 The end of the stream is not an item: as `events` does, the source
 delivers everything the parse produced and the program's sink receives
@@ -327,11 +339,11 @@ one proves:
    and the lexemes; the first rows of `transduce.tsv`.
 2. **jsonl, jsonc, json5, zon**: the same shape; jsonl's part emits the
    root array's start before the first line and its end at the end.
-3. **csv**: the first imperative grammar, and the one the line source
-   served. Its part keeps the header's labels in its state (under
-   `max_metadata_bytes`) and emits one object per record, which the
-   inference could never do. Its events are compared with the walk as
-   every part's are.
+3. **csv**: the first imperative grammar, and one of the two the line
+   source serves until step 12 (decision 2). Its part keeps the
+   header's labels in its state (under `max_metadata_bytes`) and emits
+   one object per record, which the inference could never do. Its
+   events are compared with the walk as every part's are.
 4. **yaml, xml, markdown, jsonic**: hand-written `scan-emit`s where the
    declarative form does not fit; each refusal the adapter documents
    today (a stream of several documents, a merge key, an implicit list)
@@ -342,10 +354,14 @@ one proves:
    manifest's `whole` sentence stays, and `explain` reports the
    retention. These may need a value operator that inserts under a
    path (`put` copies a record, and a state that grows per item is
-   quadratic: `docs/handover.md`, section 6); measured first.
+   quadratic: a render that kept each mapping's keys took 10.9 s for
+   16,000 keys, as the session handover of 2026-09-29, since removed
+   in #62, recorded); measured first.
 6. **feed, css, proto, pgn, expr, semver**: schema trees; a part each, or
    `whole` declared where the package's API builds the tree after the
-   parse (expr's simplified form, proto's descriptor).
+   parse (expr's simplified form, proto's descriptor). pgn's part
+   keeps the game-at-a-time stream it has had through the inference
+   since transduce 0.2.8 and tabnas-chess 0.1.17.
 
 A format is streamed the day its part lands, and read whole until then,
 so the order is also the rollout and nothing breaks in between.
@@ -382,7 +398,9 @@ plan; it would be the same generator writing the reverse.
 ## 9. aless, and the engine
 
 **aless** (after sections 5 to 8): one plan, `parser → ParserEventSource
-→ composed program`. `export::plan` goes, with `Plan` and `line_format`;
+→ composed program`, for every format but the two the line source
+serves. `export::plan` shrinks to that one choice, and goes, with
+`Plan` and `line_format`, when the line source does (step 12);
 `translate::crates()` reads the `transduce` part; the whole-value route
 stays for a format without a part, chosen by the part's absence and not
 by a name. The fallback when a part refuses a document part way stays
@@ -394,13 +412,15 @@ tests of the switch, and `tests/translate_matrix.rs` runs unchanged in
 intent over the new source.
 
 **The engine** (in parallel, the maintainer's order across the three
-runtimes): the general replacement for what the line source gave up.
+runtimes): the general replacement for the line source, which stays
+until it lands (decision 2).
 transduce's `docs/architecture.md`, section 6, names the candidates: a
 chunked source for the lexer, "the only route to bounded memory on one
 huge JSON document"; a lighter `rule_done` notification without the
-per-pass `Rule` clone; and the per-rule cost. The first is what makes
-section 2's regression temporary; the second pays for a stream that now
-carries every pass to a program; the third is throughput. Each is
+per-pass `Rule` clone; and the per-rule cost. The first is what lets
+the line source go without a regression; the second pays for a stream
+that now carries every pass to a program; the third is throughput.
+Each is
 measured before it is designed, as `doc/per-rule-cost.md` and
 `doc/rule-history-bound.md` were.
 
@@ -425,21 +445,27 @@ Acceptance, per part and for the whole:
    interpreted part costs more than the maintainer accepts; the snippet
    stays the specification.
 4. Memory: recorded in `docs/BENCH.md` before and after, JSON Lines and
-   CSV included, so the regression of section 2 is a number and its
-   recovery in section 9 is one too.
+   CSV included, so that step 12 shows those two formats holding their
+   flat memory on the general path before the line source goes.
 
-Decisions for the maintainer, in the order the work meets them:
+Decisions for the maintainer, in the order the work meets them. The
+first two were taken on 2026-10-15; the other three wait.
 
 1. **`:value` on a close pass** (section 4): include the node's scalar
    value, so a part takes the grammar's own scalar resolution (YAML's
    plain scalars, TOML's dates, CSV's typed cells) rather than redo it
    from the token; or tokens only. Recommended: include it, scalars
-   only.
+   only. **Decided 2026-10-15: scalars only.** A close pass carries its
+   node's value when that value is a scalar; containers never travel.
 2. **When `LinesSource` goes**: with section 5's phase 2, as the ruling
    reads, accepting the memory regression for JSON Lines and CSV until
    the engine's chunked source lands; or at that landing. Recommended:
    with phase 2, recorded in BENCH.md, since the ruling is about where
-   format knowledge lives and the regression is temporary.
+   format knowledge lives and the regression is temporary. **Decided
+   2026-10-15: when the chunked source lands.** The engine work that
+   would end the regression is not designed yet, so the regression
+   would have no end date; the line source stays until step 10 lands
+   and goes in step 12.
 3. **The native fast path** for `transduce-tree`: permitted under the
    existing rule (a native stands in for a snippet only when a
    differential test holds the two equal), or interpreted only.
@@ -453,19 +479,20 @@ Decisions for the maintainer, in the order the work meets them:
 
 | Step | Repository | Change | Depends on |
 |---|---|---|---|
-| 1 | alchemy | shared `parser_event.rs`; `Type::ParserEvent`; `parser-events`, `open`, `close`; input protocol; `explain`; `stdlib/transduce.alc`; `Part.transduce`; `check.tsv` rows; `docs/language.md` | decision 1 |
-| 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; `LinesSource`, `capability` and the inference retired | 1, decision 2 |
+| 1 | alchemy | shared `parser_event.rs`; `Type::ParserEvent`; `parser-events`, `open`, `close`; input protocol; `explain`; `stdlib/transduce.alc`; `Part.transduce`; `check.tsv` rows; `docs/language.md` | decision 1 (taken) |
+| 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; `capability` and the inference retired; `LinesSource` kept (decision 2) | 1 |
 | 3 | alchemy-cli | `transduce.tsv` runner with the differential rule; parts test; `translate` and `run --grammar` on the new source | 1, 2 |
 | 4 | json | the first `alchemy/transduce.alc`, manifest, embed, descriptor | 1, 3 |
 | 5 | jsonl, jsonc, json5, zon, csv | parts, in that order | 4 |
 | 6 | yaml, xml, markdown, jsonic | hand-written parts | 4 |
 | 7 | toml, ini, then the schema formats | buffering parts, or `whole` | 4, a path-insert operator if measured necessary |
 | 8 | bnf, abnf | the generated part and its differential test | 1, 3 |
-| 9 | aless | one plan over `ParserEventSource`; the generated part for `--grammar` | 2, 4, 8 |
+| 9 | aless | one plan over `ParserEventSource` for every format but JSON Lines and CSV; the generated part for `--grammar` | 2, 4, 8 |
 | 10 | parser | the chunked lexer source, the lighter notification, the per-rule cost | measured first; the maintainer's order |
-| 11 | admin | the ADR: translation between formats is composed from per-format parts, and every format's events come from its own alchemy transducer over the engine's parser events; no host or transducer knows a format by name | 1 |
+| 11 | admin | the ADR: translation between formats is composed from per-format parts, and every format's events come from its own alchemy transducer over the engine's parser events; no host or transducer knows a format by name, the line source excepted until step 12 | 1 |
+| 12 | transduce, alchemy-cli, aless | `LinesSource` and `LineFormat` retired; JSON Lines and CSV read through their parts; aless's `Plan::Lines` and `line_format` go, and with them `export::plan` | 5, 10 (decision 2) |
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
-states first, as the handover's conventions say.
+states first, as the fleet's convention is.
