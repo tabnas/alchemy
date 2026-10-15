@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 use crate::ast::{Expr, SourceSpan, Sources};
 use crate::check::describe;
 use crate::desugar::shape_error;
+use crate::program::Input;
 use crate::resolve::{fn_form, fn_params, Resolved};
 use crate::shared::{AbortFlag, Code, Datum, Duplicates, Fail, Limits};
 use crate::stdlib::registry::{self, native, truth, Kind, Native};
@@ -666,9 +667,17 @@ impl Runtime {
         }
     }
 
-    /// The program's result: `export` applied to the host's input plan. A
-    /// stream or a text plan comes back; nothing has been consumed.
+    /// The program's result: `export` applied to the host's input plan,
+    /// JSON events. A stream or a text plan comes back; nothing has been
+    /// consumed.
     pub fn export(&self) -> Result<Val, Fail> {
+        self.export_with(Input::JsonEvents)
+    }
+
+    /// [`Runtime::export`] over the input the host declares: JSON events
+    /// ([`Plan::Input`]) or the parser's rule passes
+    /// ([`Plan::ParserInput`]).
+    pub fn export_with(&self, input: Input) -> Result<Val, Fail> {
         let Some(export) = self.def_value(Scope::Program, "export")? else {
             return Err(Fail::new(
                 Code::DslTypeError,
@@ -686,7 +695,11 @@ impl Runtime {
             .get("export")
             .map(|d| d.span.clone())
             .unwrap_or_else(|| SourceSpan::new(&self.program.file, 0, 0));
-        self.apply(f, vec![Val::Stream(Arc::new(Plan::Input))], &at)
+        let plan = match input {
+            Input::JsonEvents => Plan::Input,
+            Input::ParserEvents => Plan::ParserInput,
+        };
+        self.apply(f, vec![Val::Stream(Arc::new(plan))], &at)
     }
 
     /// Evaluate a standalone expression in the program's scope, for tests
@@ -872,7 +885,9 @@ impl Runtime {
                         items: Seq::Stream(_),
                     } => sep.len(),
                     Plan::Input
+                    | Plan::ParserInput
                     | Plan::Events { .. }
+                    | Plan::ParserEvents { .. }
                     | Plan::AsEvents { .. }
                     | Plan::Records { .. }
                     | Plan::Json { .. } => 0,

@@ -19,7 +19,10 @@
 //!   tagged `schema`, `row` and `table-end` values an interpreted stream
 //!   yields;
 //! - **items** (a stream of values): a router ([`Routers::router`]) over
-//!   events for `route` and `select`, [`EventsToItems`] for `events`, the
+//!   events for `route` and `select`, [`EventsToItems`] for `events`,
+//!   [`ParserEventsToItems`] for `parser-events` (the head of the chain
+//!   when the host declares parser events: it is what the host pushes the
+//!   rule passes into, [`Lowering::parser_head`]), the
 //!   operator [`Routers::scan_emit`] answers for `scan-emit`, per-item
 //!   stages for `map` and `filter`, and an adapter turning native table
 //!   events into the tagged values a program pattern-matches;
@@ -38,8 +41,11 @@
 //! `DSL_TYPE_ERROR` with the `protocol_mismatch` finer code, the same word
 //! the checker uses when it can see it first.
 
+use std::cell::RefCell;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+
+use indexmap::IndexMap;
 
 use crate::ast::SourceSpan;
 use crate::interp::{Bounds, Runtime};
@@ -47,9 +53,9 @@ use crate::program::Output;
 use crate::shared::limits::NODE_BYTES;
 use crate::shared::{
     BoundColumn, CaptureSpec, Cell, Code, CsvOptions, Datum, Fail, Flow, JoinOut, JsonEvent,
-    JsonOptions, Limits, Metrics, MissingText, Newline, Number, PublicColumn, Renderers, RouteSink,
-    Routers, ScanEmitter, ScanFinish, ScanOut, ScanStep, Schema, Selected, Sink, TableBinding,
-    TableEvent, TableSink, TextOut, Transition,
+    JsonOptions, Limits, Metrics, MissingText, Newline, Number, ParserEvent, ParserSink,
+    PublicColumn, Renderers, RouteSink, Routers, RulePass, ScanEmitter, ScanFinish, ScanOut,
+    ScanStep, Schema, Selected, Sink, TableBinding, TableEvent, TableSink, TextOut, Transition,
 };
 use crate::stdlib::registry::{capture_budget, get_field, number_text, truth};
 use crate::value::{selector_segments, type_error, Func, NonFinite, Plan, Protocol, Seq, Val};
@@ -623,6 +629,122 @@ impl Sink for EventsToItems {
             JsonEvent::End => return self.down.end(),
         };
         self.down.item(item)
+    }
+}
+
+/// The parser's rule passes as the items `parser-events` yields: `(open
+/// rule)` and `(close rule)`, the rule a record of the pass's fields, a
+/// field the pass lacks left out (`get` answers `missing` for it). The
+/// parse's `End` is the stream's end. The head of a program's chain when
+/// the host declares parser events: the host pushes each pass into it.
+pub struct ParserEventsToItems {
+    down: Items,
+}
+
+impl ParserSink for ParserEventsToItems {
+    fn event(&mut self, ev: &ParserEvent) -> Result<Flow, Fail> {
+        let item = match ev {
+            ParserEvent::Open(pass) => Val::tagged("open", vec![rule_record(pass)]),
+            ParserEvent::Close(pass) => Val::tagged("close", vec![rule_record(pass)]),
+            ParserEvent::End => return self.down.end(),
+        };
+        self.down.item(item)
+    }
+}
+
+/// A rule pass as the record `(open rule)` and `(close rule)` carry.
+fn rule_record(pass: &RulePass) -> Val {
+    fn record(fields: Vec<(&str, Val)>) -> Val {
+        Val::Record(Arc::new(
+            fields
+                .into_iter()
+                .map(|(k, v)| (Arc::from(k), v))
+                .collect::<IndexMap<_, _>>(),
+        ))
+    }
+    let count = |n: u64| Val::num(n as f64);
+    let mut fields = vec![
+        ("name", Val::str(&pass.name)),
+        ("d", count(pass.d)),
+        ("i", count(pass.i)),
+    ];
+    if let Some(alt) = &pass.alt {
+        fields.push((
+            "alt",
+            record(vec![
+                ("p", Val::str(&alt.p)),
+                ("r", Val::str(&alt.r)),
+                ("b", count(alt.b)),
+                (
+                    "g",
+                    Val::vector(alt.g.iter().map(|g| Val::str(g)).collect()),
+                ),
+            ]),
+        ));
+    }
+    fields.push((
+        "tokens",
+        Val::vector(
+            pass.tokens
+                .iter()
+                .map(|t| {
+                    record(vec![
+                        ("name", Val::str(&t.name)),
+                        ("val", Val::from_datum(&t.val)),
+                        ("src", Val::str(&t.src)),
+                        ("row", count(t.row)),
+                        ("col", count(t.col)),
+                    ])
+                })
+                .collect(),
+        ),
+    ));
+    fields.push(("forced", Val::Bool(pass.forced)));
+    fields.push((
+        "n",
+        Val::Record(Arc::new(
+            pass.n
+                .iter()
+                .map(|(k, v)| (Arc::from(&**k), Val::num(*v as f64)))
+                .collect(),
+        )),
+    ));
+    if let Some(value) = &pass.value {
+        fields.push(("value", Val::from_datum(value)));
+    }
+    record(fields)
+}
+
+/// What the host pushes parser events into: the chain's head
+/// ([`ParserEventsToItems`]) when the program reads them, and otherwise
+/// (a text of the program's own, which reads nothing of its input) the
+/// parse's end alone, handed to the sink that writes the text once the
+/// input has validated.
+struct ParserHead {
+    head: Option<Box<dyn ParserSink + Send>>,
+    events: EventSink,
+}
+
+impl ParserSink for ParserHead {
+    fn event(&mut self, ev: &ParserEvent) -> Result<Flow, Fail> {
+        match (&mut self.head, ev) {
+            (Some(head), _) => head.event(ev),
+            (None, ParserEvent::End) => self.events.event(JsonEvent::End),
+            (None, _) => Ok(Flow::Continue),
+        }
+    }
+}
+
+/// The JSON-events sink [`Lowering::items`] answers where it lowers
+/// `parser-events`: the host pushes the rule passes into the head it
+/// keeps instead ([`Lowering::parser_head`]), never JSON events into this.
+struct ParserEventsOnly;
+
+impl Sink for ParserEventsOnly {
+    fn event(&mut self, _: JsonEvent<'_>) -> Result<Flow, Fail> {
+        Err(protocol_mismatch(
+            "the program reads parser events; push them into Program::parser_sink",
+        ))
     }
 }
 
@@ -1244,6 +1366,9 @@ pub struct Lowering<'a> {
     metrics: Arc<Metrics>,
     routers: Arc<dyn Routers<Val>>,
     renderers: Arc<dyn Renderers>,
+    /// The head of the chain when the program reads parser events: set
+    /// where `parser-events` is lowered, taken by [`Lowering::parser_head`].
+    parser_head: RefCell<Option<Box<dyn ParserSink + Send>>>,
 }
 
 impl<'a> Lowering<'a> {
@@ -1260,7 +1385,19 @@ impl<'a> Lowering<'a> {
             metrics,
             routers,
             renderers,
+            parser_head: RefCell::new(None),
         }
+    }
+
+    /// What the host pushes parser events into, once [`Lowering::sink_as`]
+    /// has answered `events`, the chain's JSON-events head: the head
+    /// `parser-events` was lowered to, or, when the program reads nothing
+    /// of its input, the parse's end alone into `events`.
+    pub fn parser_head(&self, events: EventSink) -> Box<dyn ParserSink + Send> {
+        Box::new(ParserHead {
+            head: self.parser_head.borrow_mut().take(),
+            events,
+        })
     }
 
     /// The sink for a program's result over `out`. `render` is the host's
@@ -1592,6 +1729,26 @@ impl<'a> Lowering<'a> {
                 self.events(source, router)
             }
             Plan::Events { source } => self.events(source, Box::new(EventsToItems { down })),
+            // The host's parser events, the one source `parser-events`
+            // reads (its native refuses any other): the head is kept for
+            // the host, which pushes the rule passes into it, and the JSON
+            // events side of the chain is never driven.
+            Plan::ParserEvents { source } => {
+                if !matches!(**source, Plan::ParserInput) {
+                    return Err(protocol_mismatch(
+                        "parser-events reads the host's parser events alone",
+                    ));
+                }
+                let mut head = self.parser_head.borrow_mut();
+                if head.is_some() {
+                    return Err(Fail::new(
+                        Code::StreamReused,
+                        "reused: the parser events are read twice",
+                    ));
+                }
+                *head = Some(Box::new(ParserEventsToItems { down }));
+                Ok(Box::new(ParserEventsOnly))
+            }
             Plan::ScanEmit {
                 init,
                 step,
@@ -1654,6 +1811,9 @@ impl<'a> Lowering<'a> {
             }
             Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Err(protocol_mismatch(
                 "JSON events cannot be read item by item; select or route what the stream should yield, or read its events",
+            )),
+            Plan::ParserInput => Err(protocol_mismatch(
+                "the parser's rule passes are read item by item through parser-events",
             )),
             other => Err(type_error(format!(
                 "{} is a text, not a stream",
@@ -1978,5 +2138,90 @@ pub(crate) mod tests {
                 "schema 0".to_string()
             ])
         );
+    }
+
+    /// The host pushes the parser's rule passes into the head
+    /// `parser-events` is lowered to: each pass reaches the items below
+    /// as `(open rule)` or `(close rule)`, a field the pass lacks left out
+    /// of the rule, and the parse's end as the stream's end. A program
+    /// that reads nothing of its input hands the end alone to the sink
+    /// that writes its text.
+    #[test]
+    fn parser_events_are_items_pushed_into_the_head() {
+        use std::sync::Mutex;
+
+        struct Seen(Arc<Mutex<Vec<String>>>);
+        impl ItemSink for Seen {
+            fn item(&mut self, v: Val) -> Result<Flow, Fail> {
+                self.0.lock().unwrap().push(format!("{v:?}"));
+                Ok(Flow::Continue)
+            }
+            fn end(&mut self) -> Result<Flow, Fail> {
+                self.0.lock().unwrap().push("end".to_string());
+                Ok(Flow::Continue)
+            }
+        }
+        impl Sink for Seen {
+            fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
+                self.0.lock().unwrap().push(ev.to_owned().to_string());
+                Ok(Flow::Continue)
+            }
+        }
+        let event =
+            |text: &str| ParserEvent::from_json(&serde_json::from_str(text).unwrap()).unwrap();
+        let passes = [
+            event(
+                r##"["open",{"name":"val","d":1,"i":1,"alt":{"p":"","r":"","b":0,"g":["json"]},"tokens":[["#NR",2.5,"2.50",1,1]],"forced":false,"n":{"dmap":1}}]"##,
+            ),
+            event(
+                r#"["close",{"name":"val","d":1,"i":1,"tokens":[],"forced":false,"n":{},"value":2.5}]"#,
+            ),
+            ParserEvent::End,
+        ];
+        let limits = Limits::default();
+        let lowering = |rt| {
+            Lowering::new(
+                rt,
+                &limits,
+                Metrics::new(),
+                Arc::new(Unlowered),
+                Arc::new(Unlowered),
+            )
+        };
+        let plan = Arc::new(Plan::ParserEvents {
+            source: Arc::new(Plan::ParserInput),
+        });
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let here = lowering(runtime("def export [input] (parser-events input)", true));
+        let events = here
+            .items(&plan, Box::new(Seen(seen.clone())), false)
+            .unwrap();
+        // The parser events are read once.
+        let again = here.items(&plan, Box::new(Seen(seen.clone())), false);
+        assert_eq!(again.err().map(|f| f.code), Some(Code::StreamReused));
+        let mut head = here.parser_head(events);
+        for pass in &passes {
+            head.event(pass).unwrap();
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                r##"(open (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :alt (record (entry :p "") (entry :r "") (entry :b 0) (entry :g ["json"]))) (entry :tokens [(record (entry :name "#NR") (entry :val 2.5) (entry :src "2.50") (entry :row 1) (entry :col 1))]) (entry :forced false) (entry :n (record (entry :dmap 1)))))"##,
+                r#"(close (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :tokens []) (entry :forced false) (entry :n (record)) (entry :value 2.5)))"#,
+                "end",
+            ]
+        );
+        // The JSON-events side of a parser program is never driven.
+        let fail = ParserEventsOnly.event(JsonEvent::Null).unwrap_err();
+        assert!(fail.message.starts_with("protocol_mismatch: "), "{fail}");
+
+        let text = Arc::new(Mutex::new(Vec::new()));
+        let nothing = lowering(runtime("def export [input] \"done\"", true));
+        let mut head = nothing.parser_head(Box::new(Seen(text.clone())));
+        for pass in &passes {
+            head.event(pass).unwrap();
+        }
+        assert_eq!(*text.lock().unwrap(), ["end"]);
     }
 }

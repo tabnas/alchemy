@@ -16,7 +16,7 @@ Blank lines are skipped, and so are comment lines — a line starting with
 |---|---|---|
 | [`reader.tsv`](spec/reader.tsv) | `input`, `expected` | a program → its canonical form, as a JSON string; or the reader's error |
 | [`pipe.tsv`](spec/pipe.tsv) | `input`, `expected` | a program → the canonical form of the desugared program; or the desugarer's error |
-| [`check.tsv`](spec/check.tsv) | `input`, `expected` | a program → its `explain` report, as a JSON string; or the resolver's, checker's or plan evaluation's error |
+| [`check.tsv`](spec/check.tsv) | `input`, `expected`, `protocol` | a program → its `explain` report, as a JSON string; or the resolver's, checker's or plan evaluation's error |
 | [`run.tsv`](spec/run.tsv) | `input`, `expected`, `doc`, `render` | a program run over a JSON document → the exact bytes it writes, as a JSON string; or the failure |
 
 | Column | Meaning |
@@ -25,6 +25,7 @@ Blank lines are skipped, and so are comment lines — a line starting with
 | `expected` | A JSON string (the canonical text, the report, or the output bytes), or `ERROR:<code>` / `ERROR:<code>@<row>:<col>` for a program or run that must fail. Not escape-decoded: JSON's own escapes apply, so `"a\r\n"` ends in CRLF. |
 | `doc` | `run.tsv` only. The JSON document the program runs over, escape-decoded like `input`; an empty cell is `null`. |
 | `render` | `run.tsv` only. How a table or JSON-events result is rendered: empty (the host's default: CSV for a table, JSON for events), `csv` or `json`. A program that renders its own text takes none (`render_of_text`). |
+| `protocol` | `check.tsv` only. The input the host declares when it compiles the program: empty for JSON events (what `compile` declares), `parser` for the parser's rule passes (`compile_with` over `Input::ParserEvents`). Every runner of `check.tsv` reads it, alchemy-cli's catalogue test included. |
 
 A run is what `alchemy run` does: compile the program (which builds the
 plan), then read `doc` with the tabnas JSON grammar incrementally, pruned

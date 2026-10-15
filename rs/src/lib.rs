@@ -99,7 +99,10 @@ pub use grammar::{alchemy, make, parse, parse_file, parse_value, UNNAMED};
 #[cfg(feature = "language")]
 pub use interp::{MAX_EVAL_DEPTH, MAX_PLAN_STEPS};
 #[cfg(feature = "language")]
-pub use program::{compile, compile_sources, Output, Program, Renderer, Source};
+pub use program::{
+    compile, compile_sources, compile_sources_with, compile_with, Input, Output, Program, Renderer,
+    Source,
+};
 
 /// The stack the checker and the evaluator are given: [`compile`] runs on
 /// a thread of this size, and so does the `alchemy` command, so a program

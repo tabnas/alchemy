@@ -1,4 +1,4 @@
-input	expected
+input	expected	protocol
 # The checker's codes, one row each: the first word of the message, as the reader's fixtures pin theirs.
 # The resolver's: an unknown name, a top-level form that is not a def, a name defined twice, a special form defined, a malformed fn, a def below the top level, a pattern that is not a constructor's.
 def export [input] (nope input)	ERROR:unknown_name@1:21
@@ -115,3 +115,22 @@ def export [input] (join "," (map (fn [x] (string-join "|" (split "." 1))) (sele
 def export [input] (join "," (map (fn [x] (string-join "|" (split "."))) (select (path each-index) input)))	ERROR:arity@1:60
 def export [input] (join "," (map (fn [x] (string-join "|" (split "." x x))) (select (path each-index) input)))	ERROR:arity@1:60
 def export [input] (join "," (map (fn [x] (number (split "." x))) (select (path each-index) input)))	ERROR:type_mismatch@1:51
+# A transducer part: the host declares a parser-events input (protocol parser), parser-events reads its rule passes as items, (open rule) and (close rule), and a scan-emit makes JSON events of them; its report begins with ParserEvents/1.
+def step [s pass]\n  match pass\n    case (close rule) (transition s [(scalar (get :name rule))])\n    case _ (transition s [])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (parser-events input))	"export: parser-events → scan-emit → as-events\n\nSource reads:          1\nProtocol:              ParserEvents/1 → Stream<ParserEvent> → Stream<Value> → JsonEvents/1 → Text\nSelection:             none; every rule pass is delivered as an item\nDuplicate members:     preserved; the events are copied as they arrive, not mapped by key\nRetained state:        what the step returns, no deeper than max_depth, capped at max_metadata_bytes\nOutput order:          source order\nOrdering contract:     each item before its outputs\nContract verification: static\nJSON profile:          compact, one document, trailing newline (the host's renderer)\nExternal storage:      disabled\n\nGuarantee:\n  Memory is independent of the number of rows under the configured\n  depth, capture, metadata, scalar/key and output limits: the state the\n  step returns is capped at max_metadata_bytes. What one step computes\n  is the program's, bounded by the host's abort flag.\n\nQualification:\n  A later error can occur after earlier output has been written.\n"	parser
+# Each input is read by its own operator alone: events, json, select and a map over the items take JSON events, not parser events, and parser-events takes parser events, not JSON events; nor is either source an output, nor the rule passes before a transducer makes events of them.
+def export [input] (events input)	ERROR:protocol_mismatch@1:28	parser
+def export [input] (json input)	ERROR:protocol_mismatch@1:26	parser
+def export [input] (join "," (select (path each-index) input))	ERROR:protocol_mismatch@1:56	parser
+def export [input] (join "," (map (fn [p] "x") input))	ERROR:protocol_mismatch@1:48	parser
+def export [input] (join "," (map (fn [p] "x") (parser-events input)))	ERROR:protocol_mismatch@1:63
+def export [input] input	ERROR:bad_output@1:1	parser
+def export [input] (parser-events input)	ERROR:bad_output@1:1	parser
+def export [input] (json (parser-events input))	ERROR:protocol_mismatch@1:26	parser
+# The rule passes are a stream, read once; a function read from data that would read either input another way is refused as the plan is built.
+def export [input] (concat (join "" (map (fn [p] "") (parser-events input))) (join "" (map (fn [p] "") (parser-events input))))	ERROR:reused@1:119	parser
+def export [input] (join "," ((get :f (record (entry :f select))) (path each-index) input))	ERROR:protocol_mismatch@1:30	parser
+def export [input] (join "," (map (fn [p] "x") ((get :f (record (entry :f parser-events))) input)))	ERROR:protocol_mismatch@1:48
+# A rule pass's constructors take one record, matched as (open rule) and (close rule); a step answers a transition.
+def step [s pass]\n  match pass\n    case (open rule extra) (transition s [])\n    case _ (transition s [])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (parser-events input))	ERROR:arity@3:10	parser
+def step [s pass] (transition s [(open 1)])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (parser-events input))	ERROR:type_mismatch@1:40	parser
+def step [s pass] 1\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (parser-events input))	ERROR:type_mismatch@4:27	parser

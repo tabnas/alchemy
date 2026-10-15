@@ -2,8 +2,9 @@
 //! 10.2 and 15; design brief 4.3).
 //!
 //! Every definition of a program is checked, `export` first with its
-//! `input` bound to `JsonEvents`, the others with their parameters
-//! unknown. A native's arguments are checked against its signature, a
+//! `input` bound to the protocol the host declares (`JsonEvents`, or
+//! `ParserEvents` for a transducer part), the others with their
+//! parameters unknown. A native's arguments are checked against its signature, a
 //! standard-library definition's against the signature the library
 //! declares for it ([`stdlib_signature`]), a program's own definition's
 //! against what its body inferred. What cannot be inferred is `Unknown`
@@ -44,7 +45,7 @@ use indexmap::IndexMap;
 
 use crate::ast::{Expr, SourceSpan, Sources};
 use crate::desugar;
-use crate::program::Output;
+use crate::program::{Input, Output};
 use crate::resolve::{fn_form, Def, Resolved};
 use crate::shared::{Code, Fail};
 use crate::stdlib::registry::{native, Kind, Native};
@@ -518,6 +519,7 @@ impl Checker<'_> {
                     "entry" => vec![Type::Keyword, Type::Unknown],
                     "key" => vec![Type::String],
                     "scalar" => vec![Type::Value],
+                    "open" | "close" => vec![Type::Record],
                     _ => vec![Type::Unknown; items.len().saturating_sub(1)],
                 };
                 if let Some(n) = native(head) {
@@ -842,6 +844,11 @@ impl Checker<'_> {
             Type::JsonEvents => Err(self.type_error(
                 "protocol_mismatch",
                 format!("{what} must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events"),
+                span,
+            )),
+            Type::ParserEvents => Err(self.type_error(
+                "protocol_mismatch",
+                format!("{what} must be a vector or a stream of items, not ParserEvents; parser-events reads the rule passes as items"),
                 span,
             )),
             other => Err(self.mismatch(what, &Type::vector(Type::Unknown), other, span)),
@@ -1172,6 +1179,15 @@ impl Checker<'_> {
                 self.expect("the input of events", &JsonEvents, t(0), at(0))?;
                 Type::events()
             }
+            "parser-events" => {
+                self.expect(
+                    "the input of parser-events",
+                    &Type::ParserEvents,
+                    t(0),
+                    at(0),
+                )?;
+                Type::parser_events()
+            }
             "as-events" => {
                 self.expect(
                     "the items of as-events",
@@ -1332,6 +1348,14 @@ impl Checker<'_> {
                 self.expect("the name of key", &String, t(0), at(0))?;
                 Type::tagged("key")
             }
+            "open" => {
+                self.expect("the rule of open", &Record, t(0), at(0))?;
+                Type::tagged("open")
+            }
+            "close" => {
+                self.expect("the rule of close", &Record, t(0), at(0))?;
+                Type::tagged("close")
+            }
             "scalar" => {
                 match t(0) {
                     Null | Bool | Number | String | Value | Unknown | Never => {}
@@ -1437,6 +1461,15 @@ fn output_of(export: &Type) -> Result<Output, (Code, &'static str, String)> {
 /// Check a resolved program: `export` with its input, then every other
 /// definition.
 pub fn program(resolved: &Resolved, sources: &Sources) -> Result<Checked, Fail> {
+    program_with(resolved, sources, Input::JsonEvents)
+}
+
+/// [`program`] with `export`'s input the protocol the host declares.
+pub fn program_with(resolved: &Resolved, sources: &Sources, input: Input) -> Result<Checked, Fail> {
+    let input = match input {
+        Input::JsonEvents => Type::JsonEvents,
+        Input::ParserEvents => Type::ParserEvents,
+    };
     let mut checker = Checker {
         sources,
         defs: &resolved.defs,
@@ -1483,7 +1516,9 @@ pub fn program(resolved: &Resolved, sources: &Sources) -> Result<Checked, Fail> 
     for name in order.iter().filter(|n| reached.contains(*n)) {
         checker.def_type(name)?;
     }
-    let Type::Fn(_, result) = checker.fn_type(items, &[Type::JsonEvents], &mut Vec::new())? else {
+    let Type::Fn(_, result) =
+        checker.fn_type(items, std::slice::from_ref(&input), &mut Vec::new())?
+    else {
         unreachable!("fn_type answers a Fn");
     };
     let export_type = *result;
@@ -1491,7 +1526,7 @@ pub fn program(resolved: &Resolved, sources: &Sources) -> Result<Checked, Fail> 
         .map_err(|(code, finer, message)| checker.fail(code, finer, message, &export.span))?;
     checker.memo.insert(
         Arc::from("export"),
-        Type::func(vec![Type::JsonEvents], export_type.clone()),
+        Type::func(vec![input], export_type.clone()),
     );
     for name in &order {
         if &**name != "export" {

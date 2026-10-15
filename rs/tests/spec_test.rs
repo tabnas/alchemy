@@ -21,7 +21,7 @@ use tabnas_support::{
     is_error_expect, load_spec, load_spec_dir, parse_expect, Row, Runner, SpecOptions, Value,
 };
 
-use common::{compile, repo_root, spec_dir, text_value, to_failure};
+use common::{compile_with, repo_root, row_input, spec_dir, text_value, to_failure};
 
 /// The fixtures this file runs, each with its runner below.
 const RUN_HERE: [&str; 3] = ["check.tsv", "pipe.tsv", "reader.tsv"];
@@ -91,14 +91,33 @@ fn pipe() {
 
 /// A program that checks prints its plan report; one that does not fails
 /// with the resolver's or the checker's code, at the position it names.
+/// The row's `protocol` column is the input the host declares: empty for
+/// JSON events, `parser` for the parser's rule passes.
 #[test]
 fn check() {
-    Runner::new(|input| {
-        compile(input, "check")
+    Runner::new_with_row(|input, row| {
+        compile_with(input, "check", row_input(row))
             .map(|program| text_value(program.explain()))
             .map_err(|fail| to_failure(&fail))
     })
     .file(spec_dir().join("check.tsv"));
+}
+
+/// The columns a check row reads (tabnas-alchemy-cli's catalogue test
+/// reads `protocol` too), so a renamed header fails here.
+#[test]
+fn check_fixture_has_its_columns() {
+    let spec =
+        load_spec(spec_dir().join("check.tsv"), &SpecOptions::default()).expect("check.tsv loads");
+    assert_eq!(*spec.rows[0].header, ["input", "expected", "protocol"]);
+    let parser = spec
+        .rows
+        .iter()
+        .filter(|row| row.named("protocol") == "parser");
+    assert!(parser.count() > 0, "no row reads parser events");
+    for row in &spec.rows {
+        row_input(row);
+    }
 }
 
 /// The columns a run row reads by name (tabnas-alchemy-cli's runner reads
@@ -128,7 +147,10 @@ fn row_failures(file: &str, row: &Row) -> Vec<Fail> {
             .err()
             .into_iter()
             .collect(),
-        "check.tsv" => compile(&input, "check").err().into_iter().collect(),
+        "check.tsv" => compile_with(&input, "check", row_input(row))
+            .err()
+            .into_iter()
+            .collect(),
         other => panic!("{other} has no runner in this file"),
     }
 }

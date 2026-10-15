@@ -159,10 +159,11 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
     loop {
         out.push(here);
         let next: &Plan = match here {
-            Plan::Input | Plan::Lit(_) => break,
+            Plan::Input | Plan::ParserInput | Plan::Lit(_) => break,
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
+            | Plan::ParserEvents { source }
             | Plan::AsEvents { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
@@ -200,10 +201,12 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
 fn protocol_of(stage: &Plan) -> &'static str {
     match stage {
         Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => "JsonEvents/1",
+        Plan::ParserInput => "ParserEvents/1",
         Plan::TableFromJson { .. } | Plan::CsvTable { .. } => "TableRows/1",
         Plan::Route { .. } => "Stream<Selected>",
         Plan::Select { .. } => "Stream<Value>",
         Plan::Events { .. } => "Stream<Event>",
+        Plan::ParserEvents { .. } => "Stream<ParserEvent>",
         Plan::ScanEmit { .. } | Plan::Map { .. } | Plan::Filter { .. } => "Stream<Value>",
         _ => "Text",
     }
@@ -337,7 +340,8 @@ pub fn summarize(program: &Program) -> EffectSummary {
             output,
         };
     }
-    let mut protocol: Vec<String> = vec!["JsonEvents/1".to_string()];
+    // The input's protocol, which the host declares.
+    let mut protocol: Vec<String> = vec![program.input().protocol().to_string()];
     for stage in stages.iter().skip(1) {
         let p = protocol_of(stage);
         if protocol.last().map(String::as_str) != Some(p) {
@@ -470,6 +474,11 @@ pub fn summarize(program: &Program) -> EffectSummary {
                 selection = "none; every event is delivered as an item".to_string();
             }
             Plan::Events { .. } => {}
+            // Every rule pass becomes one item as it arrives: a
+            // transducer's input, whose step decides what is kept.
+            Plan::ParserEvents { .. } => {
+                selection = "none; every rule pass is delivered as an item".to_string();
+            }
             Plan::ScanEmit { init, step, .. } => {
                 confidence = Confidence::Conditional;
                 // The library's twin of `table-from-json` keeps the table's

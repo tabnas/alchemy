@@ -202,6 +202,9 @@ pub enum Seq {
 pub enum Plan {
     /// The host's `JsonEvents/1`.
     Input,
+    /// The host's `ParserEvents/1`, when it declares a parser-events
+    /// input: read by `parser-events` alone.
+    ParserInput,
     /// `route specs input`: a stream of `selected` values.
     Route {
         specs: Vec<CaptureSpec>,
@@ -216,6 +219,11 @@ pub enum Plan {
     /// the container events as constants and `key` and `scalar` with
     /// their one field; `End` is the stream's end, not an item.
     Events { source: Arc<Plan> },
+    /// `parser-events input`: every rule pass of `ParserEvents/1` as one
+    /// tagged item, `(open rule)` or `(close rule)`; the parse's end is
+    /// the stream's end, not an item. Its source is always
+    /// [`Plan::ParserInput`].
+    ParserEvents { source: Arc<Plan> },
     /// `as-events items`: a stream of items the program built, each an
     /// event, as `JsonEvents/1`: the reverse of `events`, which any taker
     /// of JSON events already applies to such a stream; here the program
@@ -330,10 +338,11 @@ impl Plan {
     /// events arrive; a plan that does not is finite and is written whole.
     pub fn is_live(&self) -> bool {
         match self {
-            Plan::Input => true,
+            Plan::Input | Plan::ParserInput => true,
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
+            | Plan::ParserEvents { source }
             | Plan::AsEvents { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
@@ -367,15 +376,18 @@ impl Plan {
     }
 
     /// The protocol the plan produces, when it is a stream: `JsonEvents`,
-    /// `TableRows` (natively), or `Items` for a stream of values whose
-    /// shape the runtime learns item by item.
+    /// `ParserEvents` (the host's parser input), `TableRows` (natively),
+    /// or `Items` for a stream of values whose shape the runtime learns
+    /// item by item.
     pub fn protocol(&self) -> Protocol {
         match self {
             Plan::Input | Plan::Records { .. } | Plan::AsEvents { .. } => Protocol::JsonEvents,
+            Plan::ParserInput => Protocol::ParserEvents,
             Plan::TableFromJson { .. } => Protocol::TableRows,
             Plan::Route { .. }
             | Plan::Select { .. }
             | Plan::Events { .. }
+            | Plan::ParserEvents { .. }
             | Plan::ScanEmit { .. }
             | Plan::Map { .. }
             | Plan::Filter { .. }
@@ -389,6 +401,7 @@ impl Plan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protocol {
     JsonEvents,
+    ParserEvents,
     TableRows,
     Items,
     Text,
@@ -678,10 +691,11 @@ impl fmt::Debug for Val {
 /// The operator at the root of a plan, for messages.
 pub fn plan_name(plan: &Plan) -> &'static str {
     match plan {
-        Plan::Input => "input",
+        Plan::Input | Plan::ParserInput => "input",
         Plan::Route { .. } => "route",
         Plan::Select { .. } => "select",
         Plan::Events { .. } => "events",
+        Plan::ParserEvents { .. } => "parser-events",
         Plan::AsEvents { .. } => "as-events",
         Plan::ScanEmit { .. } => "scan-emit",
         Plan::Map { .. } => "map",
@@ -768,6 +782,13 @@ mod tests {
         let mixed = Plan::concat(vec![Val::str("a"), Val::Text(Arc::new(live))]);
         assert!(mixed.is_live());
         assert_eq!(Plan::Input.protocol(), Protocol::JsonEvents);
+        let passes = Plan::ParserEvents {
+            source: Arc::new(Plan::ParserInput),
+        };
+        assert!(passes.is_live() && !passes.is_text());
+        assert_eq!(passes.protocol(), Protocol::Items);
+        assert_eq!(Plan::ParserInput.protocol(), Protocol::ParserEvents);
+        assert_eq!(plan_name(&passes), "parser-events");
     }
 
     #[test]
