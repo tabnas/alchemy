@@ -21,6 +21,8 @@
 //!   `scan-emit` ([`scan`]);
 //! - the text boundary renderers write to ([`text`]) and the renderers'
 //!   options ([`csv`], [`json`]);
+//! - the spec of the library's `transduce-tree` ([`tree`]), for routers
+//!   that run it natively;
 //! - [`Routers`] and [`Renderers`] ([`inject`]): what alchemy's runtime
 //!   makes its stages with, implemented by transduce and by render and
 //!   passed in by the host.
@@ -43,6 +45,7 @@ pub mod selector;
 pub mod sink;
 pub mod table;
 pub mod text;
+pub mod tree;
 
 pub use csv::{CsvOptions, MissingText, Newline, Quoting};
 pub use datum::{
@@ -64,3 +67,4 @@ pub use table::{
     TableBinding, TableEvent, TableSink,
 };
 pub use text::{JoinOut, TextOut};
+pub use tree::{TreeContainer, TreeKey, TreeRule, TreeScalar, TreeSpec};

@@ -56,10 +56,12 @@ use crate::shared::{
     JsonOptions, Limits, Metrics, MissingText, Newline, Number, ParserEvent, ParserSink,
     PublicColumn, Renderers, RouteSink, Routers, RulePass, ScanEmitter, ScanFinish, ScanOut,
     ScanStep, Schema, Selected, Sink, TableBinding, TableEvent, TableSink, TextOut, Transition,
-    TreeContract,
+    TreeContainer, TreeContract, TreeKey, TreeRule, TreeScalar, TreeSpec,
 };
-use crate::stdlib::registry::{capture_budget, get_field, number_text, truth};
-use crate::value::{selector_segments, type_error, Func, NonFinite, Plan, Protocol, Seq, Val};
+use crate::stdlib::registry::{as_index, capture_budget, get_field, number_text, truth};
+use crate::value::{
+    selector_segments, type_error, Func, NonFinite, Plan, Protocol, Scope, Seq, Val,
+};
 
 /// The output every text stage writes to.
 pub type Out = Box<dyn TextOut + Send>;
@@ -127,6 +129,56 @@ pub fn is_table_binding(v: &Val) -> bool {
 /// `:columns` is the keyword `:infer`.
 pub fn is_inferred(binding: &Val) -> bool {
     matches!(binding.field("columns"), Some(Val::Keyword(k)) if &*k == "infer")
+}
+
+/// The spec of a `transduce-tree`, when it has the standard shape
+/// [`TreeSpec`] holds: a record of records, each entry's `:container`
+/// `:object` or `:array`, its `:key` a string or a token's index (a
+/// non-negative integer, as `path` takes one), its `:scalar` a token's
+/// index or `:value`, any of the three left out. An entry's other fields
+/// are not read, as the library reads none. Any other spec runs the
+/// library's own `transduce-tree`.
+pub fn tree_spec(v: &Val) -> Option<TreeSpec> {
+    let Val::Record(rules) = v else {
+        return None;
+    };
+    let mut spec = TreeSpec::new();
+    for (name, entry) in rules.iter() {
+        let Val::Record(fields) = entry else {
+            return None;
+        };
+        let container = match fields.get("container") {
+            None => None,
+            Some(Val::Keyword(k)) if &**k == "object" => Some(TreeContainer::Object),
+            Some(Val::Keyword(k)) if &**k == "array" => Some(TreeContainer::Array),
+            Some(_) => return None,
+        };
+        let key = match fields.get("key") {
+            None => None,
+            Some(Val::Str(name)) => Some(TreeKey::Name(Box::from(&**name))),
+            Some(index) => Some(TreeKey::Token(as_index(index)?)),
+        };
+        let scalar = match fields.get("scalar") {
+            None => None,
+            Some(Val::Keyword(k)) if &**k == "value" => Some(TreeScalar::Value),
+            Some(index) => Some(TreeScalar::Token(as_index(index)?)),
+        };
+        spec = spec.with(
+            name,
+            TreeRule {
+                container,
+                key,
+                scalar,
+            },
+        );
+    }
+    Some(spec)
+}
+
+/// Whether `f` is the standard library's definition `name`, not a
+/// program's own of that name.
+fn is_library(f: &Func, name: &str) -> bool {
+    matches!(f, Func::Closure(c) if c.scope == Scope::Stdlib && c.name.as_deref() == Some(name))
 }
 
 /// The renderer's dialect for a `csv-options` record, when every field
@@ -1390,6 +1442,60 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Keep `head` for the host to push the parser events into: the one
+    /// reader of them a program may have. The JSON-events side of the
+    /// chain the caller answers is never driven.
+    fn keep_parser_head(&self, head: Box<dyn ParserSink + Send>) -> Result<EventSink, Fail> {
+        let mut kept = self.parser_head.borrow_mut();
+        if kept.is_some() {
+            return Err(Fail::new(
+                Code::StreamReused,
+                "reused: the parser events are read twice",
+            ));
+        }
+        *kept = Some(head);
+        Ok(Box::new(ParserEventsOnly))
+    }
+
+    /// The spec of the scan the library's `transduce-tree` builds, when
+    /// `plan` is one and the runtime's native compositions are on: a
+    /// `scan-emit` from `[[] false]` over the host's parser events, its
+    /// step the library's `transduce-step` given a spec of the standard
+    /// shape ([`tree_spec`]), its finish the library's
+    /// `transduce-finish`. A program that writes that scan itself means
+    /// what `transduce-tree` means, and is run the same way.
+    fn native_tree(&self, plan: &Plan) -> Option<TreeSpec> {
+        if !self.rt.native() {
+            return None;
+        }
+        let Plan::ScanEmit {
+            init,
+            step,
+            finish,
+            source,
+            ..
+        } = plan
+        else {
+            return None;
+        };
+        let Plan::ParserEvents { source } = &**source else {
+            return None;
+        };
+        if !matches!(**source, Plan::ParserInput)
+            || !is_library(finish, "transduce-finish")
+            || *init != Val::vector(vec![Val::vector(vec![]), Val::Bool(false)])
+        {
+            return None;
+        }
+        match step {
+            Func::Partial(p) if is_library(&p.f, "transduce-step") => match &p.args[..] {
+                [spec] => tree_spec(spec),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// What the host pushes parser events into, once [`Lowering::sink_as`]
     /// has answered `events`, the chain's JSON-events head: the head
     /// `parser-events` was lowered to, or, when the program reads nothing
@@ -1615,6 +1721,17 @@ impl<'a> Lowering<'a> {
                 let guarded =
                     self.routers
                         .guarded(sink, self.limits, self.rt.abort(), Metrics::new());
+                // The library's `transduce-tree` over the host's parser
+                // events, run natively when the routers offer it: the
+                // native reads each pass as it comes and writes the events
+                // the library's step would, so the head is the native.
+                let guarded = match self.native_tree(plan) {
+                    Some(spec) => match self.routers.transduce_tree(spec, guarded) {
+                        Ok(native) => return self.keep_parser_head(native),
+                        Err(guarded) => guarded,
+                    },
+                    None => guarded,
+                };
                 self.items(plan, Box::new(TaggedToJson { down: guarded }), false)
             }
             // A stream that never yields events: `select`'s values,
@@ -1746,15 +1863,7 @@ impl<'a> Lowering<'a> {
                         "parser-events reads the host's parser events alone",
                     ));
                 }
-                let mut head = self.parser_head.borrow_mut();
-                if head.is_some() {
-                    return Err(Fail::new(
-                        Code::StreamReused,
-                        "reused: the parser events are read twice",
-                    ));
-                }
-                *head = Some(Box::new(ParserEventsToItems { down }));
-                Ok(Box::new(ParserEventsOnly))
+                self.keep_parser_head(Box::new(ParserEventsToItems { down }))
             }
             Plan::ScanEmit {
                 init,
@@ -2147,6 +2256,217 @@ pub(crate) mod tests {
                 "end".to_string(),
                 "schema 0".to_string()
             ])
+        );
+    }
+
+    /// The json grammar's spec, as the plan writes it.
+    const JSON_SPEC: &str = "def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n";
+
+    /// A spec of the standard shape is read as one; a spec of any other
+    /// shape is not, and runs the library's text.
+    #[test]
+    fn a_transduce_tree_spec_of_the_standard_shape_is_read() {
+        let src = format!(
+            "{JSON_SPEC}def named (record (entry :doc (record (entry :key \"k\") (entry :scalar :value) (entry :note 1))))\ndef odd-container (record (entry :map (record (entry :container :set))))\ndef odd-key (record (entry :pair (record (entry :key 1.5))))\ndef odd-scalar (record (entry :val (record (entry :scalar \"x\"))))\ndef odd-entry (record (entry :val 1))\n"
+        );
+        let rt = runtime(&src, true);
+        let value = |name: &str| rt.def_value(Scope::Program, name).unwrap().unwrap();
+        let rule = |container, key, scalar| TreeRule {
+            container,
+            key,
+            scalar,
+        };
+        assert_eq!(
+            tree_spec(&value("json-spec")),
+            Some(
+                TreeSpec::new()
+                    .with("map", rule(Some(TreeContainer::Object), None, None))
+                    .with("list", rule(Some(TreeContainer::Array), None, None))
+                    .with("pair", rule(None, Some(TreeKey::Token(0)), None))
+                    .with("val", rule(None, None, Some(TreeScalar::Token(0))))
+            )
+        );
+        // A field the library never reads is not read here either.
+        assert_eq!(
+            tree_spec(&value("named")),
+            Some(TreeSpec::new().with(
+                "doc",
+                rule(
+                    None,
+                    Some(TreeKey::Name("k".into())),
+                    Some(TreeScalar::Value)
+                )
+            ))
+        );
+        for odd in ["odd-container", "odd-key", "odd-scalar", "odd-entry"] {
+            assert_eq!(tree_spec(&value(odd)), None, "{odd}");
+        }
+        assert_eq!(tree_spec(&Val::Null), None);
+    }
+
+    /// Routers with a guard that passes the events through and a native
+    /// `transduce-tree` offered or declined, each call logged.
+    struct TreeRouters {
+        offer: bool,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    /// The native [`TreeRouters`] offers: it hands the parse's end on.
+    struct NativeTree(Box<dyn Sink + Send>);
+
+    impl ParserSink for NativeTree {
+        fn event(&mut self, ev: &ParserEvent) -> Result<Flow, Fail> {
+            match ev {
+                ParserEvent::End => self.0.event(JsonEvent::End),
+                _ => Ok(Flow::Continue),
+            }
+        }
+    }
+
+    /// The scan [`TreeRouters`] makes, which does nothing.
+    struct InertScan;
+
+    impl ScanEmitter<Val> for InertScan {
+        fn item(&mut self, _: Val) -> Result<Flow, Fail> {
+            Ok(Flow::Continue)
+        }
+        fn finish(&mut self) -> Result<Flow, Fail> {
+            Ok(Flow::Continue)
+        }
+    }
+
+    impl Routers<Val> for TreeRouters {
+        fn router(
+            &self,
+            _: Vec<CaptureSpec>,
+            _: &Limits,
+            _: Duplicates,
+            _: Arc<Metrics>,
+            _: Box<dyn RouteSink + Send>,
+        ) -> Result<Box<dyn Sink + Send>, Fail> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn table_from_json(
+            &self,
+            _: TableBinding,
+            _: &Limits,
+            _: Duplicates,
+            _: Arc<Metrics>,
+            _: Box<dyn TableSink + Send>,
+        ) -> Result<Box<dyn Sink + Send>, Fail> {
+            unreachable!("{UNLOWERED}")
+        }
+
+        fn scan_emit(&self, _: Val, _: StepFn, _: FinishFn, _: OutFn) -> Box<dyn ScanEmitter<Val>> {
+            self.log.lock().unwrap().push("scan-emit".into());
+            Box::new(InertScan)
+        }
+
+        fn guarded(
+            &self,
+            inner: Box<dyn Sink + Send>,
+            _: &Limits,
+            _: AbortFlag,
+            _: Arc<Metrics>,
+        ) -> Box<dyn Sink + Send> {
+            self.log.lock().unwrap().push("guarded".into());
+            inner
+        }
+
+        fn transduce_tree(
+            &self,
+            spec: TreeSpec,
+            downstream: Box<dyn Sink + Send>,
+        ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("transduce-tree of {} rules", spec.rules.len()));
+            if self.offer {
+                Ok(Box::new(NativeTree(downstream)))
+            } else {
+                Err(downstream)
+            }
+        }
+    }
+
+    /// The library's `transduce-tree` over the host's parser events runs
+    /// natively where the routers offer it, the source's guard in front
+    /// of what it writes, and through the library's scan where they
+    /// decline, where the natives are off, and where the spec is not of
+    /// the standard shape. A program that writes the library's scan
+    /// itself is run the same way; one whose step is its own is not.
+    #[test]
+    fn transduce_tree_runs_natively_where_the_routers_offer_it() {
+        use crate::program::Input;
+
+        struct Ended(Arc<Mutex<Vec<String>>>);
+        impl Sink for Ended {
+            fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
+                self.0.lock().unwrap().push(ev.to_owned().to_string());
+                Ok(Flow::Continue)
+            }
+        }
+        let limits = Limits::default();
+        let lower = |export: &str, native: bool, offer: bool| -> Vec<String> {
+            let rt = runtime(&format!("{JSON_SPEC}{export}"), native);
+            let Val::Stream(plan) = rt.export_with(Input::ParserEvents).unwrap() else {
+                panic!("the export is a stream");
+            };
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let lowering = Lowering::new(
+                rt,
+                &limits,
+                Metrics::new(),
+                Arc::new(TreeRouters {
+                    offer,
+                    log: log.clone(),
+                }),
+                Arc::new(Unlowered),
+            );
+            let events = lowering
+                .events(&plan, Box::new(Ended(log.clone())))
+                .unwrap();
+            lowering
+                .parser_head(events)
+                .event(&ParserEvent::End)
+                .unwrap();
+            let log = log.lock().unwrap().clone();
+            log
+        };
+        let tree = "def export [input] (transduce-tree json-spec input)\n";
+        let native = ["guarded", "transduce-tree of 4 rules", "end"];
+        assert_eq!(lower(tree, true, true), native);
+        assert_eq!(
+            lower(tree, true, false),
+            ["guarded", "transduce-tree of 4 rules", "scan-emit", "end"]
+        );
+        let scan = ["guarded", "scan-emit", "end"];
+        assert_eq!(lower(tree, false, true), scan);
+        assert_eq!(
+            lower(
+                "def export [input] (transduce-tree (record (entry :map (record (entry :container :set)))) input)\n",
+                true,
+                true
+            ),
+            scan
+        );
+        assert_eq!(
+            lower(
+                "def export [input] (as-events (scan-emit [[] false] (partial transduce-step json-spec) transduce-finish (parser-events input)))\n",
+                true,
+                true
+            ),
+            native
+        );
+        assert_eq!(
+            lower(
+                "def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n",
+                true,
+                true
+            ),
+            scan
         );
     }
 

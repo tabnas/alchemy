@@ -72,6 +72,8 @@ import {
   TextOut,
   Transition,
   TreeContract,
+  TreeRule,
+  TreeSpec,
   boundColumn,
   utf8Bytes,
 } from './shared'
@@ -112,6 +114,7 @@ import {
   taggedVal,
   textVal,
   typeError,
+  valEquals,
   vectorVal,
 } from './value'
 
@@ -153,6 +156,61 @@ export function isTableBinding(v: Val): boolean {
   if ('selector' === columns.v) return rows && 'fn' === v.fields.get('column')?.v
   if ('keyword' === columns.v) return rows && 'infer' === columns.name
   return false
+}
+
+// The spec of a `transduce-tree`, when it has the standard shape `TreeSpec`
+// holds: a record of records, each entry's `:container` `:object` or
+// `:array`, its `:key` a string or a token's index (a non-negative integer,
+// as `path` takes one), its `:scalar` a token's index or `:value`, any of
+// the three left out. An entry's other fields are not read, as the library
+// reads none. Any other spec runs the library's own `transduce-tree`.
+export function treeSpec(v: Val): TreeSpec | undefined {
+  if ('record' !== v.v) return undefined
+  const rules = new Map<string, TreeRule>()
+  for (const [name, entry] of v.fields) {
+    if ('record' !== entry.v) return undefined
+    const rule: { -readonly [K in keyof TreeRule]: TreeRule[K] } = {}
+    const container = entry.fields.get('container')
+    if (undefined !== container) {
+      if ('keyword' !== container.v || ('object' !== container.name && 'array' !== container.name)) {
+        return undefined
+      }
+      rule.container = container.name
+    }
+    const key = entry.fields.get('key')
+    if (undefined !== key) {
+      if ('str' === key.v) rule.key = { name: key.value }
+      else {
+        const token = asIndex(key)
+        if (undefined === token) return undefined
+        rule.key = { token }
+      }
+    }
+    const scalar = entry.fields.get('scalar')
+    if (undefined !== scalar) {
+      if ('keyword' === scalar.v && 'value' === scalar.name) rule.scalar = 'value'
+      else {
+        const token = asIndex(scalar)
+        if (undefined === token) return undefined
+        rule.scalar = { token }
+      }
+    }
+    rules.set(name, rule)
+  }
+  return { rules }
+}
+
+// A non-negative whole number that fits an index, as `path` takes one.
+function asIndex(v: Val): number | undefined {
+  if ('num' !== v.v) return undefined
+  const value = v.value
+  return value >= 0 && 0 === value % 1 && value <= 0xffffffff ? value : undefined
+}
+
+// Whether `f` is the standard library's definition `name`, not a program's
+// own of that name.
+function isLibrary(f: Func, name: string): boolean {
+  return 'closure' === f.fn && 'stdlib' === f.closure.scope && name === f.closure.name
 }
 
 // The renderer's dialect for a `csv-options` record, when every field has a
@@ -1183,6 +1241,36 @@ export class Lowering {
     private readonly metrics: Metrics,
   ) {}
 
+  // Keep `head` for the host to push the parser events into: the one reader
+  // of them a program may have. The JSON-events side of the chain the
+  // caller answers is never driven.
+  private keepParserHead(head: ParserSink): Sink {
+    if (undefined !== this.head) {
+      throw new Fail('STREAM_REUSED', 'reused: the parser events are read twice')
+    }
+    this.head = head
+    return new ParserEventsOnly()
+  }
+
+  // The spec of the scan the library's `transduce-tree` builds, when `plan`
+  // is one and the runtime's native compositions are on: a `scan-emit` from
+  // `[[] false]` over the host's parser events, its step the library's
+  // `transduce-step` given a spec of the standard shape (`treeSpec`), its
+  // finish the library's `transduce-finish`. A program that writes that
+  // scan itself means what `transduce-tree` means, and is run the same way.
+  private nativeTree(plan: Plan): TreeSpec | undefined {
+    if (!this.rt.native || 'scan-emit' !== plan.p) return undefined
+    const source = plan.source
+    if ('parser-events' !== source.p || 'parser-input' !== source.source.p) return undefined
+    if (!isLibrary(plan.finish, 'transduce-finish')) return undefined
+    const init = vectorVal([vectorVal([]), bool(false)])
+    if (!valEquals(plan.init, init)) return undefined
+    const step = plan.step
+    if ('partial' !== step.fn || !isLibrary(step.partial.f, 'transduce-step')) return undefined
+    const args = step.partial.args
+    return 1 === args.length ? treeSpec(args[0]) : undefined
+  }
+
   // What the host pushes parser events into, once `sinkAs` has answered
   // `events`, the chain's JSON-events head: the head `parser-events` was
   // lowered to, or, when the program reads nothing of its input, the
@@ -1316,6 +1404,15 @@ export class Lowering {
         // own: the source's count the source's events, and these are the
         // program's.
         const guarded = this.rt.routers.guarded(sink, this.limits, this.rt.abort, new Metrics())
+        // The library's `transduce-tree` over the host's parser events, run
+        // natively when the routers offer it: the native reads each pass as
+        // it comes and writes the events the library's step would, so the
+        // head is the native.
+        const spec = this.nativeTree(plan)
+        if (undefined !== spec) {
+          const native = this.rt.routers.transduceTree?.(spec, guarded)
+          if (undefined !== native) return this.keepParserHead(native)
+        }
         return this.items(plan, new TaggedToJson(guarded), false)
       }
       // A stream that never yields events: `select`'s values, `route`'s
@@ -1408,11 +1505,7 @@ export class Lowering {
         if ('parser-input' !== plan.source.p) {
           throw protocolMismatch("parser-events reads the host's parser events alone")
         }
-        if (undefined !== this.head) {
-          throw new Fail('STREAM_REUSED', 'reused: the parser events are read twice')
-        }
-        this.head = new ParserEventsToItems(down)
-        return new ParserEventsOnly()
+        return this.keepParserHead(new ParserEventsToItems(down))
       case 'parser-input':
         throw protocolMismatch("the parser's rule passes are read item by item through parser-events")
       case 'scan-emit':

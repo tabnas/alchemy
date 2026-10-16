@@ -237,7 +237,7 @@ fn as_items<'a>(op: &str, v: &'a Val) -> Result<&'a Arc<[Val]>, Fail> {
 }
 
 /// A non-negative whole number that fits an index.
-fn as_index(v: &Val) -> Option<usize> {
+pub(crate) fn as_index(v: &Val) -> Option<usize> {
     match v {
         Val::Num { value, .. }
             if *value >= 0.0 && value.fract() == 0.0 && *value <= u32::MAX as f64 =>

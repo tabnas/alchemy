@@ -22,11 +22,13 @@ use crate::shared::datum::Duplicates;
 use crate::shared::error::Fail;
 use crate::shared::json::JsonOptions;
 use crate::shared::limits::{AbortFlag, Limits, Metrics};
+use crate::shared::parser_event::ParserSink;
 use crate::shared::route::{CaptureSpec, RouteSink};
 use crate::shared::scan::Transition;
 use crate::shared::sink::{Flow, Sink};
 use crate::shared::table::{TableBinding, TableSink};
 use crate::shared::text::{JoinOut, TextOut};
+use crate::shared::tree::TreeSpec;
 
 /// A `scan-emit` step: the state and one item in, the next state and the
 /// items to emit for it out.
@@ -100,6 +102,27 @@ pub trait Routers<V>: Send + Sync {
         abort: AbortFlag,
         metrics: Arc<Metrics>,
     ) -> Box<dyn Sink + Send>;
+
+    /// transduce's `TransduceTree::new`: the library's `transduce-tree`
+    /// run natively, the parser's rule passes in and a tree's JSON events
+    /// out to `downstream`, as [`TreeSpec`] says a native must make them.
+    /// The lowering asks for it where a program applies `transduce-tree`
+    /// to the host's parser events with a spec of the standard shape, the
+    /// runtime's native compositions on, and hands it the sink the
+    /// library's `as-events` would write to, the source's limits already
+    /// guarding it.
+    ///
+    /// Routers that have no native transduce-tree hand `downstream` back,
+    /// and the library's text runs instead; that is what this method does
+    /// unless an implementation says otherwise.
+    fn transduce_tree(
+        &self,
+        spec: TreeSpec,
+        downstream: Box<dyn Sink + Send>,
+    ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
+        let _ = spec;
+        Err(downstream)
+    }
 }
 
 /// The renderers, writers and text combinators a plan's output is written

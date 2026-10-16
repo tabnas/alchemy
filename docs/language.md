@@ -877,7 +877,8 @@ The rest of the library is written in alchemy, embedded from
 signatures as it loads. The blocks below are those files' text, word for
 word (`rs/tests/spec_test.rs` holds the two together), and they are the
 reference: the runtime runs `table-from-json` and `csv` natively when
-their arguments have the standard shapes, and alchemy-cli's
+their arguments have the standard shapes, and `transduce-tree` when its
+spec does and the host's routers offer a native one, and alchemy-cli's
 `rs/tests/stdlib_test.rs` proves the native path and this text produce
 the same bytes, or fail with the same code.
 
@@ -1335,6 +1336,17 @@ record
 
 and a unit test (`rs/src/lower.rs`) holds `transduce-tree` with it to
 the events of tabnas-json's own rule passes, lexemes kept.
+
+Over the host's parser events, `transduce-tree` runs natively where the
+spec has the standard shape (every entry a record, its `:container`
+`:object` or `:array`, its `:key` a string or a token's index, its
+`:scalar` a token's index or `:value`) and the host's routers offer a
+native one (`Routers::transduce_tree`, which transduce's do; the shared
+`TreeSpec` says what it must do). The native reads each pass as it
+comes and builds no record of it; its events, its failures and its
+codes are this text's, and the source's guard holds on what it writes as
+on what the text's `as-events` writes. A spec of any other shape, routers
+that offer none, and `Runtime::with_native(false)` run this text.
 
 ```alchemy
 def transduce-token [n rule]
