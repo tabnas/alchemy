@@ -100,6 +100,66 @@ func protocolMismatch(message string) *Fail {
 	return NewFail(CodeDSLTypeError, "protocol_mismatch: "+message)
 }
 
+// treeSpecOf is the spec of a `transduce-tree`, when it has the standard
+// shape shared.TreeSpec holds: a record of records, each entry's
+// :container :object or :array, its :key a string or a token's index (a
+// non-negative integer, as `path` takes one), its :scalar a token's index
+// or :value, any of the three left out. An entry's other fields are not
+// read, as the library reads none. Any other spec runs the library's own
+// `transduce-tree`.
+func treeSpecOf(v Val) (shared.TreeSpec, bool) {
+	r, ok := v.(*RecordVal)
+	if !ok {
+		return shared.TreeSpec{}, false
+	}
+	spec := shared.TreeSpec{Rules: make(map[string]shared.TreeRule, r.Len())}
+	for _, name := range r.Keys() {
+		entryV, _ := r.Get(name)
+		entry, ok := entryV.(*RecordVal)
+		if !ok {
+			return shared.TreeSpec{}, false
+		}
+		var rule shared.TreeRule
+		if c, has := entry.Get("container"); has {
+			switch c {
+			case KeywordVal("object"):
+				rule.Container = shared.TreeObject
+			case KeywordVal("array"):
+				rule.Container = shared.TreeArray
+			default:
+				return shared.TreeSpec{}, false
+			}
+		}
+		if k, has := entry.Get("key"); has {
+			if name, isStr := k.(StrVal); isStr {
+				rule.Key = shared.TreeKey{Set: true, Name: string(name)}
+			} else if i, isIndex := asIndex(k); isIndex {
+				rule.Key = shared.TreeKey{Set: true, IsToken: true, Token: i}
+			} else {
+				return shared.TreeSpec{}, false
+			}
+		}
+		if sc, has := entry.Get("scalar"); has {
+			if sc == KeywordVal("value") {
+				rule.Scalar = shared.TreeScalar{Set: true, Value: true}
+			} else if i, isIndex := asIndex(sc); isIndex {
+				rule.Scalar = shared.TreeScalar{Set: true, Token: i}
+			} else {
+				return shared.TreeSpec{}, false
+			}
+		}
+		spec.Rules[name] = rule
+	}
+	return spec, true
+}
+
+// isLibrary says whether f is the standard library's definition name, not
+// a program's own of that name.
+func isLibrary(f Fn, name string) bool {
+	c, ok := f.(*Closure)
+	return ok && c.Scope == ScopeStdlib && c.Name == name
+}
+
 // isTableBinding is whether a value has the shape of the standard table
 // binding: a record with :columns and :rows selectors and a :column
 // function, or with :columns the keyword :infer (the columns are the first
@@ -1384,6 +1444,42 @@ type Lowering struct {
 	head shared.ParserSink
 }
 
+// keepParserHead keeps head for the host to push the parser events into:
+// the one reader of them a program may have. The JSON-events side of the
+// chain the caller answers is never driven.
+func (l *Lowering) keepParserHead(head shared.ParserSink) (shared.Sink, *Fail) {
+	if l.head != nil {
+		return nil, NewFail(CodeStreamReused, "reused: the parser events are read twice")
+	}
+	l.head = head
+	return parserEventsOnly{}, nil
+}
+
+// nativeTree is the spec of the scan the library's `transduce-tree`
+// builds, when p is one and the runtime's native compositions are on: a
+// `scan-emit` from `[[] false]` over the host's parser events, its step
+// the library's `transduce-step` given a spec of the standard shape
+// (treeSpecOf), its finish the library's `transduce-finish`. A program
+// that writes that scan itself means what `transduce-tree` means, and is
+// run the same way.
+func (l *Lowering) nativeTree(p *Plan) (shared.TreeSpec, bool) {
+	if !l.rt.Native() || p.Kind != PlanScanEmit {
+		return shared.TreeSpec{}, false
+	}
+	source := p.Source
+	if source == nil || source.Kind != PlanParserEvents || source.Source == nil || source.Source.Kind != PlanParserInput {
+		return shared.TreeSpec{}, false
+	}
+	if !isLibrary(p.Finish, "transduce-finish") || !Equal(p.Init, Vector(Vector(), BoolVal(false))) {
+		return shared.TreeSpec{}, false
+	}
+	step, ok := p.Step.(*Partial)
+	if !ok || !isLibrary(step.F, "transduce-step") || len(step.Args) != 1 {
+		return shared.TreeSpec{}, false
+	}
+	return treeSpecOf(step.Args[0])
+}
+
 // ParserHead is what the host pushes parser events into, once SinkAs has
 // answered events, the chain's JSON-events head: the head parser-events
 // was lowered to, or, when the program reads nothing of its input, the
@@ -1553,6 +1649,17 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 		// own: the source's count the source's events, and these are the
 		// program's.
 		guarded := l.rt.Routers().Guarded(sink, l.limits, l.rt.Abort(), shared.NewMetrics())
+		// The library's `transduce-tree` over the host's parser events, run
+		// natively when the routers offer it: the native reads each pass as
+		// it comes and writes the events the library's step would, so the
+		// head is the native.
+		if spec, ok := l.nativeTree(p); ok {
+			if routers, offers := l.rt.Routers().(shared.TreeRouters); offers {
+				if native := routers.TransduceTree(spec, guarded); native != nil {
+					return l.keepParserHead(native)
+				}
+			}
+		}
 		return l.items(p, &taggedToJSON{down: guarded}, false)
 	}
 	// A stream that never yields events: `select`'s values, `route`'s
@@ -1632,11 +1739,7 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 		if p.Source.Kind != PlanParserInput {
 			return nil, protocolMismatch("parser-events reads the host's parser events alone")
 		}
-		if l.head != nil {
-			return nil, NewFail(CodeStreamReused, "reused: the parser events are read twice")
-		}
-		l.head = &parserEventsToItems{down: down}
-		return parserEventsOnly{}, nil
+		return l.keepParserHead(&parserEventsToItems{down: down})
 	case PlanParserInput:
 		return nil, protocolMismatch("the parser's rule passes are read item by item through parser-events")
 	case PlanScanEmit:

@@ -18,8 +18,10 @@
 //! The two standard compositions run natively when their arguments have
 //! the standard shapes (`table-from-json BINDING input` and `csv OPTIONS
 //! events`, from the library's own definitions, not a program's shadowing
-//! ones); [`Runtime::with_native`] turns that off so the differential test
-//! can run the interpreted text.
+//! ones), and the lowering runs the library's `transduce-tree` natively
+//! where the host's routers offer it (`crate::lower`);
+//! [`Runtime::with_native`] turns both off so the differential test can
+//! run the interpreted text.
 //!
 //! Failures: a wrong argument count is `DSL_TYPE_ERROR` (`arity`); a value
 //! of the wrong kind where the program chose it is `DSL_TYPE_ERROR`

@@ -24,13 +24,17 @@ import {
 } from '../dist/alchemy'
 import { make as makeJson } from '@tabnas/json'
 
-import { Lowering, NoColumns, ParserEventsOnly, ParserEventsToItems } from '../dist/lower'
+import { Lowering, NoColumns, ParserEventsOnly, ParserEventsToItems, treeSpec } from '../dist/lower'
 import { CsvOptions, Datum, Limits, Metrics, fromJSON, parserEventFromJSON } from '../dist/shared'
 import type { ParserEvent, TableEvent, TableSink } from '../dist/shared'
 
 import { OPTIONS, PROGRAM, compile, thrown } from './common'
 
 const V = value
+
+// The json grammar's spec, as the plan writes it.
+const JSON_SPEC =
+  'def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n'
 
 function runtime(src: string, native: boolean): Runtime {
   const forms = desugarProgram(parseFile(src, 't.alc'), src)
@@ -243,6 +247,115 @@ describe('program', () => {
     })
     for (const pass of passes) finite.event(pass)
     assert.deepStrictEqual(text, ['end'])
+  })
+
+  // A spec of the standard shape is read as one; a spec of any other shape
+  // is not, and runs the library's text (rs/src/lower.rs's test).
+  it('a transduce-tree spec of the standard shape is read', () => {
+    const rt = runtime(
+      JSON_SPEC +
+        'def named (record (entry :doc (record (entry :key "k") (entry :scalar :value) (entry :note 1))))\n' +
+        'def odd-container (record (entry :map (record (entry :container :set))))\n' +
+        'def odd-key (record (entry :pair (record (entry :key 1.5))))\n' +
+        'def odd-scalar (record (entry :val (record (entry :scalar "x"))))\n' +
+        'def odd-entry (record (entry :val 1))\n',
+      true,
+    )
+    const val = (name: string) => run(rt.defValue('program', name)) as value.Val
+    assert.deepStrictEqual(
+      treeSpec(val('json-spec')),
+      {
+        rules: new Map<string, unknown>([
+          ['map', { container: 'object' }],
+          ['list', { container: 'array' }],
+          ['pair', { key: { token: 0 } }],
+          ['val', { scalar: { token: 0 } }],
+        ]),
+      },
+    )
+    // A field the library never reads is not read here either.
+    assert.deepStrictEqual(treeSpec(val('named')), {
+      rules: new Map([['doc', { key: { name: 'k' }, scalar: 'value' }]]),
+    })
+    for (const odd of ['odd-container', 'odd-key', 'odd-scalar', 'odd-entry']) {
+      assert.equal(treeSpec(val(odd)), undefined, odd)
+    }
+    assert.equal(treeSpec(V.NULL), undefined)
+  })
+
+  // The library's `transduce-tree` over the host's parser events runs
+  // natively where the routers offer it, the source's guard in front of
+  // what it writes, and through the library's scan where they decline,
+  // where the natives are off, and where the spec is not of the standard
+  // shape. A program that writes the library's scan itself is run the same
+  // way; one whose step is its own is not (rs/src/lower.rs's test).
+  it('transduce-tree runs natively where the routers offer it', () => {
+    const lower = (exp: string, native: boolean, offer: boolean | 'absent'): string[] => {
+      const log: string[] = []
+      const routers: any = {
+        ...OPTIONS.routers,
+        scanEmit() {
+          log.push('scan-emit')
+          return { item: () => 'continue', finish: () => 'continue' }
+        },
+        guarded(inner: any) {
+          log.push('guarded')
+          return inner
+        },
+      }
+      if ('absent' !== offer) {
+        routers.transduceTree = (spec: any, downstream: any) => {
+          log.push(`transduce-tree of ${spec.rules.size} rules`)
+          if (!offer) return undefined
+          return {
+            event(ev: any) {
+              return 'end' === ev.type ? downstream.event({ type: 'end' }) : 'continue'
+            },
+          }
+        }
+      }
+      const src = JSON_SPEC + exp
+      const forms = desugarProgram(parseFile(src, 't.alc'), src)
+      const sources = Sources.one('t.alc', src)
+      const rt = new Runtime(resolve(forms, sources, outer), sources, { ...OPTIONS, routers }).withNative(native)
+      const result = run(rt.export('ParserEvents/1')) as any
+      const lowering: any = new Lowering(rt, Limits.default(), new Metrics())
+      const events = lowering.events(result.plan, {
+        event(ev: any) {
+          log.push(ev.type)
+          return 'continue'
+        },
+      })
+      lowering.parserHead(events).event({ type: 'end' })
+      return log
+    }
+    const tree = 'def export [input] (transduce-tree json-spec input)\n'
+    const native = ['guarded', 'transduce-tree of 4 rules', 'end']
+    const scan = ['guarded', 'scan-emit', 'end']
+    assert.deepStrictEqual(lower(tree, true, true), native)
+    assert.deepStrictEqual(lower(tree, true, false), ['guarded', 'transduce-tree of 4 rules', 'scan-emit', 'end'])
+    assert.deepStrictEqual(lower(tree, true, 'absent'), scan)
+    assert.deepStrictEqual(lower(tree, false, true), scan)
+    assert.deepStrictEqual(
+      lower('def export [input] (transduce-tree (record (entry :map (record (entry :container :set)))) input)\n', true, true),
+      scan,
+    )
+    assert.deepStrictEqual(
+      lower(
+        'def export [input] (as-events (scan-emit [[] false] (partial transduce-step json-spec) transduce-finish (parser-events input)))\n',
+        true,
+        true,
+      ),
+      native,
+    )
+    assert.deepStrictEqual(
+      lower(
+        'def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n',
+        true,
+        true,
+      ),
+      scan,
+    )
   })
 
   // The json grammar's part, as the plan writes it: `transduce-tree` over
