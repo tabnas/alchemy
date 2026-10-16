@@ -56,9 +56,12 @@ import {
   Metrics,
   MissingText,
   NODE_BYTES,
+  ParserEvent,
+  ParserSink,
   PublicColumn,
   Renderers,
   RouteSink,
+  RulePass,
   Scan,
   Schema,
   Selected,
@@ -68,6 +71,7 @@ import {
   TableSink,
   TextOut,
   Transition,
+  TreeContract,
   boundColumn,
   utf8Bytes,
 } from './shared'
@@ -580,6 +584,88 @@ class EventsToItems implements Sink {
   }
 }
 
+// The parser's rule passes as the items `parser-events` yields: `(open
+// rule)` and `(close rule)`, the rule a record of the pass's fields, a
+// field the pass lacks left out (`get` answers `missing` for it). The
+// parse's `end` is the stream's end. The head of a program's chain when
+// the host declares parser events: the host pushes each pass into it.
+export class ParserEventsToItems implements ParserSink {
+  constructor(private readonly down: ItemSink) {}
+
+  event(ev: ParserEvent): Flow {
+    if ('end' === ev.type) return this.down.end()
+    // A host builds the event, and one the types do not describe (from
+    // JavaScript, say) is refused, not read.
+    if ('open' !== ev.type && 'close' !== ev.type) throw Fail.protocol('an unknown parser event kind')
+    if (null == ev.pass) throw Fail.protocol(`a parser event's ${ev.type} carries no rule pass`)
+    return this.down.item(taggedVal(ev.type, [ruleRecord(ev.pass)]))
+  }
+}
+
+// A rule pass as the record `(open rule)` and `(close rule)` carry.
+function ruleRecord(pass: RulePass): Val {
+  const fields: Array<[string, Val]> = [
+    ['name', str(pass.name)],
+    ['d', num(pass.d)],
+    ['i', num(pass.i)],
+  ]
+  if (undefined !== pass.alt) {
+    fields.push([
+      'alt',
+      record([
+        ['p', str(pass.alt.p)],
+        ['r', str(pass.alt.r)],
+        ['b', num(pass.alt.b)],
+        ['g', vectorVal(pass.alt.g.map((g) => str(g)))],
+      ]),
+    ])
+  }
+  fields.push([
+    'tokens',
+    vectorVal(
+      pass.tokens.map((t) =>
+        record([
+          ['name', str(t.name)],
+          ['val', fromDatum(t.val)],
+          ['src', str(t.src)],
+          ['row', num(t.row)],
+          ['col', num(t.col)],
+        ]),
+      ),
+    ),
+  ])
+  fields.push(['forced', bool(pass.forced)])
+  fields.push(['n', record(pass.n.map(([k, v]): [string, Val] => [k, num(v)]))])
+  if (undefined !== pass.value) fields.push(['value', fromDatum(pass.value)])
+  return record(fields)
+}
+
+// What the host pushes parser events into: the chain's head
+// (`ParserEventsToItems`) when the program reads them, and otherwise (a
+// text of the program's own, which reads nothing of its input) the
+// parse's end alone, handed to the sink that writes the text once the
+// input has validated.
+class ParserHead implements ParserSink {
+  constructor(
+    private readonly head: ParserSink | undefined,
+    private readonly events: Sink,
+  ) {}
+
+  event(ev: ParserEvent): Flow {
+    if (undefined !== this.head) return this.head.event(ev)
+    return 'end' === ev.type ? this.events.event(Ev.end) : 'continue'
+  }
+}
+
+// The JSON-events sink `Lowering.items` answers where it lowers
+// `parser-events`: the host pushes the rule passes into the head it keeps
+// instead (`Lowering.parserHead`), never JSON events into this.
+export class ParserEventsOnly implements Sink {
+  event(_ev: JsonEvent): Flow {
+    throw protocolMismatch('the program reads parser events; push them into Program.parserSink')
+  }
+}
+
 // The tagged events an interpreted stream yields, as the JSON events a
 // taker of `JsonEvents` reads (`json`, `table-from-json`, `select`,
 // `route`, `events` again): the reverse of `EventsToItems`, so a program
@@ -1087,11 +1173,25 @@ class FiniteTextSink implements Sink {
 // routers and renderers they are built from, and the limits and metrics the
 // transduce stages take.
 export class Lowering {
+  // The head of the chain when the program reads parser events: set where
+  // `parser-events` is lowered, taken by `parserHead`.
+  private head: ParserSink | undefined
+
   constructor(
     private readonly rt: Runtime,
     private readonly limits: Limits,
     private readonly metrics: Metrics,
   ) {}
+
+  // What the host pushes parser events into, once `sinkAs` has answered
+  // `events`, the chain's JSON-events head: the head `parser-events` was
+  // lowered to, or, when the program reads nothing of its input, the
+  // parse's end alone into `events`.
+  parserHead(events: Sink): ParserSink {
+    const head = this.head
+    this.head = undefined
+    return new ParserHead(head, events)
+  }
 
   // The sink for a program's result over `out`. `render` is the host's
   // choice for a stream result; a text result takes none
@@ -1195,6 +1295,10 @@ export class Lowering {
       // program's items, each an event, as JSON events.
       case 'as-events':
         return this.events(plan.source, sink)
+      // The events as they are, held to a tree's contract in front of
+      // whatever takes them.
+      case 'tree-contract':
+        return this.events(plan.source, new TreeContract(sink))
       // A stream whose items may be events (`events` itself, or a
       // `scan-emit`, `map` or `filter` over anything): each item is turned
       // back into an event as the stream runs, the reverse of `events`, so
@@ -1241,6 +1345,7 @@ export class Lowering {
       case 'input':
       case 'records':
       case 'as-events':
+      case 'tree-contract':
         throw protocolMismatch(
           'table events were expected, not JSON events (table-from-json makes a table of them)',
         )
@@ -1295,6 +1400,21 @@ export class Lowering {
       }
       case 'events':
         return this.events(plan.source, new EventsToItems(down))
+      // The host's parser events, the one source `parser-events` reads (its
+      // native refuses any other): the head is kept for the host, which
+      // pushes the rule passes into it, and the JSON events side of the
+      // chain is never driven.
+      case 'parser-events':
+        if ('parser-input' !== plan.source.p) {
+          throw protocolMismatch("parser-events reads the host's parser events alone")
+        }
+        if (undefined !== this.head) {
+          throw new Fail('STREAM_REUSED', 'reused: the parser events are read twice')
+        }
+        this.head = new ParserEventsToItems(down)
+        return new ParserEventsOnly()
+      case 'parser-input':
+        throw protocolMismatch("the parser's rule passes are read item by item through parser-events")
       case 'scan-emit':
         return this.items(
           plan.source,
@@ -1315,6 +1435,7 @@ export class Lowering {
       case 'input':
       case 'records':
       case 'as-events':
+      case 'tree-contract':
         throw protocolMismatch(
           'JSON events cannot be read item by item; select or route what the stream should yield, or read its events',
         )

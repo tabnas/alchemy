@@ -2,6 +2,11 @@
 //! [`compile_sources`], several files linked into one), ask it what it
 //! produces, and take a [`Sink`] to push the source's events into.
 //!
+//! A program reads JSON events unless the host declares another input:
+//! [`compile_with`] and [`compile_sources_with`] take an [`Input`], and a
+//! program compiled over [`Input::ParserEvents`] reads the parser's rule
+//! passes, which the host pushes into [`Program::parser_sink`].
+//!
 //! The host passes the [`Routers`] and the [`Renderers`] the program's
 //! stages are made with (transduce's and render's) to `compile`, and the
 //! program keeps them for every sink it makes.
@@ -18,10 +23,11 @@ use std::sync::Arc;
 
 use crate::ast::{Expr, Sources};
 use crate::interp::{Runtime, MAX_PLAN_STEPS};
-use crate::lower::{EventSink, Lowering, Out};
+use crate::lower::{EventSink, Lowering};
 use crate::resolve::{resolve, Resolved};
 use crate::shared::{
-    AbortFlag, Code, Duplicates, Fail, Limits, Metrics, Renderers, Routers, Selector, Sink, TextOut,
+    AbortFlag, Code, Duplicates, Fail, Limits, Metrics, ParserSink, Renderers, Routers, Selector,
+    Sink, TextOut,
 };
 use crate::value::{Plan, Protocol, Seq, Val};
 use crate::{desugar, parse_file, stdlib};
@@ -49,12 +55,39 @@ impl Output {
     }
 }
 
+/// What a program's `export [input]` reads: the protocol the host pushes
+/// into the program's sink, which the host declares when it compiles the
+/// program.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Input {
+    /// `JsonEvents/1`, a document's events, into [`Program::sink`]: the
+    /// default.
+    #[default]
+    JsonEvents,
+    /// `ParserEvents/1`, the parser's rule passes, into
+    /// [`Program::parser_sink`]: what a transducer part reads, through
+    /// `parser-events`.
+    ParserEvents,
+}
+
+impl Input {
+    /// The protocol's name, as `explain` reports it.
+    pub fn protocol(self) -> &'static str {
+        match self {
+            Input::JsonEvents => "JsonEvents/1",
+            Input::ParserEvents => "ParserEvents/1",
+        }
+    }
+}
+
 /// A compiled program: parsed, desugared, resolved and checked, with its
 /// plan built. Cheap to clone; `Send + Sync`.
 #[derive(Clone)]
 pub struct Program {
     resolved: Arc<Resolved>,
     sources: Sources,
+    /// What the host declared `export`'s input to be.
+    input: Input,
     /// What the checker decided from `export`'s type.
     output: Output,
     native: bool,
@@ -78,6 +111,7 @@ impl std::fmt::Debug for Program {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Program")
             .field("file", &self.resolved.file)
+            .field("input", &self.input)
             .field("output", &self.output())
             .field("native", &self.native)
             .finish()
@@ -102,6 +136,21 @@ pub fn compile(
     renderers: Arc<dyn Renderers>,
 ) -> Result<Program, Fail> {
     compile_sources(&[Source::new(file, src)], routers, renderers)
+}
+
+/// [`compile`] over the input the host declares: `export [input]` reads
+/// JSON events ([`Input::JsonEvents`], what [`compile`] declares) or the
+/// parser's rule passes ([`Input::ParserEvents`]). The checker holds the
+/// program to it: `events input` over parser events, or `parser-events
+/// input` over JSON events, is `protocol_mismatch`.
+pub fn compile_with(
+    src: &str,
+    file: &str,
+    input: Input,
+    routers: Arc<dyn Routers<Val>>,
+    renderers: Arc<dyn Renderers>,
+) -> Result<Program, Fail> {
+    compile_sources_with(&[Source::new(file, src)], input, routers, renderers)
 }
 
 /// One of the sources a program is compiled from: the file it is named
@@ -163,6 +212,17 @@ impl<'a> Source<'a> {
 /// [`compile`].
 pub fn compile_sources(
     sources: &[Source<'_>],
+    routers: Arc<dyn Routers<Val>>,
+    renderers: Arc<dyn Renderers>,
+) -> Result<Program, Fail> {
+    compile_sources_with(sources, Input::JsonEvents, routers, renderers)
+}
+
+/// [`compile_sources`] over the input the host declares, as for
+/// [`compile_with`].
+pub fn compile_sources_with(
+    sources: &[Source<'_>],
+    input: Input,
     routers: Arc<dyn Routers<Val>>,
     renderers: Arc<dyn Renderers>,
 ) -> Result<Program, Fail> {
@@ -237,10 +297,11 @@ pub fn compile_sources(
             forms.extend(own);
         }
         let resolved = Arc::new(resolve(forms, &linked, &stdlib::outer)?);
-        let checked = crate::check::program(&resolved, &linked)?;
+        let checked = crate::check::program_with(&resolved, &linked, input)?;
         Program::build_here(
             resolved,
             linked,
+            input,
             checked.output,
             true,
             Duplicates::Reject,
@@ -311,9 +372,11 @@ fn on_stack<T: Send>(work: impl FnOnce() -> Result<T, Fail> + Send) -> Result<T,
 }
 
 impl Program {
+    #[allow(clippy::too_many_arguments)]
     fn build(
         resolved: Arc<Resolved>,
         sources: Sources,
+        input: Input,
         output: Output,
         native: bool,
         duplicates: Duplicates,
@@ -322,14 +385,16 @@ impl Program {
     ) -> Result<Program, Fail> {
         on_stack(|| {
             Program::build_here(
-                resolved, sources, output, native, duplicates, abort, injected,
+                resolved, sources, input, output, native, duplicates, abort, injected,
             )
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_here(
         resolved: Arc<Resolved>,
         sources: Sources,
+        input: Input,
         output: Output,
         native: bool,
         duplicates: Duplicates,
@@ -341,10 +406,11 @@ impl Program {
             .with_duplicates(duplicates)
             .with_fuel(Some(MAX_PLAN_STEPS))
             .with_abort(abort.clone())
-            .export()?;
+            .export_with(input)?;
         Ok(Program {
             resolved,
             sources,
+            input,
             output,
             native,
             duplicates,
@@ -361,6 +427,7 @@ impl Program {
         Program::build(
             self.resolved.clone(),
             self.sources.clone(),
+            self.input,
             self.output,
             native,
             self.duplicates,
@@ -375,6 +442,7 @@ impl Program {
         Program::build(
             self.resolved.clone(),
             self.sources.clone(),
+            self.input,
             self.output,
             self.native,
             duplicates,
@@ -402,6 +470,13 @@ impl Program {
     /// The policy for a member name repeated in a captured scope.
     pub fn duplicates(&self) -> Duplicates {
         self.duplicates
+    }
+
+    /// What the host declared `export`'s input to be, and so which sink
+    /// it pushes the source into: [`Program::sink`] for JSON events,
+    /// [`Program::parser_sink`] for parser events.
+    pub fn input(&self) -> Input {
+        self.input
     }
 
     /// The file name the program was compiled under: the first, of
@@ -434,7 +509,9 @@ impl Program {
             Val::Stream(plan) => match plan.protocol() {
                 Protocol::JsonEvents => Output::JsonEvents,
                 Protocol::TableRows => Output::TableRows,
-                Protocol::Items | Protocol::Text => self.output,
+                // The parser's input is never a result: the checker
+                // refuses an export that answers it (`bad_output`).
+                Protocol::Items | Protocol::Text | Protocol::ParserEvents => self.output,
             },
             _ => Output::Text,
         }
@@ -496,7 +573,8 @@ impl Program {
     /// enforced and `output_bytes` counted in `metrics`. `render` chooses
     /// how a table or JSON-events result is rendered (CSV or JSON; `None`
     /// for the default); a program that renders its own text takes none
-    /// (`render_of_text`).
+    /// (`render_of_text`). A program compiled over parser events takes
+    /// them through [`Program::parser_sink`] instead.
     pub fn sink(
         &self,
         out: Box<dyn Write + Send>,
@@ -504,6 +582,7 @@ impl Program {
         limits: &Limits,
         metrics: Arc<Metrics>,
     ) -> Result<Box<dyn Sink + Send>, Fail> {
+        self.declared(Input::JsonEvents)?;
         let out = self
             .injected
             .renderers
@@ -520,6 +599,65 @@ impl Program {
         limits: &Limits,
         metrics: Arc<Metrics>,
     ) -> Result<EventSink, Fail> {
+        self.declared(Input::JsonEvents)?;
+        self.lowering(limits, metrics)
+            .sink_as(&self.result, out, render, self.output)
+    }
+
+    /// The sink for one run over parser events, for a program compiled
+    /// over [`Input::ParserEvents`]: the host pushes each rule pass into
+    /// it and one `End`, once the parse has returned its value. The output
+    /// is written as for [`Program::sink`].
+    pub fn parser_sink(
+        &self,
+        out: Box<dyn Write + Send>,
+        render: Option<Renderer>,
+        limits: &Limits,
+        metrics: Arc<Metrics>,
+    ) -> Result<Box<dyn ParserSink + Send>, Fail> {
+        self.declared(Input::ParserEvents)?;
+        let out = self
+            .injected
+            .renderers
+            .write_out(out, limits, metrics.clone());
+        self.parser_sink_out(out, render, limits, metrics)
+    }
+
+    /// [`Program::parser_sink`] over any text output, as
+    /// [`Program::sink_out`] is [`Program::sink`]'s.
+    pub fn parser_sink_out(
+        &self,
+        out: Box<dyn TextOut + Send>,
+        render: Option<Renderer>,
+        limits: &Limits,
+        metrics: Arc<Metrics>,
+    ) -> Result<Box<dyn ParserSink + Send>, Fail> {
+        self.declared(Input::ParserEvents)?;
+        let lowering = self.lowering(limits, metrics);
+        let events = lowering.sink_as(&self.result, out, render, self.output)?;
+        Ok(lowering.parser_head(events))
+    }
+
+    /// Whether the host drives the sink the program's input was declared
+    /// for: a host's mistake, not a program's, refused before anything
+    /// runs.
+    fn declared(&self, input: Input) -> Result<(), Fail> {
+        if self.input == input {
+            return Ok(());
+        }
+        let (declared, sink) = match self.input {
+            Input::JsonEvents => ("JSON events", "Program::sink"),
+            Input::ParserEvents => ("parser events", "Program::parser_sink"),
+        };
+        Err(Fail::new(
+            Code::DslTypeError,
+            format!(
+                "protocol_mismatch: the program was compiled over {declared}; push them into {sink}"
+            ),
+        ))
+    }
+
+    fn lowering<'l>(&self, limits: &'l Limits, metrics: Arc<Metrics>) -> Lowering<'l> {
         let rt = Arc::new(
             Runtime::new(self.resolved.clone(), self.sources.clone())
                 .with_native(self.native)
@@ -527,7 +665,6 @@ impl Program {
                 .with_limits(limits)
                 .with_abort(self.abort.clone()),
         );
-        let out: Out = out;
         Lowering::new(
             rt,
             limits,
@@ -535,30 +672,31 @@ impl Program {
             self.injected.routers.clone(),
             self.injected.renderers.clone(),
         )
-        .sink_as(&self.result, out, render, self.output)
     }
 }
 
 /// The stage that reads the input directly: the plan whose source is
-/// `Input`, or `Input` itself.
+/// `Input` (or `ParserInput`), or the input itself.
 fn root_stage(plan: &Plan) -> &Plan {
     let mut here = plan;
     loop {
         let next: &Plan = match here {
-            Plan::Input => return here,
+            Plan::Input | Plan::ParserInput => return here,
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
+            | Plan::ParserEvents { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
             | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
+            | Plan::TreeContract { source }
             | Plan::AsEvents { source }
             | Plan::CsvTable { source, .. }
             | Plan::Csv { source, .. }
             | Plan::Json { source, .. } => {
-                if matches!(**source, Plan::Input) {
+                if matches!(**source, Plan::Input | Plan::ParserInput) {
                     return here;
                 }
                 source

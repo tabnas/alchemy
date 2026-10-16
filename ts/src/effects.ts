@@ -22,7 +22,7 @@
 import type { Duplicates } from './shared'
 
 import { Expr, symbolOf } from './ast'
-import { Output } from './output'
+import { Input, Output } from './output'
 import { Resolved } from './resolve'
 import { noColumnsEmpty, nonFinite } from './stdlib/natives'
 import { Func, Plan, Val, field, isLive } from './value'
@@ -37,6 +37,9 @@ export interface Explainable {
   readonly resolved: Resolved
   // The policy for a member name repeated in a captured scope.
   readonly duplicates: Duplicates
+  // What the host declared `export`'s input to be; JSON events when the
+  // program does not say.
+  input?(): Input
 }
 
 // What a stage keeps alive.
@@ -49,6 +52,8 @@ export type RetentionScope =
   | 'subtree'
   // The state a `scan-emit` step returns.
   | 'state'
+  // The keys of each open object, which a tree's contract holds.
+  | 'keys'
 
 // One live retention requirement.
 export type Retention = {
@@ -176,18 +181,21 @@ function stages(plan: Plan): Plan[] {
     let next: Plan | undefined
     switch (here.p) {
       case 'input':
+      case 'parser-input':
       case 'lit':
         next = undefined
         break
       case 'route':
       case 'select':
       case 'events':
+      case 'parser-events':
       case 'as-events':
       case 'scan-emit':
       case 'map':
       case 'filter':
       case 'table-from-json':
       case 'records':
+      case 'tree-contract':
       case 'csv-table':
       case 'csv':
       case 'json':
@@ -218,7 +226,10 @@ function protocolOf(stage: Plan): string {
     case 'input':
     case 'records':
     case 'as-events':
+    case 'tree-contract':
       return 'JsonEvents/1'
+    case 'parser-input':
+      return 'ParserEvents/1'
     case 'table-from-json':
     case 'csv-table':
       return 'TableRows/1'
@@ -228,6 +239,8 @@ function protocolOf(stage: Plan): string {
       return 'Stream<Value>'
     case 'events':
       return 'Stream<Event>'
+    case 'parser-events':
+      return 'Stream<ParserEvent>'
     case 'scan-emit':
     case 'map':
     case 'filter':
@@ -267,6 +280,9 @@ function tabular(stages: Plan[], output: Output): boolean {
 // object of the source repeats.
 function duplicatesOf(stages: Plan[], policy: Duplicates, finite: boolean): string {
   if (finite) return 'not examined; the input is only validated'
+  if (stages.some((s) => 'tree-contract' === s.p)) {
+    return "rejected where a tree's contract holds the events (DUPLICATE_MEMBER)"
+  }
   const captured = stages.some((s) => 'route' === s.p || 'select' === s.p || 'table-from-json' === s.p)
   if (!captured) return 'preserved; the events are copied as they arrive, not mapped by key'
   switch (policy) {
@@ -341,7 +357,8 @@ export function summarize(program: Explainable): EffectSummary {
       output,
     }
   }
-  const protocol: string[] = ['JsonEvents/1']
+  // The input's protocol, which the host declares.
+  const protocol: string[] = [program.input?.() ?? 'JsonEvents/1']
   for (const stage of staged.slice(1)) {
     const p = protocolOf(stage)
     if (protocol[protocol.length - 1] !== p) protocol.push(p)
@@ -445,6 +462,20 @@ export function summarize(program: Explainable): EffectSummary {
       // its own summary.
       case 'events':
         if (PASS_THROUGH === selection) selection = 'none; every event is delivered as an item'
+        break
+      // The contract keeps each open object's keys, to refuse one
+      // repeated, and drops them as the object closes.
+      case 'tree-contract':
+        retention.push({
+          scope: 'keys',
+          label: 'Tree contract:',
+          reason: 'the keys of each open object, each dropped as its object closes',
+        })
+        break
+      // Every rule pass becomes one item as it arrives: a transducer's
+      // input, whose step decides what is kept.
+      case 'parser-events':
+        selection = 'none; every rule pass is delivered as an item'
         break
       case 'scan-emit': {
         confidence = 'conditional'

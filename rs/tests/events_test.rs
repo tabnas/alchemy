@@ -6,10 +6,10 @@
 
 mod common;
 
-use tabnas_alchemy::shared::Code;
-use tabnas_alchemy::Output;
+use tabnas_alchemy::shared::{Code, Fail, Limits, Metrics};
+use tabnas_alchemy::{Input, Output};
 
-use common::compile;
+use common::{compile, compile_with};
 
 /// `events` consumes the input, so a program that reads it twice, or
 /// captures it in a function, is refused as any affine stream is.
@@ -56,4 +56,57 @@ fn events_over_the_input_is_affine() {
             "{src}: {fail}"
         );
     }
+}
+
+/// `parser-events`: a host that declares a parser-events input hands the
+/// program the parser's rule passes, which `parser-events` reads as items
+/// and nothing else reads. The stream is affine as `events`'s is, and a
+/// transducer's outputs are a rewritten tree, handed on as JSON events.
+/// Running one needs transduce's parser source and render's renderers,
+/// so it is in tabnas-alchemy-cli.
+#[test]
+fn parser_events_over_a_declared_input() {
+    let transducer = "def step [s pass]\n  match pass\n    case (close rule) (transition s [(scalar (get :name rule))])\n    case _ (transition s [])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (parser-events input))\n";
+    let program = compile_with(transducer, "t.alc", Input::ParserEvents).unwrap();
+    assert_eq!(program.input(), Input::ParserEvents);
+    assert_eq!(program.output(), Output::JsonEvents);
+    assert!(program
+        .explain()
+        .contains("Protocol:              ParserEvents/1 → Stream<ParserEvent>"));
+    // Compiled over the default input, JSON events, it reads the wrong
+    // protocol.
+    let fail = compile(transducer, "t.alc").unwrap_err();
+    assert!(fail.message.starts_with("protocol_mismatch: "), "{fail}");
+    assert_eq!(
+        compile("def export [input] input", "j.alc")
+            .unwrap()
+            .input(),
+        Input::JsonEvents
+    );
+
+    let twice = "def export [input]\n  concat\n    join \"\" (map (fn [p] \"a\") (parser-events input))\n    join \"\" (map (fn [p] \"b\") (parser-events input))\n";
+    let fail = compile_with(twice, "twice.alc", Input::ParserEvents).unwrap_err();
+    assert_eq!(fail.code, Code::StreamReused, "{fail}");
+    let captured = "def export [input]\n  concat-map (fn [x] (join \"\" (map (fn [p] \"\") (parser-events input)))) [1]\n";
+    let fail = compile_with(captured, "captured.alc", Input::ParserEvents).unwrap_err();
+    assert!(fail.message.starts_with("captured: "), "{fail}");
+
+    // The host drives the sink its declared input names, and is told so
+    // before anything runs when it does not.
+    let limits = Limits::default();
+    let refused = |result: Result<(), Fail>| {
+        let fail = result.unwrap_err();
+        assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+        assert!(fail.message.starts_with("protocol_mismatch: "), "{fail}");
+    };
+    refused(
+        program
+            .sink(Box::new(Vec::new()), None, &limits, Metrics::new())
+            .map(drop),
+    );
+    let json = compile("def export [input] input", "j.alc").unwrap();
+    refused(
+        json.parser_sink(Box::new(Vec::new()), None, &limits, Metrics::new())
+            .map(drop),
+    );
 }

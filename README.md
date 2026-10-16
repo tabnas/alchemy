@@ -64,7 +64,11 @@ produce the same bytes. The `translate` module composes a translation
 from the parts each format's package exports (its manifest's `translate`
 object, its render, its lift and its embedding): the one-line main a host
 links with them, so that any format the tabnas parsers read can be
-written as any other (ADR-27 in tabnas/admin). The `alchemy` command, which composes alchemy,
+written as any other (ADR-27 in tabnas/admin). A format whose package
+also hands over a transducer part (`translate.transduce`) can be read
+from the parser's rule passes instead of its parsed value
+(`compose_parsed`): the transducer makes its events, streamed, and
+`tree-contract` holds them to a tree's before the render. The `alchemy` command, which composes alchemy,
 transduce and render, is
 [tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli), and so are
 the tests that run programs, the differential test among them: alchemy

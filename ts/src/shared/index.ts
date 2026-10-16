@@ -14,6 +14,8 @@
 //
 // - the source protocol `JsonEvent` (`JsonEvents/1`) and the push boundary
 //   `Sink`, with `Flow` and the recorders;
+// - the parser's rule passes `ParserEvent` (`ParserEvents/1`), what a
+//   transducer part reads, and their push boundary `ParserSink`;
 // - the table protocol `TableEvent` (`TableRows/1`): `Cell`, `Schema`, the
 //   bindings and the standard column mapping;
 // - `Selector`, `Path` and `Segment`; `Datum`, the retained value, and its
@@ -50,6 +52,8 @@ export type { Limit } from './error'
 export { Ev, eventEquals, eventText, isEnd, isScalar, isStart } from './event'
 export type { JsonEvent, JsonEventType } from './event'
 export { isJsonNumber, jsonNumber, jsonString, numberText } from './json'
+export { parserEventFromJSON, parserEventToJSON } from './parser-event'
+export type { ParserEvent, ParserSink, PassAlt, PassToken, RulePass } from './parser-event'
 export { AbortFlag, LIMIT_NAMES, Limits, Metrics, NODE_BYTES, utf8Bytes } from './limits'
 export { Path, Selector, keyText, pathText } from './selector'
 export type { Segment, Step } from './selector'

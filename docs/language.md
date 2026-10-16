@@ -473,7 +473,9 @@ wanted) is reported. The types (spec section 10.2):
 | `Stream<T>` | an ordered single-use sequence of items | yes |
 | `TableEvents` | `Stream<TableEvent>`: `schema`, `row`s, `table-end`, the `TableRows/1` protocol as tagged values | yes |
 | `Stream<Event>` | the source's own events as items, what `events` yields: `object-start`, `object-end`, `array-start`, `array-end`, `(key name)`, `(scalar value)`; a program hands such a stream to any taker of `JsonEvents` (`json`, `table-from-json`, `select`, `route`, `events`), each item turned back into an event as the stream runs, one that is not an event refused there (`PROTOCOL_ORDER_ERROR`), and the source's limits (`max_depth`, `max_key_bytes`, `max_scalar_bytes`) holding on them as on the source's own | yes |
+| `Stream<ParserEvent>` | the parser's rule passes as items, what `parser-events` yields: `(open rule)` and `(close rule)` (Parser events, below); no taker of `JsonEvents` reads it, which only a transducer's outputs reach | yes |
 | `JsonEvents` | the single-use source, `JsonEvents/1` | yes |
+| `ParserEvents` | the single-use source when the host declares a parser-events input, `ParserEvents/1`: the parser's rule passes, which `parser-events` alone reads | yes |
 | `Text` | single-use incremental text | yes |
 | `String` | a finite retained string; where a text is wanted, a string lifts to one | |
 
@@ -568,7 +570,9 @@ ERROR:dynamic@1:30
 ```
 
 **The entry.** `def export [input]` takes one parameter, the source's
-`JsonEvents`, and its result decides the output: a `Text` (or a string)
+`JsonEvents`, or its `ParserEvents` when the host declares a
+parser-events input (Parser events, below), and its result decides the
+output: a `Text` (or a string)
 is written as it is; `TableEvents` are rendered by the host (CSV by
 default, or JSON records with `--render json`); `JsonEvents` are
 rendered as JSON, and so is a stream whose every item the checker typed
@@ -580,6 +584,96 @@ program without one is `no_export`; a result of another type is
 could not tell, such as a `scan-emit` whose step hands the matched item
 back: `as-events` says the items are events, and the run holds each
 item to that where it arrives.
+
+## Parser events
+
+A host can hand a program the parser's own work instead of a document's
+events: it declares a **parser-events input** when it compiles the
+program (`compile_with` and `compile_sources_with`, Embedding below),
+and `export`'s `input` is then `ParserEvents`, the `ParserEvents/1`
+protocol. That is how a **transducer part** reads a format: the
+grammar's rule passes, as the parser makes them, become the JSON events
+of the document, streamed, whatever the grammar's value would hold.
+
+`parser-events input` yields every rule pass as one item, as it
+arrives: `(open rule)` once a rule's open pass has run, `(close rule)`
+once its close pass has. The rule is a record:
+
+| Field | What it is |
+|---|---|
+| `:name` | the rule's name (`map`, `pair`, `val`) |
+| `:d`, `:i` | the rule's depth on the stack and its instance in the parse |
+| `:alt` | the alternate that matched: `:p` (the rule it pushed), `:r` (the rule it replaced the current one with), `:b` (the tokens it gave back), `:g` (its groups); absent when the state declared none |
+| `:tokens` | the tokens the pass consumed, each a record of `:name`, `:val`, `:src`, `:row` and `:col` |
+| `:forced` | a close the parser's recovery made |
+| `:n` | the rule's named counters |
+| `:value` | the node's value when it is a scalar at a close pass; absent otherwise |
+
+An absent field reads as `missing` (`get`). A pass the grammar made
+inside a probe, speculative work it rewinds, is never delivered. The end
+of the parse is the stream's end, after the last pass, once the parser
+has returned the document's value: a document is complete only when it
+validated. Containers never travel in a rule pass, so a transducer that
+wants one emits its start and its end from the passes that open and
+close it, and nothing in the stream grows with the document but what
+the transducer keeps. A transducer's events are the program's, so
+nothing holds them to a tree's until `tree-contract` does: a
+translation composed over a transducer (`compose_parsed` in the
+`translate` module, which reads a format's transducer part from its
+manifest's `translate.transduce`) puts it after the transducer, before
+the lift and the render.
+
+A transducer is a `scan-emit` over the rule passes, its outputs the
+event constructors and `as-events` making them `JsonEvents` for
+whatever follows. This one writes the name of every rule as it closes;
+its report begins with the input's protocol:
+
+```alchemy
+def step [s pass]
+  match pass
+    case (close rule) (transition s [(scalar (get :name rule))])
+    case _ (transition s [])
+
+def export [input]
+  as-events (scan-emit [] step (fn [s] []) (parser-events input))
+```
+```check
+export: parser-events → scan-emit → as-events
+
+Source reads:          1
+Protocol:              ParserEvents/1 → Stream<ParserEvent> → Stream<Value> → JsonEvents/1 → Text
+Selection:             none; every rule pass is delivered as an item
+Duplicate members:     preserved; the events are copied as they arrive, not mapped by key
+Retained state:        what the step returns, no deeper than max_depth, capped at max_metadata_bytes
+Output order:          source order
+Ordering contract:     each item before its outputs
+Contract verification: static
+JSON profile:          compact, one document, trailing newline (the host's renderer)
+External storage:      disabled
+
+Guarantee:
+  Memory is independent of the number of rows under the configured
+  depth, capture, metadata, scalar/key and output limits: the state the
+  step returns is capped at max_metadata_bytes. What one step computes
+  is the program's, bounded by the host's abort flag.
+
+Qualification:
+  A later error can occur after earlier output has been written.
+```
+
+Each input is read by its own operator: over parser events, `events`,
+`json`, `select`, `route` and a `map` over the input are
+`protocol_mismatch`, as `parser-events` is over JSON events, and neither
+the input nor the rule passes before a transducer made events of them
+is an output (`bad_output`). The stream of rule passes is affine, as
+every stream is.
+
+```alchemy
+def export [input] (events input)
+```
+```check
+ERROR:protocol_mismatch@1:28
+```
 
 ## The standard library
 
@@ -640,8 +734,12 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `array-end` | `array-end -> Event` | an array ends |
 | `key` | `key name -> Event` | the name of the member whose value follows, inside an object |
 | `scalar` | `scalar value -> Event` | one scalar of the source: `null`, a boolean, a number with its lexeme, or a string |
+| `parser-events` | `parser-events input -> Stream<ParserEvent>` | every rule pass of the parser as one item, as it arrives, when the host declares a parser-events input: `(open rule)` once a rule's open pass has run, `(close rule)` once its close pass has; the rule a record of `:name`, `:d`, `:i`, `:alt`, `:tokens`, `:forced`, `:n` and `:value`; the end of the parse ends the stream and is no item; nothing is retained between passes |
+| `open` | `open rule -> ParserEvent` | a rule's open pass completed: the rule a record |
+| `close` | `close rule -> ParserEvent` | a rule's close pass completed: the rule a record, its `:value` the node's when that is a scalar |
 | `json` | `json [options] events -> Text` | `JsonEvents`, or a `Stream<Event>` a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (`TARGET_VALUE_UNREPRESENTABLE`), unless an options record first says `(entry :non-finite :null)`: then it is written as `null`. The record holds `:non-finite` and nothing else, `:reject` (the default) or `:null` |
 | `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
+| `tree-contract` | `tree-contract events -> JsonEvents` | the events unchanged, held to a tree's contract as they pass: one root value, and in each object a key and then its value, each key once; a repeated key is `DUPLICATE_MEMBER`, and events no tree has (a value where a key is due, a key outside an object, an end with nothing open, a second root, the end inside a container) are `STREAMABILITY_UNKNOWN` (`not_a_tree`), each at the path concerned; retains the keys of each open object, dropped as it closes. A translation holds a transducer's events to it before a render that writes from a tree |
 | `csv-table` | `csv-table options events -> TableEvents` | the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most `max_columns`, labels strings, numbers or booleans; rows as wide as the schema; one `table-end`; a delimiter that holds the quote, a line break or NUL is refused before anything runs |
 
 Selecting, capturing and scanning:
@@ -773,8 +871,9 @@ fail "Required metadata was not found"
 
 The rest of the library is written in alchemy, embedded from
 [`stdlib/table.alc`](../stdlib/table.alc),
-[`stdlib/csv.alc`](../stdlib/csv.alc) and
-[`stdlib/root.alc`](../stdlib/root.alc), and checked against its declared
+[`stdlib/csv.alc`](../stdlib/csv.alc),
+[`stdlib/root.alc`](../stdlib/root.alc) and
+[`stdlib/transduce.alc`](../stdlib/transduce.alc), and checked against its declared
 signatures as it loads. The blocks below are those files' text, word for
 word (`rs/tests/spec_test.rs` holds the two together), and they are the
 reference: the runtime runs `table-from-json` and `csv` natively when
@@ -1205,6 +1304,172 @@ def wrap-array [input]
 ```core
 (def wrap-array (fn [input] (as-events (scan-emit [:start] wrap-array-step wrap-finish (events input)))))
 ```
+
+The declarative transducer, `ParserEvents` in and `JsonEvents` out
+(Parser events, above): `transduce-tree spec input` makes a tree's JSON
+events of the parser's rule passes, as a spec keyed by rule name says,
+so that a format's transducer part writes no state machine of its own.
+Each entry of the spec is a record of what that rule's passes do, any
+of: `:container`, `:object` or `:array`, which the rule's open pass
+begins and its close pass ends; `:key`, the member name its open pass
+announces, a token's index (that token's `:val` names the member) or a
+string; `:scalar`, the scalar the rule yields, a token's index (that
+token of its open pass, when the pass consumed one: its `:val`, with the
+lexeme a number token carries) or `:value` (its close pass's own
+value). An open pass announces its key before it begins its container
+or yields its scalar; a pass of a rule the spec does not name yields
+nothing. A container whose rule is replaced by a rule the spec names a
+container (its close pass's alternate replaces it) is one container:
+that close yields no end and the replacing open no start. The state is
+`[stack carry]`, one `:open` marker per open container and whether a
+close handed its container on, so nothing grows with the document's
+width or length, only with its nesting. tabnas-json's part is the spec
+
+```text
+record
+  entry :map (record (entry :container :object))
+  entry :list (record (entry :container :array))
+  entry :pair (record (entry :key 0))
+  entry :val (record (entry :scalar 0))
+```
+
+and a unit test (`rs/src/lower.rs`) holds `transduce-tree` with it to
+the events of tabnas-json's own rule passes, lexemes kept.
+
+```alchemy
+def transduce-token [n rule]
+  get-path (path n) (get :tokens rule)
+```
+```core
+(def transduce-token (fn [n rule] (get-path (path n) (get :tokens rule))))
+```
+
+```alchemy
+def transduce-key [entry rule outputs]
+  match (get :key entry)
+    case missing outputs
+    case name
+      match (kind name)
+        case :string (push (key name) outputs)
+        case _
+          match (transduce-token name rule)
+            case missing outputs
+            case token (push (key (get :val token)) outputs)
+```
+```core
+(def transduce-key (fn [entry rule outputs] (match (get :key entry) (case missing outputs) (case name (match (kind name) (case :string (push (key name) outputs)) (case _ (match (transduce-token name rule) (case missing outputs) (case token (push (key (get :val token)) outputs)))))))))
+```
+
+```alchemy
+def transduce-scalar [from rule outputs]
+  match (kind from)
+    case :number
+      match (transduce-token from rule)
+        case missing outputs
+        case token (push (scalar (get :val token)) outputs)
+    case _ outputs
+```
+```core
+(def transduce-scalar (fn [from rule outputs] (match (kind from) (case :number (match (transduce-token from rule) (case missing outputs) (case token (push (scalar (get :val token)) outputs)))) (case _ outputs))))
+```
+
+```alchemy
+def transduce-value [from rule outputs]
+  match from
+    case :value
+      match (get :value rule)
+        case missing outputs
+        case value (push (scalar value) outputs)
+    case _ outputs
+```
+```core
+(def transduce-value (fn [from rule outputs] (match from (case :value (match (get :value rule) (case missing outputs) (case value (push (scalar value) outputs)))) (case _ outputs))))
+```
+
+```alchemy
+def transduce-begin [state start outputs]
+  match state
+    case [stack true] (transition [stack false] outputs)
+    case [stack carry] (transition [(push :open stack) false] (push start outputs))
+```
+```core
+(def transduce-begin (fn [state start outputs] (match state (case [stack true] (transition [stack false] outputs)) (case [stack carry] (transition [(push :open stack) false] (push start outputs))))))
+```
+
+```alchemy
+def transduce-end [spec state rule end]
+  match state
+    case [stack carry]
+      match (get :alt rule)
+        case missing (transition [(pop stack) false] [end])
+        case alt
+          match (get (get :r alt) spec)
+            case missing (transition [(pop stack) false] [end])
+            case next
+              match (get :container next)
+                case missing (transition [(pop stack) false] [end])
+                case _ (transition [stack true] [])
+```
+```core
+(def transduce-end (fn [spec state rule end] (match state (case [stack carry] (match (get :alt rule) (case missing (transition [(pop stack) false] [end])) (case alt (match (get (get :r alt) spec) (case missing (transition [(pop stack) false] [end])) (case next (match (get :container next) (case missing (transition [(pop stack) false] [end])) (case _ (transition [stack true] [])))))))))))
+```
+
+```alchemy
+def transduce-open [spec state rule]
+  match (get (get :name rule) spec)
+    case missing (transition state [])
+    case entry
+      let [outputs (transduce-key entry rule [])]
+        match (get :container entry)
+          case :object (transduce-begin state object-start outputs)
+          case :array (transduce-begin state array-start outputs)
+          case _ (transition state (transduce-scalar (get :scalar entry) rule outputs))
+```
+```core
+(def transduce-open (fn [spec state rule] (match (get (get :name rule) spec) (case missing (transition state [])) (case entry (let [outputs (transduce-key entry rule [])] (match (get :container entry) (case :object (transduce-begin state object-start outputs)) (case :array (transduce-begin state array-start outputs)) (case _ (transition state (transduce-scalar (get :scalar entry) rule outputs)))))))))
+```
+
+```alchemy
+def transduce-close [spec state rule]
+  match (get (get :name rule) spec)
+    case missing (transition state [])
+    case entry
+      match (get :container entry)
+        case :object (transduce-end spec state rule object-end)
+        case :array (transduce-end spec state rule array-end)
+        case _ (transition state (transduce-value (get :scalar entry) rule []))
+```
+```core
+(def transduce-close (fn [spec state rule] (match (get (get :name rule) spec) (case missing (transition state [])) (case entry (match (get :container entry) (case :object (transduce-end spec state rule object-end)) (case :array (transduce-end spec state rule array-end)) (case _ (transition state (transduce-value (get :scalar entry) rule []))))))))
+```
+
+```alchemy
+def transduce-step [spec state pass]
+  match pass
+    case (open rule) (transduce-open spec state rule)
+    case (close rule) (transduce-close spec state rule)
+```
+```core
+(def transduce-step (fn [spec state pass] (match pass (case (open rule) (transduce-open spec state rule)) (case (close rule) (transduce-close spec state rule)))))
+```
+
+```alchemy
+def transduce-finish [state]
+  match state
+    case [[] carry] []
+    case _ (fail :protocol-order "the rule passes ended inside a container, which a tree's never do")
+```
+```core
+(def transduce-finish (fn [state] (match state (case [[] carry] []) (case _ (fail :protocol-order "the rule passes ended inside a container, which a tree's never do")))))
+```
+
+```alchemy
+def transduce-tree [spec input]
+  as-events (scan-emit [[] false] (partial transduce-step spec) transduce-finish (parser-events input))
+```
+```core
+(def transduce-tree (fn [spec input] (as-events (scan-emit [[] false] (partial transduce-step spec) transduce-finish (parser-events input)))))
+```
 ## Programs
 
 The spec's worked example (sections 5, 12.1 and 13.4): an application
@@ -1535,6 +1800,13 @@ The TypeScript and Go ports take the same two implementations:
   and must not mention the new name already (`duplicate_def`, at the
   mention), since renaming beside a binding of that name would change
   what the source means.
+- `compile_with(src, file, input, routers, renderers)` and
+  `compile_sources_with(sources, input, routers, renderers)` are
+  `compile` and `compile_sources` over the input the host declares:
+  `Input::JsonEvents`, what `compile` declares, or
+  `Input::ParserEvents`, the parser's rule passes (Parser events,
+  above). The checker holds the program to it, and `Program::input()`
+  says which it is.
 - `Program::output()` is what the program produces (`Text`,
   `TableRows`, `JsonEvents`), so the host knows whether `--render`
   applies; `row_selector()` is the selector under which the source is
@@ -1551,6 +1823,13 @@ The TypeScript and Go ports take the same two implementations:
   at `End`. `sink_out` takes any `TextOut` instead. `render` is
   `Some(Renderer::Csv | Renderer::Json)` for a table or JSON-events
   result; for a `Text` result it must be `None` (`render_of_text`).
+- `parser_sink(out, render, limits, metrics)` is `sink` for a program
+  compiled over parser events: the host pushes each rule pass into the
+  `ParserSink + Send` it returns, a `ParserEvent::Open` or
+  `ParserEvent::Close`, then one `ParserEvent::End` once the parse has
+  returned its value. `parser_sink_out` takes any `TextOut`. Each sink
+  refuses a program compiled over the other input (`protocol_mismatch`)
+  before anything runs.
 - A failure comes back from the event call that found it, with
   `committed_output` set when text this crate wrote had reached the
   writer. A failure the source found (invalid JSON after the rows) never

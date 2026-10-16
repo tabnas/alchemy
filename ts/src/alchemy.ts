@@ -77,7 +77,7 @@ export { MAX_APPLIED, checkProgram, checkStdlibFile, noExport, stdlibSignature }
 export type { Checked } from './check'
 
 export { Program, analyze, analyzeSources, compile, compileSources } from './program'
-export type { Analyzed, CompileOptions, Output, Source } from './program'
+export type { Analyzed, CompileOptions, Input, Output, Source } from './program'
 
 export * as translate from './translate'
 

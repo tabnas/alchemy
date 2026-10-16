@@ -33,7 +33,7 @@ describe('stdlib', () => {
     // By file: the embedded module lists the files by name.
     assert.deepStrictEqual(
       SOURCES.map(([file]) => file),
-      ['stdlib/csv.alc', 'stdlib/root.alc', 'stdlib/table.alc'],
+      ['stdlib/csv.alc', 'stdlib/root.alc', 'stdlib/table.alc', 'stdlib/transduce.alc'],
     )
     assert.deepStrictEqual(
       lib.files.map((r: any) => [...r.defs.keys()]),
@@ -62,9 +62,22 @@ describe('stdlib', () => {
           'table-captures',
           'table-from-json',
         ],
+        [
+          'transduce-token',
+          'transduce-key',
+          'transduce-scalar',
+          'transduce-value',
+          'transduce-begin',
+          'transduce-end',
+          'transduce-open',
+          'transduce-close',
+          'transduce-step',
+          'transduce-finish',
+          'transduce-tree',
+        ],
       ],
     )
-    assert.equal(lib.names().length, 23)
+    assert.equal(lib.names().length, 34)
     assert.deepStrictEqual(defParams(lib.get('table-from-json')!), ['binding', 'input'])
     assert.equal(defParams(lib.get('csv-options')!), undefined)
   })
@@ -99,7 +112,7 @@ describe('natives', () => {
       assert.ok(n.signature.startsWith(n.name), `${n.name}: ${n.signature}`)
     }
     assert.equal(native('nope'), undefined)
-    assert.equal(natives().length, 67)
+    assert.equal(natives().length, 71)
   })
 
   // `signature` and `effect` are what the reference prints: every native
@@ -129,7 +142,7 @@ describe('natives', () => {
       assert.equal(n.effect, row[1], `the effect of ${n.name}`)
       compared++
     }
-    assert.equal(compared, 49)
+    assert.equal(compared, 53)
   })
 
   it('constants take no arguments and constructors take their fields', () => {

@@ -30,7 +30,7 @@
 import { Code, Fail } from './shared'
 
 import { Expr, SourceSpan, Sources, canonicalForm, symbolOf } from './ast'
-import { Output } from './output'
+import { Input, Output } from './output'
 import { shapeError } from './desugar'
 import { Def, Resolved, fnForm } from './resolve'
 import { Native, arityAccepts, arityExact, arityText, native } from './stdlib/registry'
@@ -51,9 +51,11 @@ import {
   TableEvent,
   Event,
   JsonEvents,
+  ParserEvents,
   Text,
   accepts,
   events,
+  parserEvents,
   func,
   funcOf,
   isAffine,
@@ -137,6 +139,28 @@ export function stdlibSignature(name: string): Type | undefined {
       return func([Record, vectorOf(Value)], Text)
     case 'csv':
       return func([Record, tableEvents()], Text)
+    // The declarative transducer (stdlib/transduce.alc): a spec and the
+    // rule passes in, a tree's JSON events out; its helpers thread a
+    // pass's outputs, a vector of events.
+    case 'transduce-token':
+      return func([Unknown, Record], Value)
+    case 'transduce-key':
+    case 'transduce-scalar':
+    case 'transduce-value':
+      return func([Unknown, Record, vectorOf(Unknown)], vectorOf(Unknown))
+    case 'transduce-begin':
+      return func([Unknown, Unknown, vectorOf(Unknown)], tagged('transition'))
+    case 'transduce-end':
+      return func([Record, Unknown, Record, Unknown], tagged('transition'))
+    case 'transduce-open':
+    case 'transduce-close':
+      return func([Record, Unknown, Record], tagged('transition'))
+    case 'transduce-step':
+      return func([Record, Unknown, Unknown], tagged('transition'))
+    case 'transduce-finish':
+      return func([Unknown], vectorOf(Event))
+    case 'transduce-tree':
+      return func([Record, ParserEvents], JsonEvents)
     default:
       return undefined
   }
@@ -495,6 +519,10 @@ class Checker {
           case 'scalar':
             fields = [Value]
             break
+          case 'open':
+          case 'close':
+            fields = [Record]
+            break
           default:
             fields = new Array(Math.max(0, items.length - 1)).fill(Unknown)
         }
@@ -745,6 +773,12 @@ class Checker {
           `${what} must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events`,
           sp,
         )
+      case 'ParserEvents':
+        throw this.typeError(
+          'protocol_mismatch',
+          `${what} must be a vector or a stream of items, not ParserEvents; parser-events reads the rule passes as items`,
+          sp,
+        )
       default:
         throw this.mismatch(what, vectorOf(Unknown), t, sp)
     }
@@ -933,6 +967,9 @@ class Checker {
       case 'events':
         this.expect('the input of events', JsonEvents, t(0), at(0))
         return events()
+      case 'parser-events':
+        this.expect('the input of parser-events', ParserEvents, t(0), at(0))
+        return parserEvents()
       case 'as-events':
         this.expect('the items of as-events', streamOf(Unknown), t(0), at(0))
         return JsonEvents
@@ -1042,6 +1079,10 @@ class Checker {
       case 'key':
         this.expect('the name of key', Str, t(0), at(0))
         return tagged('key')
+      case 'open':
+      case 'close':
+        this.expect(`the rule of ${n.name}`, Record, t(0), at(0))
+        return tagged(n.name)
       case 'scalar':
         if (!among(t(0), 'Null', 'Bool', 'Number', 'String', 'Value', 'Unknown', 'Never')) {
           throw this.typeError(
@@ -1064,6 +1105,9 @@ class Checker {
         return tableEvents()
       case 'records':
         this.expect('the table events of records', tableEvents(), t(0), at(0))
+        return JsonEvents
+      case 'tree-contract':
+        this.expect('the events of tree-contract', JsonEvents, t(0), at(0))
         return JsonEvents
       // The constants are not calls; a call of one is an arity error above.
       // Anything else is a native this table does not know.
@@ -1120,9 +1164,11 @@ export function noExport(): Fail {
   return new Fail('DSL_TYPE_ERROR', 'no_export: the program has no `def export [input]`')
 }
 
-// Check a resolved program: `export` with its input, then every other
+// Check a resolved program: `export` with its input, the protocol the host
+// declares (JSON events unless it says otherwise), then every other
 // definition.
-export function checkProgram(resolved: Resolved, sources: Sources): Checked {
+export function checkProgram(resolved: Resolved, sources: Sources, declared: Input = 'JsonEvents/1'): Checked {
+  const input = 'ParserEvents/1' === declared ? ParserEvents : JsonEvents
   const checker = new Checker(sources, resolved.defs, false)
   const exp = resolved.get('export')
   if (undefined === exp) throw noExport()
@@ -1142,7 +1188,7 @@ export function checkProgram(resolved: Resolved, sources: Sources): Checked {
   for (const name of order) {
     if (reached.has(name)) run(checker.defType(name))
   }
-  const typed = run(checker.fnType(value.items, [JsonEvents], []))
+  const typed = run(checker.fnType(value.items, [input], []))
   if ('Fn' !== typed.t) throw new Error('fnType answers a Fn')
   const exportType = typed.result
   const output = outputOf(exportType)
@@ -1150,7 +1196,7 @@ export function checkProgram(resolved: Resolved, sources: Sources): Checked {
     const [code, finer, message] = output
     throw checker.fail(code, finer, message, exp.span)
   }
-  checker.memo.set('export', func([JsonEvents], exportType))
+  checker.memo.set('export', func([input], exportType))
   for (const name of order) {
     if ('export' !== name) run(checker.defType(name))
   }

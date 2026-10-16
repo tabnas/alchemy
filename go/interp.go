@@ -669,9 +669,14 @@ func (rt *Runtime) Matches(pattern *Expr, value Val, env Env, scope Scope) (Env,
 	return bound, true, nil
 }
 
-// Export is the program's result: export applied to the host's input plan.
-// A stream or a text plan comes back; nothing has been consumed.
-func (rt *Runtime) Export() (Val, *Fail) {
+// Export is the program's result: export applied to the host's input plan,
+// JSON events. A stream or a text plan comes back; nothing has been
+// consumed.
+func (rt *Runtime) Export() (Val, *Fail) { return rt.ExportWith(InputJSONEvents) }
+
+// ExportWith is Export over the input the host declares: JSON events or
+// the parser's rule passes.
+func (rt *Runtime) ExportWith(input Input) (Val, *Fail) {
 	export, f := rt.DefValue(ScopeProgram, "export")
 	if f != nil {
 		return nil, f
@@ -690,7 +695,7 @@ func (rt *Runtime) Export() (Val, *Fail) {
 	if def := rt.program.Get("export"); def != nil {
 		at = def.Span
 	}
-	return rt.Apply(fn, []Val{StreamVal{Plan: inputPlan()}}, at)
+	return rt.Apply(fn, []Val{StreamVal{Plan: inputPlan(input)}}, at)
 }
 
 // EvalProgramExpr evaluates a standalone expression in the program's

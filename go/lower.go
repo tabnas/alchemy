@@ -628,6 +628,103 @@ func (r *routeToItems) End() (shared.Flow, *Fail) { return r.down.End() }
 // value a program matches on, pushed down as it arrives, and End as the
 // stream's end. Nothing is kept between events: a key is delivered as it
 // is read, twice when the source repeats it, and a scalar with its lexeme.
+// parserEventsToItems is the parser's rule passes as the items
+// parser-events yields: (open rule) and (close rule), the rule a record of
+// the pass's fields, a field the pass lacks left out (get answers missing
+// for it). The parse's End is the stream's end. The head of a program's
+// chain when the host declares parser events: the host pushes each pass
+// into it.
+type parserEventsToItems struct {
+	down ItemSink
+}
+
+func (e *parserEventsToItems) ParserEvent(ev shared.ParserEvent) (shared.Flow, *Fail) {
+	switch ev.Kind {
+	case shared.ParserEnd:
+		return e.down.End()
+	case shared.ParserOpen, shared.ParserClose:
+		// A host builds the event, and an open or a close without its
+		// pass (the struct's zero value is one) is refused, not read.
+		if ev.Pass == nil {
+			return shared.Continue, shared.ProtocolFail("a parser event's " + ev.Kind.String() + " carries no rule pass")
+		}
+		return e.down.Item(NewTagged(ev.Kind.String(), ruleRecord(ev.Pass)))
+	}
+	return shared.Continue, shared.ProtocolFail("an unknown parser event kind")
+}
+
+// ruleRecord is a rule pass as the record (open rule) and (close rule)
+// carry.
+func ruleRecord(pass *shared.RulePass) Val {
+	rec := NewRecord()
+	rec.Set("name", StrVal(pass.Name))
+	rec.Set("d", NumVal{Value: float64(pass.D)})
+	rec.Set("i", NumVal{Value: float64(pass.I)})
+	if pass.Alt != nil {
+		alt := NewRecord()
+		alt.Set("p", StrVal(pass.Alt.P))
+		alt.Set("r", StrVal(pass.Alt.R))
+		alt.Set("b", NumVal{Value: float64(pass.Alt.B)})
+		groups := make([]Val, len(pass.Alt.G))
+		for i, g := range pass.Alt.G {
+			groups[i] = StrVal(g)
+		}
+		alt.Set("g", &VectorVal{Items: groups})
+		rec.Set("alt", alt)
+	}
+	tokens := make([]Val, len(pass.Tokens))
+	for i := range pass.Tokens {
+		t := &pass.Tokens[i]
+		token := NewRecord()
+		token.Set("name", StrVal(t.Name))
+		token.Set("val", FromDatum(&t.Val))
+		token.Set("src", StrVal(t.Src))
+		token.Set("row", NumVal{Value: float64(t.Row)})
+		token.Set("col", NumVal{Value: float64(t.Col)})
+		tokens[i] = token
+	}
+	rec.Set("tokens", &VectorVal{Items: tokens})
+	rec.Set("forced", BoolVal(pass.Forced))
+	n := NewRecord()
+	for _, c := range pass.N {
+		n.Set(c.Name, NumVal{Value: float64(c.Value)})
+	}
+	rec.Set("n", n)
+	if pass.Value != nil {
+		rec.Set("value", FromDatum(pass.Value))
+	}
+	return rec
+}
+
+// parserHead is what the host pushes parser events into: the chain's head
+// (parserEventsToItems) when the program reads them, and otherwise (a text
+// of the program's own, which reads nothing of its input) the parse's end
+// alone, handed to the sink that writes the text once the input has
+// validated.
+type parserHead struct {
+	head   shared.ParserSink
+	events shared.Sink
+}
+
+func (h *parserHead) ParserEvent(ev shared.ParserEvent) (shared.Flow, *Fail) {
+	if h.head != nil {
+		return h.head.ParserEvent(ev)
+	}
+	if ev.Kind == shared.ParserEnd {
+		return h.events.Event(shared.Event{Kind: shared.End})
+	}
+	return shared.Continue, nil
+}
+
+// parserEventsOnly is the JSON-events sink items answers where it lowers
+// parser-events: the host pushes the rule passes into the head it keeps
+// instead (Lowering.ParserHead), never JSON events into this.
+type parserEventsOnly struct{}
+
+func (parserEventsOnly) Event(shared.Event) (shared.Flow, *Fail) {
+	return shared.Continue, protocolMismatch("the program reads parser events; push them into Program.ParserSink")
+}
+
 type eventsToItems struct {
 	down ItemSink
 }
@@ -1282,6 +1379,19 @@ type Lowering struct {
 	rt      *Runtime
 	limits  shared.Limits
 	metrics *shared.Metrics
+	// head is the chain's head when the program reads parser events: set
+	// where parser-events is lowered, taken by ParserHead.
+	head shared.ParserSink
+}
+
+// ParserHead is what the host pushes parser events into, once SinkAs has
+// answered events, the chain's JSON-events head: the head parser-events
+// was lowered to, or, when the program reads nothing of its input, the
+// parse's end alone into events.
+func (l *Lowering) ParserHead(events shared.Sink) shared.ParserSink {
+	head := l.head
+	l.head = nil
+	return &parserHead{head: head, events: events}
 }
 
 // NewLowering is a lowering over rt, under limits, counting into metrics
@@ -1425,6 +1535,10 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 	// program's items, each an event, as JSON events.
 	case PlanAsEvents:
 		return l.events(p.Source, sink)
+	// The events as they are, held to a tree's contract in front of
+	// whatever takes them.
+	case PlanTreeContract:
+		return l.events(p.Source, shared.NewTreeContract(sink))
 	// A stream whose items may be events (`events` itself, or a
 	// `scan-emit`, `map` or `filter` over anything): each item is turned
 	// back into an event as the stream runs, the reverse of `events`, so a
@@ -1462,7 +1576,7 @@ func (l *Lowering) table(p *Plan, table shared.TableSink, countedLater bool) (sh
 			return nil, f
 		}
 		return l.events(p.Source, transducer)
-	case PlanInput, PlanRecords, PlanAsEvents:
+	case PlanInput, PlanRecords, PlanAsEvents, PlanTreeContract:
 		return nil, protocolMismatch("table events were expected, not JSON events (table-from-json makes a table of them)")
 	}
 	return l.items(p, &taggedToTable{rt: l.rt, metrics: l.metrics, countRows: !countedLater, table: table}, true)
@@ -1510,6 +1624,21 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 		return l.events(p.Source, router)
 	case PlanEvents:
 		return l.events(p.Source, &eventsToItems{down: down})
+	case PlanParserEvents:
+		// The host's parser events, the one source parser-events reads (its
+		// native refuses any other): the head is kept for the host, which
+		// pushes the rule passes into it, and the JSON events side of the
+		// chain is never driven.
+		if p.Source.Kind != PlanParserInput {
+			return nil, protocolMismatch("parser-events reads the host's parser events alone")
+		}
+		if l.head != nil {
+			return nil, NewFail(CodeStreamReused, "reused: the parser events are read twice")
+		}
+		l.head = &parserEventsToItems{down: down}
+		return parserEventsOnly{}, nil
+	case PlanParserInput:
+		return nil, protocolMismatch("the parser's rule passes are read item by item through parser-events")
 	case PlanScanEmit:
 		stage, f := newScanStage(l.rt, p.Init, p.Step, p.Finish, p.At, l.metrics, down)
 		if f != nil {
@@ -1531,7 +1660,7 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 			return nil, f
 		}
 		return l.items(p.Source, &csvTableStage{rt: l.rt, metrics: l.metrics, noColumns: empty, countRows: !countedLater, down: down}, true)
-	case PlanInput, PlanRecords, PlanAsEvents:
+	case PlanInput, PlanRecords, PlanAsEvents, PlanTreeContract:
 		return nil, protocolMismatch("JSON events cannot be read item by item; select or route what the stream should yield, or read its events")
 	}
 	return nil, typeError(PlanName(p) + " is a text, not a stream")

@@ -42,7 +42,7 @@
 import { Fail } from './shared'
 
 import { jsonString } from './ast'
-import type { Output } from './output'
+import type { Input, Output } from './output'
 import { CompileOptions, Program, Source, compileSources } from './program'
 
 // A shape a format reads as or writes from: the manifest's `reads` and
@@ -225,6 +225,37 @@ export const Part = Object.freeze({
     }
   },
 
+  // The transducer part a descriptor's manifest names, its
+  // `translate.transduce`: the `.alc` file whose entry makes the format's
+  // JSON events of the parser's rule passes, with the part the package
+  // hands over for it (`transduce`, its entry and text). `{}` when the
+  // manifest names none and none is handed over; undefined when the two
+  // disagree or the manifest's entry is one this module cannot take, as for
+  // a lift. `fromDescriptor` reads no transducer, so a host that does not
+  // read parser events composes as it did.
+  transducer(d: Descriptor, transduce: PartText | undefined): { alc?: Alc } | undefined {
+    let manifest: unknown
+    try {
+      manifest = JSON.parse(d.manifest)
+    } catch {
+      return undefined
+    }
+    const t = member(manifest, 'translate')
+    if (undefined === t) return undefined
+    const path = member(t, 'transduce')
+    if (undefined === path && null == transduce) return {}
+    if (
+      'string' === typeof path &&
+      path.endsWith('.alc') &&
+      null != transduce &&
+      '' !== transduce.entry &&
+      null != transduce.source
+    ) {
+      return { alc: { file: `${d.package}/${path}`, entry: transduce.entry, text: transduce.source } }
+    }
+    return undefined
+  },
+
   // The part a program's output stands for, in a source's place: JSON
   // events are a plain tree, a table is records, and a text is no source
   // (`render_of_text`).
@@ -373,6 +404,9 @@ export class Composition {
     readonly native: Native | undefined,
     // The render's loss declaration, then each adapter's.
     readonly loss: ReadonlyArray<string>,
+    // What the main's `input` reads: JSON events, or the parser's rule
+    // passes for a composition over a transducer (`composeParsed`).
+    readonly input: Input = 'JsonEvents/1',
   ) {}
 
   // Link the parts with the main, and `program`'s source when the
@@ -384,7 +418,7 @@ export class Composition {
     const sources: Source[] = this.sources.map(({ file, text }) => ({ file, text }))
     if (undefined !== program) sources.push({ ...program, exportAs: PROGRAM_EXPORT })
     sources.push({ file: this.mainFile, text: this.main })
-    const compiled = compileSources(sources, options)
+    const compiled = compileSources(sources, { ...options, input: this.input })
     if (this.adapters.some((a) => 'inferred-table' === a.kind)) return compiled.withDuplicates('last_wins')
     return compiled
   }
@@ -415,6 +449,64 @@ export function composeProgram(output: Output, target: Part, options: Options, m
   const schemaOnly = undefined === target.embed && undefined !== target.schema
   const source: Part = schemaOnly ? { ...program, schema: target.schema } : program
   return composeOver(source, `(${PROGRAM_EXPORT} input)`, target, options, mainFile, 'none')
+}
+
+// `compose` over the parser's rule passes: the host declares a
+// parser-events input, and the source's transducer (its part's
+// `Part.transducer`) makes the document's events of them. Where a host
+// would hold a source's events to a tree's contract in front (a render that
+// writes from a tree, the events reaching it whole), the main holds the
+// transducer's events to it instead, before the lift and the adapters
+// (`tree-contract`), since what the host pushes is parser events; the front
+// is 'none'. A records target takes the events as they come, as it does a
+// source's. The composition is never run by a host's own renderer
+// (`Native`), which has no events to render.
+export function composeParsed(
+  source: Part,
+  transducer: Alc,
+  target: Part,
+  options: Options,
+  mainFile: string,
+): Composition {
+  const events = `(${transducer.entry} input)`
+  const plain = composeOver(source, events, target, options, mainFile, 'tree')
+  const c =
+    'tree' === plain.front
+      ? composeOver(source, `(tree-contract ${events})`, target, options, mainFile, 'none')
+      : plain
+  return parsed(c, transducer)
+}
+
+// `composeProgram` over the parser's rule passes: the program reads the
+// events the source's transducer makes of them, as it reads a source's
+// events, its output then composed into `target` as for `composeProgram`.
+export function composeProgramParsed(
+  output: Output,
+  transducer: Alc,
+  target: Part,
+  options: Options,
+  mainFile: string,
+): Composition {
+  const program = Part.ofOutput(output)
+  const schemaOnly = undefined === target.embed && undefined !== target.schema
+  const source: Part = schemaOnly ? { ...program, schema: target.schema } : program
+  const input = `(${PROGRAM_EXPORT} (${transducer.entry} input))`
+  return parsed(composeOver(source, input, target, options, mainFile, 'none'), transducer)
+}
+
+// A composition over the parser's rule passes: the transducer linked, the
+// input declared, nothing in front and no native route.
+function parsed(c: Composition, transducer: Alc): Composition {
+  return new Composition(
+    [...c.sources, { file: transducer.file, text: transducer.text }],
+    c.mainFile,
+    c.main,
+    c.adapters,
+    'none',
+    undefined,
+    c.loss,
+    'ParserEvents/1',
+  )
 }
 
 function composeOver(

@@ -537,6 +537,9 @@ type Composition struct {
 	Native   Native
 	// Loss is the render's loss declaration, then each adapter's.
 	Loss []string
+	// Input is what the main's input reads: JSON events, or the parser's
+	// rule passes for a composition over a transducer (ComposeParsed).
+	Input alchemy.Input
 }
 
 // Compile links the parts with the main, and program's source when the
@@ -555,7 +558,7 @@ func (c *Composition) Compile(program *alchemy.Source, routers shared.Routers, r
 		sources = append(sources, p)
 	}
 	sources = append(sources, alchemy.Source{File: c.MainFile, Text: c.Main})
-	compiled, f := alchemy.CompileSources(sources, routers, renderers)
+	compiled, f := alchemy.CompileSourcesWith(sources, c.Input, routers, renderers)
 	if f != nil {
 		return nil, f
 	}
@@ -596,6 +599,87 @@ func ComposeProgram(output alchemy.Output, target *Part, options Options, mainFi
 		source.Schema = target.Schema
 	}
 	return composeOver(source, "("+ProgramExport+" input)", target, options, mainFile, FrontNone)
+}
+
+// PartTransducer is the transducer part a descriptor's manifest names, its
+// translate.transduce: the .alc file whose entry makes the format's JSON
+// events of the parser's rule passes, with the part the package hands over
+// for it (transduce, its entry and text). It answers nil and true when the
+// manifest names none and none is handed over, and false when the two
+// disagree or the manifest's entry is one this package cannot take, as for
+// a lift. PartFromDescriptor reads no transducer, so a host that does not
+// read parser events composes as it did.
+func PartTransducer(d Descriptor, transduce *PartText) (*Alc, bool) {
+	var manifest any
+	if err := json.Unmarshal([]byte(d.Manifest), &manifest); err != nil {
+		return nil, false
+	}
+	t, present := member(manifest, "translate")
+	if !present {
+		return nil, false
+	}
+	pathValue, named := member(t, "transduce")
+	if !named && transduce == nil {
+		return nil, true
+	}
+	path, ok := pathValue.(string)
+	if !named || !ok || !strings.HasSuffix(path, ".alc") || transduce == nil || transduce.Entry == "" || !transduce.HasSource {
+		return nil, false
+	}
+	return &Alc{File: d.Package + "/" + path, Entry: transduce.Entry, Text: transduce.Source}, true
+}
+
+// ComposeParsed is Compose over the parser's rule passes: the host declares
+// a parser-events input, and the source's transducer (PartTransducer) makes
+// the document's events of them. Where a host would hold a source's events
+// to a tree's contract in front (a render that writes from a tree, the
+// events reaching it whole), the main holds the transducer's events to it
+// instead, before the lift and the adapters (tree-contract), since what
+// the host pushes is parser events; the front is FrontNone. A records
+// target takes the events as they come, as it does a source's. The
+// composition is never run by a host's own renderer (Native), which has no
+// events to render.
+func ComposeParsed(source *Part, transducer *Alc, target *Part, options Options, mainFile string) (*Composition, *alchemy.Fail) {
+	events := "(" + transducer.Entry + " input)"
+	c, f := composeOver(source, events, target, options, mainFile, FrontTree)
+	if f != nil {
+		return nil, f
+	}
+	if c.Front == FrontTree {
+		if c, f = composeOver(source, "(tree-contract "+events+")", target, options, mainFile, FrontNone); f != nil {
+			return nil, f
+		}
+	}
+	return parsed(c, transducer), nil
+}
+
+// ComposeProgramParsed is ComposeProgram over the parser's rule passes:
+// the program reads the events the source's transducer makes of them, as
+// it reads a source's events, its output then composed into target as for
+// ComposeProgram.
+func ComposeProgramParsed(output alchemy.Output, transducer *Alc, target *Part, options Options, mainFile string) (*Composition, *alchemy.Fail) {
+	source, f := PartOfOutput(output)
+	if f != nil {
+		return nil, f
+	}
+	if target.Embed == nil {
+		source.Schema = target.Schema
+	}
+	c, f := composeOver(source, "("+ProgramExport+" ("+transducer.Entry+" input))", target, options, mainFile, FrontNone)
+	if f != nil {
+		return nil, f
+	}
+	return parsed(c, transducer), nil
+}
+
+// parsed is a composition over the parser's rule passes: the transducer
+// linked, the input declared, nothing in front and no native route.
+func parsed(c *Composition, transducer *Alc) *Composition {
+	c.Sources = append(c.Sources, alchemy.Source{File: transducer.File, Text: transducer.Text})
+	c.Front = FrontNone
+	c.Native = NativeNone
+	c.Input = alchemy.InputParserEvents
+	return c
 }
 
 func composeOver(source *Part, input string, target *Part, options Options, mainFile string, front Front) (*Composition, *alchemy.Fail) {

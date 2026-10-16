@@ -51,6 +51,30 @@ func (o Output) String() string {
 	return "Text"
 }
 
+// Input is what a program's `export [input]` reads: the protocol the host
+// pushes into the program's sink, which the host declares when it compiles
+// the program (CompileWith).
+type Input uint8
+
+// The inputs.
+const (
+	// InputJSONEvents: JsonEvents/1, a document's events, into
+	// Program.Sink: the default.
+	InputJSONEvents Input = iota
+	// InputParserEvents: ParserEvents/1, the parser's rule passes, into
+	// Program.ParserSink: what a transducer part reads, through
+	// parser-events.
+	InputParserEvents
+)
+
+// String is the input's protocol, as the report names it.
+func (i Input) String() string {
+	if i == InputParserEvents {
+		return "ParserEvents/1"
+	}
+	return "JsonEvents/1"
+}
+
 // Checked is what the checker learned about a program.
 type Checked struct {
 	// Export is the type of export's result.
@@ -117,6 +141,25 @@ func StdlibSignature(name string) (Type, bool) {
 		return Func([]Type{RecordT, VectorOf(ValueT)}, TextT), true
 	case "csv":
 		return Func([]Type{RecordT, TableEvents()}, TextT), true
+	// The declarative transducer (stdlib/transduce.alc): a spec and the
+	// rule passes in, a tree's JSON events out; its helpers thread a
+	// pass's outputs, a vector of events.
+	case "transduce-token":
+		return Func([]Type{Unknown, RecordT}, ValueT), true
+	case "transduce-key", "transduce-scalar", "transduce-value":
+		return Func([]Type{Unknown, RecordT, VectorOf(Unknown)}, VectorOf(Unknown)), true
+	case "transduce-begin":
+		return Func([]Type{Unknown, Unknown, VectorOf(Unknown)}, Tagged("transition")), true
+	case "transduce-end":
+		return Func([]Type{RecordT, Unknown, RecordT, Unknown}, Tagged("transition")), true
+	case "transduce-open", "transduce-close":
+		return Func([]Type{RecordT, Unknown, RecordT}, Tagged("transition")), true
+	case "transduce-step":
+		return Func([]Type{RecordT, Unknown, Unknown}, Tagged("transition")), true
+	case "transduce-finish":
+		return Func([]Type{Unknown}, VectorOf(EventT)), true
+	case "transduce-tree":
+		return Func([]Type{RecordT, ParserEventsT}, JsonEvents), true
 	}
 	return Type{}, false
 }
@@ -583,6 +626,8 @@ func (c *checker) pattern(p *Expr, matched Type, e *env) *Fail {
 			fields = []Type{StringT}
 		case "scalar":
 			fields = []Type{ValueT}
+		case "open", "close":
+			fields = []Type{RecordT}
 		default:
 			n := len(p.Items) - 1
 			if n < 0 {
@@ -949,6 +994,10 @@ func (c *checker) expectSeq(what string, t Type, span SourceSpan) (Type, bool, *
 		return Type{}, false, c.typeError("protocol_mismatch",
 			what+" must be a vector or a stream of items, not JsonEvents; select or route what the stream should yield, or read its events",
 			span)
+	case TParserEvents:
+		return Type{}, false, c.typeError("protocol_mismatch",
+			what+" must be a vector or a stream of items, not ParserEvents; parser-events reads the rule passes as items",
+			span)
 	}
 	return Type{}, false, c.mismatch(what, VectorOf(Unknown), t, span)
 }
@@ -1221,6 +1270,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(StreamOf(ValueT), first(exp("the selector of select", SelectorT, 0), exp("the input of select", JsonEvents, 1)))
 	case "events":
 		return ret(Events(), exp("the input of events", JsonEvents, 0)())
+	case "parser-events":
+		return ret(ParserEvents(), exp("the input of parser-events", ParserEventsT, 0)())
 	case "as-events":
 		return ret(JsonEvents, exp("the items of as-events", StreamOf(Unknown), 0)())
 	case "indices":
@@ -1323,6 +1374,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(Tagged("selected"), exp("the tag of selected", KeywordT, 0)())
 	case "key":
 		return ret(Tagged("key"), exp("the name of key", StringT, 0)())
+	case "open", "close":
+		return ret(Tagged(name), exp("the rule of "+name, RecordT, 0)())
 	case "scalar":
 		switch t(0).Kind {
 		case TNull, TBool, TNumber, TString, TValue, TUnknown, TNever:
@@ -1344,6 +1397,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(TableEvents(), first(exp("the options of csv-table", RecordT, 0), exp("the table events of csv-table", TableEvents(), 1)))
 	case "records":
 		return ret(JsonEvents, exp("the table events of records", TableEvents(), 0)())
+	case "tree-contract":
+		return ret(JsonEvents, exp("the events of tree-contract", JsonEvents, 0)())
 	}
 	// The constants are not calls; a call of one is an arity error above.
 	// Anything else is a native this table does not know.
@@ -1391,6 +1446,16 @@ func noExport() *Fail {
 // CheckProgram checks a resolved program: export with its input, then
 // every other definition.
 func CheckProgram(resolved *Resolved, sources *Sources) (*Checked, *Fail) {
+	return CheckProgramWith(resolved, sources, InputJSONEvents)
+}
+
+// CheckProgramWith is CheckProgram with export's input the protocol the
+// host declares.
+func CheckProgramWith(resolved *Resolved, sources *Sources, declared Input) (*Checked, *Fail) {
+	input := JsonEvents
+	if declared == InputParserEvents {
+		input = ParserEventsT
+	}
 	c := &checker{sources: sources, defs: resolved.Defs, memo: map[string]Type{}}
 	export := resolved.Get("export")
 	if export == nil {
@@ -1418,7 +1483,7 @@ func CheckProgram(resolved *Resolved, sources *Sources) (*Checked, *Fail) {
 			}
 		}
 	}
-	fn, f := c.fnType(export.Value.Items, []Type{JsonEvents}, &env{})
+	fn, f := c.fnType(export.Value.Items, []Type{input}, &env{})
 	if f != nil {
 		return nil, f
 	}
@@ -1427,7 +1492,7 @@ func CheckProgram(resolved *Resolved, sources *Sources) (*Checked, *Fail) {
 	if finer != "" {
 		return nil, c.fail(code, finer, message, export.Span)
 	}
-	c.memo["export"] = Func([]Type{JsonEvents}, exportType)
+	c.memo["export"] = Func([]Type{input}, exportType)
 	for _, name := range order {
 		if name != "export" {
 			if _, f := c.defType(name); f != nil {

@@ -14,8 +14,8 @@ use tabnas_alchemy::shared::{
     TableSink, TextOut,
 };
 use tabnas_alchemy::value::Val;
-use tabnas_alchemy::{Program, Source};
-use tabnas_support::{find_spec_dir, Failure, Value};
+use tabnas_alchemy::{Input, Program, Source};
+use tabnas_support::{find_spec_dir, Failure, Row, Value};
 
 /// The routers and renderers of a compile-only test: compiling builds the
 /// plan and keeps the two for the sinks, and asks nothing of them. The
@@ -115,6 +115,26 @@ impl Renderers for NoStages {
 /// for a test that reads what compiling decided and runs nothing.
 pub fn compile(src: &str, file: &str) -> Result<Program, Fail> {
     tabnas_alchemy::compile(src, file, Arc::new(NoStages), Arc::new(NoStages))
+}
+
+/// [`tabnas_alchemy::compile_with`] with [`NoStages`] routers and
+/// renderers: a program over the input the host declares.
+pub fn compile_with(src: &str, file: &str, input: Input) -> Result<Program, Fail> {
+    tabnas_alchemy::compile_with(src, file, input, Arc::new(NoStages), Arc::new(NoStages))
+}
+
+/// The input a `check.tsv` row's program is compiled over: its
+/// `protocol` column, empty for JSON events (the default a host
+/// declares), `parser` for the parser's rule passes.
+pub fn row_input(row: &Row) -> Input {
+    match row.named("protocol") {
+        "" => Input::JsonEvents,
+        "parser" => Input::ParserEvents,
+        other => panic!(
+            "{}: the protocol is empty or parser, not {other:?}",
+            row.location()
+        ),
+    }
 }
 
 /// [`tabnas_alchemy::compile_sources`] with [`NoStages`] routers and

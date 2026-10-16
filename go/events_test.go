@@ -13,6 +13,8 @@ package tabnasalchemy
 import (
 	"strings"
 	"testing"
+
+	"github.com/tabnas/alchemy/go/shared"
 )
 
 // events consumes the input, so a program that reads it twice, or captures
@@ -47,4 +49,53 @@ func TestEventsOverTheInputIsAffine(t *testing.T) {
 	if tree, f := Compile("def export [input] (events input)", "tree.alc", routers, renderers); f != nil || tree.Output() != OutputJsonEvents {
 		t.Errorf("%v %v", tree, f)
 	}
+}
+
+// parser-events: a host that declares a parser-events input hands the
+// program the parser's rule passes, which parser-events reads as items and
+// nothing else reads. The stream is affine as events's is, and a
+// transducer's outputs are a rewritten tree, handed on as JSON events.
+func TestParserEventsOverADeclaredInput(t *testing.T) {
+	transducer := "def step [s pass]\n  match pass\n    case (close rule) (transition s [(scalar (get :name rule))])\n    case _ (transition s [])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (parser-events input))\n"
+	program, f := CompileWith(transducer, "t.alc", InputParserEvents, routers, renderers)
+	if f != nil {
+		t.Fatal(f)
+	}
+	if program.Input() != InputParserEvents || program.Output() != OutputJsonEvents {
+		t.Errorf("%v %v", program.Input(), program.Output())
+	}
+	if !strings.Contains(program.Explain(), "Protocol:              ParserEvents/1 → Stream<ParserEvent>") {
+		t.Error(program.Explain())
+	}
+	// Compiled over the default input, JSON events, it reads the wrong
+	// protocol.
+	if _, f := Compile(transducer, "t.alc", routers, renderers); f == nil || !strings.HasPrefix(f.Message, "protocol_mismatch: ") {
+		t.Errorf("%v", f)
+	}
+	if p, f := Compile("def export [input] input", "j.alc", routers, renderers); f != nil || p.Input() != InputJSONEvents {
+		t.Errorf("%v", f)
+	}
+
+	twice := "def export [input]\n  concat\n    join \"\" (map (fn [p] \"a\") (parser-events input))\n    join \"\" (map (fn [p] \"b\") (parser-events input))\n"
+	if _, f := CompileWith(twice, "twice.alc", InputParserEvents, routers, renderers); f == nil || f.Code != CodeStreamReused {
+		t.Errorf("%v", f)
+	}
+	captured := "def export [input]\n  concat-map (fn [x] (join \"\" (map (fn [p] \"\") (parser-events input)))) [1]\n"
+	if _, f := CompileWith(captured, "captured.alc", InputParserEvents, routers, renderers); f == nil || !strings.HasPrefix(f.Message, "captured: ") {
+		t.Errorf("%v", f)
+	}
+
+	// The host drives the sink its declared input names, and is told so
+	// before anything runs when it does not.
+	refused := func(f *Fail) {
+		t.Helper()
+		if f == nil || f.Code != CodeDSLTypeError || !strings.HasPrefix(f.Message, "protocol_mismatch: ") {
+			t.Errorf("%v", f)
+		}
+	}
+	_, f = program.Sink(nil, RenderDefault, shared.DefaultLimits(), nil)
+	refused(f)
+	json, _ := Compile("def export [input] input", "j.alc", routers, renderers)
+	_, f = json.ParserSink(nil, RenderDefault, shared.DefaultLimits(), nil)
+	refused(f)
 }

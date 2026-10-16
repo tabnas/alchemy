@@ -154,6 +154,9 @@ export type Seq =
 export type Plan =
   // The host's `JsonEvents/1`.
   | { readonly p: 'input' }
+  // The host's `ParserEvents/1`, when it declares a parser-events input:
+  // read by `parser-events` alone.
+  | { readonly p: 'parser-input' }
   // `route specs input`: a stream of `selected` values.
   | { readonly p: 'route'; readonly specs: ReadonlyArray<CaptureSpec>; readonly source: Plan }
   // `select selector input`: a stream of the selected values.
@@ -162,6 +165,10 @@ export type Plan =
   // container events as constants and `key` and `scalar` with their one
   // field; `end` is the stream's end, not an item.
   | { readonly p: 'events'; readonly source: Plan }
+  // `parser-events input`: every rule pass of `ParserEvents/1` as one
+  // tagged item, `(open rule)` or `(close rule)`; the parse's end is the
+  // stream's end, not an item. Its source is always the `parser-input`.
+  | { readonly p: 'parser-events'; readonly source: Plan }
   // `as-events items`: a stream of items the program built, each an
   // event, as `JsonEvents/1`: the reverse of `events`, which any taker of
   // JSON events already applies to such a stream; here the program says
@@ -183,6 +190,9 @@ export type Plan =
   | { readonly p: 'table-from-json'; readonly binding: Val; readonly source: Plan; readonly at: SourceSpan }
   // `records table-events`: `JsonEvents/1` from `TableRows/1`.
   | { readonly p: 'records'; readonly source: Plan }
+  // `tree-contract events`: the events unchanged, held to a tree's
+  // contract (the shared `TreeContract`) where they pass.
+  | { readonly p: 'tree-contract'; readonly source: Plan }
   // `csv-table options events`: the tagged table events, validated as the
   // CSV renderer validates them, passed on unchanged.
   | { readonly p: 'csv-table'; readonly options: Val; readonly source: Plan }
@@ -224,9 +234,10 @@ export function nonFiniteWord(value: number): string {
   return value > 0 ? 'Infinity' : '-Infinity'
 }
 
-// What a plan produces: `JsonEvents`, `TableRows` (natively), or `Items`
-// for a stream of values whose shape the runtime learns item by item.
-export type Protocol = 'JsonEvents' | 'TableRows' | 'Items' | 'Text'
+// What a plan produces: `JsonEvents`, `ParserEvents` (the host's parser
+// input), `TableRows` (natively), or `Items` for a stream of values whose
+// shape the runtime learns item by item.
+export type Protocol = 'JsonEvents' | 'ParserEvents' | 'TableRows' | 'Items' | 'Text'
 
 // A `concat` of `items`, with its live item found once.
 export function concatPlan(items: ReadonlyArray<Val>): Plan {
@@ -242,16 +253,19 @@ export function isLive(plan: Plan): boolean {
   for (;;) {
     switch (here.p) {
       case 'input':
+      case 'parser-input':
         return true
       case 'route':
       case 'select':
       case 'events':
+      case 'parser-events':
       case 'as-events':
       case 'scan-emit':
       case 'map':
       case 'filter':
       case 'table-from-json':
       case 'records':
+      case 'tree-contract':
       case 'csv-table':
       case 'csv':
       case 'json':
@@ -296,12 +310,16 @@ export function protocol(plan: Plan): Protocol {
     case 'input':
     case 'records':
     case 'as-events':
+    case 'tree-contract':
       return 'JsonEvents'
+    case 'parser-input':
+      return 'ParserEvents'
     case 'table-from-json':
       return 'TableRows'
     case 'route':
     case 'select':
     case 'events':
+    case 'parser-events':
     case 'scan-emit':
     case 'map':
     case 'filter':
@@ -319,6 +337,8 @@ export function planName(plan: Plan): string {
       return 'text'
     case 'replace':
       return 'replace-text'
+    case 'parser-input':
+      return 'input'
     default:
       return plan.p
   }

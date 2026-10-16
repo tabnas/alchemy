@@ -6,9 +6,10 @@
 //! `Stream<T>` an ordered single-use sequence, of which `TableEvents`
 //! (`Stream<TableEvent>`, the `TableRows/1` protocol as tagged values) and
 //! `Stream<Event>` (the source's own events as tagged values, what
-//! `events` yields) are two; `JsonEvents` the single-use source; `Text`
-//! single-use incremental
-//! text; `String` a finite retained string. `Unknown` is what inference
+//! `events` yields) and `Stream<ParserEvent>` (the parser's rule passes,
+//! what `parser-events` yields) are three; `JsonEvents` the single-use
+//! source, or `ParserEvents` when the host declares a parser-events input;
+//! `Text` single-use incremental text; `String` a finite retained string. `Unknown` is what inference
 //! could not decide, and it is accepted everywhere: the checker is
 //! conservative, reporting only what it can see is wrong. `Never` is the
 //! type of `fail`.
@@ -49,12 +50,18 @@ pub enum Type {
     /// `object-end`, `array-start`, `array-end`, `(key name)` or
     /// `(scalar value)`.
     Event,
+    /// One rule pass as `parser-events` delivers it: `(open rule)` or
+    /// `(close rule)`, the rule a record.
+    ParserEvent,
     /// A function: its parameters and its result.
     Fn(Vec<Type>, Box<Type>),
     /// A single-use stream of items.
     Stream(Box<Type>),
     /// The single-use source.
     JsonEvents,
+    /// The single-use source, when the host declares a parser-events
+    /// input: the parser's rule passes (`ParserEvents/1`).
+    ParserEvents,
     /// Single-use incremental text.
     Text,
 }
@@ -76,6 +83,12 @@ impl Type {
     /// `Stream<Event>`: the source's events as items, what `events` yields.
     pub fn events() -> Type {
         Type::stream(Type::Event)
+    }
+
+    /// `Stream<ParserEvent>`: the parser's rule passes as items, what
+    /// `parser-events` yields.
+    pub fn parser_events() -> Type {
+        Type::stream(Type::ParserEvent)
     }
 
     pub fn tagged(name: &str) -> Type {
@@ -111,16 +124,21 @@ impl Type {
             Type::Selector => "a selector",
             Type::CaptureSpec => "a capture",
             Type::Tagged(tag) if &**tag == "missing" => "missing",
-            Type::Tagged(_) | Type::TableEvent | Type::Event => "a tagged value",
+            Type::Tagged(_) | Type::TableEvent | Type::Event | Type::ParserEvent => {
+                "a tagged value"
+            }
             Type::Fn(..) => "a function",
-            Type::Stream(_) | Type::JsonEvents => "a stream",
+            Type::Stream(_) | Type::JsonEvents | Type::ParserEvents => "a stream",
             Type::Text => "a text",
         }
     }
 
     /// Whether a binding of this type is used at most once.
     pub fn is_affine(&self) -> bool {
-        matches!(self, Type::Stream(_) | Type::JsonEvents | Type::Text)
+        matches!(
+            self,
+            Type::Stream(_) | Type::JsonEvents | Type::ParserEvents | Type::Text
+        )
     }
 
     /// Whether this is one of the protocols, so a mismatch is between
@@ -152,7 +170,10 @@ impl Type {
     /// may hold one; the runtime refuses a live one where the vector is
     /// built, as it refuses one a `map` over a vector answers.
     pub fn is_stream_or_source(&self) -> bool {
-        matches!(self, Type::Stream(_) | Type::JsonEvents)
+        matches!(
+            self,
+            Type::Stream(_) | Type::JsonEvents | Type::ParserEvents
+        )
     }
 
     /// Whether this type is a stream: `Stream<T>` in any shape.
@@ -190,6 +211,7 @@ impl Type {
                 &**tag,
                 "object-start" | "object-end" | "array-start" | "array-end" | "key" | "scalar"
             ),
+            (Type::ParserEvent, Type::Tagged(tag)) => matches!(&**tag, "open" | "close"),
             (Type::Fn(ps, r), Type::Fn(qs, s)) => ps.len() == qs.len() && r.accepts(s),
             // A stream of events reaches any taker of JSON events: the
             // lowering turns each item back into an event as the stream
@@ -240,6 +262,7 @@ impl fmt::Display for Type {
             Type::Tagged(tag) => f.write_str(tag),
             Type::TableEvent => f.write_str("TableEvent"),
             Type::Event => f.write_str("Event"),
+            Type::ParserEvent => f.write_str("ParserEvent"),
             Type::Fn(params, result) => {
                 f.write_str("Fn(")?;
                 for (i, p) in params.iter().enumerate() {
@@ -253,6 +276,7 @@ impl fmt::Display for Type {
             Type::Stream(t) if **t == Type::TableEvent => f.write_str("TableEvents"),
             Type::Stream(t) => write!(f, "Stream<{t}>"),
             Type::JsonEvents => f.write_str("JsonEvents"),
+            Type::ParserEvents => f.write_str("ParserEvents"),
             Type::Text => f.write_str("Text"),
         }
     }
@@ -347,6 +371,28 @@ mod tests {
             Type::func(vec![Type::Record, Type::JsonEvents], table).to_string(),
             "Fn(Record JsonEvents -> TableEvents)"
         );
+    }
+
+    /// The parser's rule passes are a protocol of their own: neither
+    /// source stands for the other, and a stream of rule passes reaches no
+    /// taker of JSON events, which only a transducer's outputs do.
+    #[test]
+    fn parser_events_are_their_own_protocol() {
+        let passes = Type::parser_events();
+        assert!(passes.accepts(&Type::stream(Type::tagged("open"))));
+        assert!(passes.accepts(&Type::stream(Type::tagged("close"))));
+        assert!(!passes.accepts(&Type::stream(Type::tagged("key"))));
+        assert!(!passes.accepts(&Type::events()));
+        assert!(!Type::events().accepts(&passes));
+        assert!(!Type::JsonEvents.accepts(&passes));
+        assert!(!Type::JsonEvents.accepts(&Type::ParserEvents));
+        assert!(!Type::ParserEvents.accepts(&Type::JsonEvents));
+        assert!(Type::ParserEvents.is_affine() && Type::ParserEvents.is_stream_or_source());
+        assert!(passes.is_affine());
+        assert_eq!(Type::ParserEvents.kind_text(), "a stream");
+        assert_eq!(Type::ParserEvent.kind_text(), "a tagged value");
+        assert_eq!(passes.to_string(), "Stream<ParserEvent>");
+        assert_eq!(Type::ParserEvents.to_string(), "ParserEvents");
     }
 
     #[test]

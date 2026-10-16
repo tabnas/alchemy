@@ -35,12 +35,21 @@
 //! program, and keeps a tree's contract in front of a render that writes
 //! from one ([`Front`]). Nothing here knows a format by name: every
 //! decision is the descriptors'.
+//!
+//! A format whose package hands over a transducer part (its manifest's
+//! `translate.transduce`, read by [`Part::transducer`]) can be read from
+//! the parser's rule passes instead of its parsed value's events: a host
+//! that declares that input composes with [`compose_parsed`] (or
+//! [`compose_program_parsed`]), whose main reads `ParserEvents/1`, makes
+//! the format's events with the transducer, and holds them to a tree's
+//! contract inside the program (`tree-contract`), where the host would
+//! hold a source's events in front; [`Front`] is then `None`.
 
 use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::program::{compile_sources, Output, Program, Source};
+use crate::program::{compile_sources_with, Input, Output, Program, Source};
 use crate::shared::{Code, Duplicates, Fail, Renderers, Routers};
 use crate::value::Val;
 
@@ -270,6 +279,33 @@ impl Part {
         })
     }
 
+    /// The transducer part a descriptor's manifest names, its
+    /// `translate.transduce`: the `.alc` file whose entry makes the
+    /// format's JSON events of the parser's rule passes, with the part the
+    /// package hands over for it (`transduce`, its entry and text).
+    /// `Some(None)` when the manifest names none and none is handed over;
+    /// `None` when the two disagree or the manifest's entry is one this
+    /// module cannot take, as for a lift. [`Part::from_descriptor`] reads
+    /// no transducer, so a host that does not read parser events composes
+    /// as it did.
+    pub fn transducer(d: &Descriptor, transduce: Option<&PartText>) -> Option<Option<Alc>> {
+        let manifest: Value = serde_json::from_str(&d.manifest).ok()?;
+        let named = manifest.get("translate")?.get("transduce");
+        match (named, transduce) {
+            (None, None) => Some(None),
+            (Some(Value::String(path)), Some(p))
+                if path.ends_with(".alc") && !p.entry.is_empty() =>
+            {
+                Some(Some(Alc {
+                    file: format!("{}/{path}", d.package),
+                    entry: p.entry.clone(),
+                    text: p.source.clone()?,
+                }))
+            }
+            _ => None,
+        }
+    }
+
     /// The part a program's output stands for, in a source's place: JSON
     /// events are a plain tree, a table is records, and a text is no
     /// source (`render_of_text`).
@@ -434,6 +470,9 @@ pub struct Composition {
     pub native: Option<Native>,
     /// The render's loss declaration, then each adapter's.
     pub loss: Vec<String>,
+    /// What the main's `input` reads: JSON events, or the parser's rule
+    /// passes for a composition over a transducer ([`compose_parsed`]).
+    pub input: Input,
 }
 
 impl Composition {
@@ -456,7 +495,7 @@ impl Composition {
             sources.push(p.export_as(PROGRAM_EXPORT));
         }
         sources.push(Source::new(&self.main_file, &self.main));
-        let program = compile_sources(&sources, routers, renderers)?;
+        let program = compile_sources_with(&sources, self.input, routers, renderers)?;
         if self.adapters.contains(&Adapter::InferredTable) {
             program.with_duplicates(Duplicates::LastWins)
         } else {
@@ -510,6 +549,84 @@ pub fn compose_program(
         main_file,
         Front::None,
     )
+}
+
+/// [`compose`] over the parser's rule passes: the host declares a
+/// parser-events input, and the source's transducer (its part's
+/// [`Part::transducer`]) makes the document's events of them. Where a host
+/// would hold a source's events to a tree's contract in front (a render
+/// that writes from a tree, the events reaching it whole), the main holds
+/// the transducer's events to it instead, before the lift and the
+/// adapters (`tree-contract`), since what the host pushes is parser
+/// events; the [`Front`] is `None`. A records target takes the events as
+/// they come, as it does a source's. The composition is never run by a
+/// host's own renderer ([`Native`]), which has no events to render.
+pub fn compose_parsed(
+    source: &Part,
+    transducer: &Alc,
+    target: &Part,
+    options: &Options,
+    main_file: &str,
+) -> Result<Composition, Fail> {
+    let events = format!("({} input)", transducer.entry);
+    let plain = compose_over(
+        Some(source),
+        &events,
+        target,
+        options,
+        main_file,
+        Front::Tree,
+    )?;
+    let mut composition = match plain.front {
+        Front::Tree => compose_over(
+            Some(source),
+            &format!("(tree-contract {events})"),
+            target,
+            options,
+            main_file,
+            Front::None,
+        )?,
+        Front::None => plain,
+    };
+    composition.front = Front::None;
+    composition.native = None;
+    composition
+        .sources
+        .push((transducer.file.clone(), transducer.text.clone()));
+    composition.input = Input::ParserEvents;
+    Ok(composition)
+}
+
+/// [`compose_program`] over the parser's rule passes: the program reads
+/// the events the source's transducer makes of them, as it reads a
+/// source's events, its output then composed into `target` as for
+/// [`compose_program`].
+pub fn compose_program_parsed(
+    output: Output,
+    transducer: &Alc,
+    target: &Part,
+    options: &Options,
+    main_file: &str,
+) -> Result<Composition, Fail> {
+    let mut source = Part::of_output(output)?;
+    if target.embed.is_none() {
+        source.schema = target.schema.clone();
+    }
+    let input = format!("({PROGRAM_EXPORT} ({} input))", transducer.entry);
+    let mut composition = compose_over(
+        Some(&source),
+        &input,
+        target,
+        options,
+        main_file,
+        Front::None,
+    )?;
+    composition.native = None;
+    composition
+        .sources
+        .push((transducer.file.clone(), transducer.text.clone()));
+    composition.input = Input::ParserEvents;
+    Ok(composition)
 }
 
 fn compose_over(
@@ -622,6 +739,7 @@ fn compose_over(
         front,
         native,
         loss,
+        input: Input::JsonEvents,
     })
 }
 
@@ -908,5 +1026,138 @@ mod tests {
             "def export [input] (xml-render (xml-embed (records (program-export input))))"
         );
         assert_eq!(c.adapters, vec![Adapter::Records, Adapter::Embed]);
+    }
+
+    /// The json grammar's descriptor, naming a transducer part.
+    fn json_descriptor() -> Descriptor {
+        Descriptor {
+            package: "tabnas-json".into(),
+            manifest: r#"{"languageId": "json", "translate": {"reads": "tree", "writes": "tree", "transduce": "alchemy/transduce.alc", "render": "json"}}"#.into(),
+            lift: None,
+            embed: None,
+            render: Some(PartText::new("json", None)),
+        }
+    }
+
+    const JSON_TRANSDUCE: &str = "def json-transduce [input]\n  transduce-tree\n    record\n      entry :map (record (entry :container :object))\n      entry :list (record (entry :container :array))\n      entry :pair (record (entry :key 0))\n      entry :val (record (entry :scalar 0))\n    input\n";
+
+    /// A manifest's transducer part is read with the text the package
+    /// hands over, as a lift is, and only by `Part::transducer`:
+    /// `from_descriptor` composes as it did whatever the manifest names.
+    #[test]
+    fn a_transducer_part_is_read_beside_the_descriptor() {
+        let d = json_descriptor();
+        let json = Part::from_descriptor(&d).expect("the part reads as it did");
+        assert_eq!(json.render, Render::Json);
+        let text = PartText::new("json-transduce", Some(JSON_TRANSDUCE));
+        let t = Part::transducer(&d, Some(&text)).unwrap().unwrap();
+        assert_eq!(
+            (t.file.as_str(), t.entry.as_str()),
+            ("tabnas-json/alchemy/transduce.alc", "json-transduce")
+        );
+        // Named and not handed over, handed over and not named, or not an
+        // alchemy file: no part.
+        assert_eq!(Part::transducer(&d, None), None);
+        let plain = Descriptor {
+            manifest: r#"{"languageId": "json", "translate": {"reads": "tree", "writes": "tree", "render": "json"}}"#.into(),
+            ..json_descriptor()
+        };
+        assert_eq!(Part::transducer(&plain, None), Some(None));
+        assert_eq!(Part::transducer(&plain, Some(&text)), None);
+        let not_alc = Descriptor {
+            manifest: d.manifest.replace("transduce.alc", "transduce.txt"),
+            ..json_descriptor()
+        };
+        assert_eq!(Part::transducer(&not_alc, Some(&text)), None);
+    }
+
+    /// Over the parser's rule passes the main reads them, the transducer
+    /// makes the format's events, and the tree's contract holds them where
+    /// a host would hold a source's in front: nothing is in front, and no
+    /// host renders them itself.
+    #[test]
+    fn a_transducer_composes_over_the_parsers_rule_passes() {
+        use crate::lower::tests::Unlowered;
+        let o = Options::default();
+        let d = json_descriptor();
+        let json = Part::from_descriptor(&d).unwrap();
+        let text = PartText::new("json-transduce", Some(JSON_TRANSDUCE));
+        let t = Part::transducer(&d, Some(&text)).unwrap().unwrap();
+
+        let yaml = tree("yaml", "any");
+        let c = compose_parsed(&json, &t, &yaml, &o, "main").unwrap();
+        assert_eq!(
+            c.main,
+            "def export [input] (yaml-render (tree-contract (json-transduce input)))"
+        );
+        assert_eq!(
+            (c.front, c.native, c.input),
+            (Front::None, None, Input::ParserEvents)
+        );
+        assert_eq!(
+            c.sources.last().unwrap().0,
+            "tabnas-json/alchemy/transduce.alc"
+        );
+        let program = c
+            .compile(None, Arc::new(Unlowered), Arc::new(Unlowered))
+            .unwrap();
+        assert_eq!(program.input(), Input::ParserEvents);
+        let report = program.explain();
+        assert!(
+            report.contains("Protocol:              ParserEvents/1 → Stream<ParserEvent> → Stream<Value> → JsonEvents/1 → Text"),
+            "{report}"
+        );
+        assert!(
+            report.contains("Tree contract:         the keys of each open object, each dropped as its object closes"),
+            "{report}"
+        );
+        assert!(
+            report.contains("Duplicate members:     rejected where a tree's contract holds the events (DUPLICATE_MEMBER)"),
+            "{report}"
+        );
+
+        // Into JSON: the contract, and no native route.
+        let c = compose_parsed(&json, &t, &json, &o, "main").unwrap();
+        assert_eq!(
+            c.main,
+            "def export [input] (json (record (entry :non-finite :null)) (tree-contract (json-transduce input)))"
+        );
+        assert_eq!(c.native, None);
+        // A root adapter takes the contract's events.
+        let toml = tree("toml", "object");
+        let c = compose_parsed(&json, &t, &toml, &o, "main").unwrap();
+        assert_eq!(
+            c.main,
+            "def export [input] (toml-render (wrap-object \"items\" (tree-contract (json-transduce input))))"
+        );
+        // A records target takes the events as it takes a source's.
+        let csv = part(
+            "csv",
+            r#"{"reads": "records", "writes": "records", "root": "array", "render": "csv"}"#,
+            Some(PartText::new("csv", None)),
+        )
+        .unwrap();
+        let c = compose_parsed(&json, &t, &csv, &o, "main").unwrap();
+        assert!(!c.main.contains("tree-contract"), "{}", c.main);
+        assert!(c.main.contains("(json-transduce input)"), "{}", c.main);
+        assert_eq!(c.input, Input::ParserEvents);
+        c.compile(None, Arc::new(Unlowered), Arc::new(Unlowered))
+            .unwrap();
+
+        // A program's output over the transducer's events.
+        let c = compose_program_parsed(Output::JsonEvents, &t, &yaml, &o, "main").unwrap();
+        assert_eq!(
+            c.main,
+            "def export [input] (yaml-render (program-export (json-transduce input)))"
+        );
+        assert_eq!((c.front, c.input), (Front::None, Input::ParserEvents));
+        let program = c
+            .compile(
+                Some(Source::new("p.alc", "def export [input] (events input)")),
+                Arc::new(Unlowered),
+                Arc::new(Unlowered),
+            )
+            .unwrap();
+        assert_eq!(program.input(), Input::ParserEvents);
     }
 }

@@ -20,6 +20,11 @@ import (
 // values and plans, and formats a number itself (shortestNumber), so the
 // stages are first called when a sink is made.
 //
+// A program reads JSON events unless the host declares another input:
+// CompileWith and CompileSourcesWith take an Input, and a program compiled
+// over InputParserEvents reads the parser's rule passes, which the host
+// pushes into Program.ParserSink.
+//
 // The host pushes transduce Events into the sink and one End; the sink
 // writes the output as it goes and flushes it at End. A failure comes back
 // from the event call that found it, as a transduce *Fail whose
@@ -32,6 +37,8 @@ import (
 type Program struct {
 	resolved *Resolved
 	sources  *Sources
+	// input is what the host declared export's input to be.
+	input Input
 	// output is what the checker decided from export's type.
 	output     Output
 	native     bool
@@ -61,6 +68,15 @@ func Compile(src, file string, routers shared.Routers, renderers shared.Renderer
 	return CompileSources([]Source{{File: file, Text: src}}, routers, renderers)
 }
 
+// CompileWith is Compile over the input the host declares: export reads
+// JSON events (InputJSONEvents, what Compile declares) or the parser's
+// rule passes (InputParserEvents). The checker holds the program to it:
+// `events input` over parser events, or `parser-events input` over JSON
+// events, is `protocol_mismatch`.
+func CompileWith(src, file string, input Input, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
+	return CompileSourcesWith([]Source{{File: file, Text: src}}, input, routers, renderers)
+}
+
 // CompileSources compiles a program from several sources linked into one
 // namespace: a definition in any of them is in scope in all, export is
 // defined in one, and a name defined twice, in one file or across two, is
@@ -82,14 +98,20 @@ func Compile(src, file string, routers shared.Routers, renderers shared.Renderer
 // routers and renderers are the stages the program runs on, as for Compile:
 // compiling calls neither, and every sink the program makes runs on them.
 func CompileSources(sources []Source, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
-	a, f := AnalyzeSources(sources)
+	return CompileSourcesWith(sources, InputJSONEvents, routers, renderers)
+}
+
+// CompileSourcesWith is CompileSources over the input the host declares,
+// as for CompileWith.
+func CompileSourcesWith(sources []Source, input Input, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
+	a, f := AnalyzeSourcesWith(sources, input)
 	if f != nil {
 		return nil, f
 	}
-	return buildProgram(a.Resolved, a.Sources, a.Checked.Output, true, shared.Reject, shared.NewAbortFlag(), routers, renderers)
+	return buildProgram(a.Resolved, a.Sources, input, a.Checked.Output, true, shared.Reject, shared.NewAbortFlag(), routers, renderers)
 }
 
-func buildProgram(resolved *Resolved, sources *Sources, output Output, native bool, duplicates shared.Duplicates, abort *shared.AbortFlag, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
+func buildProgram(resolved *Resolved, sources *Sources, input Input, output Output, native bool, duplicates shared.Duplicates, abort *shared.AbortFlag, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
 	// The plan is built on a runtime without the stages: evaluating asks
 	// nothing of them, and the program keeps them for its sinks.
 	result, f := NewRuntime(resolved, sources).
@@ -97,13 +119,14 @@ func buildProgram(resolved *Resolved, sources *Sources, output Output, native bo
 		WithDuplicates(duplicates).
 		WithFuel(MaxPlanSteps).
 		WithAbort(abort).
-		Export()
+		ExportWith(input)
 	if f != nil {
 		return nil, f
 	}
 	return &Program{
 		resolved:   resolved,
 		sources:    sources,
+		input:      input,
 		output:     output,
 		native:     native,
 		duplicates: duplicates,
@@ -118,13 +141,13 @@ func buildProgram(resolved *Resolved, sources *Sources, output Output, native bo
 // through the library's own definitions (false) or natively (true, the
 // default). The differential test runs both.
 func (p *Program) WithNative(native bool) (*Program, *Fail) {
-	return buildProgram(p.resolved, p.sources, p.output, native, p.duplicates, p.abort, p.routers, p.renderers)
+	return buildProgram(p.resolved, p.sources, p.input, p.output, native, p.duplicates, p.abort, p.routers, p.renderers)
 }
 
 // WithDuplicates is the same program with another policy for repeated
 // member names in captured values; the default rejects them.
 func (p *Program) WithDuplicates(duplicates shared.Duplicates) (*Program, *Fail) {
-	return buildProgram(p.resolved, p.sources, p.output, p.native, duplicates, p.abort, p.routers, p.renderers)
+	return buildProgram(p.resolved, p.sources, p.input, p.output, p.native, duplicates, p.abort, p.routers, p.renderers)
 }
 
 // WithAbort is the same program with the host's cancellation: every sink
@@ -156,6 +179,11 @@ func (p *Program) Resolved() *Resolved { return p.resolved }
 
 // Result is the plan export answered: a text or a stream.
 func (p *Program) Result() Val { return p.result }
+
+// Input is what the host declared export's input to be, and so which sink
+// it pushes the source into: Sink for JSON events, ParserSink for parser
+// events.
+func (p *Program) Input() Input { return p.input }
 
 // Output is what the program produces, and so what the host renders:
 // decided by the checker from export's type.
@@ -231,11 +259,11 @@ func rootStage(plan *Plan) *Plan {
 	for {
 		var next *Plan
 		switch here.Kind {
-		case PlanInput:
+		case PlanInput, PlanParserInput:
 			return here
-		case PlanRoute, PlanSelect, PlanEvents, PlanScanEmit, PlanMap, PlanFilter,
-			PlanTableFromJSON, PlanRecords, PlanAsEvents, PlanCsvTable, PlanCsv, PlanJSON:
-			if here.Source.Kind == PlanInput {
+		case PlanRoute, PlanSelect, PlanEvents, PlanParserEvents, PlanScanEmit, PlanMap, PlanFilter,
+			PlanTableFromJSON, PlanRecords, PlanTreeContract, PlanAsEvents, PlanCsvTable, PlanCsv, PlanJSON:
+			if here.Source.Kind == PlanInput || here.Source.Kind == PlanParserInput {
 				return here
 			}
 			next = here.Source
@@ -277,9 +305,9 @@ func stagesOf(plan *Plan) []*Plan {
 		out = append(out, here)
 		var next *Plan
 		switch here.Kind {
-		case PlanInput, PlanLit:
-		case PlanRoute, PlanSelect, PlanEvents, PlanAsEvents, PlanScanEmit, PlanMap, PlanFilter,
-			PlanTableFromJSON, PlanRecords, PlanCsvTable, PlanCsv, PlanJSON:
+		case PlanInput, PlanParserInput, PlanLit:
+		case PlanRoute, PlanSelect, PlanEvents, PlanParserEvents, PlanAsEvents, PlanScanEmit, PlanMap, PlanFilter,
+			PlanTableFromJSON, PlanRecords, PlanTreeContract, PlanCsvTable, PlanCsv, PlanJSON:
 			next = here.Source
 		case PlanConcatMap, PlanJoin:
 			next = here.Seq.Stream
@@ -334,6 +362,8 @@ func stageOf(p *Plan) Stage {
 		PlanTableFromJSON: StageTableFromJSON, PlanRecords: StageRecords, PlanCsvTable: StageCsvTable,
 		PlanCsv: StageCsv, PlanJSON: StageJSON, PlanConcatMap: StageConcatMap, PlanJoin: StageJoin,
 		PlanConcat: StageConcat, PlanReplace: StageReplace,
+		PlanParserInput: StageParserInput, PlanParserEvents: StageParserEvents,
+		PlanTreeContract: StageTreeContract,
 	}
 	s := Stage{Kind: kinds[p.Kind]}
 	switch p.Kind {
@@ -378,7 +408,7 @@ func stageOf(p *Plan) Stage {
 // the duplicate-member policy.
 func (p *Program) PlanView() PlanView {
 	plan := p.plan()
-	view := PlanView{Output: p.output, Live: plan != nil && plan.IsLive(), Duplicates: p.duplicates}
+	view := PlanView{Input: p.input, Output: p.output, Live: plan != nil && plan.IsLive(), Duplicates: p.duplicates}
 	if view.Live {
 		for _, stage := range stagesOf(plan) {
 			view.Stages = append(view.Stages, stageOf(stage))
@@ -405,8 +435,12 @@ func (p *Program) ExplainJSON() *JSONObject { return p.Summary().JSON() }
 // OutputBytes counted in metrics (a fresh set when nil). render chooses how
 // a table or JSON-events result is rendered (RenderCSV or RenderJSON;
 // RenderDefault for the host's default); a program that renders its own
-// text takes none (`render_of_text`).
+// text takes none (`render_of_text`). A program compiled over parser
+// events takes them through ParserSink instead.
 func (p *Program) Sink(out io.Writer, render Renderer, limits shared.Limits, metrics *shared.Metrics) (shared.Sink, *Fail) {
+	if f := p.declared(InputJSONEvents); f != nil {
+		return nil, f
+	}
 	if metrics == nil {
 		metrics = shared.NewMetrics()
 	}
@@ -417,6 +451,54 @@ func (p *Program) Sink(out io.Writer, render Renderer, limits shared.Limits, met
 // SinkOut is Sink over any text output: for a host that has its own writer
 // stage, and for tests that read the text back.
 func (p *Program) SinkOut(out shared.TextOut, render Renderer, limits shared.Limits, metrics *shared.Metrics) (shared.Sink, *Fail) {
+	if f := p.declared(InputJSONEvents); f != nil {
+		return nil, f
+	}
+	return p.lowering(limits, metrics).SinkAs(p.result, out, render, p.output)
+}
+
+// ParserSink is the sink for one run over parser events, for a program
+// compiled over InputParserEvents: the host pushes each rule pass into it
+// and one ParserEnd, once the parse has returned its value. The output is
+// written as for Sink.
+func (p *Program) ParserSink(out io.Writer, render Renderer, limits shared.Limits, metrics *shared.Metrics) (shared.ParserSink, *Fail) {
+	if f := p.declared(InputParserEvents); f != nil {
+		return nil, f
+	}
+	if metrics == nil {
+		metrics = shared.NewMetrics()
+	}
+	w := p.renderers.WriteOut(out, limits, metrics)
+	return p.ParserSinkOut(w, render, limits, metrics)
+}
+
+// ParserSinkOut is ParserSink over any text output, as SinkOut is Sink's.
+func (p *Program) ParserSinkOut(out shared.TextOut, render Renderer, limits shared.Limits, metrics *shared.Metrics) (shared.ParserSink, *Fail) {
+	if f := p.declared(InputParserEvents); f != nil {
+		return nil, f
+	}
+	l := p.lowering(limits, metrics)
+	events, f := l.SinkAs(p.result, out, render, p.output)
+	if f != nil {
+		return nil, f
+	}
+	return l.ParserHead(events), nil
+}
+
+// declared refuses a sink of the input the program was not compiled over:
+// a host's mistake, not a program's, refused before anything runs.
+func (p *Program) declared(input Input) *Fail {
+	if p.input == input {
+		return nil
+	}
+	declared, sink := "JSON events", "Program.Sink"
+	if p.input == InputParserEvents {
+		declared, sink = "parser events", "Program.ParserSink"
+	}
+	return NewFail(CodeDSLTypeError, "protocol_mismatch: the program was compiled over "+declared+"; push them into "+sink)
+}
+
+func (p *Program) lowering(limits shared.Limits, metrics *shared.Metrics) *Lowering {
 	rt := NewRuntime(p.resolved, p.sources).
 		WithNative(p.native).
 		WithDuplicates(p.duplicates).
@@ -424,5 +506,5 @@ func (p *Program) SinkOut(out shared.TextOut, render Renderer, limits shared.Lim
 		WithAbort(p.abort).
 		WithRouters(p.routers).
 		WithRenderers(p.renderers)
-	return NewLowering(rt, limits, metrics).SinkAs(p.result, out, render, p.output)
+	return NewLowering(rt, limits, metrics)
 }

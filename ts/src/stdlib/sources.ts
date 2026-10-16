@@ -275,4 +275,127 @@ def table-from-json [binding input]
     scan-emit no-schema (partial table-step binding) (partial table-finish-for binding)
 `,
   ],
+  [
+    "stdlib/transduce.alc",
+    `; The declarative transducer: a tree's JSON events from a grammar's rule
+; passes (ParserEvents/1), as a spec keyed by rule name says, so that a
+; transducer part for a grammar whose rules map onto a tree writes no
+; state machine of its own. The json grammar's part is
+;
+;   def json-transduce [input]
+;     transduce-tree
+;       record
+;         entry :map (record (entry :container :object))
+;         entry :list (record (entry :container :array))
+;         entry :pair (record (entry :key 0))
+;         entry :val (record (entry :scalar 0))
+;       input
+;
+; Each entry is a record of what that rule's passes do, any of:
+; \`:container\`, \`:object\` or \`:array\`, which the rule's open pass begins
+; and its close pass ends; \`:key\`, the member name its open pass
+; announces, a token's index (that token's \`:val\` names the member) or a
+; string; \`:scalar\`, the scalar the rule yields, a token's index (that
+; token of its open pass, when the pass consumed one: its \`:val\`, with
+; the lexeme a number token carries) or \`:value\` (its close pass's own
+; value). An open pass announces its key before it begins its container
+; or yields its scalar. A pass of a rule the spec does not name yields
+; nothing. A container whose rule is replaced by a rule the spec names a
+; container (its close pass's alternate replaces it) is one container:
+; that close yields no end and the replacing open no start.
+;
+; The state is [stack carry]: one :open marker per open container, and
+; whether a container's close handed it on to the rule replacing it.
+; Nothing grows with the document's width or length, only with its
+; nesting.
+
+; Token \`n\` of a pass, or missing when it consumed no such token.
+def transduce-token [n rule]
+  get-path (path n) (get :tokens rule)
+
+; The outputs with the key an open pass announces after them.
+def transduce-key [entry rule outputs]
+  match (get :key entry)
+    case missing outputs
+    case name
+      match (kind name)
+        case :string (push (key name) outputs)
+        case _
+          match (transduce-token name rule)
+            case missing outputs
+            case token (push (key (get :val token)) outputs)
+
+; The outputs with the scalar an open pass yields from one of its tokens.
+def transduce-scalar [from rule outputs]
+  match (kind from)
+    case :number
+      match (transduce-token from rule)
+        case missing outputs
+        case token (push (scalar (get :val token)) outputs)
+    case _ outputs
+
+; The outputs with the scalar a close pass yields from its own value.
+def transduce-value [from rule outputs]
+  match from
+    case :value
+      match (get :value rule)
+        case missing outputs
+        case value (push (scalar value) outputs)
+    case _ outputs
+
+; A container begins, unless the rule it replaced carries it on.
+def transduce-begin [state start outputs]
+  match state
+    case [stack true] (transition [stack false] outputs)
+    case [stack carry] (transition [(push :open stack) false] (push start outputs))
+
+; A container ends, unless the alternate replaces its rule with a rule the
+; spec names a container, which carries it on.
+def transduce-end [spec state rule end]
+  match state
+    case [stack carry]
+      match (get :alt rule)
+        case missing (transition [(pop stack) false] [end])
+        case alt
+          match (get (get :r alt) spec)
+            case missing (transition [(pop stack) false] [end])
+            case next
+              match (get :container next)
+                case missing (transition [(pop stack) false] [end])
+                case _ (transition [stack true] [])
+
+def transduce-open [spec state rule]
+  match (get (get :name rule) spec)
+    case missing (transition state [])
+    case entry
+      let [outputs (transduce-key entry rule [])]
+        match (get :container entry)
+          case :object (transduce-begin state object-start outputs)
+          case :array (transduce-begin state array-start outputs)
+          case _ (transition state (transduce-scalar (get :scalar entry) rule outputs))
+
+def transduce-close [spec state rule]
+  match (get (get :name rule) spec)
+    case missing (transition state [])
+    case entry
+      match (get :container entry)
+        case :object (transduce-end spec state rule object-end)
+        case :array (transduce-end spec state rule array-end)
+        case _ (transition state (transduce-value (get :scalar entry) rule []))
+
+def transduce-step [spec state pass]
+  match pass
+    case (open rule) (transduce-open spec state rule)
+    case (close rule) (transduce-close spec state rule)
+
+def transduce-finish [state]
+  match state
+    case [[] carry] []
+    case _ (fail :protocol-order "the rule passes ended inside a container, which a tree's never do")
+
+; A tree's JSON events from the rule passes, as \`spec\` says.
+def transduce-tree [spec input]
+  as-events (scan-emit [[] false] (partial transduce-step spec) transduce-finish (parser-events input))
+`,
+  ],
 ]

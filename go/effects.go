@@ -48,6 +48,12 @@ const (
 	StageJoin
 	StageConcat
 	StageReplace
+	// StageParserInput is the host's parser input; StageParserEvents
+	// `parser-events` over it.
+	StageParserInput
+	StageParserEvents
+	// StageTreeContract is `tree-contract`.
+	StageTreeContract
 )
 
 // Selector is a selector as the report prints it: transduce's Selector
@@ -117,6 +123,8 @@ const (
 // stream or text), the plan's stages from the input outward when it does,
 // and the duplicate-member policy.
 type PlanView struct {
+	// Input is what the host declared export's input to be.
+	Input      Input
 	Output     Output
 	Live       bool
 	Stages     []Stage
@@ -132,6 +140,9 @@ const (
 	RetainRecord
 	RetainSubtree
 	RetainState
+	// RetainKeys is the keys of each open object, which a tree's contract
+	// holds.
+	RetainKeys
 )
 
 func (s RetentionScope) String() string {
@@ -142,6 +153,8 @@ func (s RetentionScope) String() string {
 		return "subtree"
 	case RetainState:
 		return "state"
+	case RetainKeys:
+		return "keys"
 	}
 	return "metadata"
 }
@@ -251,6 +264,8 @@ func protocolOf(s StageKind) string {
 	switch s {
 	case StageInput, StageRecords, StageAsEvents:
 		return "JsonEvents/1"
+	case StageParserInput:
+		return "ParserEvents/1"
 	case StageTableFromJSON, StageCsvTable:
 		return "TableRows/1"
 	case StageRoute:
@@ -259,6 +274,10 @@ func protocolOf(s StageKind) string {
 		return "Stream<Value>"
 	case StageEvents:
 		return "Stream<Event>"
+	case StageParserEvents:
+		return "Stream<ParserEvent>"
+	case StageTreeContract:
+		return "JsonEvents/1"
 	case StageScanEmit, StageMap, StageFilter:
 		return "Stream<Value>"
 	}
@@ -309,6 +328,11 @@ func tabular(stages []Stage, output Output) bool {
 func duplicatesOf(stages []Stage, policy Duplicates, finite bool) string {
 	if finite {
 		return "not examined; the input is only validated"
+	}
+	for _, s := range stages {
+		if s.Kind == StageTreeContract {
+			return "rejected where a tree's contract holds the events (DUPLICATE_MEMBER)"
+		}
 	}
 	for _, s := range stages {
 		switch s.Kind {
@@ -381,7 +405,8 @@ func Summarize(resolved *Resolved, view PlanView) *EffectSummary {
 		}
 	}
 
-	protocol := []string{"JsonEvents/1"}
+	// The input's protocol, which the host declares.
+	protocol := []string{view.Input.String()}
 	for i, stage := range stages {
 		if i == 0 {
 			continue
@@ -495,6 +520,18 @@ func Summarize(resolved *Resolved, view PlanView) *EffectSummary {
 			if selection == passThrough {
 				selection = "none; every event is delivered as an item"
 			}
+		case StageTreeContract:
+			// The contract keeps each open object's keys, to refuse one
+			// repeated, and drops them as the object closes.
+			retention = append(retention, Retention{
+				Scope:  RetainKeys,
+				Label:  "Tree contract:",
+				Reason: "the keys of each open object, each dropped as its object closes",
+			})
+		case StageParserEvents:
+			// Every rule pass becomes one item as it arrives: a
+			// transducer's input, whose step decides what is kept.
+			selection = "none; every rule pass is delivered as an item"
 		case StageScanEmit:
 			confidence = Conditional
 			reason := "what the step returns, no deeper than max_depth"

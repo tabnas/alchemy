@@ -6,9 +6,10 @@
 // value, a single-use resource, and a protocol. `Value` is any data a
 // document can hold; `Vector<T>` a finite retained collection;
 // `Stream<T>` an ordered single-use sequence, of which `TableEvents`
-// (`Stream<TableEvent>`) and `Stream<Event>` are two; `JsonEvents` the
-// single-use source; `Text` single-use incremental text; `String` a
-// finite retained string. `Unknown` is what inference could not decide,
+// (`Stream<TableEvent>`), `Stream<Event>` and `Stream<ParserEvent>` are
+// three; `JsonEvents` the single-use source, or `ParserEvents` when the
+// host declares a parser-events input; `Text` single-use incremental
+// text; `String` a finite retained string. `Unknown` is what inference could not decide,
 // and it is accepted everywhere: the checker is conservative. `Never` is
 // the type of `fail`.
 //
@@ -35,12 +36,18 @@ export type Type =
   | { readonly t: 'TableEvent' }
   // One event of the source as `events` delivers it.
   | { readonly t: 'Event' }
+  // One rule pass as `parser-events` delivers it: `(open rule)` or
+  // `(close rule)`, the rule a record.
+  | { readonly t: 'ParserEvent' }
   // A function: its parameters and its result.
   | { readonly t: 'Fn'; readonly params: Type[]; readonly result: Type }
   // A single-use stream of items.
   | { readonly t: 'Stream'; readonly item: Type }
   // The single-use source.
   | { readonly t: 'JsonEvents' }
+  // The single-use source, when the host declares a parser-events input:
+  // the parser's rule passes (`ParserEvents/1`).
+  | { readonly t: 'ParserEvents' }
   // Single-use incremental text.
   | { readonly t: 'Text' }
 
@@ -57,7 +64,9 @@ export const Selector: Type = { t: 'Selector' }
 export const CaptureSpec: Type = { t: 'CaptureSpec' }
 export const TableEvent: Type = { t: 'TableEvent' }
 export const Event: Type = { t: 'Event' }
+export const ParserEvent: Type = { t: 'ParserEvent' }
 export const JsonEvents: Type = { t: 'JsonEvents' }
+export const ParserEvents: Type = { t: 'ParserEvents' }
 export const Text: Type = { t: 'Text' }
 
 export function vectorOf(item: Type): Type {
@@ -76,6 +85,12 @@ export function tableEvents(): Type {
 // `Stream<Event>`: the source's events as items, what `events` yields.
 export function events(): Type {
   return streamOf(Event)
+}
+
+// `Stream<ParserEvent>`: the parser's rule passes as items, what
+// `parser-events` yields.
+export function parserEvents(): Type {
+  return streamOf(ParserEvent)
 }
 
 export function tagged(tag: string): Type {
@@ -119,7 +134,7 @@ export function typesEq(a: Type[], b: Type[]): boolean {
 
 // Whether a binding of this type is used at most once.
 export function isAffine(ty: Type): boolean {
-  return 'Stream' === ty.t || 'JsonEvents' === ty.t || 'Text' === ty.t
+  return 'Stream' === ty.t || 'JsonEvents' === ty.t || 'ParserEvents' === ty.t || 'Text' === ty.t
 }
 
 // Whether this is one of the protocols, so a mismatch is between protocols
@@ -153,7 +168,7 @@ export function isData(ty: Type): boolean {
 // text is affine too, but it may be finite, so a vector may hold one; the
 // runtime refuses a live one where the vector is built.
 export function isStreamOrSource(ty: Type): boolean {
-  return 'Stream' === ty.t || 'JsonEvents' === ty.t
+  return 'Stream' === ty.t || 'JsonEvents' === ty.t || 'ParserEvents' === ty.t
 }
 
 // Whether this type is a stream: `Stream<T>` in any shape.
@@ -168,6 +183,7 @@ export function isTextlike(ty: Type): boolean {
 
 const TABLE_EVENT_TAGS = ['schema', 'row', 'table-end']
 const EVENT_TAGS = ['object-start', 'object-end', 'array-start', 'array-end', 'key', 'scalar']
+const PARSER_EVENT_TAGS = ['open', 'close']
 
 // Whether a value of type `actual` may be given where `expected` is
 // expected. `Value` is any data, so it may be the particular data wanted
@@ -181,6 +197,7 @@ export function accepts(expected: Type, actual: Type): boolean {
   if ('Stream' === expected.t && 'Stream' === actual.t) return accepts(expected.item, actual.item)
   if ('TableEvent' === expected.t && 'Tagged' === actual.t) return TABLE_EVENT_TAGS.includes(actual.tag)
   if ('Event' === expected.t && 'Tagged' === actual.t) return EVENT_TAGS.includes(actual.tag)
+  if ('ParserEvent' === expected.t && 'Tagged' === actual.t) return PARSER_EVENT_TAGS.includes(actual.tag)
   if ('Fn' === expected.t && 'Fn' === actual.t) {
     return expected.params.length === actual.params.length && accepts(expected.result, actual.result)
   }
@@ -241,11 +258,13 @@ export function typeKindText(ty: Type): string {
       return 'missing' === ty.tag ? 'missing' : 'a tagged value'
     case 'TableEvent':
     case 'Event':
+    case 'ParserEvent':
       return 'a tagged value'
     case 'Fn':
       return 'a function'
     case 'Stream':
     case 'JsonEvents':
+    case 'ParserEvents':
       return 'a stream'
     case 'Text':
       return 'a text'

@@ -170,7 +170,10 @@ fn as_selector<'a>(op: &str, what: &str, v: &'a Val) -> Result<&'a Arc<Selector>
 
 fn as_stream<'a>(op: &str, v: &'a Val) -> Result<&'a Arc<Plan>, Fail> {
     match v {
-        Val::Stream(p) => Ok(p),
+        Val::Stream(p) => {
+            not_parser_input(op, p)?;
+            Ok(p)
+        }
         other => Err(type_error(format!(
             "{op}: the data must be a stream, not {}",
             other.kind()
@@ -181,12 +184,32 @@ fn as_stream<'a>(op: &str, v: &'a Val) -> Result<&'a Arc<Plan>, Fail> {
 fn as_seq(op: &str, v: &Val) -> Result<Seq, Fail> {
     match v {
         Val::Vector(items) => Ok(Seq::Vector(items.clone())),
-        Val::Stream(p) => Ok(Seq::Stream(p.clone())),
+        Val::Stream(p) => {
+            not_parser_input(op, p)?;
+            Ok(Seq::Stream(p.clone()))
+        }
         other => Err(type_error(format!(
             "{op}: the data must be a vector or a stream, not {}",
             other.kind()
         ))),
     }
+}
+
+/// The host's parser events are read by `parser-events` alone: anywhere
+/// else they are refused as the plan is built. The checker refuses them
+/// first wherever it sees them; a function read from data is what brings
+/// them here.
+fn not_parser_input(op: &str, p: &Plan) -> Result<(), Fail> {
+    match p {
+        Plan::ParserInput => Err(protocol_mismatch(format!(
+            "{op}: the input is the parser's rule passes, which only parser-events reads"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn protocol_mismatch(message: impl std::fmt::Display) -> Fail {
+    Fail::new(Code::DslTypeError, format!("protocol_mismatch: {message}"))
 }
 
 /// A string or a text: what the text algebra accepts as an item.
@@ -1593,6 +1616,49 @@ fn events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Stream(Arc::new(Plan::Events { source })))
 }
 
+/// `parser-events input`: the host's parser events, every rule pass an
+/// item. Only the host's input is parser events: a JSON-events input, or
+/// any stream a program made, is refused as the plan is built.
+fn parser_events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Stream(source) if matches!(**source, Plan::ParserInput) => {
+            Ok(Val::Stream(Arc::new(Plan::ParserEvents {
+                source: source.clone(),
+            })))
+        }
+        Val::Stream(other) => Err(protocol_mismatch(format!(
+            "parser-events reads the parser's rule passes, the input a host declares as parser events, not {}",
+            match &**other {
+                Plan::Input => "JSON events",
+                plan => crate::value::plan_name(plan),
+            }
+        ))),
+        other => Err(type_error(format!(
+            "parser-events: the data must be a stream, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+/// `(open rule)` and `(close rule)`: a rule pass, the rule a record.
+fn rule_pass(name: &'static str) -> impl Fn(&Runtime, &[Val], &SourceSpan) -> Result<Val, Fail> {
+    move |_, a, _| match &a[0] {
+        Val::Record(_) => Ok(Val::tagged(name, a.to_vec())),
+        other => Err(type_error(format!(
+            "{name}: the rule must be a record, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn open(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    rule_pass("open")(rt, a, at)
+}
+
+fn close(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
+    rule_pass("close")(rt, a, at)
+}
+
 fn csv_table(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let source = as_stream("csv-table", &a[1])?.clone();
     Ok(Val::Stream(Arc::new(Plan::CsvTable {
@@ -1639,6 +1705,13 @@ fn json_options(options: &Val) -> Result<NonFinite, Fail> {
         )),
         policy => Ok(policy),
     }
+}
+
+/// `tree-contract events`: the events unchanged, held to a tree's
+/// contract where they pass.
+fn tree_contract(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let source = as_stream("tree-contract", &a[0])?.clone();
+    Ok(Val::Stream(Arc::new(Plan::TreeContract { source })))
 }
 
 fn records(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -1773,9 +1846,14 @@ static NATIVES: &[Native] = &[
     c("array-end", array_end, "array-end -> Event", "an array ends"),
     k("key", Exact(1), key, "key name -> Event", "the name of the member whose value follows, inside an object"),
     k("scalar", Exact(1), scalar, "scalar value -> Event", "one scalar of the source: null, a boolean, a number with its lexeme, or a string"),
+    // The parser's rule passes, as `parser-events` delivers them.
+    f("parser-events", Exact(1), parser_events, "parser-events input -> Stream<ParserEvent>", "every rule pass of the parser as one item, as it arrives, when the host declares a parser-events input: (open rule) once a rule's open pass has run, (close rule) once its close pass has; the rule a record of :name, :d, :i, :alt, :tokens, :forced, :n and :value; the end of the parse ends the stream and is no item; nothing is retained between passes"),
+    k("open", Exact(1), open, "open rule -> ParserEvent", "a rule's open pass completed: the rule a record"),
+    k("close", Exact(1), close, "close rule -> ParserEvent", "a rule's close pass completed: the rule a record, its :value the node's when that is a scalar"),
     // Renderers and protocol adapters.
     f("json", Between(1, 2), json, "json [options] events -> Text", "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (TARGET_VALUE_UNREPRESENTABLE), unless an options record first says (entry :non-finite :null): then it is written as null. The record holds :non-finite and nothing else, :reject (the default) or :null"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
+    f("tree-contract", Exact(1), tree_contract, "tree-contract events -> JsonEvents", "the events unchanged, held to a tree's contract as they pass: one root value, and in each object a key and then its value, each key once; a repeated key is DUPLICATE_MEMBER, and events no tree has (a value where a key is due, a key outside an object, an end with nothing open, a second root, the end inside a container) are STREAMABILITY_UNKNOWN (not_a_tree), each at the path concerned; retains the keys of each open object, dropped as it closes. A translation holds a transducer's events to it before a render that writes from a tree"),
     f("csv-table", Exact(2), csv_table, "csv-table options events -> TableEvents", "the events unchanged, validated as the CSV renderer validates them: one schema first, of at least one column and at most max_columns, labels strings, numbers or booleans; rows as wide as the schema; one table-end; a delimiter that holds the quote, a line break or NUL is refused before anything runs"),
 ];
 
@@ -1834,7 +1912,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 49);
+        assert_eq!(compared, 53);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

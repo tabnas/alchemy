@@ -51,6 +51,7 @@ import {
   nonFiniteNamed,
   nonFiniteWord,
   num,
+  planName,
   record as recordVal,
   selectorSegments,
   selectorVal,
@@ -108,14 +109,29 @@ function asSelector(op: string, what: string, v: Val): Selector {
 }
 
 function asStream(op: string, v: Val): Plan {
-  if ('stream' === v.v) return v.plan
+  if ('stream' === v.v) return notParserInput(op, v.plan)
   throw typeError(`${op}: the data must be a stream, not ${kindText(v)}`)
 }
 
 function asSeq(op: string, v: Val): Seq {
   if ('vector' === v.v) return { seq: 'vector', items: v.items }
-  if ('stream' === v.v) return { seq: 'stream', plan: v.plan }
+  if ('stream' === v.v) return { seq: 'stream', plan: notParserInput(op, v.plan) }
   throw typeError(`${op}: the data must be a vector or a stream, not ${kindText(v)}`)
+}
+
+// The host's parser events are read by `parser-events` alone: anywhere
+// else they are refused as the plan is built. The checker refuses them
+// first wherever it sees them; a function read from data is what brings
+// them here.
+function notParserInput(op: string, plan: Plan): Plan {
+  if ('parser-input' === plan.p) {
+    throw protocolMismatch(`${op}: the input is the parser's rule passes, which only parser-events reads`)
+  }
+  return plan
+}
+
+function protocolMismatch(message: string): Fail {
+  return new Fail('DSL_TYPE_ERROR', `protocol_mismatch: ${message}`)
 }
 
 // A string or a text: what the text algebra accepts as an item.
@@ -1292,6 +1308,27 @@ function events(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   return streamVal({ p: 'events', source: asStream('events', a[0]) })
 }
 
+// `parser-events input`: the host's parser events, every rule pass an item.
+// Only the host's input is parser events: a JSON-events input, or any
+// stream a program made, is refused as the plan is built.
+function parserEvents(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const v = a[0]
+  if ('stream' !== v.v) throw typeError(`parser-events: the data must be a stream, not ${kindText(v)}`)
+  if ('parser-input' === v.plan.p) return streamVal({ p: 'parser-events', source: v.plan })
+  const what = 'input' === v.plan.p ? 'JSON events' : planName(v.plan)
+  throw protocolMismatch(
+    `parser-events reads the parser's rule passes, the input a host declares as parser events, not ${what}`,
+  )
+}
+
+// `(open rule)` and `(close rule)`: a rule pass, the rule a record.
+function rulePass(name: string): NativeImpl {
+  return (_rt: Runtime, a: ReadonlyArray<Val>): Val => {
+    if ('record' === a[0].v) return taggedVal(name, a.slice())
+    throw typeError(`${name}: the rule must be a record, not ${kindText(a[0])}`)
+  }
+}
+
 function asEvents(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   return streamVal({ p: 'as-events', source: asStream('as-events', a[0]) })
 }
@@ -1331,6 +1368,12 @@ function jsonNonFinite(options: Val): NonFinite {
   const policy = nonFinite(options)
   if ('literal' === policy) throw typeError('json: :non-finite must be :reject or :null, not :literal')
   return policy
+}
+
+// `tree-contract events`: the events unchanged, held to a tree's contract
+// where they pass.
+function treeContract(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  return streamVal({ p: 'tree-contract', source: asStream('tree-contract', a[0]) })
 }
 
 function records(_rt: Runtime, a: ReadonlyArray<Val>): Val {
@@ -1403,8 +1446,12 @@ const IMPLS: Record<string, NativeImpl> = {
   'array-end': constructor('array-end'),
   key,
   scalar,
+  'parser-events': parserEvents,
+  open: rulePass('open'),
+  close: rulePass('close'),
   json,
   records,
+  'tree-contract': treeContract,
   'csv-table': csvTable,
 }
 

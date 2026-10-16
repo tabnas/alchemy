@@ -87,8 +87,10 @@ impl Sink for CountSink {
 /// follow but not every one a grammar can produce. A repeated key in one
 /// object is refused with `DUPLICATE_MEMBER`, and events no tree has (a
 /// value where a key is due, a key outside an object, a close with nothing
-/// open, a second root) with `STREAMABILITY_UNKNOWN`, each at the path of
-/// the object concerned; the event is not passed on, and what to do then
+/// open, a second root) with `STREAMABILITY_UNKNOWN`, whose message leads
+/// with the finer code `not_a_tree` (a program reaches the contract
+/// through `tree-contract`, and alchemy's catalogue declares the text),
+/// each at the path of the object concerned; the event is not passed on, and what to do then
 /// is the host's (aless falls back once to the parsed value when nothing
 /// has been written). Each open object keeps the keys it has had, dropped
 /// when it closes, so the cost is a lookup per key and the keys of the
@@ -159,7 +161,8 @@ impl<S> TreeContract<S> {
         Fail::new(
             Code::StreamabilityUnknown,
             format!(
-                "the stream holds {what}, which a tree's events never do, so it is not a tree's"
+                "not_a_tree: the stream holds {what}, which a tree's events never do, so it is \
+                 not a tree's"
             ),
         )
         .at_path(self.path().to_string())
@@ -441,6 +444,7 @@ mod tests {
             let mut guard = TreeContract::new(Vec::new());
             let fail = replay(&bad, &mut guard).unwrap_err();
             assert_eq!(fail.code, Code::StreamabilityUnknown, "{bad:?}");
+            assert!(fail.message.starts_with("not_a_tree: "), "{bad:?}: {fail}");
             assert!(fail.message.contains(why), "{bad:?}: {fail}");
             assert_eq!(fail.path.as_deref(), Some(path), "{bad:?}: {fail}");
             assert_eq!(guard.inner().len(), bad.len() - 1, "{bad:?}");

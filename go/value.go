@@ -410,6 +410,17 @@ const (
 	PlanCsv
 	// PlanJSON is `json events`, or `json options events`.
 	PlanJSON
+	// PlanParserInput is the host's ParserEvents/1, when it declares a
+	// parser-events input: read by `parser-events` alone.
+	PlanParserInput
+	// PlanTreeContract is `tree-contract events`: the events unchanged,
+	// held to a tree's contract (shared.TreeContract) where they pass.
+	PlanTreeContract
+	// PlanParserEvents is `parser-events input`: every rule pass of
+	// ParserEvents/1 as one tagged item, (open rule) or (close rule); the
+	// parse's end is the stream's end, not an item. Its source is always
+	// the PlanParserInput.
+	PlanParserEvents
 )
 
 // NonFinite is what a renderer does with a number that is not finite
@@ -501,8 +512,14 @@ type Plan struct {
 	Text      Val
 }
 
-// inputPlan is the host's input.
-func inputPlan() *Plan { return &Plan{Kind: PlanInput} }
+// inputPlan is the host's input: JSON events, or the parser's rule passes
+// when the host declares them.
+func inputPlan(input Input) *Plan {
+	if input == InputParserEvents {
+		return &Plan{Kind: PlanParserInput}
+	}
+	return &Plan{Kind: PlanInput}
+}
 
 // litPlan is a literal text.
 func litPlan(s string) *Plan { return &Plan{Kind: PlanLit, Lit: s} }
@@ -524,7 +541,7 @@ func newConcat(items []Val) *Plan {
 // whole.
 func (p *Plan) IsLive() bool {
 	switch p.Kind {
-	case PlanInput:
+	case PlanInput, PlanParserInput:
 		return true
 	case PlanLit:
 		return false
@@ -558,17 +575,22 @@ const (
 	// item by item.
 	ProtocolItems
 	ProtocolText
+	// ProtocolParserEvents is the host's parser input.
+	ProtocolParserEvents
 )
 
 // Protocol is the protocol the plan produces, when it is a stream:
-// JsonEvents, TableRows (natively), or Items.
+// JsonEvents, ParserEvents (the host's parser input), TableRows
+// (natively), or Items.
 func (p *Plan) Protocol() Protocol {
 	switch p.Kind {
-	case PlanInput, PlanRecords, PlanAsEvents:
+	case PlanInput, PlanRecords, PlanAsEvents, PlanTreeContract:
 		return ProtocolJSONEvents
+	case PlanParserInput:
+		return ProtocolParserEvents
 	case PlanTableFromJSON:
 		return ProtocolTableRows
-	case PlanRoute, PlanSelect, PlanEvents, PlanScanEmit, PlanMap, PlanFilter, PlanCsvTable:
+	case PlanRoute, PlanSelect, PlanEvents, PlanParserEvents, PlanScanEmit, PlanMap, PlanFilter, PlanCsvTable:
 		return ProtocolItems
 	}
 	return ProtocolText
@@ -577,8 +599,10 @@ func (p *Plan) Protocol() Protocol {
 // PlanName is the operator at the root of a plan, for messages.
 func PlanName(p *Plan) string {
 	switch p.Kind {
-	case PlanInput:
+	case PlanInput, PlanParserInput:
 		return "input"
+	case PlanParserEvents:
+		return "parser-events"
 	case PlanRoute:
 		return "route"
 	case PlanSelect:
@@ -597,6 +621,8 @@ func PlanName(p *Plan) string {
 		return "table-from-json"
 	case PlanRecords:
 		return "records"
+	case PlanTreeContract:
+		return "tree-contract"
 	case PlanCsvTable:
 		return "csv-table"
 	case PlanLit:

@@ -162,20 +162,67 @@ func TestSpecPipe(t *testing.T) {
 
 // checkRow is a program that checks as its plan report; one that does not
 // fails with the resolver's, the checker's or the plan evaluation's code,
-// at the position it names.
-func checkRow(input string) (string, *Fail) {
-	program, f := Compile(input, "check", routers, renderers)
+// at the position it names. input is what the host declares.
+func checkRow(src string, input Input) (string, *Fail) {
+	program, f := CompileWith(src, "check", input, routers, renderers)
 	if f != nil {
 		return "", f
 	}
 	return program.Explain(), nil
 }
 
+// rowInput is the input a check.tsv row's program is compiled over: its
+// protocol column, empty for JSON events (the default a host declares),
+// parser for the parser's rule passes.
+func rowInput(t testing.TB, row *support.Row) Input {
+	switch protocol := row.Named("protocol"); protocol {
+	case "":
+		return InputJSONEvents
+	case "parser":
+		return InputParserEvents
+	default:
+		t.Fatalf("%s: the protocol is empty or parser, not %q", row.Where(), protocol)
+	}
+	return InputJSONEvents
+}
+
 // TestSpecCheck runs check.tsv: compile builds the plan, so a failure
 // only the plan's evaluation meets has a row here too, and every plan
-// report is the plan's.
+// report is the plan's. The row's protocol column is the input the host
+// declares.
 func TestSpecCheck(t *testing.T) {
-	runner(checkRow).File(t, filepath.Join(specDir(t), "check.tsv"))
+	r := runner(nil)
+	r.Parse = nil
+	r.ParseRow = func(src string, row *support.Row) (any, error) {
+		text, f := checkRow(src, rowInput(t, row))
+		if f != nil {
+			return nil, asErr(f)
+		}
+		return text, nil
+	}
+	r.File(t, filepath.Join(specDir(t), "check.tsv"))
+}
+
+// TestCheckFixtureHasItsColumns holds the columns a check row is read by
+// (alchemy-cli's catalogue test reads protocol too), so a renamed header
+// fails here.
+func TestCheckFixtureHasItsColumns(t *testing.T) {
+	spec, err := support.LoadSpec(filepath.Join(specDir(t), "check.tsv"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(spec.Header, " "); got != "input expected protocol" {
+		t.Fatalf("check.tsv's header is %q", got)
+	}
+	parser := 0
+	for _, row := range spec.Rows {
+		if rowInput(t, row) == InputParserEvents {
+			parser++
+		}
+	}
+	if parser == 0 {
+		t.Error("no row reads parser events")
+	}
 }
 
 // runCode is the code a run row pins: the finer code (the first word of
@@ -193,7 +240,7 @@ func runCode(f *Fail) string {
 // rowFailures is what a row's program meets, as the runners above meet it:
 // the reader's (reader.tsv), the desugarer's (pipe.tsv) or compile's
 // (check.tsv).
-func rowFailures(file string, row *support.Row) []*Fail {
+func rowFailures(t testing.TB, file string, row *support.Row) []*Fail {
 	input := row.Unesc(0)
 	var f *Fail
 	switch file {
@@ -202,7 +249,7 @@ func rowFailures(file string, row *support.Row) []*Fail {
 	case "pipe.tsv":
 		_, f = pipeRow(input)
 	case "check.tsv":
-		_, f = checkRow(input)
+		_, f = checkRow(input, rowInput(t, row))
 	}
 	if f == nil {
 		return nil
@@ -295,7 +342,7 @@ func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 			if !support.IsErrorExpect(row.Col(1)) {
 				continue
 			}
-			for _, f := range rowFailures(spec.Name, row) {
+			for _, f := range rowFailures(t, spec.Name, row) {
 				switch f.Code {
 				case CodeDSLParseError, CodeDSLTypeError, CodeStreamReused, CodeStreamabilityUnknown:
 				default:

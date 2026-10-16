@@ -7,6 +7,9 @@
 //!
 //! - the source protocol [`JsonEvent`] (`JsonEvents/1`) and the push
 //!   boundary [`Sink`] ([`event`], [`sink`]);
+//! - the parser's rule passes [`ParserEvent`] (`ParserEvents/1`), what a
+//!   transducer part reads, and their push boundary [`ParserSink`]
+//!   ([`parser_event`]);
 //! - the table protocol [`TableEvent`] (`TableRows/1`), its cells,
 //!   columns and bindings ([`table`]);
 //! - [`Selector`]s and concrete [`Path`]s ([`selector`]), and the retained
@@ -33,6 +36,7 @@ pub mod inject;
 pub mod json;
 pub mod limits;
 pub mod matcher;
+pub mod parser_event;
 pub mod route;
 pub mod scan;
 pub mod selector;
@@ -50,6 +54,7 @@ pub use inject::{Renderers, Routers, ScanEmitter, ScanFinish, ScanOut, ScanStep}
 pub use json::JsonOptions;
 pub use limits::{AbortFlag, Limits, Metrics};
 pub use matcher::CaptureId;
+pub use parser_event::{ParserEvent, ParserSink, PassAlt, PassToken, RulePass};
 pub use route::{Budget, CaptureMode, CaptureSpec, FnRoute, RouteSink, Selected};
 pub use scan::Transition;
 pub use selector::{Path, Segment, Selector, Step};
