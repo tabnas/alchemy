@@ -623,6 +623,20 @@ section 5.5's `Descriptor.transduce` and `Part.transduce` became
 `compose_program`. The tree contract is the native `tree-contract`, and
 its refusal leads with `not_a_tree`.
 
+Step 2 is tabnas/transduce#51, with tabnas/alchemy#67 and
+tabnas/alchemy-cli#34 beside it. `ParserEventSource` relays the passes
+in all three runtimes, and `test/spec/parser-events.tsv` pins them. The
+native `transduce-tree` is transduce's `TransduceTree`, pinned by
+`test/spec/tree.tsv`. alchemy's lowering takes it through an optional
+`Routers::transduce_tree`, for the library's scan with a spec of the
+standard shape (the shared `TreeSpec`), and runs the library's text
+everywhere else. alchemy-cli's differential test holds the two to the
+same bytes in each runtime. The source sorts an alternate's groups,
+which the engines order differently. It relays two more differences
+between the engines as they are, which transduce's `DIVERGENCE.md` 6 and
+7 record: the first rule's instance number, and a fixed token's value.
+Step 11 is tabnas/admin#152, ADR-28.
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
