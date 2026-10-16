@@ -8,7 +8,7 @@ go 1.24.7
 // them are alchemy-cli's (github.com/tabnas/alchemy-cli/go/e2e).
 require (
 	github.com/tabnas/json/go v0.5.17
-	github.com/tabnas/parser/go v0.12.11
+	github.com/tabnas/parser/go v0.12.12
 )
 
 // The debug model and the shared fixture runner, for the tests.
