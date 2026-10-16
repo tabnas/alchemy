@@ -1710,7 +1710,7 @@ table.
 ## run
 
 ```text
-alchemy run [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
+alchemy run [--grammar FORMAT] [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
 ```
 
 Parses `INPUT`, a JSON document, with the tabnas JSON grammar through
@@ -1723,8 +1723,15 @@ is rendered (a program that renders its own text takes none:
 the library's text; `--max-output-bytes` sets the writer's
 `max_output_bytes`, which also bounds what a finite text or one item's
 text may hold as it is built (the other limits are transduce's
-defaults). Other input formats are aless's business: it runs alchemy
-programs against every format its parsers read.
+defaults). `--grammar FORMAT` parses `INPUT` with that format's grammar
+instead, one of the formats `alchemy formats` lists whose documents are
+parsed rather than read as a tree, through transduce's
+`ParserEventSource`, and compiles the program over the parser's rule
+passes (`compile_with` over `Input::ParserEvents`, [Parser
+events](#parser-events)): a transducer part is such a program, and this
+runs one against its own fixtures from the command line. Other input
+formats as documents are aless's business: it runs alchemy programs
+against every format its parsers read.
 
 A failure is one `Fail` JSON object on standard error, with `output:
 "partial"` when bytes had already reached standard output, and the exit
@@ -1938,8 +1945,9 @@ alchemy canon FILE       print the program in canonical form
 alchemy format FILE      print the program in layout form
 alchemy check FILE       parse, desugar, resolve, check and build the plan; print nothing and exit 0
 alchemy explain FILE     print the plan report
-alchemy run [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
-                         run the program over the JSON document INPUT
+alchemy run [--grammar FORMAT] [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
+                         run the program over the JSON document INPUT; with --grammar, over
+                         the rule passes of INPUT parsed as FORMAT (a transducer part's input)
 ```
 
 `FILE`, `PROGRAM` and `INPUT` may be `-` for standard input (one of them

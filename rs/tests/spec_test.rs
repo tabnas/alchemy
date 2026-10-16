@@ -27,15 +27,23 @@ use common::{compile_with, repo_root, row_input, spec_dir, text_value, to_failur
 const RUN_HERE: [&str; 3] = ["check.tsv", "pipe.tsv", "reader.tsv"];
 
 /// The fixtures another repository runs, and why. A run.tsv row compiles a
-/// program and runs it over a JSON document, which needs real routers and
+/// program and runs it over a JSON document, and a transduce.tsv row runs
+/// one over a grammar's rule passes, which needs real routers and
 /// renderers: transduce's and render's, which depend on this crate's
 /// shared types, so this crate cannot depend on them. tabnas-alchemy-cli,
 /// the composition root that depends on all three, runs every row (its
 /// rs/tests/spec_test.rs, against this checkout as a sibling).
-const RUN_ELSEWHERE: [(&str, &str); 1] = [(
-    "run.tsv",
-    "run by tabnas-alchemy-cli: a run needs transduce's routers and render's renderers",
-)];
+const RUN_ELSEWHERE: [(&str, &str); 2] = [
+    (
+        "run.tsv",
+        "run by tabnas-alchemy-cli: a run needs transduce's routers and render's renderers",
+    ),
+    (
+        "transduce.tsv",
+        "run by tabnas-alchemy-cli: a run over a grammar's rule passes needs transduce's \
+         parser-event source and routers, and render's renderers",
+    ),
+];
 
 /// Every fixture the directory holds has a runner: one below, or, for the
 /// files [`RUN_ELSEWHERE`] names, tabnas-alchemy-cli's, for the reason it
@@ -487,4 +495,30 @@ fn the_library_definitions_on_the_page_are_the_library_text() {
         }
     }
     assert_eq!(shown, tabnas_alchemy::stdlib::stdlib().names().count());
+}
+
+/// The columns a transduce row reads by name (tabnas-alchemy-cli's runner
+/// reads `grammar`, `doc` and `render`), so a renamed header fails here,
+/// where transduce.tsv is kept, rather than reading empty cells there.
+#[test]
+fn transduce_fixture_has_its_columns() {
+    let spec = load_spec(spec_dir().join("transduce.tsv"), &SpecOptions::default())
+        .expect("transduce.tsv loads");
+    assert_eq!(
+        *spec.rows[0].header,
+        ["input", "expected", "grammar", "doc", "render"]
+    );
+    for row in &spec.rows {
+        assert!(
+            row.index_of("grammar").is_some() && row_doc_columns_are_named(row),
+            "{}: the columns are named",
+            row.location()
+        );
+        assert!(
+            !row.named("grammar").is_empty(),
+            "{}: names a grammar",
+            row.location()
+        );
+        row_input(row);
+    }
 }
