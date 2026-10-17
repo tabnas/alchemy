@@ -90,5 +90,29 @@ describe('events', () => {
     refused(() => program.sink({ write() {}, flush() {} } as any))
     const json = compile('def export [input] input', 'j.alc')
     refused(() => json.parserSink({ write() {}, flush() {} } as any))
+
+    // A host that takes a transducer's events into its own sink drives
+    // `parserSinkInto`, which holds the program to JSON events: one
+    // compiled over JSON events, or answering a text or a table, is
+    // refused before any stage is built. Running one is
+    // tabnas-alchemy-cli's.
+    const down = { event: () => 'continue' } as any
+    refused(() => json.parserSinkInto(down))
+    const text = compile(
+      'def export [input] (join "" (map (fn [p] "a") (parser-events input)))',
+      'text.alc',
+      'ParserEvents/1',
+    )
+    assert.equal(text.output, 'Text')
+    fail = thrown(() => text.parserSinkInto(down))
+    assert.ok(fail.message.startsWith("protocol_mismatch: the program's result is a text"), String(fail))
+    const rows = compile(
+      'def step [s pass]\n  match pass\n    case (close rule) (transition s [(scalar (get :name rule))])\n    case _ (transition s [])\n\ndef export [input]\n  table-from-json (record (entry :columns :infer) (entry :rows (path each-index))) (as-events (scan-emit [] step (fn [s] []) (parser-events input)))\n',
+      'rows.alc',
+      'ParserEvents/1',
+    )
+    assert.equal(rows.output, 'TableRows/1')
+    fail = thrown(() => rows.parserSinkInto(down))
+    assert.ok(fail.message.startsWith("protocol_mismatch: the program's result is a table"), String(fail))
   })
 })

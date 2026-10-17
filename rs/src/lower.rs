@@ -1622,6 +1622,34 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The sink for a program's JSON-events result whose events go into
+    /// the host's own `down` rather than to a renderer: the host's stages
+    /// take them as a source's (a renderer of its own, a scope over a
+    /// path), and `down` sees the program's `End` after the root.
+    /// `output` is the checker's word, as for [`Lowering::sink_as`]. A
+    /// result that is a text or a table is refused (`protocol_mismatch`).
+    pub fn events_into(
+        &self,
+        result: &Val,
+        output: Output,
+        down: EventSink,
+    ) -> Result<EventSink, Fail> {
+        let Val::Stream(plan) = result else {
+            return Err(protocol_mismatch(format!(
+                "the program's result is {}, and a host takes JSON events into its own sink",
+                result.kind()
+            )));
+        };
+        match (plan.protocol(), output) {
+            (Protocol::JsonEvents, _) | (Protocol::Items, Output::JsonEvents) => {
+                self.events(plan, down)
+            }
+            _ => Err(protocol_mismatch(
+                "the program's result is a table, and a host takes JSON events into its own sink",
+            )),
+        }
+    }
+
     fn text(&self, plan: &Arc<Plan>, out: Out) -> Result<EventSink, Fail> {
         if !plan.is_live() {
             return Ok(Box::new(FiniteTextSink {

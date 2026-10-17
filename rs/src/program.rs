@@ -638,6 +638,30 @@ impl Program {
         Ok(lowering.parser_head(events))
     }
 
+    /// The sink for one run over parser events whose JSON events go into
+    /// the host's own `down` rather than to a renderer, for a program
+    /// compiled over [`Input::ParserEvents`] that answers JSON events: a
+    /// format's transducer part, run in front of the host's own stages (a
+    /// renderer of its own, a scope over a path, another program's sink).
+    /// The host pushes each rule pass into the `ParserSink + Send` it
+    /// returns, then one `ParserEvent::End` once the parse has returned its
+    /// value, and `down` takes the events as the program makes them, then
+    /// one `End`. The source's limits hold on them as on a source's own. A
+    /// program that answers a text or a table is refused
+    /// (`protocol_mismatch`) before anything runs, as is one compiled over
+    /// JSON events.
+    pub fn parser_sink_into(
+        &self,
+        down: Box<dyn Sink + Send>,
+        limits: &Limits,
+        metrics: Arc<Metrics>,
+    ) -> Result<Box<dyn ParserSink + Send>, Fail> {
+        self.declared(Input::ParserEvents)?;
+        let lowering = self.lowering(limits, metrics);
+        let events = lowering.events_into(&self.result, self.output, down)?;
+        Ok(lowering.parser_head(events))
+    }
+
     /// Whether the host drives the sink the program's input was declared
     /// for: a host's mistake, not a program's, refused before anything
     /// runs.

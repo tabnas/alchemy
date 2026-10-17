@@ -1593,6 +1593,24 @@ func (l *Lowering) SinkAs(result Val, out shared.TextOut, render Renderer, outpu
 	return nil, typeError("export must answer a text or a stream, not " + KindOf(result))
 }
 
+// EventsInto is the sink for a program's JSON-events result whose events go
+// into the host's own down rather than to a renderer: the host's stages
+// take them as a source's (a renderer of its own, a scope over a path),
+// and down sees the program's End after the root. output is the checker's
+// word, as for SinkAs. A result that is a text or a table is refused
+// (`protocol_mismatch`).
+func (l *Lowering) EventsInto(result Val, output Output, down shared.Sink) (shared.Sink, *Fail) {
+	x, ok := result.(StreamVal)
+	if !ok {
+		return nil, protocolMismatch("the program's result is " + KindOf(result) + ", and a host takes JSON events into its own sink")
+	}
+	protocol := x.Plan.Protocol()
+	if protocol == ProtocolJSONEvents || (protocol == ProtocolItems && output == OutputJsonEvents) {
+		return l.events(x.Plan, down)
+	}
+	return nil, protocolMismatch("the program's result is a table, and a host takes JSON events into its own sink")
+}
+
 func (l *Lowering) text(p *Plan, out shared.TextOut) (shared.Sink, *Fail) {
 	if !p.IsLive() {
 		return &finiteTextSink{rt: l.rt, text: TextVal{Plan: p}, out: out}, nil

@@ -109,4 +109,41 @@ fn parser_events_over_a_declared_input() {
         json.parser_sink(Box::new(Vec::new()), None, &limits, Metrics::new())
             .map(drop),
     );
+
+    // A host that takes a transducer's events into its own sink drives
+    // `parser_sink_into`, which holds the program to JSON events: one
+    // compiled over JSON events, or answering a text or a table, is
+    // refused before any stage is built. Running one is tabnas-alchemy-cli's.
+    let into = |program: &tabnas_alchemy::Program| {
+        program
+            .parser_sink_into(Box::new(Vec::new()), &limits, Metrics::new())
+            .map(drop)
+    };
+    refused(into(&json));
+    let text = compile_with(
+        "def export [input] (join \"\" (map (fn [p] \"a\") (parser-events input)))",
+        "text.alc",
+        Input::ParserEvents,
+    )
+    .unwrap();
+    assert_eq!(text.output(), Output::Text);
+    let fail = into(&text).unwrap_err();
+    assert!(
+        fail.message
+            .starts_with("protocol_mismatch: the program's result is a text"),
+        "{fail}"
+    );
+    let rows = compile_with(
+        "def step [s pass]\n  match pass\n    case (close rule) (transition s [(scalar (get :name rule))])\n    case _ (transition s [])\n\ndef export [input]\n  table-from-json (record (entry :columns :infer) (entry :rows (path each-index))) (as-events (scan-emit [] step (fn [s] []) (parser-events input)))\n",
+        "rows.alc",
+        Input::ParserEvents,
+    )
+    .unwrap();
+    assert_eq!(rows.output(), Output::TableRows);
+    let fail = into(&rows).unwrap_err();
+    assert!(
+        fail.message
+            .starts_with("protocol_mismatch: the program's result is a table"),
+        "{fail}"
+    );
 }

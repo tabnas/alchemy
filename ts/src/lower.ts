@@ -1350,6 +1350,25 @@ export class Lowering {
     }
   }
 
+  // The sink for a program's JSON-events result whose events go into the
+  // host's own `down` rather than to a renderer: the host's stages take
+  // them as a source's (a renderer of its own, a scope over a path), and
+  // `down` sees the program's `end` after the root. `output` is the
+  // checker's word, as for `sinkAs`. A result that is a text or a table is
+  // refused (`protocol_mismatch`).
+  eventsInto(result: Val, output: Output, down: Sink): Sink {
+    if ('stream' !== result.v) {
+      throw protocolMismatch(
+        `the program's result is ${kindText(result)}, and a host takes JSON events into its own sink`,
+      )
+    }
+    const built = protocol(result.plan)
+    if ('JsonEvents' === built || ('Items' === built && 'JsonEvents/1' === output)) {
+      return this.events(result.plan, down)
+    }
+    throw protocolMismatch("the program's result is a table, and a host takes JSON events into its own sink")
+  }
+
   private text(plan: Plan, out: TextOut): Sink {
     if (!isLive(plan)) return new FiniteTextSink(this.rt, textVal(plan), out)
     switch (plan.p) {
