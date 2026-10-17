@@ -89,62 +89,102 @@ func jsonPasses(t *testing.T, src string) []shared.ParserEvent {
 	return append(out, shared.ParserEvent{Kind: shared.ParserEnd})
 }
 
-// The json grammar's part, as the plan writes it: transduce-tree over
-// tabnas-json's own rule passes yields the document's events, lexemes
-// kept, in the order a walk of its value gives them.
-func TestTransduceTreeMakesJSONEventsOfTabnasJSONRulePasses(t *testing.T) {
-	rt := runtimeOf(t, "def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n\ndef export [input] (transduce-tree json-spec input)\n")
-	spec, f := rt.DefValue(ScopeProgram, "json-spec")
+// treeScan is the scan a transduce-tree builds, run here by hand over
+// tabnas-json's own rule passes: step applied to each item as transduce's
+// scan-emit applies it, from init, and finish to the last state, since
+// running the plan itself needs transduce's stages (rs/src/lower.rs's
+// tree_scan). The outputs, each as the value prints.
+func treeScan(t *testing.T, rt *Runtime, specName, stepName, finishName string, init Val, src string) string {
+	t.Helper()
+	spec, f := rt.DefValue(ScopeProgram, specName)
 	if f != nil {
 		t.Fatal(f)
 	}
-	stepVal, _ := rt.DefValue(ScopeStdlib, "transduce-step")
-	finishVal, _ := rt.DefValue(ScopeStdlib, "transduce-finish")
+	stepVal, _ := rt.DefValue(ScopeStdlib, stepName)
+	finishVal, _ := rt.DefValue(ScopeStdlib, finishName)
 	step, finish := stepVal.(Fn), finishVal.(Fn)
 	at := SourceSpan{File: NewFile("t")}
-	events := func(src string) string {
-		var state Val = &VectorVal{Items: []Val{&VectorVal{}, BoolVal(false)}}
-		var out []string
-		var item Val
-		items := &parserEventsToItems{down: itemFunc(func(v Val) { item = v })}
-		for _, ev := range jsonPasses(t, src) {
-			if ev.Kind == shared.ParserEnd {
-				tail, f := rt.Apply(finish, []Val{state}, at)
-				if f != nil {
-					t.Fatalf("%s: %v", src, f)
-				}
-				for _, v := range tail.(*VectorVal).Items {
-					out = append(out, DebugString(v))
-				}
-				break
-			}
-			if _, f := items.ParserEvent(ev); f != nil {
-				t.Fatal(f)
-			}
-			next, f := rt.Apply(step, []Val{spec, state, item}, at)
+	state := init
+	var out []string
+	var item Val
+	items := &parserEventsToItems{down: itemFunc(func(v Val) { item = v })}
+	for _, ev := range jsonPasses(t, src) {
+		if ev.Kind == shared.ParserEnd {
+			tail, f := rt.Apply(finish, []Val{state}, at)
 			if f != nil {
 				t.Fatalf("%s: %v", src, f)
 			}
-			tr := next.(*TaggedVal)
-			if tr.Tag != "transition" {
-				t.Fatalf("the step answers %s", tr.Tag)
-			}
-			for _, v := range tr.Fields[1].(*VectorVal).Items {
+			for _, v := range tail.(*VectorVal).Items {
 				out = append(out, DebugString(v))
 			}
-			state = tr.Fields[0]
+			break
 		}
-		return strings.Join(out, " ")
+		if _, f := items.ParserEvent(ev); f != nil {
+			t.Fatal(f)
+		}
+		next, f := rt.Apply(step, []Val{spec, state, item}, at)
+		if f != nil {
+			t.Fatalf("%s: %v", src, f)
+		}
+		tr := next.(*TaggedVal)
+		if tr.Tag != "transition" {
+			t.Fatalf("the step answers %s", tr.Tag)
+		}
+		for _, v := range tr.Fields[1].(*VectorVal).Items {
+			out = append(out, DebugString(v))
+		}
+		state = tr.Fields[0]
 	}
-	for _, c := range []struct{ src, want string }{
-		{`{"a":[1,2.50,"x",{"b":null}],"c":{},"d":[],"e":1e21,"f":true}`, `object-start (key "a") array-start (scalar 1) (scalar 2.50) (scalar "x") object-start (key "b") (scalar null) object-end array-end (key "c") object-start object-end (key "d") array-start array-end (key "e") (scalar 1e21) (key "f") (scalar true) object-end`},
-		{"7", "(scalar 7)"},
-		{`"s"`, `(scalar "s")`},
-		{"[]", "array-start array-end"},
-		{"[[[{}]]]", "array-start array-start array-start object-start object-end array-end array-end array-end"},
+	return strings.Join(out, " ")
+}
+
+// The json grammar's part, as the plan writes it: transduce-tree over
+// tabnas-json's own rule passes yields the document's events, lexemes
+// kept, in the order a walk of its value gives them, through
+// transduce-step and through transduce-tree's own step alike.
+func TestTransduceTreeMakesJSONEventsOfTabnasJSONRulePasses(t *testing.T) {
+	rt := runtimeOf(t, "def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n\ndef export [input] (transduce-tree json-spec input)\n")
+	tree := func() Val { return &VectorVal{Items: []Val{&VectorVal{}, BoolVal(false)}} }
+	steps := map[string]func(string) string{
+		"transduce-step": func(src string) string {
+			return treeScan(t, rt, "json-spec", "transduce-step", "transduce-finish", tree(), src)
+		},
+		"transduce-pass": func(src string) string {
+			return treeScan(t, rt, "json-spec", "transduce-pass", "transduce-done", &VectorVal{Items: []Val{tree(), &VectorVal{}}}, src)
+		},
+	}
+	for name, events := range steps {
+		for _, c := range []struct{ src, want string }{
+			{`{"a":[1,2.50,"x",{"b":null}],"c":{},"d":[],"e":1e21,"f":true}`, `object-start (key "a") array-start (scalar 1) (scalar 2.50) (scalar "x") object-start (key "b") (scalar null) object-end array-end (key "c") object-start object-end (key "d") array-start array-end (key "e") (scalar 1e21) (key "f") (scalar true) object-end`},
+			{"7", "(scalar 7)"},
+			{`"s"`, `(scalar "s")`},
+			{"[]", "array-start array-end"},
+			{"[[[{}]]]", "array-start array-start array-start object-start object-end array-end array-end array-end"},
+		} {
+			if got := events(c.src); got != c.want {
+				t.Errorf("%s, %s:\n  got  %s\n  want %s", name, c.src, got, c.want)
+			}
+		}
+	}
+}
+
+// transduce-tree's own step reads :member and :text: a member after the
+// container its rule begins, and a :text rule's text, the :src of the
+// tokens the passes between its open and its close consumed, first on its
+// close; a :text rule closed inside another joins its text to the one
+// around it, with its own passes' tokens (rs/src/lower.rs's test).
+func TestTransduceTreeReadsAMemberAndAText(t *testing.T) {
+	rt := runtimeOf(t, "def values\n  record\n    entry :map (record (entry :container :object))\n    entry :pair (record (entry :key 0) (entry :text true))\n\ndef lists\n  record\n    entry :list (record (entry :container :object) (entry :member \"items\") (entry :text true))\n\ndef export [input] (transduce-tree values input)\n")
+	init := func() Val {
+		return &VectorVal{Items: []Val{&VectorVal{Items: []Val{&VectorVal{}, BoolVal(false)}}, &VectorVal{}}}
+	}
+	for _, c := range []struct{ spec, src, want string }{
+		{"values", `{"a":[1, 2],"b":"x","d":7}`, `object-start (key "a") (scalar "[1,2]") (key "b") (scalar "\"x\"") (key "d") (scalar "7") object-end`},
+		{"lists", `[1,[2,3],"x"]`, `object-start (key "items") object-start (key "items") (scalar "2,3") object-end (scalar "1,[2,3],\"x\"") object-end`},
+		{"lists", "[]", `object-start (key "items") (scalar "") object-end`},
 	} {
-		if got := events(c.src); got != c.want {
-			t.Errorf("%s:\n  got  %s\n  want %s", c.src, got, c.want)
+		if got := treeScan(t, rt, c.spec, "transduce-pass", "transduce-done", init(), c.src); got != c.want {
+			t.Errorf("%s, %s:\n  got  %s\n  want %s", c.spec, c.src, got, c.want)
 		}
 	}
 }

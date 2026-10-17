@@ -133,11 +133,12 @@ pub fn is_inferred(binding: &Val) -> bool {
 
 /// The spec of a `transduce-tree`, when it has the standard shape
 /// [`TreeSpec`] holds: a record of records, each entry's `:container`
-/// `:object` or `:array`, its `:key` a string or a token's index (a
-/// non-negative integer, as `path` takes one), its `:scalar` a token's
-/// index or `:value`, any of the three left out. An entry's other fields
-/// are not read, as the library reads none. Any other spec runs the
-/// library's own `transduce-tree`.
+/// `:object` or `:array`, its `:key` and its `:member` each a string or a
+/// token's index (a non-negative integer, as `path` takes one), its
+/// `:scalar` a token's index or `:value`, its `:text` a boolean, any of
+/// the five left out. An entry's other fields are not read, as the
+/// library reads none. Any other spec runs the library's own
+/// `transduce-tree`.
 pub fn tree_spec(v: &Val) -> Option<TreeSpec> {
     let Val::Record(rules) = v else {
         return None;
@@ -153,15 +154,22 @@ pub fn tree_spec(v: &Val) -> Option<TreeSpec> {
             Some(Val::Keyword(k)) if &**k == "array" => Some(TreeContainer::Array),
             Some(_) => return None,
         };
-        let key = match fields.get("key") {
-            None => None,
-            Some(Val::Str(name)) => Some(TreeKey::Name(Box::from(&**name))),
-            Some(index) => Some(TreeKey::Token(as_index(index)?)),
+        let named = |field: &str| match fields.get(field) {
+            None => Some(None),
+            Some(Val::Str(name)) => Some(Some(TreeKey::Name(Box::from(&**name)))),
+            Some(index) => Some(Some(TreeKey::Token(as_index(index)?))),
         };
+        let key = named("key")?;
+        let member = named("member")?;
         let scalar = match fields.get("scalar") {
             None => None,
             Some(Val::Keyword(k)) if &**k == "value" => Some(TreeScalar::Value),
             Some(index) => Some(TreeScalar::Token(as_index(index)?)),
+        };
+        let text = match fields.get("text") {
+            None => false,
+            Some(Val::Bool(b)) => *b,
+            Some(_) => return None,
         };
         spec = spec.with(
             name,
@@ -169,6 +177,8 @@ pub fn tree_spec(v: &Val) -> Option<TreeSpec> {
                 container,
                 key,
                 scalar,
+                member,
+                text,
             },
         );
     }
@@ -1459,11 +1469,14 @@ impl<'a> Lowering<'a> {
 
     /// The spec of the scan the library's `transduce-tree` builds, when
     /// `plan` is one and the runtime's native compositions are on: a
-    /// `scan-emit` from `[[] false]` over the host's parser events, its
-    /// step the library's `transduce-step` given a spec of the standard
-    /// shape ([`tree_spec`]), its finish the library's
-    /// `transduce-finish`. A program that writes that scan itself means
-    /// what `transduce-tree` means, and is run the same way.
+    /// `scan-emit` from `[[[] false] []]` over the host's parser events,
+    /// its step the library's `transduce-pass` given a spec of the
+    /// standard shape ([`tree_spec`]), its finish the library's
+    /// `transduce-done`. A program that writes that scan itself means what
+    /// `transduce-tree` means, and is run the same way; so is one that
+    /// writes the scan of `transduce-step` from `[[] false]` with
+    /// `transduce-finish`, with the spec as that step reads it, without
+    /// its members and texts.
     fn native_tree(&self, plan: &Plan) -> Option<TreeSpec> {
         if !self.rt.native() {
             return None;
@@ -1481,15 +1494,34 @@ impl<'a> Lowering<'a> {
         let Plan::ParserEvents { source } = &**source else {
             return None;
         };
-        if !matches!(**source, Plan::ParserInput)
-            || !is_library(finish, "transduce-finish")
-            || *init != Val::vector(vec![Val::vector(vec![]), Val::Bool(false)])
-        {
+        if !matches!(**source, Plan::ParserInput) {
             return None;
         }
+        let tree = Val::vector(vec![Val::vector(vec![]), Val::Bool(false)]);
+        let pass = if is_library(finish, "transduce-done")
+            && *init == Val::vector(vec![tree.clone(), Val::vector(vec![])])
+        {
+            true
+        } else if is_library(finish, "transduce-finish") && *init == tree {
+            false
+        } else {
+            return None;
+        };
+        let name = if pass {
+            "transduce-pass"
+        } else {
+            "transduce-step"
+        };
         match step {
-            Func::Partial(p) if is_library(&p.f, "transduce-step") => match &p.args[..] {
-                [spec] => tree_spec(spec),
+            Func::Partial(p) if is_library(&p.f, name) => match &p.args[..] {
+                [spec] => {
+                    let spec = tree_spec(spec)?;
+                    Some(if pass {
+                        spec
+                    } else {
+                        spec.without_member_and_text()
+                    })
+                }
                 _ => None,
             },
             _ => None,
@@ -1725,12 +1757,21 @@ impl<'a> Lowering<'a> {
                 // events, run natively when the routers offer it: the
                 // native reads each pass as it comes and writes the events
                 // the library's step would, so the head is the native.
+                // A spec that names a member or a text goes only to routers
+                // that read them, and its texts are bounded as the
+                // library's `string-join` bounds them.
                 let guarded = match self.native_tree(plan) {
-                    Some(spec) => match self.routers.transduce_tree(spec, guarded) {
-                        Ok(native) => return self.keep_parser_head(native),
-                        Err(guarded) => guarded,
-                    },
-                    None => guarded,
+                    Some(spec)
+                        if !spec.uses_member_or_text()
+                            || self.routers.transduce_tree_reads_member_and_text() =>
+                    {
+                        let spec = spec.with_max_text_bytes(self.limits.max_scalar_bytes);
+                        match self.routers.transduce_tree(spec, guarded) {
+                            Ok(native) => return self.keep_parser_head(native),
+                            Err(guarded) => guarded,
+                        }
+                    }
+                    _ => guarded,
                 };
                 self.items(plan, Box::new(TaggedToJson { down: guarded }), false)
             }
@@ -2267,7 +2308,7 @@ pub(crate) mod tests {
     #[test]
     fn a_transduce_tree_spec_of_the_standard_shape_is_read() {
         let src = format!(
-            "{JSON_SPEC}def named (record (entry :doc (record (entry :key \"k\") (entry :scalar :value) (entry :note 1))))\ndef odd-container (record (entry :map (record (entry :container :set))))\ndef odd-key (record (entry :pair (record (entry :key 1.5))))\ndef odd-scalar (record (entry :val (record (entry :scalar \"x\"))))\ndef odd-entry (record (entry :val 1))\n"
+            "{JSON_SPEC}def named (record (entry :doc (record (entry :key \"k\") (entry :scalar :value) (entry :note 1))))\ndef texts (record (entry :row (record (entry :container :object) (entry :member \"a\") (entry :text true))) (entry :cell (record (entry :member 1) (entry :text false))))\ndef odd-container (record (entry :map (record (entry :container :set))))\ndef odd-key (record (entry :pair (record (entry :key 1.5))))\ndef odd-scalar (record (entry :val (record (entry :scalar \"x\"))))\ndef odd-entry (record (entry :val 1))\ndef odd-member (record (entry :row (record (entry :member -1))))\ndef odd-text (record (entry :row (record (entry :text :yes))))\n"
         );
         let rt = runtime(&src, true);
         let value = |name: &str| rt.def_value(Scope::Program, name).unwrap().unwrap();
@@ -2275,6 +2316,7 @@ pub(crate) mod tests {
             container,
             key,
             scalar,
+            ..TreeRule::default()
         };
         assert_eq!(
             tree_spec(&value("json-spec")),
@@ -2298,7 +2340,37 @@ pub(crate) mod tests {
                 )
             ))
         );
-        for odd in ["odd-container", "odd-key", "odd-scalar", "odd-entry"] {
+        // A member is read as a key is, and a text as a boolean.
+        assert_eq!(
+            tree_spec(&value("texts")),
+            Some(
+                TreeSpec::new()
+                    .with(
+                        "row",
+                        TreeRule {
+                            container: Some(TreeContainer::Object),
+                            member: Some(TreeKey::Name("a".into())),
+                            text: true,
+                            ..TreeRule::default()
+                        }
+                    )
+                    .with(
+                        "cell",
+                        TreeRule {
+                            member: Some(TreeKey::Token(1)),
+                            ..TreeRule::default()
+                        }
+                    )
+            )
+        );
+        for odd in [
+            "odd-container",
+            "odd-key",
+            "odd-scalar",
+            "odd-entry",
+            "odd-member",
+            "odd-text",
+        ] {
             assert_eq!(tree_spec(&value(odd)), None, "{odd}");
         }
         assert_eq!(tree_spec(&Val::Null), None);
@@ -2308,6 +2380,8 @@ pub(crate) mod tests {
     /// `transduce-tree` offered or declined, each call logged.
     struct TreeRouters {
         offer: bool,
+        /// Whether the native reads `:member` and `:text`.
+        reads: bool,
         log: Arc<Mutex<Vec<String>>>,
     }
 
@@ -2379,15 +2453,24 @@ pub(crate) mod tests {
             spec: TreeSpec,
             downstream: Box<dyn Sink + Send>,
         ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
-            self.log
-                .lock()
-                .unwrap()
-                .push(format!("transduce-tree of {} rules", spec.rules.len()));
+            let texts = if spec.uses_member_or_text() {
+                format!(", texts within {}", spec.max_text_bytes)
+            } else {
+                String::new()
+            };
+            self.log.lock().unwrap().push(format!(
+                "transduce-tree of {} rules{texts}",
+                spec.rules.len()
+            ));
             if self.offer {
                 Ok(Box::new(NativeTree(downstream)))
             } else {
                 Err(downstream)
             }
+        }
+
+        fn transduce_tree_reads_member_and_text(&self) -> bool {
+            self.reads
         }
     }
 
@@ -2409,7 +2492,7 @@ pub(crate) mod tests {
             }
         }
         let limits = Limits::default();
-        let lower = |export: &str, native: bool, offer: bool| -> Vec<String> {
+        let lower_with = |export: &str, native: bool, offer: bool, reads: bool| -> Vec<String> {
             let rt = runtime(&format!("{JSON_SPEC}{export}"), native);
             let Val::Stream(plan) = rt.export_with(Input::ParserEvents).unwrap() else {
                 panic!("the export is a stream");
@@ -2421,6 +2504,7 @@ pub(crate) mod tests {
                 Metrics::new(),
                 Arc::new(TreeRouters {
                     offer,
+                    reads,
                     log: log.clone(),
                 }),
                 Arc::new(Unlowered),
@@ -2435,6 +2519,8 @@ pub(crate) mod tests {
             let log = log.lock().unwrap().clone();
             log
         };
+        let lower =
+            |export: &str, native: bool, offer: bool| lower_with(export, native, offer, true);
         let tree = "def export [input] (transduce-tree json-spec input)\n";
         let native = ["guarded", "transduce-tree of 4 rules", "end"];
         assert_eq!(lower(tree, true, true), native);
@@ -2462,12 +2548,54 @@ pub(crate) mod tests {
         );
         assert_eq!(
             lower(
+                "def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-pass json-spec) transduce-done (parser-events input)))\n",
+                true,
+                true
+            ),
+            native
+        );
+        // Each step from the other's state is a scan of the program's own.
+        assert_eq!(
+            lower(
+                "def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-step json-spec) transduce-done (parser-events input)))\n",
+                true,
+                true
+            ),
+            scan
+        );
+        assert_eq!(
+            lower(
+                "def export [input] (as-events (scan-emit [[] false] (partial transduce-pass json-spec) transduce-finish (parser-events input)))\n",
+                true,
+                true
+            ),
+            scan
+        );
+        assert_eq!(
+            lower(
                 "def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n",
                 true,
                 true
             ),
             scan
         );
+        // A spec that names a member or a text goes only to routers that
+        // read them, with its texts held to `max_scalar_bytes`; a spec that
+        // names neither goes to routers that read neither.
+        let texts = "def export [input] (transduce-tree (record (entry :map (record (entry :container :object) (entry :member \"m\"))) (entry :pair (record (entry :key 0) (entry :text true)))) input)\n";
+        assert_eq!(
+            lower_with(texts, true, true, true),
+            [
+                "guarded".to_string(),
+                format!(
+                    "transduce-tree of 2 rules, texts within {}",
+                    limits.max_scalar_bytes
+                ),
+                "end".to_string()
+            ]
+        );
+        assert_eq!(lower_with(texts, true, true, false), scan);
+        assert_eq!(lower_with(tree, true, true, false), native);
     }
 
     /// The host pushes the parser's rule passes into the head
@@ -2627,69 +2755,136 @@ pub(crate) mod tests {
         out
     }
 
+    /// The scan a `transduce-tree` builds, run here by hand over
+    /// tabnas-json's own rule passes: `step` applied to each item as
+    /// transduce's scan-emit applies it, from `init`, and `finish` to the
+    /// last state, since running the plan itself needs transduce's stages.
+    /// The outputs, each as the value prints.
+    fn tree_scan(
+        rt: &Runtime,
+        spec: &str,
+        step: &str,
+        finish: &str,
+        init: Val,
+        src: &str,
+    ) -> Vec<String> {
+        use crate::value::Scope;
+        let spec = rt.def_value(Scope::Program, spec).unwrap().unwrap();
+        let Some(Val::Fn(step)) = rt.def_value(Scope::Stdlib, step).unwrap() else {
+            panic!("{step} is a function");
+        };
+        let Some(Val::Fn(finish)) = rt.def_value(Scope::Stdlib, finish).unwrap() else {
+            panic!("{finish} is a function");
+        };
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let mut state = init;
+        let mut out = Vec::new();
+        for ev in json_passes(src) {
+            let item = match &ev {
+                ParserEvent::Open(pass) => Val::tagged("open", vec![rule_record(pass)]),
+                ParserEvent::Close(pass) => Val::tagged("close", vec![rule_record(pass)]),
+                ParserEvent::End => {
+                    let Val::Vector(tail) = rt.apply(&finish, vec![state.clone()], &at).unwrap()
+                    else {
+                        panic!("finish answers a vector");
+                    };
+                    out.extend(tail.iter().map(|v| format!("{v:?}")));
+                    break;
+                }
+            };
+            let next = rt
+                .apply(&step, vec![spec.clone(), state.clone(), item], &at)
+                .unwrap_or_else(|f| panic!("{src}: {f}"));
+            let Val::Tagged { tag, fields } = &next else {
+                panic!("the step answers a transition");
+            };
+            assert_eq!(&**tag, "transition");
+            let Val::Vector(outputs) = &fields[1] else {
+                panic!("a transition's outputs are a vector");
+            };
+            out.extend(outputs.iter().map(|v| format!("{v:?}")));
+            state = fields[0].clone();
+        }
+        out
+    }
+
     /// The json grammar's part, as the plan writes it: `transduce-tree`
     /// over tabnas-json's own rule passes yields the document's events,
-    /// lexemes kept, in the order a walk of its value gives them. The
-    /// scan runs here by hand, the step applied to each item as
-    /// transduce's scan-emit applies it, since running the plan itself
-    /// needs transduce's stages.
+    /// lexemes kept, in the order a walk of its value gives them, through
+    /// transduce-step and through transduce-tree's own step alike.
     #[test]
     fn transduce_tree_makes_json_events_of_tabnas_jsons_rule_passes() {
-        use crate::value::Scope;
         let rt = runtime(
             "def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n\ndef export [input] (transduce-tree json-spec input)\n",
             true,
         );
-        let spec = rt.def_value(Scope::Program, "json-spec").unwrap().unwrap();
-        let Some(Val::Fn(step)) = rt.def_value(Scope::Stdlib, "transduce-step").unwrap() else {
-            panic!("transduce-step is a function");
+        let tree = || Val::vector(vec![Val::vector(vec![]), Val::Bool(false)]);
+        let stepped = |src: &str| {
+            tree_scan(
+                &rt,
+                "json-spec",
+                "transduce-step",
+                "transduce-finish",
+                tree(),
+                src,
+            )
         };
-        let Some(Val::Fn(finish)) = rt.def_value(Scope::Stdlib, "transduce-finish").unwrap() else {
-            panic!("transduce-finish is a function");
+        let passed = |src: &str| {
+            tree_scan(
+                &rt,
+                "json-spec",
+                "transduce-pass",
+                "transduce-done",
+                Val::vector(vec![tree(), Val::vector(vec![])]),
+                src,
+            )
         };
-        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
-        let run = |src: &str| -> Vec<String> {
-            let mut state = Val::vector(vec![Val::vector(vec![]), Val::Bool(false)]);
-            let mut out = Vec::new();
-            for ev in json_passes(src) {
-                let item = match &ev {
-                    ParserEvent::Open(pass) => Val::tagged("open", vec![rule_record(pass)]),
-                    ParserEvent::Close(pass) => Val::tagged("close", vec![rule_record(pass)]),
-                    ParserEvent::End => {
-                        let Val::Vector(tail) =
-                            rt.apply(&finish, vec![state.clone()], &at).unwrap()
-                        else {
-                            panic!("finish answers a vector");
-                        };
-                        out.extend(tail.iter().map(|v| format!("{v:?}")));
-                        break;
-                    }
-                };
-                let next = rt
-                    .apply(&step, vec![spec.clone(), state.clone(), item], &at)
-                    .unwrap_or_else(|f| panic!("{src}: {f}"));
-                let Val::Tagged { tag, fields } = &next else {
-                    panic!("the step answers a transition");
-                };
-                assert_eq!(&**tag, "transition");
-                let Val::Vector(outputs) = &fields[1] else {
-                    panic!("a transition's outputs are a vector");
-                };
-                out.extend(outputs.iter().map(|v| format!("{v:?}")));
-                state = fields[0].clone();
-            }
-            out
-        };
-        assert_eq!(
-            run(r#"{"a":[1,2.50,"x",{"b":null}],"c":{},"d":[],"e":1e21,"f":true}"#).join(" "),
-            r#"object-start (key "a") array-start (scalar 1) (scalar 2.50) (scalar "x") object-start (key "b") (scalar null) object-end array-end (key "c") object-start object-end (key "d") array-start array-end (key "e") (scalar 1e21) (key "f") (scalar true) object-end"#
+        for run in [&stepped as &dyn Fn(&str) -> Vec<String>, &passed] {
+            assert_eq!(
+                run(r#"{"a":[1,2.50,"x",{"b":null}],"c":{},"d":[],"e":1e21,"f":true}"#).join(" "),
+                r#"object-start (key "a") array-start (scalar 1) (scalar 2.50) (scalar "x") object-start (key "b") (scalar null) object-end array-end (key "c") object-start object-end (key "d") array-start array-end (key "e") (scalar 1e21) (key "f") (scalar true) object-end"#
+            );
+            assert_eq!(run("7").join(" "), "(scalar 7)");
+            assert_eq!(run(r#""s""#).join(" "), r#"(scalar "s")"#);
+            assert_eq!(run("[]").join(" "), "array-start array-end");
+            assert_eq!(
+                run("[[[{}]]]").join(" "),
+                "array-start array-start array-start object-start object-end array-end array-end array-end"
+            );
+        }
+    }
+
+    /// transduce-tree's own step reads `:member` and `:text`: a member
+    /// after the container its rule begins, and a `:text` rule's text, the
+    /// `:src` of the tokens the passes between its open and its close
+    /// consumed, first on its close; a `:text` rule closed inside another
+    /// joins its text to the one around it, with its own passes' tokens.
+    #[test]
+    fn transduce_tree_reads_a_member_and_a_text() {
+        let rt = runtime(
+            "def values\n  record\n    entry :map (record (entry :container :object))\n    entry :pair (record (entry :key 0) (entry :text true))\n\ndef lists\n  record\n    entry :list (record (entry :container :object) (entry :member \"items\") (entry :text true))\n\ndef export [input] (transduce-tree values input)\n",
+            true,
         );
-        assert_eq!(run("7").join(" "), "(scalar 7)");
-        assert_eq!(run(r#""s""#).join(" "), r#"(scalar "s")"#);
-        assert_eq!(run("[]").join(" "), "array-start array-end");
+        let init = || {
+            Val::vector(vec![
+                Val::vector(vec![Val::vector(vec![]), Val::Bool(false)]),
+                Val::vector(vec![]),
+            ])
+        };
+        let run = |spec: &str, src: &str| {
+            tree_scan(&rt, spec, "transduce-pass", "transduce-done", init(), src).join(" ")
+        };
         assert_eq!(
-            run("[[[{}]]]").join(" "),
-            "array-start array-start array-start object-start object-end array-end array-end array-end"
+            run("values", r#"{"a":[1, 2],"b":"x","d":7}"#),
+            r#"object-start (key "a") (scalar "[1,2]") (key "b") (scalar "\"x\"") (key "d") (scalar "7") object-end"#
+        );
+        assert_eq!(
+            run("lists", r#"[1,[2,3],"x"]"#),
+            r#"object-start (key "items") object-start (key "items") (scalar "2,3") object-end (scalar "1,[2,3],\"x\"") object-end"#
+        );
+        assert_eq!(
+            run("lists", "[]"),
+            r#"object-start (key "items") (scalar "") object-end"#
         );
     }
 }

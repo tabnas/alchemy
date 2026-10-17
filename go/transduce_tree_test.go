@@ -22,7 +22,10 @@ func TestATransduceTreeSpecOfTheStandardShapeIsRead(t *testing.T) {
 		"def odd-container (record (entry :map (record (entry :container :set))))\n"+
 		"def odd-key (record (entry :pair (record (entry :key 1.5))))\n"+
 		"def odd-scalar (record (entry :val (record (entry :scalar \"x\"))))\n"+
-		"def odd-entry (record (entry :val 1))\n")
+		"def odd-entry (record (entry :val 1))\n"+
+		"def texts (record (entry :row (record (entry :container :object) (entry :member \"a\") (entry :text true))) (entry :cell (record (entry :member 1) (entry :text false))))\n"+
+		"def odd-member (record (entry :row (record (entry :member -1))))\n"+
+		"def odd-text (record (entry :row (record (entry :text :yes))))\n")
 	value := func(name string) Val {
 		v, f := rt.DefValue(ScopeProgram, name)
 		if f != nil {
@@ -48,7 +51,16 @@ func TestATransduceTreeSpecOfTheStandardShapeIsRead(t *testing.T) {
 	if !ok || !reflect.DeepEqual(spec, want) {
 		t.Errorf("named: %v %+v", ok, spec)
 	}
-	for _, odd := range []string{"odd-container", "odd-key", "odd-scalar", "odd-entry"} {
+	// A member is read as a key is, and a text as a boolean.
+	spec, ok = treeSpecOf(value("texts"))
+	want = shared.TreeSpec{Rules: map[string]shared.TreeRule{
+		"row":  {Container: shared.TreeObject, Member: shared.TreeKey{Set: true, Name: "a"}, Text: true},
+		"cell": {Member: shared.TreeKey{Set: true, IsToken: true, Token: 1}},
+	}}
+	if !ok || !reflect.DeepEqual(spec, want) {
+		t.Errorf("texts: %v %+v", ok, spec)
+	}
+	for _, odd := range []string{"odd-container", "odd-key", "odd-scalar", "odd-entry", "odd-member", "odd-text"} {
 		if _, ok := treeSpecOf(value(odd)); ok {
 			t.Errorf("%s is read as a spec", odd)
 		}
@@ -76,19 +88,26 @@ func (r logRouters) Guarded(inner shared.Sink, _ shared.Limits, _ *shared.AbortF
 }
 
 // treeRouters is logRouters with a native transduce-tree offered or
-// declined.
+// declined, which reads a spec's :member and :text or does not.
 type treeRouters struct {
 	logRouters
 	offer bool
+	reads bool
 }
 
 func (r treeRouters) TransduceTree(spec shared.TreeSpec, downstream shared.Sink) shared.ParserSink {
-	*r.log = append(*r.log, fmt.Sprintf("transduce-tree of %d rules", len(spec.Rules)))
+	texts := ""
+	if spec.UsesMemberOrText() {
+		texts = fmt.Sprintf(", texts within %d", spec.MaxTextBytes)
+	}
+	*r.log = append(*r.log, fmt.Sprintf("transduce-tree of %d rules%s", len(spec.Rules), texts))
 	if !r.offer {
 		return nil
 	}
 	return nativeTree{downstream}
 }
+
+func (r treeRouters) TransduceTreeReadsMemberAndText() bool { return r.reads }
 
 // nativeTree is the native treeRouters offers: it hands the parse's end
 // on.
@@ -114,11 +133,11 @@ func (inertScan) Finish() (shared.Flow, *Fail)  { return shared.Continue, nil }
 // program that writes the library's scan itself is run the same way; one
 // whose step is its own is not (rs/src/lower.rs's test).
 func TestTransduceTreeRunsNativelyWhereTheRoutersOfferIt(t *testing.T) {
-	lower := func(export string, native bool, offer string) []string {
+	lowerWith := func(export string, native bool, offer string, reads bool) []string {
 		t.Helper()
 		var log []string
 		plain := logRouters{log: &log}
-		var r shared.Routers = treeRouters{logRouters: plain, offer: offer == "offer"}
+		var r shared.Routers = treeRouters{logRouters: plain, offer: offer == "offer", reads: reads}
 		if offer == "absent" {
 			r = plain
 		}
@@ -138,6 +157,10 @@ func TestTransduceTreeRunsNativelyWhereTheRoutersOfferIt(t *testing.T) {
 		}
 		return append(log, ended.seen...)
 	}
+	lower := func(export string, native bool, offer string) []string {
+		t.Helper()
+		return lowerWith(export, native, offer, true)
+	}
 	check := func(got []string, want ...string) {
 		t.Helper()
 		if strings.Join(got, ", ") != strings.Join(want, ", ") {
@@ -153,5 +176,16 @@ func TestTransduceTreeRunsNativelyWhereTheRoutersOfferIt(t *testing.T) {
 	check(lower(tree, false, "offer"), scan...)
 	check(lower("def export [input] (transduce-tree (record (entry :map (record (entry :container :set)))) input)\n", true, "offer"), scan...)
 	check(lower("def export [input] (as-events (scan-emit [[] false] (partial transduce-step json-spec) transduce-finish (parser-events input)))\n", true, "offer"), native...)
+	check(lower("def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-pass json-spec) transduce-done (parser-events input)))\n", true, "offer"), native...)
+	// Each step from the other's state is a scan of the program's own.
+	check(lower("def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-step json-spec) transduce-done (parser-events input)))\n", true, "offer"), scan...)
+	check(lower("def export [input] (as-events (scan-emit [[] false] (partial transduce-pass json-spec) transduce-finish (parser-events input)))\n", true, "offer"), scan...)
 	check(lower("def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n", true, "offer"), scan...)
+	// A spec that names a member or a text goes only to routers that read
+	// them, with its texts held to max_scalar_bytes; a spec that names
+	// neither goes to routers that read neither.
+	texts := "def export [input] (transduce-tree (record (entry :map (record (entry :container :object) (entry :member \"m\"))) (entry :pair (record (entry :key 0) (entry :text true)))) input)\n"
+	check(lowerWith(texts, true, "offer", true), "guarded", fmt.Sprintf("transduce-tree of 2 rules, texts within %d", shared.DefaultLimits().MaxScalarBytes), "end")
+	check(lowerWith(texts, true, "offer", false), scan...)
+	check(lowerWith(tree, true, "offer", false), native...)
 }

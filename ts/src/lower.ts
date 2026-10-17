@@ -75,7 +75,9 @@ import {
   TreeRule,
   TreeSpec,
   boundColumn,
+  usesMemberOrText,
   utf8Bytes,
+  withoutMemberAndText,
 } from './shared'
 
 import { SourceSpan } from './ast'
@@ -160,10 +162,11 @@ export function isTableBinding(v: Val): boolean {
 
 // The spec of a `transduce-tree`, when it has the standard shape `TreeSpec`
 // holds: a record of records, each entry's `:container` `:object` or
-// `:array`, its `:key` a string or a token's index (a non-negative integer,
-// as `path` takes one), its `:scalar` a token's index or `:value`, any of
-// the three left out. An entry's other fields are not read, as the library
-// reads none. Any other spec runs the library's own `transduce-tree`.
+// `:array`, its `:key` and its `:member` each a string or a token's index
+// (a non-negative integer, as `path` takes one), its `:scalar` a token's
+// index or `:value`, its `:text` a boolean, any of the five left out. An
+// entry's other fields are not read, as the library reads none. Any other
+// spec runs the library's own `transduce-tree`.
 export function treeSpec(v: Val): TreeSpec | undefined {
   if ('record' !== v.v) return undefined
   const rules = new Map<string, TreeRule>()
@@ -177,14 +180,20 @@ export function treeSpec(v: Val): TreeSpec | undefined {
       }
       rule.container = container.name
     }
-    const key = entry.fields.get('key')
-    if (undefined !== key) {
-      if ('str' === key.v) rule.key = { name: key.value }
+    for (const field of ['key', 'member'] as const) {
+      const named = entry.fields.get(field)
+      if (undefined === named) continue
+      if ('str' === named.v) rule[field] = { name: named.value }
       else {
-        const token = asIndex(key)
+        const token = asIndex(named)
         if (undefined === token) return undefined
-        rule.key = { token }
+        rule[field] = { token }
       }
+    }
+    const text = entry.fields.get('text')
+    if (undefined !== text) {
+      if ('bool' !== text.v) return undefined
+      if (text.value) rule.text = true
     }
     const scalar = entry.fields.get('scalar')
     if (undefined !== scalar) {
@@ -1254,21 +1263,32 @@ export class Lowering {
 
   // The spec of the scan the library's `transduce-tree` builds, when `plan`
   // is one and the runtime's native compositions are on: a `scan-emit` from
-  // `[[] false]` over the host's parser events, its step the library's
-  // `transduce-step` given a spec of the standard shape (`treeSpec`), its
-  // finish the library's `transduce-finish`. A program that writes that
-  // scan itself means what `transduce-tree` means, and is run the same way.
+  // `[[[] false] []]` over the host's parser events, its step the library's
+  // `transduce-pass` given a spec of the standard shape (`treeSpec`), its
+  // finish the library's `transduce-done`. A program that writes that scan
+  // itself means what `transduce-tree` means, and is run the same way; so
+  // is one that writes the scan of `transduce-step` from `[[] false]` with
+  // `transduce-finish`, with the spec as that step reads it, without its
+  // members and texts.
   private nativeTree(plan: Plan): TreeSpec | undefined {
     if (!this.rt.native || 'scan-emit' !== plan.p) return undefined
     const source = plan.source
     if ('parser-events' !== source.p || 'parser-input' !== source.source.p) return undefined
-    if (!isLibrary(plan.finish, 'transduce-finish')) return undefined
-    const init = vectorVal([vectorVal([]), bool(false)])
-    if (!valEquals(plan.init, init)) return undefined
+    const tree = vectorVal([vectorVal([]), bool(false)])
+    let pass: boolean
+    if (isLibrary(plan.finish, 'transduce-done') && valEquals(plan.init, vectorVal([tree, vectorVal([])]))) {
+      pass = true
+    } else if (isLibrary(plan.finish, 'transduce-finish') && valEquals(plan.init, tree)) {
+      pass = false
+    } else return undefined
     const step = plan.step
-    if ('partial' !== step.fn || !isLibrary(step.partial.f, 'transduce-step')) return undefined
+    const name = pass ? 'transduce-pass' : 'transduce-step'
+    if ('partial' !== step.fn || !isLibrary(step.partial.f, name)) return undefined
     const args = step.partial.args
-    return 1 === args.length ? treeSpec(args[0]) : undefined
+    if (1 !== args.length) return undefined
+    const spec = treeSpec(args[0])
+    if (undefined === spec) return undefined
+    return pass ? spec : withoutMemberAndText(spec)
   }
 
   // What the host pushes parser events into, once `sinkAs` has answered
@@ -1408,9 +1428,16 @@ export class Lowering {
         // natively when the routers offer it: the native reads each pass as
         // it comes and writes the events the library's step would, so the
         // head is the native.
+        // A spec that names a member or a text goes only to routers that
+        // read them, and its texts are bounded as the library's
+        // `string-join` bounds them.
         const spec = this.nativeTree(plan)
-        if (undefined !== spec) {
-          const native = this.rt.routers.transduceTree?.(spec, guarded)
+        if (
+          undefined !== spec &&
+          (!usesMemberOrText(spec) || true === this.rt.routers.transduceTreeReadsMemberAndText?.())
+        ) {
+          const bounded = { ...spec, maxTextBytes: this.limits.max_scalar_bytes }
+          const native = this.rt.routers.transduceTree?.(bounded, guarded)
           if (undefined !== native) return this.keepParserHead(native)
         }
         return this.items(plan, new TaggedToJson(guarded), false)

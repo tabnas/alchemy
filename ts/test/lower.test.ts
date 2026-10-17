@@ -25,7 +25,7 @@ import {
 import { make as makeJson } from '@tabnas/json'
 
 import { Lowering, NoColumns, ParserEventsOnly, ParserEventsToItems, treeSpec } from '../dist/lower'
-import { CsvOptions, Datum, Limits, Metrics, fromJSON, parserEventFromJSON } from '../dist/shared'
+import { CsvOptions, Datum, Limits, Metrics, fromJSON, parserEventFromJSON, usesMemberOrText } from '../dist/shared'
 import type { ParserEvent, TableEvent, TableSink } from '../dist/shared'
 
 import { OPTIONS, PROGRAM, compile, thrown } from './common'
@@ -258,7 +258,10 @@ describe('program', () => {
         'def odd-container (record (entry :map (record (entry :container :set))))\n' +
         'def odd-key (record (entry :pair (record (entry :key 1.5))))\n' +
         'def odd-scalar (record (entry :val (record (entry :scalar "x"))))\n' +
-        'def odd-entry (record (entry :val 1))\n',
+        'def odd-entry (record (entry :val 1))\n' +
+        'def texts (record (entry :row (record (entry :container :object) (entry :member "a") (entry :text true))) (entry :cell (record (entry :member 1) (entry :text false))))\n' +
+        'def odd-member (record (entry :row (record (entry :member -1))))\n' +
+        'def odd-text (record (entry :row (record (entry :text :yes))))\n',
       true,
     )
     const val = (name: string) => run(rt.defValue('program', name)) as value.Val
@@ -277,7 +280,14 @@ describe('program', () => {
     assert.deepStrictEqual(treeSpec(val('named')), {
       rules: new Map([['doc', { key: { name: 'k' }, scalar: 'value' }]]),
     })
-    for (const odd of ['odd-container', 'odd-key', 'odd-scalar', 'odd-entry']) {
+    // A member is read as a key is, and a text as a boolean.
+    assert.deepStrictEqual(treeSpec(val('texts')), {
+      rules: new Map<string, unknown>([
+        ['row', { container: 'object', member: { name: 'a' }, text: true }],
+        ['cell', { member: { token: 1 } }],
+      ]),
+    })
+    for (const odd of ['odd-container', 'odd-key', 'odd-scalar', 'odd-entry', 'odd-member', 'odd-text']) {
       assert.equal(treeSpec(val(odd)), undefined, odd)
     }
     assert.equal(treeSpec(V.NULL), undefined)
@@ -290,7 +300,7 @@ describe('program', () => {
   // shape. A program that writes the library's scan itself is run the same
   // way; one whose step is its own is not (rs/src/lower.rs's test).
   it('transduce-tree runs natively where the routers offer it', () => {
-    const lower = (exp: string, native: boolean, offer: boolean | 'absent'): string[] => {
+    const lowerWith = (exp: string, native: boolean, offer: boolean | 'absent', reads: boolean): string[] => {
       const log: string[] = []
       const routers: any = {
         ...OPTIONS.routers,
@@ -304,8 +314,10 @@ describe('program', () => {
         },
       }
       if ('absent' !== offer) {
+        if (reads) routers.transduceTreeReadsMemberAndText = () => true
         routers.transduceTree = (spec: any, downstream: any) => {
-          log.push(`transduce-tree of ${spec.rules.size} rules`)
+          const texts = usesMemberOrText(spec) ? `, texts within ${spec.maxTextBytes}` : ''
+          log.push(`transduce-tree of ${spec.rules.size} rules${texts}`)
           if (!offer) return undefined
           return {
             event(ev: any) {
@@ -329,6 +341,7 @@ describe('program', () => {
       lowering.parserHead(events).event({ type: 'end' })
       return log
     }
+    const lower = (exp: string, native: boolean, offer: boolean | 'absent') => lowerWith(exp, native, offer, true)
     const tree = 'def export [input] (transduce-tree json-spec input)\n'
     const native = ['guarded', 'transduce-tree of 4 rules', 'end']
     const scan = ['guarded', 'scan-emit', 'end']
@@ -350,108 +363,181 @@ describe('program', () => {
     )
     assert.deepStrictEqual(
       lower(
+        'def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-pass json-spec) transduce-done (parser-events input)))\n',
+        true,
+        true,
+      ),
+      native,
+    )
+    // Each step from the other's state is a scan of the program's own.
+    assert.deepStrictEqual(
+      lower(
+        'def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-step json-spec) transduce-done (parser-events input)))\n',
+        true,
+        true,
+      ),
+      scan,
+    )
+    assert.deepStrictEqual(
+      lower(
+        'def export [input] (as-events (scan-emit [[] false] (partial transduce-pass json-spec) transduce-finish (parser-events input)))\n',
+        true,
+        true,
+      ),
+      scan,
+    )
+    assert.deepStrictEqual(
+      lower(
         'def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n',
         true,
         true,
       ),
       scan,
     )
+    // A spec that names a member or a text goes only to routers that read
+    // them, with its texts held to `max_scalar_bytes`; a spec that names
+    // neither goes to routers that read neither.
+    const texts =
+      'def export [input] (transduce-tree (record (entry :map (record (entry :container :object) (entry :member "m"))) (entry :pair (record (entry :key 0) (entry :text true)))) input)\n'
+    assert.deepStrictEqual(lowerWith(texts, true, true, true), [
+      'guarded',
+      `transduce-tree of 2 rules, texts within ${Limits.default().max_scalar_bytes}`,
+      'end',
+    ])
+    assert.deepStrictEqual(lowerWith(texts, true, true, false), scan)
+    assert.deepStrictEqual(lowerWith(tree, true, true, false), native)
   })
+
+  // tabnas-json's passes, as a parser-events source makes them: each
+  // pass's own tokens (those its alternate gave back are the next rule's),
+  // a number token's value with its source text as the lexeme, a close
+  // pass's scalar node as its value, then one end.
+  const passes = (src: string): ParserEvent[] => {
+    const out: ParserEvent[] = []
+    const parser = makeJson()
+    parser.sub({
+      ruleDone: (r: any, _ctx: any, done: any) => {
+        const open = 'o' === done.state
+        const all: any[] = open ? r.o : r.c
+        const b = null == done.alt ? 0 : done.alt.b
+        const tokens = all.slice(0, all.length - b).map((t: any) => ({
+          name: t.name,
+          val: '#NR' === t.name ? Datum.number(t.val, t.src) : undefined === t.val ? Datum.null : fromJSON(t.val),
+          src: t.src,
+          row: t.rI,
+          col: t.cI,
+        }))
+        const node = r.node
+        const scalar = !open && undefined !== node && (null === node || 'object' !== typeof node)
+        out.push({
+          type: open ? 'open' : 'close',
+          pass: {
+            name: r.name,
+            d: r.d,
+            i: r.i,
+            ...(null == done.alt
+              ? {}
+              : { alt: { p: done.alt.p, r: done.alt.r, b: done.alt.b, g: done.alt.g } }),
+            tokens,
+            forced: true === done.forced,
+            n: Object.entries(r.n as Record<string, number>).sort(),
+            ...(scalar ? { value: fromJSON(node) } : {}),
+          },
+        })
+      },
+    })
+    parser.parse(src)
+    out.push({ type: 'end' })
+    return out
+  }
+
+  // The scan a `transduce-tree` builds, run here by hand over tabnas-json's
+  // own rule passes: `step` applied to each item as transduce's scan-emit
+  // applies it, from `init`, and `finish` to the last state, since running
+  // the plan itself needs transduce's stages (rs/src/lower.rs's
+  // `tree_scan`).
+  const treeScan = (rt: Runtime, specName: string, stepName: string, finishName: string, init: value.Val, src: string): string => {
+    const spec = run(rt.defValue('program', specName))!
+    const step: any = run(rt.defValue('stdlib', stepName))
+    const finish: any = run(rt.defValue('stdlib', finishName))
+    const at = span(sourceFile('t'), 0, 0)
+    let state = init
+    const out: string[] = []
+    let pending: any
+    const items = new ParserEventsToItems({
+      item(v: any) {
+        pending = v
+        return 'continue'
+      },
+      end() {
+        return 'continue'
+      },
+    })
+    for (const ev of passes(src)) {
+      if ('end' === ev.type) {
+        const tail: any = run(rt.apply(finish.f, [state], at))
+        out.push(...tail.items.map((v: any) => V.debugText(v)))
+        break
+      }
+      items.event(ev)
+      const next: any = run(rt.apply(step.f, [spec, state, pending], at))
+      assert.equal(next.tag, 'transition')
+      out.push(...next.fields[1].items.map((v: any) => V.debugText(v)))
+      state = next.fields[0]
+    }
+    return out.join(' ')
+  }
 
   // The json grammar's part, as the plan writes it: `transduce-tree` over
   // tabnas-json's own rule passes yields the document's events, lexemes
-  // kept, in the order a walk of its value gives them (rs/src/lower.rs's
-  // test). The scan runs here by hand, the step applied to each item as
-  // transduce's scan-emit applies it, since running the plan itself needs
-  // transduce's stages.
+  // kept, in the order a walk of its value gives them, through
+  // transduce-step and through transduce-tree's own step alike
+  // (rs/src/lower.rs's test).
   it('transduce-tree makes JSON events of tabnas-json rule passes', () => {
     const rt = runtime(
       'def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n\ndef export [input] (transduce-tree json-spec input)\n',
       true,
     )
-    const spec = run(rt.defValue('program', 'json-spec'))!
-    const step: any = run(rt.defValue('stdlib', 'transduce-step'))
-    const finish: any = run(rt.defValue('stdlib', 'transduce-finish'))
-    const at = span(sourceFile('t'), 0, 0)
-    // tabnas-json's passes, as a parser-events source makes them: each
-    // pass's own tokens (those its alternate gave back are the next
-    // rule's), a number token's value with its source text as the lexeme,
-    // a close pass's scalar node as its value, then one end.
-    const passes = (src: string): ParserEvent[] => {
-      const out: ParserEvent[] = []
-      const parser = makeJson()
-      parser.sub({
-        ruleDone: (r: any, _ctx: any, done: any) => {
-          const open = 'o' === done.state
-          const all: any[] = open ? r.o : r.c
-          const b = null == done.alt ? 0 : done.alt.b
-          const tokens = all.slice(0, all.length - b).map((t: any) => ({
-            name: t.name,
-            val: '#NR' === t.name ? Datum.number(t.val, t.src) : undefined === t.val ? Datum.null : fromJSON(t.val),
-            src: t.src,
-            row: t.rI,
-            col: t.cI,
-          }))
-          const node = r.node
-          const scalar = !open && undefined !== node && (null === node || 'object' !== typeof node)
-          out.push({
-            type: open ? 'open' : 'close',
-            pass: {
-              name: r.name,
-              d: r.d,
-              i: r.i,
-              ...(null == done.alt
-                ? {}
-                : { alt: { p: done.alt.p, r: done.alt.r, b: done.alt.b, g: done.alt.g } }),
-              tokens,
-              forced: true === done.forced,
-              n: Object.entries(r.n as Record<string, number>).sort(),
-              ...(scalar ? { value: fromJSON(node) } : {}),
-            },
-          })
-        },
-      })
-      parser.parse(src)
-      out.push({ type: 'end' })
-      return out
+    const tree = () => V.vectorVal([V.vectorVal([]), V.bool(false)])
+    const stepped = (src: string) => treeScan(rt, 'json-spec', 'transduce-step', 'transduce-finish', tree(), src)
+    const passed = (src: string) =>
+      treeScan(rt, 'json-spec', 'transduce-pass', 'transduce-done', V.vectorVal([tree(), V.vectorVal([])]), src)
+    for (const events of [stepped, passed]) {
+      assert.equal(
+        events('{"a":[1,2.50,"x",{"b":null}],"c":{},"d":[],"e":1e21,"f":true}'),
+        'object-start (key "a") array-start (scalar 1) (scalar 2.50) (scalar "x") object-start (key "b") (scalar null) object-end array-end (key "c") object-start object-end (key "d") array-start array-end (key "e") (scalar 1e21) (key "f") (scalar true) object-end',
+      )
+      assert.equal(events('7'), '(scalar 7)')
+      assert.equal(events('"s"'), '(scalar "s")')
+      assert.equal(events('[]'), 'array-start array-end')
+      assert.equal(
+        events('[[[{}]]]'),
+        'array-start array-start array-start object-start object-end array-end array-end array-end',
+      )
     }
-    const events = (src: string): string => {
-      let state = V.vectorVal([V.vectorVal([]), V.bool(false)])
-      const out: string[] = []
-      let pending: any
-      const items = new ParserEventsToItems({
-        item(v: any) {
-          pending = v
-          return 'continue'
-        },
-        end() {
-          return 'continue'
-        },
-      })
-      for (const ev of passes(src)) {
-        if ('end' === ev.type) {
-          const tail: any = run(rt.apply(finish.f, [state], at))
-          out.push(...tail.items.map((v: any) => V.debugText(v)))
-          break
-        }
-        items.event(ev)
-        const next: any = run(rt.apply(step.f, [spec, state, pending], at))
-        assert.equal(next.tag, 'transition')
-        out.push(...next.fields[1].items.map((v: any) => V.debugText(v)))
-        state = next.fields[0]
-      }
-      return out.join(' ')
-    }
-    assert.equal(
-      events('{"a":[1,2.50,"x",{"b":null}],"c":{},"d":[],"e":1e21,"f":true}'),
-      'object-start (key "a") array-start (scalar 1) (scalar 2.50) (scalar "x") object-start (key "b") (scalar null) object-end array-end (key "c") object-start object-end (key "d") array-start array-end (key "e") (scalar 1e21) (key "f") (scalar true) object-end',
+  })
+
+  // transduce-tree's own step reads `:member` and `:text`: a member after
+  // the container its rule begins, and a `:text` rule's text, the `:src`
+  // of the tokens the passes between its open and its close consumed,
+  // first on its close; a `:text` rule closed inside another joins its
+  // text to the one around it, with its own passes' tokens
+  // (rs/src/lower.rs's test).
+  it('transduce-tree reads a member and a text', () => {
+    const rt = runtime(
+      'def values\n  record\n    entry :map (record (entry :container :object))\n    entry :pair (record (entry :key 0) (entry :text true))\n\ndef lists\n  record\n    entry :list (record (entry :container :object) (entry :member "items") (entry :text true))\n\ndef export [input] (transduce-tree values input)\n',
+      true,
     )
-    assert.equal(events('7'), '(scalar 7)')
-    assert.equal(events('"s"'), '(scalar "s")')
-    assert.equal(events('[]'), 'array-start array-end')
+    const init = () => V.vectorVal([V.vectorVal([V.vectorVal([]), V.bool(false)]), V.vectorVal([])])
+    const events = (spec: string, src: string) => treeScan(rt, spec, 'transduce-pass', 'transduce-done', init(), src)
     assert.equal(
-      events('[[[{}]]]'),
-      'array-start array-start array-start object-start object-end array-end array-end array-end',
+      events('values', '{"a":[1, 2],"b":"x","d":7}'),
+      'object-start (key "a") (scalar "[1,2]") (key "b") (scalar "\\"x\\"") (key "d") (scalar "7") object-end',
     )
+    assert.equal(
+      events('lists', '[1,[2,3],"x"]'),
+      'object-start (key "items") object-start (key "items") (scalar "2,3") object-end (scalar "1,[2,3],\\"x\\"") object-end',
+    )
+    assert.equal(events('lists', '[]'), 'object-start (key "items") (scalar "") object-end')
   })
 })

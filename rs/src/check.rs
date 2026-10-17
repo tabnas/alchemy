@@ -101,7 +101,7 @@ pub fn stdlib_signature(name: &str) -> Option<Type> {
         // the rule passes in, a tree's JSON events out; its helpers thread
         // a pass's outputs, a vector of events.
         "transduce-token" => Type::func(vec![Unknown, Record], Value),
-        "transduce-key" | "transduce-scalar" | "transduce-value" => Type::func(
+        "transduce-named" | "transduce-key" | "transduce-scalar" | "transduce-value" => Type::func(
             vec![Unknown, Record, Type::vector(Unknown)],
             Type::vector(Unknown),
         ),
@@ -118,6 +118,26 @@ pub fn stdlib_signature(name: &str) -> Option<Type> {
         }
         "transduce-step" => Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition")),
         "transduce-finish" => Type::func(vec![Unknown], Type::vector(Event)),
+        // transduce-tree's own step, which carries the open texts beside
+        // the tree's state: the texts are a vector of strings, and a
+        // close pass's text and outputs come back as a vector of the two.
+        "transduce-member" => Type::func(
+            vec![Record, Record, Type::vector(Unknown)],
+            Type::vector(Unknown),
+        ),
+        "transduce-write" => Type::func(vec![Unknown, Type::String], Type::vector(Unknown)),
+        "transduce-spell" => Type::func(vec![Unknown, Record], Unknown),
+        "transduce-text-open" => Type::func(vec![Record, Unknown, Record], Unknown),
+        "transduce-text-end" => {
+            Type::func(vec![Type::String, Unknown, Record], Type::vector(Unknown))
+        }
+        "transduce-text-close" => Type::func(vec![Record, Unknown, Record], Type::vector(Unknown)),
+        "transduce-then" => Type::func(
+            vec![Type::vector(Unknown), Type::vector(Unknown)],
+            Type::vector(Unknown),
+        ),
+        "transduce-pass" => Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition")),
+        "transduce-done" => Type::func(vec![Unknown], Type::vector(Event)),
         "transduce-tree" => Type::func(vec![Record, ParserEvents], JsonEvents),
         _ => return None,
     })

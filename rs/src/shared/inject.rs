@@ -123,6 +123,17 @@ pub trait Routers<V>: Send + Sync {
         let _ = spec;
         Err(downstream)
     }
+
+    /// Whether [`Routers::transduce_tree`]'s native reads a spec's
+    /// `:member` and `:text`, and holds a `:text` rule's text to
+    /// [`TreeSpec::max_text_bytes`] as it grows. Routers written before
+    /// those fields read neither and answer `false`, which is what this
+    /// method does unless an implementation says otherwise; the lowering
+    /// then runs the library's text for a spec that uses either, so the
+    /// native and the text never disagree.
+    fn transduce_tree_reads_member_and_text(&self) -> bool {
+        false
+    }
 }
 
 /// The renderers, writers and text combinators a plan's output is written

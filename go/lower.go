@@ -102,11 +102,11 @@ func protocolMismatch(message string) *Fail {
 
 // treeSpecOf is the spec of a `transduce-tree`, when it has the standard
 // shape shared.TreeSpec holds: a record of records, each entry's
-// :container :object or :array, its :key a string or a token's index (a
-// non-negative integer, as `path` takes one), its :scalar a token's index
-// or :value, any of the three left out. An entry's other fields are not
-// read, as the library reads none. Any other spec runs the library's own
-// `transduce-tree`.
+// :container :object or :array, its :key and its :member each a string or
+// a token's index (a non-negative integer, as `path` takes one), its
+// :scalar a token's index or :value, its :text a boolean, any of the five
+// left out. An entry's other fields are not read, as the library reads
+// none. Any other spec runs the library's own `transduce-tree`.
 func treeSpecOf(v Val) (shared.TreeSpec, bool) {
 	r, ok := v.(*RecordVal)
 	if !ok {
@@ -130,14 +130,31 @@ func treeSpecOf(v Val) (shared.TreeSpec, bool) {
 				return shared.TreeSpec{}, false
 			}
 		}
-		if k, has := entry.Get("key"); has {
+		named := func(field string) (shared.TreeKey, bool) {
+			k, has := entry.Get(field)
+			if !has {
+				return shared.TreeKey{}, true
+			}
 			if name, isStr := k.(StrVal); isStr {
-				rule.Key = shared.TreeKey{Set: true, Name: string(name)}
-			} else if i, isIndex := asIndex(k); isIndex {
-				rule.Key = shared.TreeKey{Set: true, IsToken: true, Token: i}
-			} else {
+				return shared.TreeKey{Set: true, Name: string(name)}, true
+			}
+			if i, isIndex := asIndex(k); isIndex {
+				return shared.TreeKey{Set: true, IsToken: true, Token: i}, true
+			}
+			return shared.TreeKey{}, false
+		}
+		if rule.Key, ok = named("key"); !ok {
+			return shared.TreeSpec{}, false
+		}
+		if rule.Member, ok = named("member"); !ok {
+			return shared.TreeSpec{}, false
+		}
+		if t, has := entry.Get("text"); has {
+			b, isBool := t.(BoolVal)
+			if !isBool {
 				return shared.TreeSpec{}, false
 			}
+			rule.Text = bool(b)
 		}
 		if sc, has := entry.Get("scalar"); has {
 			if sc == KeywordVal("value") {
@@ -1457,11 +1474,13 @@ func (l *Lowering) keepParserHead(head shared.ParserSink) (shared.Sink, *Fail) {
 
 // nativeTree is the spec of the scan the library's `transduce-tree`
 // builds, when p is one and the runtime's native compositions are on: a
-// `scan-emit` from `[[] false]` over the host's parser events, its step
-// the library's `transduce-step` given a spec of the standard shape
-// (treeSpecOf), its finish the library's `transduce-finish`. A program
-// that writes that scan itself means what `transduce-tree` means, and is
-// run the same way.
+// `scan-emit` from `[[[] false] []]` over the host's parser events, its
+// step the library's `transduce-pass` given a spec of the standard shape
+// (treeSpecOf), its finish the library's `transduce-done`. A program that
+// writes that scan itself means what `transduce-tree` means, and is run
+// the same way; so is one that writes the scan of `transduce-step` from
+// `[[] false]` with `transduce-finish`, with the spec as that step reads
+// it, without its members and texts.
 func (l *Lowering) nativeTree(p *Plan) (shared.TreeSpec, bool) {
 	if !l.rt.Native() || p.Kind != PlanScanEmit {
 		return shared.TreeSpec{}, false
@@ -1470,14 +1489,28 @@ func (l *Lowering) nativeTree(p *Plan) (shared.TreeSpec, bool) {
 	if source == nil || source.Kind != PlanParserEvents || source.Source == nil || source.Source.Kind != PlanParserInput {
 		return shared.TreeSpec{}, false
 	}
-	if !isLibrary(p.Finish, "transduce-finish") || !Equal(p.Init, Vector(Vector(), BoolVal(false))) {
+	tree := Vector(Vector(), BoolVal(false))
+	var name string
+	switch {
+	case isLibrary(p.Finish, "transduce-done") && Equal(p.Init, Vector(tree, Vector())):
+		name = "transduce-pass"
+	case isLibrary(p.Finish, "transduce-finish") && Equal(p.Init, tree):
+		name = "transduce-step"
+	default:
 		return shared.TreeSpec{}, false
 	}
 	step, ok := p.Step.(*Partial)
-	if !ok || !isLibrary(step.F, "transduce-step") || len(step.Args) != 1 {
+	if !ok || !isLibrary(step.F, name) || len(step.Args) != 1 {
 		return shared.TreeSpec{}, false
 	}
-	return treeSpecOf(step.Args[0])
+	spec, ok := treeSpecOf(step.Args[0])
+	if !ok {
+		return shared.TreeSpec{}, false
+	}
+	if name == "transduce-step" {
+		spec = spec.WithoutMemberAndText()
+	}
+	return spec, true
 }
 
 // ParserHead is what the host pushes parser events into, once SinkAs has
@@ -1653,8 +1686,16 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 		// natively when the routers offer it: the native reads each pass as
 		// it comes and writes the events the library's step would, so the
 		// head is the native.
+		// A spec that names a member or a text goes only to routers that
+		// read them, and its texts are bounded as the library's
+		// `string-join` bounds them.
 		if spec, ok := l.nativeTree(p); ok {
-			if routers, offers := l.rt.Routers().(shared.TreeRouters); offers {
+			reads := false
+			if texts, ok := l.rt.Routers().(shared.TreeTextRouters); ok {
+				reads = texts.TransduceTreeReadsMemberAndText()
+			}
+			if routers, offers := l.rt.Routers().(shared.TreeRouters); offers && (reads || !spec.UsesMemberOrText()) {
+				spec.MaxTextBytes = l.limits.MaxScalarBytes
 				if native := routers.TransduceTree(spec, guarded); native != nil {
 					return l.keepParserHead(native)
 				}
