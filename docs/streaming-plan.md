@@ -58,12 +58,13 @@ and as the oracle every transducer is verified against.
 What the ruling removes, by repository:
 
 - transduce: `capability::INCREMENTAL` as a gate and the inference in
-  `rule_events.rs`, once every format on the list has its part
-  (section 7); and, once the engine reads its input in chunks
-  (decision 2), `LinesSource` and `LineFormat`. What stays general and
-  is kept: `Guarded`, `Prune` (the engine's tree is still built while
-  events leave, and pruning the streamed elements is format-neutral),
-  the router, the table transducer, `scan-emit`, the limits and metrics.
+  `rule_events.rs`, once every format on the list has its part or
+  declares `whole`, as markdown does (section 7); and, once the engine
+  reads its input in chunks (decision 2), `LinesSource` and
+  `LineFormat`. What stays general and is kept: `Guarded`, `Prune` (the
+  engine's tree is still built while events leave, and pruning the
+  streamed elements is format-neutral), the router, the table
+  transducer, `scan-emit`, the limits and metrics.
 - aless: `Plan::Incremental`, `Plan::Materialize` and every
   `capability::incremental` call in `src/export.rs`; with the line
   source, `Plan::Lines`, `line_format()` and the `--max-size`
@@ -261,8 +262,10 @@ state machine at all:
   width or length.
 - `transduce-step`, `transduce-finish` and the small helpers the step
   uses, so a format whose grammar does not fit the declarative form
-  (YAML, XML, Markdown, CSV) writes its own `scan-emit` over the same
-  pieces, as the render parts write theirs over `events`.
+  (YAML, XML, CSV) writes its own `scan-emit` over the same pieces, as
+  the render parts write theirs over `events`. Markdown, whose passes
+  never carry the finished document, has no part and declares `whole`
+  (section 7).
 
 The differential test in alchemy-cli (section 6) holds every part,
 declarative or hand-written, to the walk of the grammar's own value.
