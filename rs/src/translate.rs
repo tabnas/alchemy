@@ -478,8 +478,13 @@ pub struct Composition {
 impl Composition {
     /// Link the parts with the main, and `program`'s source when the
     /// composition is over a program's output, into one program under the
-    /// policies the adapters need: the inferred table keeps a repeated
-    /// member's last value, as an export does.
+    /// policies the adapters need: over a document's events the inferred
+    /// table keeps a repeated member's last value, as an export does; over
+    /// a transducer part's ([`compose_parsed`]), which streams every
+    /// occurrence of a repeated member, it refuses one (`DUPLICATE_MEMBER`),
+    /// as a tree's contract does, since what the grammar's value keeps,
+    /// the last or a merge of the two, only the document read whole shows,
+    /// and a host reads it so where the part's route refuses.
     pub fn compile(
         &self,
         program: Option<Source<'_>>,
@@ -496,7 +501,7 @@ impl Composition {
         }
         sources.push(Source::new(&self.main_file, &self.main));
         let program = compile_sources_with(&sources, self.input, routers, renderers)?;
-        if self.adapters.contains(&Adapter::InferredTable) {
+        if self.input == Input::JsonEvents && self.adapters.contains(&Adapter::InferredTable) {
             program.with_duplicates(Duplicates::LastWins)
         } else {
             Ok(program)
@@ -1141,8 +1146,17 @@ mod tests {
         assert!(!c.main.contains("tree-contract"), "{}", c.main);
         assert!(c.main.contains("(json-transduce input)"), "{}", c.main);
         assert_eq!(c.input, Input::ParserEvents);
-        c.compile(None, Arc::new(Unlowered), Arc::new(Unlowered))
+        // The inferred table over a part's events refuses a repeated
+        // member, where over a document's it keeps the last.
+        let program = c
+            .compile(None, Arc::new(Unlowered), Arc::new(Unlowered))
             .unwrap();
+        assert_eq!(program.duplicates(), Duplicates::Reject);
+        let program = compose(None, &csv, &o, "main")
+            .unwrap()
+            .compile(None, Arc::new(Unlowered), Arc::new(Unlowered))
+            .unwrap();
+        assert_eq!(program.duplicates(), Duplicates::LastWins);
 
         // A program's output over the transducer's events.
         let c = compose_program_parsed(Output::JsonEvents, &t, &yaml, &o, "main").unwrap();
