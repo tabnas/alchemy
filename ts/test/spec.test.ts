@@ -8,10 +8,12 @@
 // report (check.tsv).
 //
 // Every row of reader.tsv, pipe.tsv and check.tsv runs here. run.tsv's
-// rows are the bytes a run writes, which needs transduce's routers and
-// render's renderers, and this package depends on neither: alchemy-cli
-// runs them (its ts/test/spec.test.ts), each row twice, native and through
-// the library's text, with the catalogue's coverage over all four files.
+// rows are the bytes a run writes, and transduce.tsv's the bytes a run
+// over a grammar's rule passes writes, which needs transduce's sources and
+// routers and render's renderers, and this package depends on neither:
+// alchemy-cli runs them (its ts/test/spec.test.ts), each row twice, native
+// and through the library's text, with the catalogue's coverage over all
+// five files.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
@@ -47,6 +49,8 @@ const RUN_HERE = ['check.tsv', 'pipe.tsv', 'reader.tsv']
 const RUN_ELSEWHERE: Record<string, string> = {
   'run.tsv':
     "alchemy-cli runs it (ts/test/spec.test.ts there): every row runs a program over a document, on transduce's routers and render's renderers, and alchemy depends on neither",
+  'transduce.tsv':
+    "alchemy-cli runs it (ts/test/spec.test.ts there): every row runs a program over a grammar's rule passes, on transduce's parser-event source and routers and render's renderers, and alchemy depends on neither",
 }
 
 describe('fixtures', () => {
@@ -57,7 +61,7 @@ describe('fixtures', () => {
     const files = loadSpecDir(SPEC_DIR)
       .map((spec) => spec.file)
       .sort()
-    assert.deepStrictEqual(files, ['check.tsv', 'pipe.tsv', 'reader.tsv', 'run.tsv'])
+    assert.deepStrictEqual(files, ['check.tsv', 'pipe.tsv', 'reader.tsv', 'run.tsv', 'transduce.tsv'])
     assert.deepStrictEqual([...RUN_HERE, ...Object.keys(RUN_ELSEWHERE)].sort(), files)
     // And test/AGENTS.md, the fixtures' guide, describes each one.
     const guide = readFileSync(join(REPO_ROOT, 'test', 'AGENTS.md'), 'utf8')
@@ -73,6 +77,25 @@ describe('fixtures', () => {
     const spec = loadSpec(join(SPEC_DIR, 'run.tsv'))
     assert.deepStrictEqual(spec.header, ['input', 'expected', 'doc', 'render'])
     assert.ok(spec.rows.every((row: SpecRow) => -1 !== row.index_of('doc') && -1 !== row.index_of('render')))
+  })
+
+  // And a transduce row's, which alchemy-cli's runner reads by name too:
+  // the grammar whose rule passes the program reads, beside doc and render,
+  // and the duplicates policy: empty (the default), first or last.
+  it('transduce.tsv has its columns', () => {
+    const spec = loadSpec(join(SPEC_DIR, 'transduce.tsv'))
+    assert.deepStrictEqual(spec.header, ['input', 'expected', 'grammar', 'doc', 'render', 'duplicates'])
+    assert.ok(
+      spec.rows.every(
+        (row: SpecRow) =>
+          -1 !== row.index_of('grammar') &&
+          '' !== row.named('grammar') &&
+          -1 !== row.index_of('doc') &&
+          -1 !== row.index_of('render') &&
+          -1 !== row.index_of('duplicates') &&
+          ['', 'first', 'last'].includes(row.named('duplicates')),
+      ),
+    )
   })
 
   // The columns a check row is read by (alchemy-cli's catalogue test reads

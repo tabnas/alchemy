@@ -107,19 +107,25 @@ func pipeRow(input string) (string, *Fail) {
 }
 
 // specRunners are the fixtures, each named by the test that runs it. Every
-// one is this package's but run.tsv: its rows run a program over a
-// document, which needs transduce's routers and render's renderers, and
-// this package depends on neither, so alchemy-cli runs it, the composition
-// root that builds all three.
+// one is this package's but run.tsv and transduce.tsv: their rows run a
+// program over a document, or over a grammar's rule passes, which needs
+// transduce's sources and routers and render's renderers, and this package
+// depends on neither, so alchemy-cli runs them, the composition root that
+// builds all three.
 var specRunners = map[string]string{
-	"reader.tsv": "TestSpecReader",
-	"pipe.tsv":   "TestSpecPipe",
-	"check.tsv":  "TestSpecCheck",
-	"run.tsv":    runByCLI,
+	"reader.tsv":    "TestSpecReader",
+	"pipe.tsv":      "TestSpecPipe",
+	"check.tsv":     "TestSpecCheck",
+	"run.tsv":       runByCLI,
+	"transduce.tsv": transduceByCLI,
 }
 
-// runByCLI is the runner of a fixture this package does not run.
-const runByCLI = "alchemy-cli's go/e2e TestSpecRun"
+// runByCLI and transduceByCLI are the runners of the fixtures this package
+// does not run.
+const (
+	runByCLI       = "alchemy-cli's go/e2e TestSpecRun"
+	transduceByCLI = "alchemy-cli's go/e2e TestSpecTransduce"
+)
 
 // TestEveryFixtureHasARunner fails when a fixture is added without a
 // runner, here or in alchemy-cli, rather than passing silently; and
@@ -335,7 +341,7 @@ func TestTheRaisedMessagesMatchTheDocument(t *testing.T) {
 	raisedAs := map[string]map[Code]bool{}
 	failures := 0
 	for _, spec := range specs {
-		if specRunners[spec.Name] == runByCLI {
+		if runner := specRunners[spec.Name]; runner == runByCLI || runner == transduceByCLI {
 			continue
 		}
 		for _, row := range spec.Rows {

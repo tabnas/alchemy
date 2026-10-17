@@ -328,7 +328,9 @@ The fixtures are the contract every runtime is held to
   `run.tsv` is: columns `input` (the program), `expected` (the bytes, or
   `ERROR:<code>`), `grammar` (the parser whose events the program reads:
   `json` first, then the others alchemy-cli depends on), `doc` (the
-  document, in that grammar), `render`. Its first rows: `json-transduce`
+  document, in that grammar), `render`, `duplicates` (the policy for a
+  member an object repeats within a captured value: empty, `first` or
+  `last`). Its first rows: `json-transduce`
   into `json` over `{"a":[1,2.50,"x",{"b":null}],"c":{},"d":[],"e":1e21,"f":true}`,
   the bytes the walk gives with the lexemes kept (`2.50`, `1e21`); an
   empty object, an empty array, a root scalar, a document the grammar

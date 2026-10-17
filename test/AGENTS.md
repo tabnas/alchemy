@@ -18,13 +18,16 @@ Blank lines are skipped, and so are comment lines — a line starting with
 | [`pipe.tsv`](spec/pipe.tsv) | `input`, `expected` | a program → the canonical form of the desugared program; or the desugarer's error |
 | [`check.tsv`](spec/check.tsv) | `input`, `expected`, `protocol` | a program → its `explain` report, as a JSON string; or the resolver's, checker's or plan evaluation's error |
 | [`run.tsv`](spec/run.tsv) | `input`, `expected`, `doc`, `render` | a program run over a JSON document → the exact bytes it writes, as a JSON string; or the failure |
+| [`transduce.tsv`](spec/transduce.tsv) | `input`, `expected`, `grammar`, `doc`, `render`, `duplicates` | a program over a grammar's rule passes (a transducer), run over a document in that grammar → the exact bytes it writes, as a JSON string; or the failure |
 
 | Column | Meaning |
 |---|---|
 | `input` | The program's text. Escapes `\n` `\r` `\t` `\\` are decoded. |
 | `expected` | A JSON string (the canonical text, the report, or the output bytes), or `ERROR:<code>` / `ERROR:<code>@<row>:<col>` for a program or run that must fail. Not escape-decoded: JSON's own escapes apply, so `"a\r\n"` ends in CRLF. |
-| `doc` | `run.tsv` only. The JSON document the program runs over, escape-decoded like `input`; an empty cell is `null`. |
-| `render` | `run.tsv` only. How a table or JSON-events result is rendered: empty (the host's default: CSV for a table, JSON for events), `csv` or `json`. A program that renders its own text takes none (`render_of_text`). |
+| `doc` | `run.tsv` and `transduce.tsv`. The document the program runs over, escape-decoded like `input`: in `run.tsv` a JSON document, and an empty cell is `null`; in `transduce.tsv` a document in the row's `grammar`, and an empty cell is the empty text. |
+| `render` | `run.tsv` and `transduce.tsv`. How a table or JSON-events result is rendered: empty (the host's default: CSV for a table, JSON for events), `csv` or `json`. A program that renders its own text takes none (`render_of_text`). |
+| `grammar` | `transduce.tsv` only. The grammar whose rule passes the program reads: the `languageId` of a format alchemy-cli carries (`json` first, then the others it depends on). The document is parsed with that package's parser, as `alchemy run --grammar` parses it. |
+| `duplicates` | `transduce.tsv` only. The policy for a member name an object repeats within a captured value (spec section 18.2), which the runner sets with `with_duplicates`: empty, the default, refuses the capture (`DUPLICATE_MEMBER`); `first` keeps the earlier value; `last` the later. |
 | `protocol` | `check.tsv` only. The input the host declares when it compiles the program: empty for JSON events (what `compile` declares), `parser` for the parser's rule passes (`compile_with` over `Input::ParserEvents`). Every runner of `check.tsv` reads it, alchemy-cli's catalogue test included. |
 
 A run is what `alchemy run` does: compile the program (which builds the
@@ -39,6 +42,25 @@ runs every row twice, with the standard compositions native and through
 the library's text (`with_native(false)`), and fails a row whose two
 paths differ in a byte, a code or a position. A port that runs only the
 library's text is held to the same bytes.
+
+A `transduce.tsv` run is what `alchemy run --grammar` does: compile the
+program over the parser's rule passes (`compile_with` over
+`Input::ParserEvents`), read `doc` with the row's grammar through
+transduce's `ParserEventSource`, and push each pass through the program's
+parser sink (`Program::parser_sink`), with the default `Limits`; its rows
+run natively and interpreted, held to each other as `run.tsv`'s are. A
+row's program is a transducer, its events the document's, and the runner
+holds it to that: for every row whose program answers JSON events, whose
+document the grammar accepts and which repeats no member, it also
+compares the events the program writes with the walk of the grammar's
+own value (transduce's `ValueSource`), a number's lexeme aside, and fails
+on any difference. The other rows have no such oracle and are held by
+`expected` alone: a document the grammar refuses has no value to walk,
+and its program must fail with the declared code before `End`; a repeated
+member is streamed twice where the value keeps one, and its rows pin what
+the plain transducer, `tree-contract` and a capture make of it, under the
+default policy and under `first` and `last` (the `duplicates` column,
+which the runner hands to `with_duplicates`).
 
 ## Error expectations
 
@@ -98,16 +120,18 @@ compile with inert stages.
 - Go: `go/spec_test.go`.
 
 Each runtime's every-fixture-has-a-runner test fails when a file is added
-without a runner, and names `run.tsv` as run by alchemy-cli.
+without a runner, and names `run.tsv` and `transduce.tsv` as run by
+alchemy-cli.
 
 In [tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), against
-this repository's `test/spec/` in the sibling checkout: `run.tsv`, natively
-and interpreted, and the full catalogue test over all four files.
+this repository's `test/spec/` in the sibling checkout: `run.tsv` and
+`transduce.tsv`, natively and interpreted, and the full catalogue test
+over all five files.
 
 - Rust: `rs/tests/spec_test.rs`.
 - TypeScript: `ts/test/spec.test.ts`.
-- Go: `go/e2e`'s `TestSpecRun`. Rows that read a document need
-  `-tags tabnas_nodecell`, which alchemy-cli's gate passes.
+- Go: `go/e2e`'s `TestSpecRun` and `TestSpecTransduce`. Rows that read a
+  document need `-tags tabnas_nodecell`, which alchemy-cli's gate passes.
 
 This repository's `.github/workflows/downstream.yml` runs alchemy-cli's
 gates against each change here.
@@ -135,5 +159,6 @@ it.
   `DIVERGENCE.md`.
 - A new row must pass in every runtime that exists: `cargo test
   --all-targets` from `rs/` (or `make test` from the root), and, for a
-  `run.tsv` row, alchemy-cli's gates (`../alchemy-cli/ci/rust/run.sh` and
-  `../alchemy-cli/ci/polyglot/run.sh`, which downstream.yml runs).
+  `run.tsv` or `transduce.tsv` row, alchemy-cli's gates
+  (`../alchemy-cli/ci/rust/run.sh` and `../alchemy-cli/ci/polyglot/run.sh`,
+  which downstream.yml runs).
