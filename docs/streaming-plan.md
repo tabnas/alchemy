@@ -728,10 +728,16 @@ undefined value is null in an object and nothing in a list, a separator
 with no value a null element, a pair inside a list dropped, its passes
 passed by until it closes, and the empty document null. Over the 996
 inputs of jsonic's fixtures the part writes what the walk writes for
-974, and the tree contract refuses the other 22, so a host reads them
-whole: an implicit list whose first element is a container, whose
-events stream before the list is known (a second root), and a member
-name repeated, which the grammar's `map.extend` merges. A part reads a document
+974, and the tree contract refuses the other 22: an implicit list
+whose first element is a container, whose events stream before the
+list is known (a second root), and a member name repeated, which the
+grammar's `map.extend` merges. alchemy-cli's `translate` reads those
+whole, since it commits an attempt's bytes only once the attempt
+succeeds (`{a:1},{b:2}` comes out as `[{"a":1},{"b":2}]` through the
+part); a host that has written already, as aless's export streams,
+reports partial output instead, as the fallback rule above says, since
+no pass tells the part the list is coming before its first element
+has streamed. A part reads a document
 under the grammar's default options, which every host that reads a
 part builds the grammar with: the passes carry no options, and an
 option that reshapes the value (jsonic's `list.pair`, whose pair
