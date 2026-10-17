@@ -426,7 +426,10 @@ one proves:
    array starts before the scalar) and leaves one whose first element is
    a container, streamed before the list is known, to the tree contract
    (a second root), as it leaves a repeated member, which `map.extend`
-   merges (`DUPLICATE_MEMBER`). zon's rules are json's, but an integer
+   merges (`DUPLICATE_MEMBER`); yaml's part refuses a merge key and an
+   alias to a mapping or a sequence in its own words (`fail
+   :unstreamable`, alchemy 0.2.10) and leaves a stream of several
+   documents to the tree contract. zon's rules are json's, but an integer
    no double holds is the `$big` object in Rust and a bigint or `big.Int`
    in TypeScript and Go, which the declarative form cannot take from a
    token, and an enum literal under `enumTag` is wrapped only after the
@@ -745,6 +748,45 @@ element fires the same alternate the default drops, `list.child`,
 `info.map`, `lex.emptyResult`) is not in them, so a host that sets one
 reads the document whole; a part's header says so, as csv's does for
 its options.
+
+YAML's part, step 6's third (tabnas/yaml#130, released as yaml 0.5.25,
+which tabnas/alchemy-cli#40 reads; its rows are tabnas/alchemy#81), is
+hand-written, since the grammar builds its block structure and the
+relaxed forms it shares with jsonic in its actions, which the passes do
+not show: a `map`'s passes open and close an object, a flow `list`'s an
+array, the `val` or `indent` whose open pushes the block sequence's rule
+an array its own close ends, and a sequence's mapping (`yamlElemMap`,
+replaced by its pairs in one frame) an object its last pair's close
+ends; a `pair`'s or `yamlElemPair`'s key comes from its key token (the
+one after `?` on an explicit key), held until the value begins, a key
+with no value in a flow mapping is a null member at once, and a `val`,
+or an `indent` opened on a plain scalar, yields its scalar at its close,
+so that adjacent scalars start the array before the first; an undefined
+value is null in a mapping, at the root and as a block sequence's item,
+and nothing in a flow sequence, a separator with no value a null
+element, and directives and document markers alone null. What the
+passes cannot show the part refuses in its own words, the first use of
+`fail :unstreamable` (tabnas/alchemy#78, released as alchemy 0.2.10:
+`STREAMABILITY_UNKNOWN` with the finer code `unstreamable`, on which a
+host that reads a part reads the document whole, as it does on
+`DUPLICATE_MEMBER`; the same change puts the tree contract after the
+part in every composition, so a second root reaches the host as
+`not_a_tree` rather than as the renderer's `PROTOCOL_ORDER_ERROR`): an
+alias to a mapping or a sequence, whose value the token carries whole,
+and a plain `<<` merge key, whose members the grammar folds in after
+the passes; a stream of several documents is a second root to the tree
+contract. Over the 568 inputs of yaml's fixtures the part writes what
+the walk writes for 535 and refuses the other 33 (18 streams of several
+documents, 13 merge keys, 2 aliases). Where the part met the ports, the
+review and alchemy-cli's gates found them apart, and the same change
+repairs each: a sequence entry's pair with no value (`- a:`) walked as
+`{"a":null}` in TypeScript and Go and as `{}` in Rust, and is a null
+member in all three now; with `map.ordered` on, the TypeScript grammar
+recorded none of the members it stores itself in the engine's key-order
+side channel, so a walk in source order put them last; and Go's lexer
+handed an alias to a mapping or a sequence as the marker it hands an
+alias to nothing, which the passes cannot tell apart, where TypeScript
+hands the value's copy.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
