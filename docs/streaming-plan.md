@@ -420,8 +420,13 @@ one proves:
 4. **yaml, xml, markdown, jsonic, zon**: hand-written `scan-emit`s where
    the declarative form does not fit; each refusal the adapter documents
    today (a stream of several documents, a merge key, an implicit list)
-   becomes an explicit `fail :protocol-order` in the part, or a shape
-   the part follows where it can. zon's rules are json's, but an integer
+   becomes an explicit `fail` in the part, or a shape the part follows
+   where it can: jsonic's part follows an implicit list whose first
+   element is a scalar (the val's close replaces it with `list`, so the
+   array starts before the scalar) and leaves one whose first element is
+   a container, streamed before the list is known, to the tree contract
+   (a second root), as it leaves a repeated member, which `map.extend`
+   merges (`DUPLICATE_MEMBER`). zon's rules are json's, but an integer
    no double holds is the `$big` object in Rust and a bigint or `big.Int`
    in TypeScript and Go, which the declarative form cannot take from a
    token, and an enum literal under `enumTag` is wrapped only after the
@@ -707,6 +712,33 @@ repeated aside, which the part streams twice and the tree contract
 refuses, so a host reads the document whole; alchemy-cli, which read
 CSV whole before, now streams it through the part, and the line source
 keeps serving aless until step 12. Step 5 is complete.
+
+jsonic's part, step 6's second (tabnas/jsonic#116, released as jsonic
+0.7.10, which tabnas/alchemy-cli#39 reads; its rows are
+tabnas/alchemy#77), is hand-written over json's rule shape, since the
+relaxed forms are built in the grammar's actions, which the passes do
+not show: a `map`'s passes open and close an object, a `list`'s an
+array, a `pair`'s open on its key alternate announces its key (a
+string's value, any other token's source) and one opened on a separator
+with no key announces nothing, and a `val` yields its scalar at its
+close, from the value the close carries, so a close whose alternate
+replaces the val with `list`, the first element of an implicit list,
+starts the array before it and the list's open starts no second one; an
+undefined value is null in an object and nothing in a list, a separator
+with no value a null element, a pair inside a list dropped, its passes
+passed by until it closes, and the empty document null. Over the 996
+inputs of jsonic's fixtures the part writes what the walk writes for
+974, and the tree contract refuses the other 22, so a host reads them
+whole: an implicit list whose first element is a container, whose
+events stream before the list is known (a second root), and a member
+name repeated, which the grammar's `map.extend` merges. A part reads a document
+under the grammar's default options, which every host that reads a
+part builds the grammar with: the passes carry no options, and an
+option that reshapes the value (jsonic's `list.pair`, whose pair
+element fires the same alternate the default drops, `list.child`,
+`info.map`, `lex.emptyResult`) is not in them, so a host that sets one
+reads the document whole; a part's header says so, as csv's does for
+its options.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
