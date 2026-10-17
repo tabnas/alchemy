@@ -854,7 +854,7 @@ list with the list itself.
 
 The generated part, step 8 (tabnas/bnf#117, released as bnf 0.1.31;
 tabnas/abnf#126, released as abnf 0.4.25; its tests
-tabnas/alchemy-cli#45), is alchemy's `transduce-tree` with a spec read
+tabnas/alchemy-cli#46), is alchemy's `transduce-tree` with a spec read
 off the value actions the compiler attaches to an annotated rule, keyed
 by rule name: a rule whose open alternate begins an object or an array
 is a container, a member named by a constant is a key or, on the head of
