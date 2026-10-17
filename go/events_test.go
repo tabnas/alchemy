@@ -98,4 +98,25 @@ func TestParserEventsOverADeclaredInput(t *testing.T) {
 	json, _ := Compile("def export [input] input", "j.alc", routers, renderers)
 	_, f = json.ParserSink(nil, RenderDefault, shared.DefaultLimits(), nil)
 	refused(f)
+
+	// A host that takes a transducer's events into its own sink drives
+	// ParserSinkInto, which holds the program to JSON events: one compiled
+	// over JSON events, or answering a text or a table, is refused before
+	// any stage is built. Running one is tabnas-alchemy-cli's.
+	_, f = json.ParserSinkInto(nil, shared.DefaultLimits(), nil)
+	refused(f)
+	text, f := CompileWith("def export [input] (join \"\" (map (fn [p] \"a\") (parser-events input)))", "text.alc", InputParserEvents, routers, renderers)
+	if f != nil || text.Output() != OutputText {
+		t.Fatalf("%v", f)
+	}
+	if _, f := text.ParserSinkInto(nil, shared.DefaultLimits(), nil); f == nil || !strings.HasPrefix(f.Message, "protocol_mismatch: the program's result is a text") {
+		t.Errorf("%v", f)
+	}
+	rows, f := CompileWith("def step [s pass]\n  match pass\n    case (close rule) (transition s [(scalar (get :name rule))])\n    case _ (transition s [])\n\ndef export [input]\n  table-from-json (record (entry :columns :infer) (entry :rows (path each-index))) (as-events (scan-emit [] step (fn [s] []) (parser-events input)))\n", "rows.alc", InputParserEvents, routers, renderers)
+	if f != nil || rows.Output() != OutputTableRows {
+		t.Fatalf("%v", f)
+	}
+	if _, f := rows.ParserSinkInto(nil, shared.DefaultLimits(), nil); f == nil || !strings.HasPrefix(f.Message, "protocol_mismatch: the program's result is a table") {
+		t.Errorf("%v", f)
+	}
 }

@@ -478,6 +478,24 @@ export class Program {
     return lowering.parserHead(events)
   }
 
+  // The sink for one run over parser events whose JSON events go into the
+  // host's own `down` rather than to a renderer, for a program compiled
+  // over `'ParserEvents/1'` that answers JSON events: a format's
+  // transducer part, run in front of the host's own stages (a renderer of
+  // its own, a scope over a path, another program's sink). The host pushes
+  // each rule pass into the sink it returns, then one `end` once the parse
+  // has returned its value, and `down` takes the events as the program
+  // makes them, then one `end`. The source's limits hold on them as on a
+  // source's own. A program that answers a text or a table is refused
+  // (`protocol_mismatch`) before anything runs, as is one compiled over
+  // JSON events.
+  parserSinkInto(down: Sink, limits: Limits = Limits.default(), metrics: Metrics = new Metrics()): ParserSink {
+    this.declared('ParserEvents/1')
+    const lowering = this.lowering(limits, metrics)
+    const events = lowering.eventsInto(this.result, this.output, down)
+    return lowering.parserHead(events)
+  }
+
   // Whether the host drives the sink the program's input was declared
   // for: a host's mistake, not a program's, refused before anything runs.
   private declared(input: Input): void {
