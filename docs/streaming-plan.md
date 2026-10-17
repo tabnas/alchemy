@@ -405,18 +405,24 @@ one proves:
 
 1. **json**: the proof that the declarative form reproduces the walk
    and the lexemes; the first rows of `transduce.tsv`.
-2. **jsonl, jsonc, json5, zon**: the same shape; jsonl's part emits the
+2. **jsonl, jsonc, json5**: the same shape; jsonl's part emits the
    root array's start before the first line and its end at the end.
 3. **csv**: the first imperative grammar, and one of the two the line
    source serves until step 12 (decision 2). Its part keeps the
    header's labels in its state (under `max_metadata_bytes`) and emits
    one object per record, which the inference could never do. Its
    events are compared with the walk as every part's are.
-4. **yaml, xml, markdown, jsonic**: hand-written `scan-emit`s where the
-   declarative form does not fit; each refusal the adapter documents
+4. **yaml, xml, markdown, jsonic, zon**: hand-written `scan-emit`s where
+   the declarative form does not fit; each refusal the adapter documents
    today (a stream of several documents, a merge key, an implicit list)
    becomes an explicit `fail :protocol-order` in the part, or a shape
-   the part follows where it can.
+   the part follows where it can. zon's rules are json's, but an integer
+   no double holds is the `$big` object in Rust and a bigint or `big.Int`
+   in TypeScript and Go, which the declarative form cannot take from a
+   token and transduce's parser-event sources do not yet present alike,
+   and an enum literal under `enumTag` is wrapped only after the close;
+   its part reads those from the pass's value once a big integer token
+   has one stream form in every runtime.
 5. **toml, ini**: parts that build the tree in their state and emit it
    at `finish`, since a later header can add to an earlier table; the
    manifest's `whole` sentence stays, and `explain` reports the
@@ -601,8 +607,8 @@ six were taken on 2026-10-15.
 | 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; a probe's flagged passes dropped (decision 6); a native `transduce-tree`, held to the snippet (decision 3); `capability` and the inference kept until step 13; `LinesSource` kept (decision 2) | 1, the engine's probe flag (step 10) |
 | 3 | alchemy-cli | `transduce.tsv` runner with the differential rule; parts test; `translate` and `run --grammar` on the new source | 1, 2 |
 | 4 | json | the first `alchemy/transduce.alc`, manifest, embed, descriptor | 1, 3 |
-| 5 | jsonl, jsonc, json5, zon, csv | parts, in that order | 4 |
-| 6 | yaml, xml, markdown, jsonic | hand-written parts | 4 |
+| 5 | jsonl, jsonc, json5, csv | parts, in that order | 4 |
+| 6 | yaml, xml, markdown, jsonic, zon | hand-written parts | 4; for zon, a stream form for a big integer token in transduce's sources |
 | 7 | toml, ini, then the schema formats | buffering parts, or `whole` | 4, a path-insert operator if measured necessary |
 | 8 | bnf, abnf | the generated part and its differential test | 1, 3 |
 | 9 | aless | one plan over `ParserEventSource` for every format with a part but JSON Lines and CSV, the current routes for the rest; the generated part for `--grammar` | 2, 4, 8 |
@@ -638,6 +644,38 @@ which the engines order differently. It relays two more differences
 between the engines as they are, which transduce's `DIVERGENCE.md` 6 and
 7 record: the first rule's instance number, and a fixed token's value.
 Step 11 is tabnas/admin#152, ADR-28.
+
+Step 3 is tabnas/alchemy#69 and tabnas/alchemy-cli#35: `transduce.tsv`
+with the json transducer's rows and a `duplicates` column (empty, `first`
+or `last`, which the runners hand to `with_duplicates`) beside `grammar`,
+`doc` and `render`; alchemy-cli's runner of it in all three runtimes, held
+to the walk of the grammar's value as section 5.6's rule says; `translate`
+reading a format whose package ships a part through it, over the parser's
+rule passes, with the walk standing in where the part's events are not
+the value's (a repeated member) and for a path; and `run --grammar
+FORMAT`, a program over a format's rule passes. Step 4 is tabnas/json#111,
+released as tabnas-json 0.5.18, which alchemy-cli#35 reads. Step 5's
+first group is tabnas/jsonl#53, tabnas/jsonc#91 and tabnas/json5#102,
+released as jsonl 0.1.18, jsonc 0.5.15 and json5 0.5.17, which
+tabnas/alchemy-cli#36 reads: json's spec for each, jsonl's with the
+`jsonl` rule's passes opening and closing the root array, each row of
+`transduce.tsv` for them held to the walk as json's are. Reading json5's
+part found where a part's events and the walk part ways: json5's grammar
+merges a repeated member's containers, and the composition's inferred
+table kept the last, so `{a:{x:1},a:{y:2}}` into CSV lost `x`.
+tabnas/alchemy#71, released as alchemy 0.2.9, makes a composition over a
+part refuse a repeated member (`DUPLICATE_MEMBER`), as the tree contract
+does, so a host reads the document whole; `LastWins` stays for a
+document's events, where the incremental source's own net catches a
+merge. ZON's part (tabnas/zon#103, closed) waits on a stream
+form for a big integer: the token's value is the `$big` object in Rust
+and a bigint or `big.Int` in TypeScript and Go, which transduce's
+parser-event sources do not yet present as the object the walk builds,
+so json's spec fails such a document (`DSL_TYPE_ERROR`, which no host
+reads the document whole on) where the walk writes `{"$big": …}`; and an
+enum literal under `enumTag` is wrapped only in the rule's value, after
+the close. ZON's part is a hand-written one of step 6, once transduce
+presents a big integer token as the `$big` object in every runtime.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
