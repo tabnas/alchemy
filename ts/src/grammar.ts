@@ -232,6 +232,7 @@ const grammarText = `
       "reused": "{name} is a stream and is used {count} times; a stream is consumed once\\nconcat was given two live texts; the input is consumed once",
       "captured": "{name} is a stream and is captured by a fn; a function may run more than once, and a stream is consumed once",
       "not_a_tree": "the stream holds {what}, which a tree's events never do, so it is not a tree's",
+      "unstreamable": "{what}",
       "dynamic": "{what} must be a fn, a definition, a native or a partial of one, so the plan can be analyzed; strict mode refuses a function obtained at run time",
       # The runtime's, where a value is built or a match is taken.
       "duplicate_key": "record has two entries for :{key}",
@@ -266,6 +267,7 @@ const grammarText = `
       "reused": "A stream is read once, so it is used in one place only. Take\\neverything needed from it in that one pass (route captures several\\nparts at once).",
       "captured": "A fn may run more than once, and a stream is read once, so a fn cannot\\nuse a stream from the scope around it. Pass what it needs as an\\nargument instead.",
       "not_a_tree": "tree-contract holds events to a tree's: one root value, and in\\neach object a key and then its value. A step that makes events must\\nmake them in that order.",
+      "unstreamable": "A transducer part refuses a document it does not stream from the\\nrule passes, in its own words (fail :unstreamable); a host that reads\\nthe part then reads the document whole.",
       "dynamic": "Strict mode needs to know, when the program is checked, the function\\na stream operator runs. Pass a fn, a definition, a native or a\\npartial of one, not a function read from data.",
       "duplicate_key": "A record holds each key once. Remove or rename the repeated entry.",
       "no_match": "Add a case for the value, or end with (case _ BODY), which takes any\\nvalue.",

@@ -1325,7 +1325,7 @@ impl Checker<'_> {
             }
             "fail" => {
                 // `(fail message)` is INPUT_INVALID; `(fail :code message)`
-                // names the code: a literal keyword is held to the three
+                // names the code: a literal keyword is held to the four
                 // here, any other keyword at run time.
                 let message = args.len() - 1;
                 if args.len() == 2 {
@@ -1333,12 +1333,12 @@ impl Checker<'_> {
                     if let Expr::Keyword { name, span } = &args[0] {
                         if !matches!(
                             name.as_str(),
-                            "invalid" | "unrepresentable" | "protocol-order"
+                            "invalid" | "unrepresentable" | "protocol-order" | "unstreamable"
                         ) {
                             return Err(self.type_error(
                                 "type_mismatch",
                                 format!(
-                                    "the code of fail must be :invalid, :unrepresentable or :protocol-order, not :{name}"
+                                    "the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :{name}"
                                 ),
                                 span,
                             ));

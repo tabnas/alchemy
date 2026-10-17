@@ -1244,15 +1244,21 @@ function fail(rt: Runtime, a: ReadonlyArray<Val>, at: SourceSpan): Val {
       case 'protocol-order':
         code = 'PROTOCOL_ORDER_ERROR'
         break
+      case 'unstreamable':
+        code = 'STREAMABILITY_UNKNOWN'
+        break
       default:
-        throw typeError(`the code of fail must be :invalid, :unrepresentable or :protocol-order, not :${k.name}`)
+        throw typeError(`the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :${k.name}`)
     }
     message = a[1]
   } else {
     throw typeError('fail takes a message, or a code and a message')
   }
   const text = asStr('fail', 'the message', message)
-  throw rt.failAt(new Fail(code, text), at)
+  // STREAMABILITY_UNKNOWN leads with its finer code, as the checker's own
+  // do: `unstreamable`, a transducer part's refusal of a document it does
+  // not stream, which a host that reads the part reads whole.
+  throw rt.failAt(new Fail(code, 'STREAMABILITY_UNKNOWN' === code ? `unstreamable: ${text}` : text), at)
 }
 
 function isReadyValue(v: Val): boolean {
