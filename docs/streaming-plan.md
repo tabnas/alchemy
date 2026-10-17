@@ -485,19 +485,27 @@ same annotations writes the alchemy part:
   nested, and nothing when it is, since the nested rule emits its own
   container;
 - the rule's final close emits the container's end;
-- a grammar with no annotations emits the compiler's `{rule, src, kids}`
-  tree, one object per rule pass, so that the viewer's value and the
-  stream agree.
+- a grammar with no annotations is read whole: its value is the
+  compiler's `{rule, src, kids}` tree, whose `src` holds the text of
+  every node beneath it and comes before its `kids`, so no stream can
+  write the root before the document has ended.
 
-`tabnas_bnf::transduce_alc(&spec) -> String` writes it;
-`tabnas_abnf::abnf_transduce(src, opts)` exposes it; and the test is the
-same differential suite over aless's grammar library and bnf's
-fixtures: the generated part's events equal the walk of the value the
-compiled grammar builds. aless registers the generated part for every
-`--grammar` and `--grammar-expr` format, and a custom format streams
-through the one path like any other. A render part for a custom format
-(so that a custom format can be a `--render` target) is not in this
-plan; it would be the same generator writing the reverse.
+The part is the library's `transduce-tree` over a spec keyed by rule
+name, which step 8's record in section 11 describes.
+`tabnas_bnf::transduce_alc(&spec, name)` writes it as
+`<name>-transduce`, or says why a host reads the grammar's documents
+whole, as it does for a grammar with no annotations and for the
+annotated shapes the spec cannot say (TypeScript's `transduceAlc` and
+Go's `TransduceAlc` alike); `tabnas_abnf::abnf_transduce(src, name,
+opts)` converts an ABNF grammar and writes it; and the test is a
+differential suite over abnf's fixtures, in alchemy-cli, and aless's
+grammar library, in aless: the generated part's events equal the walk of
+the value the compiled grammar builds. aless runs the generated part for
+every `--grammar` and `--grammar-expr` format the generator writes one
+for, through the one path a format's part takes, and reads the others
+whole, as it reads any format with no part. A render part for a custom
+format (so that a custom format can be a `--render` target) is not in
+this plan; it would be the same generator writing the reverse.
 
 ## 9. aless, and the engine
 
@@ -843,6 +851,74 @@ through which aless reads markdown until step 13, sends the document's
 events only once its last line is in, since the grammar sets it whole
 as the root's node in its last action. Markdown leaves the incremental
 list with the list itself.
+
+The generated part, step 8 (tabnas/bnf#117, released as bnf 0.1.31;
+tabnas/abnf#126, released as abnf 0.4.25; its tests
+tabnas/alchemy-cli#46), is alchemy's `transduce-tree` with a spec read
+off the value actions the compiler attaches to an annotated rule, keyed
+by rule name: a rule whose open alternate begins an object or an array
+is a container, a member named by a constant is a key or, on the head of
+an `@object` chain, a member, and a member that holds the text its
+pushed rule matched is a text. Two fields the spec lacked come with it
+(tabnas/alchemy#86, released as alchemy 0.2.11, with the natives in
+tabnas/transduce#53, released as transduce 0.2.10): `:member`, a member
+an open pass names after the container its rule begins, since the head
+of an `@object` chain begins the object and names the member its first
+link fills; and `:text`, a rule whose close pass yields first the source
+text of the tokens the passes between its open and its close consumed,
+the text `@setval$` and `@push$` read with `src`. The routers say
+whether their native reads the two fields, and the lowering hands a spec
+that names either only to routers that do; a native holds a text to
+`max_scalar_bytes` at the joins the library's `string-join` makes, in
+its order. `transduceAlc(spec, name)` writes `<name>-transduce`, the
+same text in TypeScript, Go (`TransduceAlc`) and Rust (`transduce_alc`),
+or `{whole}` with the reason a host reads the grammar's documents whole:
+a name alchemy cannot give a definition, or a rule's; alternates of one
+rule whose value actions differ, or a value action the spec cannot say;
+a rule two containers would carry on; a container or text rule an open
+alternate replaces; a value rule beneath a text member; and a start rule
+with no annotation. The tree of one object per rule pass that the plan
+first proposed for that last case is not what such a grammar builds: its
+value is the `{rule, src, kids}` tree, whose `src` comes before its
+`kids` and holds the text of every node beneath it, so no stream writes
+the root before the document has ended, and the generator declares it
+whole. abnf's `abnfTransduce(src, name, opts)` converts and writes it.
+Over abnf's `alignment-abnf-ast.tsv`, the parts of the 23 annotated
+grammars write the value each compiled grammar builds, natively and
+interpreted, in all three runtimes, and the generator declares the other
+49 read whole; a simulation over aless's grammar library before the
+change agreed on the ten grammars there.
+
+Step 9 began with the grammars from the command line
+(rjrodger/aless#76): a `--grammar` or `--grammar-expr` grammar that step
+8's generator writes a part for, as it does for every annotated grammar
+of abnf's fixtures and of aless's library, is read through it, compiled
+once with the grammar, and any other is read whole, for the reason the
+generator gives. The text's rule passes go from `ParserEventSource` into
+the part by `Program::parser_sink_into` (tabnas/alchemy#88, released as
+alchemy 0.2.12, in all three runtimes: a program of JSON events over
+parser events into a sink of the host's own, through the lowering's own
+events, so the source's limits hold on the part's events and the native
+`transduce-tree` runs where the routers offer it), then through a tree's
+contract into the path's scope and the export's chain, as before.
+aless's guard, its depth cap and its timeout, stays on the parser, and
+the program's abort flag reaches the part's steps. A document the part
+refuses is read whole once more when nothing was written, as an
+incremental grammar's is, and so is one that nests past the transducer's
+`max_depth` first, since the whole read holds a custom grammar's value
+to the measure it always has. Over a 100,000-line hosts file the first 4
+KB leave in 0.15 s instead of 6.37 s, and the whole run takes 1.5 to
+1.65 times the whole read (10.46 s against 6.84 s into JSON), the cost
+section 10 measured for recording each rule pass; the memory is the
+same, since the engine builds its tree either way. The built-in formats
+with parts keep their routes for now. Moving them is the rest of step 9,
+and it waits on the maintainer's call on its cost, as PGN's part does:
+over 10,000 records in alchemy-cli's release build, 1.2 times the whole
+read for JSON, whose part is the native `transduce-tree`, and 4.8 times
+for YAML and 3.9 times for XML, whose parts are interpreted; and
+`ParserEventSource` drops nothing behind the stream, where the
+incremental source prunes the exported array's elements, so the engine's
+tree holds the whole document.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
