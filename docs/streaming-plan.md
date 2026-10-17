@@ -655,10 +655,19 @@ rule passes, with the walk standing in where the part's events are not
 the value's (a repeated member) and for a path; and `run --grammar
 FORMAT`, a program over a format's rule passes. Step 4 is tabnas/json#111,
 released as tabnas-json 0.5.18, which alchemy-cli#35 reads. Step 5's
-first group is tabnas/jsonl#53, tabnas/jsonc#91 and tabnas/json5#102:
-json's spec for each, jsonl's with the `jsonl` rule's passes opening and
-closing the root array, each row of `transduce.tsv` for them held to the
-walk as json's are. ZON's part (tabnas/zon#103, closed) waits on a stream
+first group is tabnas/jsonl#53, tabnas/jsonc#91 and tabnas/json5#102,
+released as jsonl 0.1.18, jsonc 0.5.15 and json5 0.5.17, which
+tabnas/alchemy-cli#36 reads: json's spec for each, jsonl's with the
+`jsonl` rule's passes opening and closing the root array, each row of
+`transduce.tsv` for them held to the walk as json's are. Reading json5's
+part found where a part's events and the walk part ways: json5's grammar
+merges a repeated member's containers, and the composition's inferred
+table kept the last, so `{a:{x:1},a:{y:2}}` into CSV lost `x`.
+tabnas/alchemy#71, released as alchemy 0.2.9, makes a composition over a
+part refuse a repeated member (`DUPLICATE_MEMBER`), as the tree contract
+does, so a host reads the document whole; `LastWins` stays for a
+document's events, where the incremental source's own net catches a
+merge. ZON's part (tabnas/zon#103, closed) waits on a stream
 form for a big integer: the token's value is the `$big` object in Rust
 and a bigint or `big.Int` in TypeScript and Go, which transduce's
 parser-event sources do not yet present as the object the walk builds,
