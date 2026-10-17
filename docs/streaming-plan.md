@@ -639,6 +639,29 @@ between the engines as they are, which transduce's `DIVERGENCE.md` 6 and
 7 record: the first rule's instance number, and a fixed token's value.
 Step 11 is tabnas/admin#152, ADR-28.
 
+Step 3 is tabnas/alchemy#69 and tabnas/alchemy-cli#35: `transduce.tsv`
+with the json transducer's rows and a `duplicates` column (empty, `first`
+or `last`, which the runners hand to `with_duplicates`) beside `grammar`,
+`doc` and `render`; alchemy-cli's runner of it in all three runtimes, held
+to the walk of the grammar's value as section 5.6's rule says; `translate`
+reading a format whose package ships a part through it, over the parser's
+rule passes, with the walk standing in where the part's events are not
+the value's (a repeated member) and for a path; and `run --grammar
+FORMAT`, a program over a format's rule passes. Step 4 is tabnas/json#111,
+released as tabnas-json 0.5.18, which alchemy-cli#35 reads. Step 5's
+first group is tabnas/jsonl#53, tabnas/jsonc#91 and tabnas/json5#102:
+json's spec for each, jsonl's with the `jsonl` rule's passes opening and
+closing the root array, each row of `transduce.tsv` for them held to the
+walk as json's are. ZON's part (tabnas/zon#103, closed) waits on a stream
+form for a big integer: the token's value is the `$big` object in Rust
+and a bigint or `big.Int` in TypeScript and Go, which transduce's
+parser-event sources do not yet present as the object the walk builds,
+so json's spec fails such a document (`DSL_TYPE_ERROR`, which no host
+reads the document whole on) where the walk writes `{"$big": …}`; and an
+enum literal under `enumTag` is wrapped only in the rule's value, after
+the close. ZON's part is a hand-written one of step 6, once transduce
+presents a big integer token as the `$big` object in every runtime.
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
