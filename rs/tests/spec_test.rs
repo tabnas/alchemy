@@ -508,7 +508,14 @@ fn transduce_fixture_has_its_columns() {
         .expect("transduce.tsv loads");
     assert_eq!(
         *spec.rows[0].header,
-        ["input", "expected", "grammar", "doc", "render", "duplicates"]
+        [
+            "input",
+            "expected",
+            "grammar",
+            "doc",
+            "render",
+            "duplicates"
+        ]
     );
     for row in &spec.rows {
         assert!(
