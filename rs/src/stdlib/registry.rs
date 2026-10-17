@@ -1451,7 +1451,8 @@ fn repeat(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     // `(fail message)` is INPUT_INVALID, the code of a document the
     // program refuses; `(fail :code message)` names what the failure is: a
-    // value the target cannot carry, or a stream that breaks its protocol.
+    // value the target cannot carry, a stream that breaks its protocol, or a
+    // document a transducer part does not stream.
     let (code, message) = match a {
         [message] => (Code::InputInvalid, message),
         [code, message] => {
@@ -1460,9 +1461,10 @@ fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
                     "invalid" => Code::InputInvalid,
                     "unrepresentable" => Code::TargetValueUnrepresentable,
                     "protocol-order" => Code::ProtocolOrderError,
+                    "unstreamable" => Code::StreamabilityUnknown,
                     other => {
                         return Err(type_error(format!(
-                            "the code of fail must be :invalid, :unrepresentable or :protocol-order, not :{other}"
+                            "the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :{other}"
                         )))
                     }
                 },
@@ -1478,7 +1480,15 @@ fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
         _ => return Err(type_error("fail takes a message, or a code and a message")),
     };
     let message = as_str("fail", "the message", message)?;
-    Err(rt.fail_at(Fail::new(code, message.to_string()), at))
+    // STREAMABILITY_UNKNOWN leads with its finer code, as the checker's
+    // own do: `unstreamable`, a transducer part's refusal of a document it
+    // does not stream, which a host that reads the part reads whole.
+    let text = if code == Code::StreamabilityUnknown {
+        format!("unstreamable: {message}")
+    } else {
+        message.to_string()
+    };
+    Err(rt.fail_at(Fail::new(code, text), at))
 }
 
 fn as_events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -1828,7 +1838,7 @@ static NATIVES: &[Native] = &[
     f("string-join", Exact(2), string_join, "string-join separator strings -> String", "the strings of a vector joined into one string, the separator between them; refused past max_scalar_bytes, before it is built"),
     f("split", Exact(2), split, "split separator string -> Vector", "the strings between the separator's occurrences in the string, found from the front, none overlapping another: one more than it occurs, an empty one where two occurrences meet or at either end, and the string itself where it does not occur (split \".\" \"a..b\" is [\"a\" \"\" \"b\"], split \".\" \"\" is [\"\"]); the separator is a literal, not a pattern, and must not be empty. A part reads a dotted string's parts with it to check each one"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
-    f("fail", Between(1, 2), fail, "fail [code] message -> Never", "INPUT_INVALID with the message and the form's position; with a code first, :unrepresentable is TARGET_VALUE_UNREPRESENTABLE (a value the target cannot carry), :protocol-order is PROTOCOL_ORDER_ERROR (a stream that breaks its protocol) and :invalid is INPUT_INVALID"),
+    f("fail", Between(1, 2), fail, "fail [code] message -> Never", "INPUT_INVALID with the message and the form's position; with a code first, :unrepresentable is TARGET_VALUE_UNREPRESENTABLE (a value the target cannot carry), :protocol-order is PROTOCOL_ORDER_ERROR (a stream that breaks its protocol), :unstreamable is STREAMABILITY_UNKNOWN, the finer code unstreamable leading the message (a document a transducer part does not stream from the rule passes, which a host that reads the part reads whole) and :invalid is INPUT_INVALID"),
     // The table protocol.
     f("is-ready", Exact(1), is_ready, "is-ready state -> Bool", "whether the state holds columns"),
     f("require-columns", Exact(1), require_columns, "require-columns state -> Vector<Column>", "the columns, or INPUT_ORDER_VIOLATION"),

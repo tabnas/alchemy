@@ -388,8 +388,9 @@ describe('translate', () => {
     assert.equal(c.main, 'def export [input] (toml-render (wrap-object "items" (tree-contract (json-transduce input))))')
     const csv = full('csv', '{"reads": "records", "writes": "records", "root": "array", "render": "csv"}')
     c = T.composeParsed(json, t, csv, o, 'main')
-    assert.ok(!c.main.includes('tree-contract'), c.main)
-    assert.ok(c.main.includes('(json-transduce input)'), c.main)
+    // A records target takes the contract's events too: a second root is
+    // the contract's refusal, not the root adapter's.
+    assert.ok(c.main.includes('(wrap-array (tree-contract (json-transduce input)))'), c.main)
     // The inferred table over a part's events refuses a repeated member,
     // where over a document's it keeps the last.
     assert.equal(c.compile(undefined, OPTIONS).duplicates, 'reject')

@@ -1343,7 +1343,7 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(VectorOf(StringT), first(exp("the separator of split", StringT, 0), exp("the string of split", StringT, 1)))
 	case "fail":
 		// `(fail message)` is INPUT_INVALID; `(fail :code message)` names
-		// the code: a literal keyword is held to the three here, any other
+		// the code: a literal keyword is held to the four here, any other
 		// keyword at run time.
 		message := len(args) - 1
 		if len(args) == 2 {
@@ -1352,10 +1352,10 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 			}
 			if args[0].Kind == ExprKeyword {
 				switch args[0].Text {
-				case "invalid", "unrepresentable", "protocol-order":
+				case "invalid", "unrepresentable", "protocol-order", "unstreamable":
 				default:
 					return Type{}, c.typeError("type_mismatch",
-						"the code of fail must be :invalid, :unrepresentable or :protocol-order, not :"+args[0].Text, args[0].Span)
+						"the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :"+args[0].Text, args[0].Span)
 				}
 			}
 		}

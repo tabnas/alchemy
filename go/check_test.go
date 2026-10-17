@@ -428,7 +428,7 @@ func TestOutputs(t *testing.T) {
 		t.Errorf("%+v", c)
 	}
 	if _, f := checked(t, "def export [input] (join \"\" (map (fn [x] (fail :nope \"x\")) (select (path each-index) input)))"); f == nil ||
-		f.Message != "type_mismatch: the code of fail must be :invalid, :unrepresentable or :protocol-order, not :nope" {
+		f.Message != "type_mismatch: the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :nope" {
 		t.Errorf("%v", f)
 	}
 }

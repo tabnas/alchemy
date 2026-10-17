@@ -1043,16 +1043,16 @@ class Checker {
         return vectorOf(Str)
       case 'fail': {
         // `(fail message)` is INPUT_INVALID; `(fail :code message)` names
-        // the code: a literal keyword is held to the three here, any other
+        // the code: a literal keyword is held to the four here, any other
         // keyword at run time.
         const message = args.length - 1
         if (2 === args.length) {
           this.expect('the code of fail', Keyword, t(0), at(0))
           const k = args[0]
-          if ('keyword' === k.kind && !['invalid', 'unrepresentable', 'protocol-order'].includes(k.name)) {
+          if ('keyword' === k.kind && !['invalid', 'unrepresentable', 'protocol-order', 'unstreamable'].includes(k.name)) {
             throw this.typeError(
               'type_mismatch',
-              `the code of fail must be :invalid, :unrepresentable or :protocol-order, not :${k.name}`,
+              `the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :${k.name}`,
               k.span,
             )
           }

@@ -563,9 +563,16 @@ pub fn compose_program(
 /// that writes from a tree, the events reaching it whole), the main holds
 /// the transducer's events to it instead, before the lift and the
 /// adapters (`tree-contract`), since what the host pushes is parser
-/// events; the [`Front`] is `None`. A records target takes the events as
-/// they come, as it does a source's. The composition is never run by a
-/// host's own renderer ([`Native`]), which has no events to render.
+/// events; the [`Front`] is `None`. The main holds them to it for a
+/// records target too, where a source's events go as they come: a part's
+/// events are the document's only as far as the walk of the grammar's
+/// value agrees, and a shape no tree has (a second root, which an
+/// implicit list whose first element is a container streams) must reach
+/// the host as the contract's refusal (STREAMABILITY_UNKNOWN), which it
+/// reads the document whole on, not as the root adapter's
+/// (PROTOCOL_ORDER_ERROR), which it does not. The composition is never
+/// run by a host's own renderer ([`Native`]), which has no events to
+/// render.
 pub fn compose_parsed(
     source: &Part,
     transducer: &Alc,
@@ -573,26 +580,15 @@ pub fn compose_parsed(
     options: &Options,
     main_file: &str,
 ) -> Result<Composition, Fail> {
-    let events = format!("({} input)", transducer.entry);
-    let plain = compose_over(
+    let events = format!("(tree-contract ({} input))", transducer.entry);
+    let mut composition = compose_over(
         Some(source),
         &events,
         target,
         options,
         main_file,
-        Front::Tree,
+        Front::None,
     )?;
-    let mut composition = match plain.front {
-        Front::Tree => compose_over(
-            Some(source),
-            &format!("(tree-contract {events})"),
-            target,
-            options,
-            main_file,
-            Front::None,
-        )?,
-        Front::None => plain,
-    };
     composition.front = Front::None;
     composition.native = None;
     composition
@@ -1135,7 +1131,9 @@ mod tests {
             c.main,
             "def export [input] (toml-render (wrap-object \"items\" (tree-contract (json-transduce input))))"
         );
-        // A records target takes the events as it takes a source's.
+        // A records target takes the contract's events too, where it takes
+        // a source's as they come: a second root is the contract's refusal,
+        // not the root adapter's.
         let csv = part(
             "csv",
             r#"{"reads": "records", "writes": "records", "root": "array", "render": "csv"}"#,
@@ -1143,8 +1141,12 @@ mod tests {
         )
         .unwrap();
         let c = compose_parsed(&json, &t, &csv, &o, "main").unwrap();
-        assert!(!c.main.contains("tree-contract"), "{}", c.main);
-        assert!(c.main.contains("(json-transduce input)"), "{}", c.main);
+        assert!(
+            c.main
+                .contains("(wrap-array (tree-contract (json-transduce input)))"),
+            "{}",
+            c.main
+        );
         assert_eq!(c.input, Input::ParserEvents);
         // The inferred table over a part's events refuses a repeated
         // member, where over a document's it keeps the last.

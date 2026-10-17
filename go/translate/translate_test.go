@@ -513,7 +513,9 @@ func TestATransducerComposesOverTheParsersRulePasses(t *testing.T) {
 		t.Errorf("%s", c.Main)
 	}
 	csv := full(t, "csv", `{"reads": "records", "writes": "records", "root": "array", "render": "csv"}`, nil, nil)
-	if c := compose(csv); strings.Contains(c.Main, "tree-contract") || !strings.Contains(c.Main, "(json-transduce input)") {
+	// A records target takes the contract's events too: a second root is
+	// the contract's refusal, not the root adapter's.
+	if c := compose(csv); !strings.Contains(c.Main, "(wrap-array (tree-contract (json-transduce input)))") {
 		t.Errorf("%s", c.Main)
 	} else if program, f := c.Compile(nil, nil, nil); f != nil {
 		t.Error(f)
