@@ -544,9 +544,14 @@ type Composition struct {
 
 // Compile links the parts with the main, and program's source when the
 // composition is over a program's output (nil otherwise), into one program
-// under the policies the adapters need: the inferred table keeps a
-// repeated member's last value, as an export does. routers and renderers
-// are the stages the program runs on, as for alchemy.CompileSources.
+// under the policies the adapters need: over a document's events the
+// inferred table keeps a repeated member's last value, as an export does;
+// over a transducer part's (ComposeParsed), which streams every occurrence
+// of a repeated member, it refuses one (DUPLICATE_MEMBER), as a tree's
+// contract does, since what the grammar's value keeps, the last or a merge
+// of the two, only the document read whole shows, and a host reads it so
+// where the part's route refuses. routers and renderers are the stages the
+// program runs on, as for alchemy.CompileSources.
 func (c *Composition) Compile(program *alchemy.Source, routers shared.Routers, renderers shared.Renderers) (*alchemy.Program, *alchemy.Fail) {
 	sources := make([]alchemy.Source, 0, len(c.Sources)+2)
 	for _, s := range c.Sources {
@@ -562,9 +567,11 @@ func (c *Composition) Compile(program *alchemy.Source, routers shared.Routers, r
 	if f != nil {
 		return nil, f
 	}
-	for _, a := range c.Adapters {
-		if a.Kind == AdapterInferredTable {
-			return compiled.WithDuplicates(shared.LastWins)
+	if c.Input == alchemy.InputJSONEvents {
+		for _, a := range c.Adapters {
+			if a.Kind == AdapterInferredTable {
+				return compiled.WithDuplicates(shared.LastWins)
+			}
 		}
 	}
 	return compiled, nil

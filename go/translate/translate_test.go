@@ -515,8 +515,15 @@ func TestATransducerComposesOverTheParsersRulePasses(t *testing.T) {
 	csv := full(t, "csv", `{"reads": "records", "writes": "records", "root": "array", "render": "csv"}`, nil, nil)
 	if c := compose(csv); strings.Contains(c.Main, "tree-contract") || !strings.Contains(c.Main, "(json-transduce input)") {
 		t.Errorf("%s", c.Main)
-	} else if _, f := c.Compile(nil, nil, nil); f != nil {
+	} else if program, f := c.Compile(nil, nil, nil); f != nil {
 		t.Error(f)
+	} else if program.Duplicates() != shared.Reject {
+		// The inferred table over a part's events refuses a repeated
+		// member, where over a document's it keeps the last.
+		t.Errorf("%v", program.Duplicates())
+	}
+	if program, f := mustCompose(t, nil, csv, o).Compile(nil, nil, nil); f != nil || program.Duplicates() != shared.LastWins {
+		t.Errorf("%v %v", program, f)
 	}
 	c, f = ComposeProgramParsed(alchemy.OutputJsonEvents, tr, yaml, o, "main")
 	if f != nil {

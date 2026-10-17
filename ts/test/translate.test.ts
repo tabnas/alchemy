@@ -390,7 +390,10 @@ describe('translate', () => {
     c = T.composeParsed(json, t, csv, o, 'main')
     assert.ok(!c.main.includes('tree-contract'), c.main)
     assert.ok(c.main.includes('(json-transduce input)'), c.main)
-    c.compile(undefined, OPTIONS)
+    // The inferred table over a part's events refuses a repeated member,
+    // where over a document's it keeps the last.
+    assert.equal(c.compile(undefined, OPTIONS).duplicates, 'reject')
+    assert.equal(T.compose(undefined, csv, o, 'main').compile(undefined, OPTIONS).duplicates, 'last_wins')
     c = T.composeProgramParsed('JsonEvents/1', t, yaml, o, 'main')
     assert.equal(c.main, 'def export [input] (yaml-render (program-export (json-transduce input)))')
     assert.deepStrictEqual([c.front, c.input], ['none', 'ParserEvents/1'])
