@@ -1976,6 +1976,15 @@ The TypeScript and Go ports take the same two implementations:
   returned its value. `parser_sink_out` takes any `TextOut`. Each sink
   refuses a program compiled over the other input (`protocol_mismatch`)
   before anything runs.
+- `parser_sink_into(down, limits, metrics)` (`parserSinkInto` in
+  TypeScript, `ParserSinkInto` in Go) is `parser_sink` for a host that
+  runs a format's transducer part in front of stages of its own (a
+  renderer, a scope over a path, another program's sink): the program
+  must answer JSON events, and the host's `down` takes them as the
+  program makes them, then one `End`, rather than a renderer. The
+  source's limits hold on them as on a source's own. A program that
+  answers a text or a table is refused (`protocol_mismatch`) before
+  anything runs, as is one compiled over JSON events.
 - A failure comes back from the event call that found it, with
   `committed_output` set when text this crate wrote had reached the
   writer. A failure the source found (invalid JSON after the rows) never
