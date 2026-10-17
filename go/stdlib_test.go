@@ -121,7 +121,7 @@ func TestTheLibraryLoads(t *testing.T) {
 
 func TestTheLibraryLoadsWithTheSpecDefinitions(t *testing.T) {
 	lib := StdlibLoaded()
-	want := "[public-column table-inferred-column table-row table-positional-column table-value-column table-inferred-columns table-first-row table-step table-finish table-finish-for table-captures table-from-json csv-options csv-field csv-row csv wrap-object-close wrap-object-step wrap-finish wrap-object wrap-array-close wrap-array-step wrap-array transduce-token transduce-key transduce-scalar transduce-value transduce-begin transduce-end transduce-open transduce-close transduce-step transduce-finish transduce-tree]"
+	want := "[public-column table-inferred-column table-row table-positional-column table-value-column table-inferred-columns table-first-row table-step table-finish table-finish-for table-captures table-from-json csv-options csv-field csv-row csv wrap-object-close wrap-object-step wrap-finish wrap-object wrap-array-close wrap-array-step wrap-array transduce-token transduce-named transduce-key transduce-scalar transduce-value transduce-begin transduce-end transduce-open transduce-close transduce-step transduce-finish transduce-member transduce-write transduce-spell transduce-text-open transduce-text-end transduce-text-close transduce-then transduce-pass transduce-done transduce-tree]"
 	if got := fmt.Sprint(lib.Names()); got != want {
 		t.Errorf("%s", got)
 	}

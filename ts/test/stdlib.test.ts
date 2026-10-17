@@ -64,6 +64,7 @@ describe('stdlib', () => {
         ],
         [
           'transduce-token',
+          'transduce-named',
           'transduce-key',
           'transduce-scalar',
           'transduce-value',
@@ -73,11 +74,20 @@ describe('stdlib', () => {
           'transduce-close',
           'transduce-step',
           'transduce-finish',
+          'transduce-member',
+          'transduce-write',
+          'transduce-spell',
+          'transduce-text-open',
+          'transduce-text-end',
+          'transduce-text-close',
+          'transduce-then',
+          'transduce-pass',
+          'transduce-done',
           'transduce-tree',
         ],
       ],
     )
-    assert.equal(lib.names().length, 34)
+    assert.equal(lib.names().length, 44)
     assert.deepStrictEqual(defParams(lib.get('table-from-json')!), ['binding', 'input'])
     assert.equal(defParams(lib.get('csv-options')!), undefined)
   })

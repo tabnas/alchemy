@@ -22,7 +22,10 @@ func TestATransduceTreeSpecOfTheStandardShapeIsRead(t *testing.T) {
 		"def odd-container (record (entry :map (record (entry :container :set))))\n"+
 		"def odd-key (record (entry :pair (record (entry :key 1.5))))\n"+
 		"def odd-scalar (record (entry :val (record (entry :scalar \"x\"))))\n"+
-		"def odd-entry (record (entry :val 1))\n")
+		"def odd-entry (record (entry :val 1))\n"+
+		"def texts (record (entry :row (record (entry :container :object) (entry :member \"a\") (entry :text true))) (entry :cell (record (entry :member 1) (entry :text false))))\n"+
+		"def odd-member (record (entry :row (record (entry :member -1))))\n"+
+		"def odd-text (record (entry :row (record (entry :text :yes))))\n")
 	value := func(name string) Val {
 		v, f := rt.DefValue(ScopeProgram, name)
 		if f != nil {
@@ -48,7 +51,16 @@ func TestATransduceTreeSpecOfTheStandardShapeIsRead(t *testing.T) {
 	if !ok || !reflect.DeepEqual(spec, want) {
 		t.Errorf("named: %v %+v", ok, spec)
 	}
-	for _, odd := range []string{"odd-container", "odd-key", "odd-scalar", "odd-entry"} {
+	// A member is read as a key is, and a text as a boolean.
+	spec, ok = treeSpecOf(value("texts"))
+	want = shared.TreeSpec{Rules: map[string]shared.TreeRule{
+		"row":  {Container: shared.TreeObject, Member: shared.TreeKey{Set: true, Name: "a"}, Text: true},
+		"cell": {Member: shared.TreeKey{Set: true, IsToken: true, Token: 1}},
+	}}
+	if !ok || !reflect.DeepEqual(spec, want) {
+		t.Errorf("texts: %v %+v", ok, spec)
+	}
+	for _, odd := range []string{"odd-container", "odd-key", "odd-scalar", "odd-entry", "odd-member", "odd-text"} {
 		if _, ok := treeSpecOf(value(odd)); ok {
 			t.Errorf("%s is read as a spec", odd)
 		}
@@ -153,5 +165,9 @@ func TestTransduceTreeRunsNativelyWhereTheRoutersOfferIt(t *testing.T) {
 	check(lower(tree, false, "offer"), scan...)
 	check(lower("def export [input] (transduce-tree (record (entry :map (record (entry :container :set)))) input)\n", true, "offer"), scan...)
 	check(lower("def export [input] (as-events (scan-emit [[] false] (partial transduce-step json-spec) transduce-finish (parser-events input)))\n", true, "offer"), native...)
+	check(lower("def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-pass json-spec) transduce-done (parser-events input)))\n", true, "offer"), native...)
+	// Each step from the other's state is a scan of the program's own.
+	check(lower("def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-step json-spec) transduce-done (parser-events input)))\n", true, "offer"), scan...)
+	check(lower("def export [input] (as-events (scan-emit [[] false] (partial transduce-pass json-spec) transduce-finish (parser-events input)))\n", true, "offer"), scan...)
 	check(lower("def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n", true, "offer"), scan...)
 }

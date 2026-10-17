@@ -146,7 +146,7 @@ func StdlibSignature(name string) (Type, bool) {
 	// pass's outputs, a vector of events.
 	case "transduce-token":
 		return Func([]Type{Unknown, RecordT}, ValueT), true
-	case "transduce-key", "transduce-scalar", "transduce-value":
+	case "transduce-named", "transduce-key", "transduce-scalar", "transduce-value":
 		return Func([]Type{Unknown, RecordT, VectorOf(Unknown)}, VectorOf(Unknown)), true
 	case "transduce-begin":
 		return Func([]Type{Unknown, Unknown, VectorOf(Unknown)}, Tagged("transition")), true
@@ -157,6 +157,27 @@ func StdlibSignature(name string) (Type, bool) {
 	case "transduce-step":
 		return Func([]Type{RecordT, Unknown, Unknown}, Tagged("transition")), true
 	case "transduce-finish":
+		return Func([]Type{Unknown}, VectorOf(EventT)), true
+	// transduce-tree's own step, which carries the open texts beside the
+	// tree's state: the texts are a vector of strings, and a close pass's
+	// text and outputs come back as a vector of the two.
+	case "transduce-member":
+		return Func([]Type{RecordT, RecordT, VectorOf(Unknown)}, VectorOf(Unknown)), true
+	case "transduce-write":
+		return Func([]Type{Unknown, StringT}, VectorOf(Unknown)), true
+	case "transduce-spell":
+		return Func([]Type{Unknown, RecordT}, Unknown), true
+	case "transduce-text-open":
+		return Func([]Type{RecordT, Unknown, RecordT}, Unknown), true
+	case "transduce-text-end":
+		return Func([]Type{StringT, Unknown, RecordT}, VectorOf(Unknown)), true
+	case "transduce-text-close":
+		return Func([]Type{RecordT, Unknown, RecordT}, VectorOf(Unknown)), true
+	case "transduce-then":
+		return Func([]Type{VectorOf(Unknown), VectorOf(Unknown)}, VectorOf(Unknown)), true
+	case "transduce-pass":
+		return Func([]Type{RecordT, Unknown, Unknown}, Tagged("transition")), true
+	case "transduce-done":
 		return Func([]Type{Unknown}, VectorOf(EventT)), true
 	case "transduce-tree":
 		return Func([]Type{RecordT, ParserEventsT}, JsonEvents), true

@@ -298,24 +298,37 @@ def table-from-json [binding input]
 ; string; \`:scalar\`, the scalar the rule yields, a token's index (that
 ; token of its open pass, when the pass consumed one: its \`:val\`, with
 ; the lexeme a number token carries) or \`:value\` (its close pass's own
-; value). An open pass announces its key before it begins its container
-; or yields its scalar. A pass of a rule the spec does not name yields
-; nothing. A container whose rule is replaced by a rule the spec names a
-; container (its close pass's alternate replaces it) is one container:
-; that close yields no end and the replacing open no start.
+; value); \`:member\`, a member name its open pass announces after what it
+; begins or yields, read as \`:key\` is, so that a container rule can name
+; the first member of its own container; and \`:text\`, \`true\` for a rule
+; whose close pass yields, before anything else, the text that the
+; passes between its open pass and its close pass consumed: each token's
+; \`:src\`, in order, which is the source text a grammar's tree builders
+; gather for a rule's node. An open pass announces its key before it
+; begins its container or yields its scalar, and its member after. A
+; pass of a rule the spec does not name yields nothing. A container
+; whose rule is replaced by a rule the spec names a container (its close
+; pass's alternate replaces it) is one container: that close yields no
+; end and the replacing open no start.
 ;
-; The state is [stack carry]: one :open marker per open container, and
-; whether a container's close handed it on to the rule replacing it.
+; transduce-step's state is [stack carry]: one :open marker per open
+; container, and whether a container's close handed it on to the rule
+; replacing it. It reads neither \`:member\` nor \`:text\`. transduce-tree's
+; step is transduce-pass, over the state [[stack carry] texts]: the same
+; two, and the text each open \`:text\` rule has gathered so far, the
+; innermost last, which joins the text around it when its rule closes.
 ; Nothing grows with the document's width or length, only with its
-; nesting.
+; nesting and with the text of a \`:text\` rule still open.
 
 ; Token \`n\` of a pass, or missing when it consumed no such token.
 def transduce-token [n rule]
   get-path (path n) (get :tokens rule)
 
-; The outputs with the key an open pass announces after them.
-def transduce-key [entry rule outputs]
-  match (get :key entry)
+; The outputs with the member \`name\` names after them: a string as it
+; stands, or the \`:val\` of the pass's token at that index; nothing when
+; \`name\` is missing or the pass consumed no such token.
+def transduce-named [name rule outputs]
+  match name
     case missing outputs
     case name
       match (kind name)
@@ -324,6 +337,10 @@ def transduce-key [entry rule outputs]
           match (transduce-token name rule)
             case missing outputs
             case token (push (key (get :val token)) outputs)
+
+; The outputs with the key an open pass announces after them.
+def transduce-key [entry rule outputs]
+  transduce-named (get :key entry) rule outputs
 
 ; The outputs with the scalar an open pass yields from one of its tokens.
 def transduce-scalar [from rule outputs]
@@ -393,9 +410,84 @@ def transduce-finish [state]
     case [[] carry] []
     case _ (fail :protocol-order "the rule passes ended inside a container, which a tree's never do")
 
+; The outputs with the member an open pass announces after what it
+; begins or yields: its entry's \`:member\`, read as \`:key\` is.
+def transduce-member [spec rule outputs]
+  match (get (get :name rule) spec)
+    case missing outputs
+    case entry (transduce-named (get :member entry) rule outputs)
+
+; The open texts with \`more\` written at the end of the innermost.
+def transduce-write [texts more]
+  push (string-join "" [(top texts) more]) (pop texts)
+
+; The open texts with a pass's tokens written at the end of the
+; innermost, each token's \`:src\` in order; as they were when no text is
+; open.
+def transduce-spell [texts rule]
+  match texts
+    case [] texts
+    case _ (transduce-write texts (string-join "" (map (fn [token] (get :src token)) (get :tokens rule))))
+
+; The open texts after an open pass: its tokens written to the innermost,
+; then, for a rule the spec names a \`:text\` rule, a text of its own.
+def transduce-text-open [spec texts rule]
+  let [spelled (transduce-spell texts rule)]
+    match (get (get :name rule) spec)
+      case missing spelled
+      case entry
+        match (get :text entry)
+          case true (push "" spelled)
+          case _ spelled
+
+; A \`:text\` rule's text, closed: the texts around it, the innermost of
+; which it joins before the close pass's own tokens do, and the scalar it
+; yields.
+def transduce-text-end [text texts rule]
+  match texts
+    case [] [texts [(scalar text)]]
+    case _ [(transduce-spell (transduce-write texts text) rule) [(scalar text)]]
+
+; A close pass's open texts, and the outputs it yields before any other:
+; a \`:text\` rule's text, closed; for any other rule nothing, its tokens
+; written to the innermost text.
+def transduce-text-close [spec texts rule]
+  match (get (get :name rule) spec)
+    case missing [(transduce-spell texts rule) []]
+    case entry
+      match (get :text entry)
+        case true (transduce-text-end (top texts) (pop texts) rule)
+        case _ [(transduce-spell texts rule) []]
+
+; \`first\`, then the outputs of a close pass, which are at most one.
+def transduce-then [first outputs]
+  match outputs
+    case [] first
+    case [output] (push output first)
+
+; transduce-tree's step: transduce-step's over the tree's state, with the
+; open texts beside it, an open pass's member after what it begins or
+; yields, and a \`:text\` rule's text before what its close pass ends.
+def transduce-pass [spec state pass]
+  match state
+    case [tree texts]
+      match pass
+        case (open rule)
+          match (transduce-open spec tree rule)
+            case (transition next outputs) (transition [next (transduce-text-open spec texts rule)] (transduce-member spec rule outputs))
+        case (close rule)
+          match (transduce-text-close spec texts rule)
+            case [rest first]
+              match (transduce-close spec tree rule)
+                case (transition next outputs) (transition [next rest] (transduce-then first outputs))
+
+def transduce-done [state]
+  match state
+    case [tree texts] (transduce-finish tree)
+
 ; A tree's JSON events from the rule passes, as \`spec\` says.
 def transduce-tree [spec input]
-  as-events (scan-emit [[] false] (partial transduce-step spec) transduce-finish (parser-events input))
+  as-events (scan-emit [[[] false] []] (partial transduce-pass spec) transduce-done (parser-events input))
 `,
   ],
 ]

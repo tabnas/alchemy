@@ -144,6 +144,7 @@ export function stdlibSignature(name: string): Type | undefined {
     // pass's outputs, a vector of events.
     case 'transduce-token':
       return func([Unknown, Record], Value)
+    case 'transduce-named':
     case 'transduce-key':
     case 'transduce-scalar':
     case 'transduce-value':
@@ -158,6 +159,27 @@ export function stdlibSignature(name: string): Type | undefined {
     case 'transduce-step':
       return func([Record, Unknown, Unknown], tagged('transition'))
     case 'transduce-finish':
+      return func([Unknown], vectorOf(Event))
+    // transduce-tree's own step, which carries the open texts beside the
+    // tree's state: the texts are a vector of strings, and a close pass's
+    // text and outputs come back as a vector of the two.
+    case 'transduce-member':
+      return func([Record, Record, vectorOf(Unknown)], vectorOf(Unknown))
+    case 'transduce-write':
+      return func([Unknown, Str], vectorOf(Unknown))
+    case 'transduce-spell':
+      return func([Unknown, Record], Unknown)
+    case 'transduce-text-open':
+      return func([Record, Unknown, Record], Unknown)
+    case 'transduce-text-end':
+      return func([Str, Unknown, Record], vectorOf(Unknown))
+    case 'transduce-text-close':
+      return func([Record, Unknown, Record], vectorOf(Unknown))
+    case 'transduce-then':
+      return func([vectorOf(Unknown), vectorOf(Unknown)], vectorOf(Unknown))
+    case 'transduce-pass':
+      return func([Record, Unknown, Unknown], tagged('transition'))
+    case 'transduce-done':
       return func([Unknown], vectorOf(Event))
     case 'transduce-tree':
       return func([Record, ParserEvents], JsonEvents)
