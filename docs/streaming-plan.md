@@ -405,18 +405,24 @@ one proves:
 
 1. **json**: the proof that the declarative form reproduces the walk
    and the lexemes; the first rows of `transduce.tsv`.
-2. **jsonl, jsonc, json5, zon**: the same shape; jsonl's part emits the
+2. **jsonl, jsonc, json5**: the same shape; jsonl's part emits the
    root array's start before the first line and its end at the end.
 3. **csv**: the first imperative grammar, and one of the two the line
    source serves until step 12 (decision 2). Its part keeps the
    header's labels in its state (under `max_metadata_bytes`) and emits
    one object per record, which the inference could never do. Its
    events are compared with the walk as every part's are.
-4. **yaml, xml, markdown, jsonic**: hand-written `scan-emit`s where the
-   declarative form does not fit; each refusal the adapter documents
+4. **yaml, xml, markdown, jsonic, zon**: hand-written `scan-emit`s where
+   the declarative form does not fit; each refusal the adapter documents
    today (a stream of several documents, a merge key, an implicit list)
    becomes an explicit `fail :protocol-order` in the part, or a shape
-   the part follows where it can.
+   the part follows where it can. zon's rules are json's, but an integer
+   no double holds is the `$big` object in Rust and a bigint or `big.Int`
+   in TypeScript and Go, which the declarative form cannot take from a
+   token and transduce's parser-event sources do not yet present alike,
+   and an enum literal under `enumTag` is wrapped only after the close;
+   its part reads those from the pass's value once a big integer token
+   has one stream form in every runtime.
 5. **toml, ini**: parts that build the tree in their state and emit it
    at `finish`, since a later header can add to an earlier table; the
    manifest's `whole` sentence stays, and `explain` reports the
@@ -601,8 +607,8 @@ six were taken on 2026-10-15.
 | 2 | transduce | `ParserEventSource`; `test/spec/parser-events.tsv`; a probe's flagged passes dropped (decision 6); a native `transduce-tree`, held to the snippet (decision 3); `capability` and the inference kept until step 13; `LinesSource` kept (decision 2) | 1, the engine's probe flag (step 10) |
 | 3 | alchemy-cli | `transduce.tsv` runner with the differential rule; parts test; `translate` and `run --grammar` on the new source | 1, 2 |
 | 4 | json | the first `alchemy/transduce.alc`, manifest, embed, descriptor | 1, 3 |
-| 5 | jsonl, jsonc, json5, zon, csv | parts, in that order | 4 |
-| 6 | yaml, xml, markdown, jsonic | hand-written parts | 4 |
+| 5 | jsonl, jsonc, json5, csv | parts, in that order | 4 |
+| 6 | yaml, xml, markdown, jsonic, zon | hand-written parts | 4; for zon, a stream form for a big integer token in transduce's sources |
 | 7 | toml, ini, then the schema formats | buffering parts, or `whole` | 4, a path-insert operator if measured necessary |
 | 8 | bnf, abnf | the generated part and its differential test | 1, 3 |
 | 9 | aless | one plan over `ParserEventSource` for every format with a part but JSON Lines and CSV, the current routes for the rest; the generated part for `--grammar` | 2, 4, 8 |
