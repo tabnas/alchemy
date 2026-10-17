@@ -262,7 +262,10 @@ text). `STREAM_REUSED` carries `reused` or `captured`;
 `STREAMABILITY_UNKNOWN` carries `recursion` (from the resolver, a
 definition that reaches itself; from the evaluator, nesting past
 `MAX_EVAL_DEPTH`, which a function applied to itself reaches),
-`dynamic` or `unknown_output`. `test/spec/check.tsv` pins each code
+`dynamic` or `unknown_output`; from the tree contract, `not_a_tree`;
+and from a transducer part, `unstreamable` (`fail :unstreamable`, a
+document the part does not stream from the rule passes, which a host
+that reads the part reads whole). `test/spec/check.tsv` pins each code
 `alchemy check` can reach, with the position it names: `check` builds
 the plan, so `duplicate_key`, `no_match` and the evaluator's
 `recursion` have rows where the plan's own evaluation meets them.

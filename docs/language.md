@@ -1913,7 +1913,7 @@ repurposed; one may be added.
 | `DSL_PARSE_ERROR` | the reader's `tab_indent`, `bad_indent`, `bad_dedent`, `unbalanced`, `too_deep`; the desugarer's `empty_step`, `bad_def`, `bad_let`, `bad_if`, `bad_match` (the last three from the resolver too, for a form a `pipe` builds); the engine's `unterminated_string`, `unprintable`, `unexpected` |
 | `DSL_TYPE_ERROR` | the resolver's `unknown_name`, `not_def`, `duplicate_def`, `reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; the linker's `duplicate_file`; the checker's `arity`, `type_mismatch`, `protocol_mismatch`, `no_export`, `bad_output`; the runtime's `duplicate_key`, `no_match`, `render_of_text` |
 | `STREAM_REUSED` | `reused`, `captured` |
-| `STREAMABILITY_UNKNOWN` | `recursion`, `dynamic`, `unknown_output` |
+| `STREAMABILITY_UNKNOWN` | `recursion`, `dynamic`, `unknown_output`; the tree contract's `not_a_tree`; a transducer part's `unstreamable` (`fail :unstreamable`, a document the part does not stream, which a host that reads the part reads whole) |
 
 Each of these finer codes but the engine's and the linker's
 `duplicate_file` is declared in the grammar document,
