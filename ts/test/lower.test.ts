@@ -25,7 +25,7 @@ import {
 import { make as makeJson } from '@tabnas/json'
 
 import { Lowering, NoColumns, ParserEventsOnly, ParserEventsToItems, treeSpec } from '../dist/lower'
-import { CsvOptions, Datum, Limits, Metrics, fromJSON, parserEventFromJSON } from '../dist/shared'
+import { CsvOptions, Datum, Limits, Metrics, fromJSON, parserEventFromJSON, usesMemberOrText } from '../dist/shared'
 import type { ParserEvent, TableEvent, TableSink } from '../dist/shared'
 
 import { OPTIONS, PROGRAM, compile, thrown } from './common'
@@ -300,7 +300,7 @@ describe('program', () => {
   // shape. A program that writes the library's scan itself is run the same
   // way; one whose step is its own is not (rs/src/lower.rs's test).
   it('transduce-tree runs natively where the routers offer it', () => {
-    const lower = (exp: string, native: boolean, offer: boolean | 'absent'): string[] => {
+    const lowerWith = (exp: string, native: boolean, offer: boolean | 'absent', reads: boolean): string[] => {
       const log: string[] = []
       const routers: any = {
         ...OPTIONS.routers,
@@ -314,8 +314,10 @@ describe('program', () => {
         },
       }
       if ('absent' !== offer) {
+        if (reads) routers.transduceTreeReadsMemberAndText = () => true
         routers.transduceTree = (spec: any, downstream: any) => {
-          log.push(`transduce-tree of ${spec.rules.size} rules`)
+          const texts = usesMemberOrText(spec) ? `, texts within ${spec.maxTextBytes}` : ''
+          log.push(`transduce-tree of ${spec.rules.size} rules${texts}`)
           if (!offer) return undefined
           return {
             event(ev: any) {
@@ -339,6 +341,7 @@ describe('program', () => {
       lowering.parserHead(events).event({ type: 'end' })
       return log
     }
+    const lower = (exp: string, native: boolean, offer: boolean | 'absent') => lowerWith(exp, native, offer, true)
     const tree = 'def export [input] (transduce-tree json-spec input)\n'
     const native = ['guarded', 'transduce-tree of 4 rules', 'end']
     const scan = ['guarded', 'scan-emit', 'end']
@@ -391,6 +394,18 @@ describe('program', () => {
       ),
       scan,
     )
+    // A spec that names a member or a text goes only to routers that read
+    // them, with its texts held to `max_scalar_bytes`; a spec that names
+    // neither goes to routers that read neither.
+    const texts =
+      'def export [input] (transduce-tree (record (entry :map (record (entry :container :object) (entry :member "m"))) (entry :pair (record (entry :key 0) (entry :text true)))) input)\n'
+    assert.deepStrictEqual(lowerWith(texts, true, true, true), [
+      'guarded',
+      `transduce-tree of 2 rules, texts within ${Limits.default().max_scalar_bytes}`,
+      'end',
+    ])
+    assert.deepStrictEqual(lowerWith(texts, true, true, false), scan)
+    assert.deepStrictEqual(lowerWith(tree, true, true, false), native)
   })
 
   // tabnas-json's passes, as a parser-events source makes them: each

@@ -76,4 +76,11 @@ export interface Routers {
   // the source's limits already guarding it. Optional: routers that leave
   // it out, or answer `undefined`, have the library's text run instead.
   transduceTree?(spec: TreeSpec, downstream: Sink): ParserSink | undefined
+
+  // Whether `transduceTree`'s native reads a spec's `:member` and `:text`,
+  // and holds a `:text` rule's text to `TreeSpec.maxTextBytes` as it grows.
+  // Optional: routers written before those fields leave it out, and the
+  // lowering then runs the library's text for a spec that uses either, so
+  // the native and the text never disagree.
+  transduceTreeReadsMemberAndText?(): boolean
 }

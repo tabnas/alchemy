@@ -1686,8 +1686,16 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 		// natively when the routers offer it: the native reads each pass as
 		// it comes and writes the events the library's step would, so the
 		// head is the native.
+		// A spec that names a member or a text goes only to routers that
+		// read them, and its texts are bounded as the library's
+		// `string-join` bounds them.
 		if spec, ok := l.nativeTree(p); ok {
-			if routers, offers := l.rt.Routers().(shared.TreeRouters); offers {
+			reads := false
+			if texts, ok := l.rt.Routers().(shared.TreeTextRouters); ok {
+				reads = texts.TransduceTreeReadsMemberAndText()
+			}
+			if routers, offers := l.rt.Routers().(shared.TreeRouters); offers && (reads || !spec.UsesMemberOrText()) {
+				spec.MaxTextBytes = l.limits.MaxScalarBytes
 				if native := routers.TransduceTree(spec, guarded); native != nil {
 					return l.keepParserHead(native)
 				}

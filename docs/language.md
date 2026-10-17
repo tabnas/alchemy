@@ -1519,10 +1519,13 @@ def transduce-write [texts more]
 def transduce-spell [texts rule]
   match texts
     case [] texts
-    case _ (transduce-write texts (string-join "" (map (fn [token] (get :src token)) (get :tokens rule))))
+    case _
+      match (get :tokens rule)
+        case [] texts
+        case tokens (transduce-write texts (string-join "" (map (fn [token] (get :src token)) tokens)))
 ```
 ```core
-(def transduce-spell (fn [texts rule] (match texts (case [] texts) (case _ (transduce-write texts (string-join "" (map (fn [token] (get :src token)) (get :tokens rule))))))))
+(def transduce-spell (fn [texts rule] (match texts (case [] texts) (case _ (match (get :tokens rule) (case [] texts) (case tokens (transduce-write texts (string-join "" (map (fn [token] (get :src token)) tokens)))))))))
 ```
 
 ```alchemy

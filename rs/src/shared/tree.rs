@@ -46,9 +46,22 @@
 //! token's value is a container, are `DSL_TYPE_ERROR`; a close with no
 //! container open is the library's `pop` of an empty stack, and a `:text`
 //! rule's close with no text open its `top` of an empty one, each
-//! `DSL_TYPE_ERROR` too.
+//! `DSL_TYPE_ERROR` too. A text is held to [`TreeSpec::max_text_bytes`] as
+//! it grows, as the library's `string-join` holds it: a pass's tokens
+//! together, then the text they join, then a closed text joined to the one
+//! around it, each past the bound refused with [`tree_text_refusal`]; a pass
+//! that consumed no tokens joins nothing. (The library's scan also holds
+//! its whole state to `max_metadata_bytes`, which a native has no state to
+//! match: past that, the two refuse with the same code and different
+//! limits.)
+//!
+//! A router built before `:member` and `:text` existed reads neither, so
+//! the lowering hands a spec that uses either only to routers that say
+//! they do ([`crate::shared::Routers::transduce_tree_reads_member_and_text`]).
 
 use std::collections::HashMap;
+
+use crate::shared::error::Fail;
 
 /// The container a rule's passes begin and end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,14 +104,34 @@ pub struct TreeRule {
 }
 
 /// A `transduce-tree` spec of the standard shape: the rules it names.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeSpec {
     pub rules: HashMap<Box<str>, TreeRule>,
+    /// The most bytes a `:text` rule's text may hold as it grows: the
+    /// runtime's `max_scalar_bytes`, which the library's `string-join`
+    /// holds it to. The lowering sets it when it hands the spec to a
+    /// native; unbounded until then.
+    pub max_text_bytes: usize,
+}
+
+impl Default for TreeSpec {
+    fn default() -> TreeSpec {
+        TreeSpec {
+            rules: HashMap::new(),
+            max_text_bytes: usize::MAX,
+        }
+    }
 }
 
 impl TreeSpec {
     pub fn new() -> TreeSpec {
         TreeSpec::default()
+    }
+
+    /// The spec with its texts held to `max` bytes as they grow.
+    pub fn with_max_text_bytes(mut self, max: usize) -> TreeSpec {
+        self.max_text_bytes = max;
+        self
     }
 
     /// The spec with `rule`'s entry set.
@@ -119,10 +152,10 @@ impl TreeSpec {
         self.rule(name).is_some_and(|r| r.container.is_some())
     }
 
-    /// Whether any rule is a `:text` rule: a native that finds none need
-    /// keep no text.
-    pub fn has_text(&self) -> bool {
-        self.rules.values().any(|r| r.text)
+    /// Whether any rule names a `:member` or is a `:text` rule: what a
+    /// router built before those fields cannot read.
+    pub fn uses_member_or_text(&self) -> bool {
+        self.rules.values().any(|r| r.member.is_some() || r.text)
     }
 
     /// The spec as the library's `transduce-step` reads it: without the
@@ -135,6 +168,16 @@ impl TreeSpec {
         }
         self
     }
+}
+
+/// The library's refusal of a text past [`TreeSpec::max_text_bytes`]: its
+/// `string-join`'s, `len` the bytes the join would hold.
+pub fn tree_text_refusal(len: usize, max: usize) -> Fail {
+    Fail::limit(
+        "max_scalar_bytes",
+        max as u64,
+        format!("string-join: the joined string is {len} bytes, more than {max}"),
+    )
 }
 
 #[cfg(test)]

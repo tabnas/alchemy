@@ -1757,12 +1757,21 @@ impl<'a> Lowering<'a> {
                 // events, run natively when the routers offer it: the
                 // native reads each pass as it comes and writes the events
                 // the library's step would, so the head is the native.
+                // A spec that names a member or a text goes only to routers
+                // that read them, and its texts are bounded as the
+                // library's `string-join` bounds them.
                 let guarded = match self.native_tree(plan) {
-                    Some(spec) => match self.routers.transduce_tree(spec, guarded) {
-                        Ok(native) => return self.keep_parser_head(native),
-                        Err(guarded) => guarded,
-                    },
-                    None => guarded,
+                    Some(spec)
+                        if !spec.uses_member_or_text()
+                            || self.routers.transduce_tree_reads_member_and_text() =>
+                    {
+                        let spec = spec.with_max_text_bytes(self.limits.max_scalar_bytes);
+                        match self.routers.transduce_tree(spec, guarded) {
+                            Ok(native) => return self.keep_parser_head(native),
+                            Err(guarded) => guarded,
+                        }
+                    }
+                    _ => guarded,
                 };
                 self.items(plan, Box::new(TaggedToJson { down: guarded }), false)
             }
@@ -2371,6 +2380,8 @@ pub(crate) mod tests {
     /// `transduce-tree` offered or declined, each call logged.
     struct TreeRouters {
         offer: bool,
+        /// Whether the native reads `:member` and `:text`.
+        reads: bool,
         log: Arc<Mutex<Vec<String>>>,
     }
 
@@ -2442,15 +2453,24 @@ pub(crate) mod tests {
             spec: TreeSpec,
             downstream: Box<dyn Sink + Send>,
         ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
-            self.log
-                .lock()
-                .unwrap()
-                .push(format!("transduce-tree of {} rules", spec.rules.len()));
+            let texts = if spec.uses_member_or_text() {
+                format!(", texts within {}", spec.max_text_bytes)
+            } else {
+                String::new()
+            };
+            self.log.lock().unwrap().push(format!(
+                "transduce-tree of {} rules{texts}",
+                spec.rules.len()
+            ));
             if self.offer {
                 Ok(Box::new(NativeTree(downstream)))
             } else {
                 Err(downstream)
             }
+        }
+
+        fn transduce_tree_reads_member_and_text(&self) -> bool {
+            self.reads
         }
     }
 
@@ -2472,7 +2492,7 @@ pub(crate) mod tests {
             }
         }
         let limits = Limits::default();
-        let lower = |export: &str, native: bool, offer: bool| -> Vec<String> {
+        let lower_with = |export: &str, native: bool, offer: bool, reads: bool| -> Vec<String> {
             let rt = runtime(&format!("{JSON_SPEC}{export}"), native);
             let Val::Stream(plan) = rt.export_with(Input::ParserEvents).unwrap() else {
                 panic!("the export is a stream");
@@ -2484,6 +2504,7 @@ pub(crate) mod tests {
                 Metrics::new(),
                 Arc::new(TreeRouters {
                     offer,
+                    reads,
                     log: log.clone(),
                 }),
                 Arc::new(Unlowered),
@@ -2498,6 +2519,8 @@ pub(crate) mod tests {
             let log = log.lock().unwrap().clone();
             log
         };
+        let lower =
+            |export: &str, native: bool, offer: bool| lower_with(export, native, offer, true);
         let tree = "def export [input] (transduce-tree json-spec input)\n";
         let native = ["guarded", "transduce-tree of 4 rules", "end"];
         assert_eq!(lower(tree, true, true), native);
@@ -2556,6 +2579,23 @@ pub(crate) mod tests {
             ),
             scan
         );
+        // A spec that names a member or a text goes only to routers that
+        // read them, with its texts held to `max_scalar_bytes`; a spec that
+        // names neither goes to routers that read neither.
+        let texts = "def export [input] (transduce-tree (record (entry :map (record (entry :container :object) (entry :member \"m\"))) (entry :pair (record (entry :key 0) (entry :text true)))) input)\n";
+        assert_eq!(
+            lower_with(texts, true, true, true),
+            [
+                "guarded".to_string(),
+                format!(
+                    "transduce-tree of 2 rules, texts within {}",
+                    limits.max_scalar_bytes
+                ),
+                "end".to_string()
+            ]
+        );
+        assert_eq!(lower_with(texts, true, true, false), scan);
+        assert_eq!(lower_with(tree, true, true, false), native);
     }
 
     /// The host pushes the parser's rule passes into the head

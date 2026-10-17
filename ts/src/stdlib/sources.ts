@@ -423,11 +423,14 @@ def transduce-write [texts more]
 
 ; The open texts with a pass's tokens written at the end of the
 ; innermost, each token's \`:src\` in order; as they were when no text is
-; open.
+; open, or the pass consumed no token.
 def transduce-spell [texts rule]
   match texts
     case [] texts
-    case _ (transduce-write texts (string-join "" (map (fn [token] (get :src token)) (get :tokens rule))))
+    case _
+      match (get :tokens rule)
+        case [] texts
+        case tokens (transduce-write texts (string-join "" (map (fn [token] (get :src token)) tokens)))
 
 ; The open texts after an open pass: its tokens written to the innermost,
 ; then, for a rule the spec names a \`:text\` rule, a text of its own.

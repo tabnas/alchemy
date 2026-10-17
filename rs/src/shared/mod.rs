@@ -67,4 +67,4 @@ pub use table::{
     TableBinding, TableEvent, TableSink,
 };
 pub use text::{JoinOut, TextOut};
-pub use tree::{TreeContainer, TreeKey, TreeRule, TreeScalar, TreeSpec};
+pub use tree::{tree_text_refusal, TreeContainer, TreeKey, TreeRule, TreeScalar, TreeSpec};

@@ -88,19 +88,26 @@ func (r logRouters) Guarded(inner shared.Sink, _ shared.Limits, _ *shared.AbortF
 }
 
 // treeRouters is logRouters with a native transduce-tree offered or
-// declined.
+// declined, which reads a spec's :member and :text or does not.
 type treeRouters struct {
 	logRouters
 	offer bool
+	reads bool
 }
 
 func (r treeRouters) TransduceTree(spec shared.TreeSpec, downstream shared.Sink) shared.ParserSink {
-	*r.log = append(*r.log, fmt.Sprintf("transduce-tree of %d rules", len(spec.Rules)))
+	texts := ""
+	if spec.UsesMemberOrText() {
+		texts = fmt.Sprintf(", texts within %d", spec.MaxTextBytes)
+	}
+	*r.log = append(*r.log, fmt.Sprintf("transduce-tree of %d rules%s", len(spec.Rules), texts))
 	if !r.offer {
 		return nil
 	}
 	return nativeTree{downstream}
 }
+
+func (r treeRouters) TransduceTreeReadsMemberAndText() bool { return r.reads }
 
 // nativeTree is the native treeRouters offers: it hands the parse's end
 // on.
@@ -126,11 +133,11 @@ func (inertScan) Finish() (shared.Flow, *Fail)  { return shared.Continue, nil }
 // program that writes the library's scan itself is run the same way; one
 // whose step is its own is not (rs/src/lower.rs's test).
 func TestTransduceTreeRunsNativelyWhereTheRoutersOfferIt(t *testing.T) {
-	lower := func(export string, native bool, offer string) []string {
+	lowerWith := func(export string, native bool, offer string, reads bool) []string {
 		t.Helper()
 		var log []string
 		plain := logRouters{log: &log}
-		var r shared.Routers = treeRouters{logRouters: plain, offer: offer == "offer"}
+		var r shared.Routers = treeRouters{logRouters: plain, offer: offer == "offer", reads: reads}
 		if offer == "absent" {
 			r = plain
 		}
@@ -149,6 +156,10 @@ func TestTransduceTreeRunsNativelyWhereTheRoutersOfferIt(t *testing.T) {
 			t.Fatal(f)
 		}
 		return append(log, ended.seen...)
+	}
+	lower := func(export string, native bool, offer string) []string {
+		t.Helper()
+		return lowerWith(export, native, offer, true)
 	}
 	check := func(got []string, want ...string) {
 		t.Helper()
@@ -170,4 +181,11 @@ func TestTransduceTreeRunsNativelyWhereTheRoutersOfferIt(t *testing.T) {
 	check(lower("def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-step json-spec) transduce-done (parser-events input)))\n", true, "offer"), scan...)
 	check(lower("def export [input] (as-events (scan-emit [[] false] (partial transduce-pass json-spec) transduce-finish (parser-events input)))\n", true, "offer"), scan...)
 	check(lower("def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n", true, "offer"), scan...)
+	// A spec that names a member or a text goes only to routers that read
+	// them, with its texts held to max_scalar_bytes; a spec that names
+	// neither goes to routers that read neither.
+	texts := "def export [input] (transduce-tree (record (entry :map (record (entry :container :object) (entry :member \"m\"))) (entry :pair (record (entry :key 0) (entry :text true)))) input)\n"
+	check(lowerWith(texts, true, "offer", true), "guarded", fmt.Sprintf("transduce-tree of 2 rules, texts within %d", shared.DefaultLimits().MaxScalarBytes), "end")
+	check(lowerWith(texts, true, "offer", false), scan...)
+	check(lowerWith(tree, true, "offer", false), native...)
 }

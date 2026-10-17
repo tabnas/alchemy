@@ -47,7 +47,19 @@
 // token's value is a container, are `DSL_TYPE_ERROR`; a close with no
 // container open is the library's `pop` of an empty stack, and a `:text`
 // rule's close with no text open its `top` of an empty one, each
-// `DSL_TYPE_ERROR` too.
+// `DSL_TYPE_ERROR` too. A text is held to `TreeSpec.maxTextBytes` as it
+// grows, as the library's `string-join` holds it: a pass's tokens together,
+// then the text they join, then a closed text joined to the one around it,
+// each past the bound refused with `treeTextRefusal`; a pass that consumed
+// no tokens joins nothing. (The library's scan also holds its whole state
+// to `max_metadata_bytes`, which a native has no state to match: past that,
+// the two refuse with the same code and different limits.)
+//
+// A router built before `:member` and `:text` existed reads neither, so
+// the lowering hands a spec that uses either only to routers that say they
+// do (`Routers.transduceTreeReadsMemberAndText`).
+
+import { Fail } from './error'
 
 // The container a rule's passes begin and end.
 export type TreeContainer = 'object' | 'array'
@@ -73,9 +85,14 @@ export interface TreeRule {
   readonly text?: boolean
 }
 
-// A `transduce-tree` spec of the standard shape: the rules it names.
+// A `transduce-tree` spec of the standard shape: the rules it names, and
+// the most bytes a `:text` rule's text may hold as it grows, the runtime's
+// `max_scalar_bytes`, which the library's `string-join` holds it to. The
+// lowering sets the bound when it hands the spec to a native; absent, the
+// texts are unbounded.
 export interface TreeSpec {
   readonly rules: ReadonlyMap<string, TreeRule>
+  readonly maxTextBytes?: number
 }
 
 // Whether the rule named `name` is a container rule: what decides, at a
@@ -85,11 +102,17 @@ export function isTreeContainer(spec: TreeSpec, name: string): boolean {
   return undefined !== spec.rules.get(name)?.container
 }
 
-// Whether any rule is a `:text` rule: a native that finds none need keep
-// no text.
-export function hasTreeText(spec: TreeSpec): boolean {
-  for (const rule of spec.rules.values()) if (rule.text) return true
+// Whether any rule names a `:member` or is a `:text` rule: what a router
+// built before those fields cannot read.
+export function usesMemberOrText(spec: TreeSpec): boolean {
+  for (const rule of spec.rules.values()) if (undefined !== rule.member || true === rule.text) return true
   return false
+}
+
+// The library's refusal of a text past `TreeSpec.maxTextBytes`: its
+// `string-join`'s, `len` the bytes the join would hold.
+export function treeTextRefusal(len: number, max: number): Fail {
+  return Fail.limit('max_scalar_bytes', max, `string-join: the joined string is ${len} bytes, more than ${max}`)
 }
 
 // The spec as the library's `transduce-step` reads it: without the
@@ -101,5 +124,5 @@ export function withoutMemberAndText(spec: TreeSpec): TreeSpec {
     const { member: _member, text: _text, ...rest } = rule
     rules.set(name, rest)
   }
-  return { rules }
+  return { ...spec, rules }
 }

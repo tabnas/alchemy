@@ -75,6 +75,7 @@ import {
   TreeRule,
   TreeSpec,
   boundColumn,
+  usesMemberOrText,
   utf8Bytes,
   withoutMemberAndText,
 } from './shared'
@@ -1427,9 +1428,16 @@ export class Lowering {
         // natively when the routers offer it: the native reads each pass as
         // it comes and writes the events the library's step would, so the
         // head is the native.
+        // A spec that names a member or a text goes only to routers that
+        // read them, and its texts are bounded as the library's
+        // `string-join` bounds them.
         const spec = this.nativeTree(plan)
-        if (undefined !== spec) {
-          const native = this.rt.routers.transduceTree?.(spec, guarded)
+        if (
+          undefined !== spec &&
+          (!usesMemberOrText(spec) || true === this.rt.routers.transduceTreeReadsMemberAndText?.())
+        ) {
+          const bounded = { ...spec, maxTextBytes: this.limits.max_scalar_bytes }
+          const native = this.rt.routers.transduceTree?.(bounded, guarded)
           if (undefined !== native) return this.keepParserHead(native)
         }
         return this.items(plan, new TaggedToJson(guarded), false)
