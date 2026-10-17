@@ -411,15 +411,22 @@ export class Composition {
 
   // Link the parts with the main, and `program`'s source when the
   // composition is over a program's output, into one program under the
-  // policies the adapters need: the inferred table keeps a repeated
-  // member's last value, as an export does. The program's stages are built
+  // policies the adapters need: over a document's events the inferred
+  // table keeps a repeated member's last value, as an export does; over a
+  // transducer part's (`composeParsed`), which streams every occurrence of
+  // a repeated member, it refuses one (`DUPLICATE_MEMBER`), as a tree's
+  // contract does, since what the grammar's value keeps, the last or a
+  // merge of the two, only the document read whole shows, and a host reads
+  // it so where the part's route refuses. The program's stages are built
   // from `options`' routers and renderers.
   compile(program: Source | undefined, options: CompileOptions): Program {
     const sources: Source[] = this.sources.map(({ file, text }) => ({ file, text }))
     if (undefined !== program) sources.push({ ...program, exportAs: PROGRAM_EXPORT })
     sources.push({ file: this.mainFile, text: this.main })
     const compiled = compileSources(sources, { ...options, input: this.input })
-    if (this.adapters.some((a) => 'inferred-table' === a.kind)) return compiled.withDuplicates('last_wins')
+    if ('JsonEvents/1' === this.input && this.adapters.some((a) => 'inferred-table' === a.kind)) {
+      return compiled.withDuplicates('last_wins')
+    }
     return compiled
   }
 }

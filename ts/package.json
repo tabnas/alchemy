@@ -1,6 +1,6 @@
 {
   "name": "@tabnas/alchemy",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "main": "dist/alchemy.js",
   "type": "commonjs",
   "types": "dist/alchemy.d.ts",
