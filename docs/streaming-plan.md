@@ -410,8 +410,13 @@ one proves:
 3. **csv**: the first imperative grammar, and one of the two the line
    source serves until step 12 (decision 2). Its part keeps the
    header's labels in its state (under `max_metadata_bytes`) and emits
-   one object per record, which the inference could never do. Its
-   events are compared with the walk as every part's are.
+   one object per record, which the inference could never do: a `val`'s
+   close yields the cell under the header's name at its position, or
+   `field~` and the position past the header, an `elem` that opens
+   without pushing a `val` or closes giving its token back on the comma
+   group is an empty cell, and a record's close fills the header cells
+   it lacks with the empty string, as the grammar's `field.empty` does.
+   Its events are compared with the walk as every part's are.
 4. **yaml, xml, markdown, jsonic, zon**: hand-written `scan-emit`s where
    the declarative form does not fit; each refusal the adapter documents
    today (a stream of several documents, a merge key, an implicit list)
@@ -682,7 +687,26 @@ as Rust's reader builds it; so the part steps the library's
 `transduce-tree` over json's spec for the containers and the keys, and
 yields a scalar token's value itself, the one-member record as that
 object. An enum literal under `enumTag` is its name: the wrapping is
-made on the rule's value after the close and reaches no pass.
+made on the rule's value after the close and reaches no pass. CSV's
+part, step 5's last (tabnas/csv#104, released as csv 0.6.7, which
+tabnas/alchemy-cli#38 reads; its rows are tabnas/alchemy#75), is
+hand-written too, since the grammar builds its records in its actions,
+which the passes do not show: the `csv` rule's passes open and close
+the array, a `record`'s its object after the header, a `val`'s close
+yields the cell under the header's name at its position, or `field~`
+and the position past the header, an `elem` that opens without pushing
+a `val` or closes giving its token back on the comma group is an empty
+cell, and a record's close fills the header cells it lacks with the
+empty string; an empty document, which makes no pass, is the empty
+array at `finish`. A step's outputs are one vector and a record's
+missing cells are as many pairs as the header has left, so the part is
+two scans, the first yielding each cell as a pair and each container as
+a keyword, the second writing each as its events. Every event is the
+walk of the grammar's value under its default options, a header name
+repeated aside, which the part streams twice and the tree contract
+refuses, so a host reads the document whole; alchemy-cli, which read
+CSV whole before, now streams it through the part, and the line source
+keeps serving aless until step 12. Step 5 is complete.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
