@@ -419,10 +419,13 @@ one proves:
    the part follows where it can. zon's rules are json's, but an integer
    no double holds is the `$big` object in Rust and a bigint or `big.Int`
    in TypeScript and Go, which the declarative form cannot take from a
-   token and transduce's parser-event sources do not yet present alike,
-   and an enum literal under `enumTag` is wrapped only after the close;
-   its part reads those from the pass's value once a big integer token
-   has one stream form in every runtime.
+   token, and an enum literal under `enumTag` is wrapped only after the
+   close; its part steps the library's `transduce-tree` over json's spec
+   for the containers and the keys, and yields a scalar token's value
+   itself: a big integer, the one-member record a host's parser presents
+   it as (its Rust reader always, alchemy-cli's TypeScript and Go parsers
+   by a lex hook), as that object; an enum literal is its name, since the
+   wrapping reaches no pass.
 5. **toml, ini**: parts that build the tree in their state and emit it
    at `finish`, since a later header can add to an earlier table; the
    manifest's `whole` sentence stays, and `explain` reports the
@@ -608,7 +611,7 @@ six were taken on 2026-10-15.
 | 3 | alchemy-cli | `transduce.tsv` runner with the differential rule; parts test; `translate` and `run --grammar` on the new source | 1, 2 |
 | 4 | json | the first `alchemy/transduce.alc`, manifest, embed, descriptor | 1, 3 |
 | 5 | jsonl, jsonc, json5, csv | parts, in that order | 4 |
-| 6 | yaml, xml, markdown, jsonic, zon | hand-written parts | 4; for zon, a stream form for a big integer token in transduce's sources |
+| 6 | yaml, xml, markdown, jsonic, zon | hand-written parts | 4; for zon, a big integer token presented as the `$big` object, as alchemy-cli's parsers present it |
 | 7 | toml, ini, then the schema formats | buffering parts, or `whole` | 4, a path-insert operator if measured necessary |
 | 8 | bnf, abnf | the generated part and its differential test | 1, 3 |
 | 9 | aless | one plan over `ParserEventSource` for every format with a part but JSON Lines and CSV, the current routes for the rest; the generated part for `--grammar` | 2, 4, 8 |
@@ -667,15 +670,19 @@ tabnas/alchemy#71, released as alchemy 0.2.9, makes a composition over a
 part refuse a repeated member (`DUPLICATE_MEMBER`), as the tree contract
 does, so a host reads the document whole; `LastWins` stays for a
 document's events, where the incremental source's own net catches a
-merge. ZON's part (tabnas/zon#103, closed) waits on a stream
-form for a big integer: the token's value is the `$big` object in Rust
-and a bigint or `big.Int` in TypeScript and Go, which transduce's
-parser-event sources do not yet present as the object the walk builds,
-so json's spec fails such a document (`DSL_TYPE_ERROR`, which no host
-reads the document whole on) where the walk writes `{"$big": …}`; and an
-enum literal under `enumTag` is wrapped only in the rule's value, after
-the close. ZON's part is a hand-written one of step 6, once transduce
-presents a big integer token as the `$big` object in every runtime.
+merge. ZON's part is the first of step 6, hand-written
+(tabnas/zon#104, released as zon 0.5.18, which tabnas/alchemy-cli#37
+reads; its rows are tabnas/alchemy#73): a big integer token's value is
+the `$big` object in Rust and a bigint or `big.Int` in TypeScript and
+Go, which json's spec fails (`DSL_TYPE_ERROR`, which no host reads the
+document whole on) where the walk writes `{"$big": …}`, and no stream
+form in transduce's sources was needed, since alchemy-cli's TypeScript
+and Go parsers already present the token as the object by a lex hook,
+as Rust's reader builds it; so the part steps the library's
+`transduce-tree` over json's spec for the containers and the keys, and
+yields a scalar token's value itself, the one-member record as that
+object. An enum literal under `enumTag` is its name: the wrapping is
+made on the rule's value after the close and reaches no pass.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
