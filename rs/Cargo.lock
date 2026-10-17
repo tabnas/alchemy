@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "tabnas-json"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "regex",
  "serde_json",

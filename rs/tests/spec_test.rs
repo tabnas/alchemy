@@ -498,25 +498,34 @@ fn the_library_definitions_on_the_page_are_the_library_text() {
 }
 
 /// The columns a transduce row reads by name (tabnas-alchemy-cli's runner
-/// reads `grammar`, `doc` and `render`), so a renamed header fails here,
-/// where transduce.tsv is kept, rather than reading empty cells there.
+/// reads `grammar`, `doc`, `render` and `duplicates`), so a renamed header
+/// fails here, where transduce.tsv is kept, rather than reading empty cells
+/// there. A `duplicates` cell is empty (the default policy), `first` or
+/// `last`.
 #[test]
 fn transduce_fixture_has_its_columns() {
     let spec = load_spec(spec_dir().join("transduce.tsv"), &SpecOptions::default())
         .expect("transduce.tsv loads");
     assert_eq!(
         *spec.rows[0].header,
-        ["input", "expected", "grammar", "doc", "render"]
+        ["input", "expected", "grammar", "doc", "render", "duplicates"]
     );
     for row in &spec.rows {
         assert!(
-            row.index_of("grammar").is_some() && row_doc_columns_are_named(row),
+            row.index_of("grammar").is_some()
+                && row.index_of("duplicates").is_some()
+                && row_doc_columns_are_named(row),
             "{}: the columns are named",
             row.location()
         );
         assert!(
             !row.named("grammar").is_empty(),
             "{}: names a grammar",
+            row.location()
+        );
+        assert!(
+            matches!(row.named("duplicates"), "" | "first" | "last"),
+            "{}: duplicates is empty, first or last",
             row.location()
         );
         row_input(row);

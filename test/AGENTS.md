@@ -18,7 +18,7 @@ Blank lines are skipped, and so are comment lines — a line starting with
 | [`pipe.tsv`](spec/pipe.tsv) | `input`, `expected` | a program → the canonical form of the desugared program; or the desugarer's error |
 | [`check.tsv`](spec/check.tsv) | `input`, `expected`, `protocol` | a program → its `explain` report, as a JSON string; or the resolver's, checker's or plan evaluation's error |
 | [`run.tsv`](spec/run.tsv) | `input`, `expected`, `doc`, `render` | a program run over a JSON document → the exact bytes it writes, as a JSON string; or the failure |
-| [`transduce.tsv`](spec/transduce.tsv) | `input`, `expected`, `grammar`, `doc`, `render` | a program over a grammar's rule passes (a transducer), run over a document in that grammar → the exact bytes it writes, as a JSON string; or the failure |
+| [`transduce.tsv`](spec/transduce.tsv) | `input`, `expected`, `grammar`, `doc`, `render`, `duplicates` | a program over a grammar's rule passes (a transducer), run over a document in that grammar → the exact bytes it writes, as a JSON string; or the failure |
 
 | Column | Meaning |
 |---|---|
@@ -27,6 +27,7 @@ Blank lines are skipped, and so are comment lines — a line starting with
 | `doc` | `run.tsv` and `transduce.tsv`. The document the program runs over, escape-decoded like `input`: in `run.tsv` a JSON document, and an empty cell is `null`; in `transduce.tsv` a document in the row's `grammar`, and an empty cell is the empty text. |
 | `render` | `run.tsv` and `transduce.tsv`. How a table or JSON-events result is rendered: empty (the host's default: CSV for a table, JSON for events), `csv` or `json`. A program that renders its own text takes none (`render_of_text`). |
 | `grammar` | `transduce.tsv` only. The grammar whose rule passes the program reads: the `languageId` of a format alchemy-cli carries (`json` first, then the others it depends on). The document is parsed with that package's parser, as `alchemy run --grammar` parses it. |
+| `duplicates` | `transduce.tsv` only. The policy for a member name an object repeats within a captured value (spec section 18.2), which the runner sets with `with_duplicates`: empty, the default, refuses the capture (`DUPLICATE_MEMBER`); `first` keeps the earlier value; `last` the later. |
 | `protocol` | `check.tsv` only. The input the host declares when it compiles the program: empty for JSON events (what `compile` declares), `parser` for the parser's rule passes (`compile_with` over `Input::ParserEvents`). Every runner of `check.tsv` reads it, alchemy-cli's catalogue test included. |
 
 A run is what `alchemy run` does: compile the program (which builds the
@@ -57,7 +58,9 @@ on any difference. The other rows have no such oracle and are held by
 `expected` alone: a document the grammar refuses has no value to walk,
 and its program must fail with the declared code before `End`; a repeated
 member is streamed twice where the value keeps one, and its rows pin what
-the plain transducer, `tree-contract` and a capture make of it.
+the plain transducer, `tree-contract` and a capture make of it, under the
+default policy and under `first` and `last` (the `duplicates` column,
+which the runner hands to `with_duplicates`).
 
 ## Error expectations
 

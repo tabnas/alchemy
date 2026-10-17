@@ -80,17 +80,20 @@ describe('fixtures', () => {
   })
 
   // And a transduce row's, which alchemy-cli's runner reads by name too:
-  // the grammar whose rule passes the program reads, beside doc and render.
+  // the grammar whose rule passes the program reads, beside doc and render,
+  // and the duplicates policy: empty (the default), first or last.
   it('transduce.tsv has its columns', () => {
     const spec = loadSpec(join(SPEC_DIR, 'transduce.tsv'))
-    assert.deepStrictEqual(spec.header, ['input', 'expected', 'grammar', 'doc', 'render'])
+    assert.deepStrictEqual(spec.header, ['input', 'expected', 'grammar', 'doc', 'render', 'duplicates'])
     assert.ok(
       spec.rows.every(
         (row: SpecRow) =>
           -1 !== row.index_of('grammar') &&
           '' !== row.named('grammar') &&
           -1 !== row.index_of('doc') &&
-          -1 !== row.index_of('render'),
+          -1 !== row.index_of('render') &&
+          -1 !== row.index_of('duplicates') &&
+          ['', 'first', 'last'].includes(row.named('duplicates')),
       ),
     )
   })
