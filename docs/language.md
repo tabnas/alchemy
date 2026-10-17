@@ -723,7 +723,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `string-join` | `string-join separator strings -> String` | the strings of a vector joined into one string, the separator between them; refused past `max_scalar_bytes`, before it is built |
 | `split` | `split separator string -> Vector` | the strings between the separator's occurrences in the string, found from the front, none overlapping another: one more than it occurs, an empty one where two occurrences meet or at either end, and the string itself where it does not occur (`split "." "a..b"` is `["a" "" "b"]`, `split "." ""` is `[""]`); the separator is a literal, not a pattern, and must not be empty. A part reads a dotted string's parts with it to check each one |
-| `fail` | `fail [code] message -> Never` | `INPUT_INVALID` with the message and the form's position; with a code first, `:unrepresentable` is `TARGET_VALUE_UNREPRESENTABLE` (a value the target cannot carry), `:protocol-order` is `PROTOCOL_ORDER_ERROR` (a stream that breaks its protocol) and `:invalid` is `INPUT_INVALID` |
+| `fail` | `fail [code] message -> Never` | `INPUT_INVALID` with the message and the form's position; with a code first, `:unrepresentable` is `TARGET_VALUE_UNREPRESENTABLE` (a value the target cannot carry), `:protocol-order` is `PROTOCOL_ORDER_ERROR` (a stream that breaks its protocol), `:unstreamable` is `STREAMABILITY_UNKNOWN`, the finer code `unstreamable` leading the message (a document a transducer part does not stream from the rule passes, which a host that reads the part reads whole) and `:invalid` is `INPUT_INVALID` |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema, of at most `max_columns` columns, refused where it is built past them; one row, as wide as the schema; the end, after the source validated |
 | `ready`, `no-schema`, `selected` | `ready columns -> State`, `no-schema -> State`, `selected :tag value -> Selected` | the state once the metadata is bound; the state before it; what `route` delivers |
@@ -1913,7 +1913,7 @@ repurposed; one may be added.
 | `DSL_PARSE_ERROR` | the reader's `tab_indent`, `bad_indent`, `bad_dedent`, `unbalanced`, `too_deep`; the desugarer's `empty_step`, `bad_def`, `bad_let`, `bad_if`, `bad_match` (the last three from the resolver too, for a form a `pipe` builds); the engine's `unterminated_string`, `unprintable`, `unexpected` |
 | `DSL_TYPE_ERROR` | the resolver's `unknown_name`, `not_def`, `duplicate_def`, `reserved`, `bad_fn`, `misplaced_def`, `bad_pattern`; the linker's `duplicate_file`; the checker's `arity`, `type_mismatch`, `protocol_mismatch`, `no_export`, `bad_output`; the runtime's `duplicate_key`, `no_match`, `render_of_text` |
 | `STREAM_REUSED` | `reused`, `captured` |
-| `STREAMABILITY_UNKNOWN` | `recursion`, `dynamic`, `unknown_output` |
+| `STREAMABILITY_UNKNOWN` | `recursion`, `dynamic`, `unknown_output`; the tree contract's `not_a_tree`; a transducer part's `unstreamable` (`fail :unstreamable`, a document the part does not stream, which a host that reads the part reads whole) |
 
 Each of these finer codes but the engine's and the linker's
 `duplicate_file` is declared in the grammar document,

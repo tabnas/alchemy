@@ -661,9 +661,11 @@ func TestNumbersPrintAsTheRenderersPrintThem(t *testing.T) {
 	}
 }
 
-// fail takes a code before the message: one of three keywords, each its
-// code; any other keyword, or a code that is not one, is a type error, as
-// the checker's is for a literal keyword.
+// fail takes a code before the message: one of four keywords, each its
+// code (the fourth leading its message with its finer code, as the
+// checker's STREAMABILITY_UNKNOWN failures do); any other keyword, or a
+// code that is not one, is a type error, as the checker's is for a
+// literal keyword.
 func TestFailNamesItsCode(t *testing.T) {
 	src := `def boom [k] (fail k "no")`
 	for _, c := range []struct {
@@ -678,8 +680,11 @@ func TestFailNamesItsCode(t *testing.T) {
 			t.Errorf("%s: %v", c.expr, f)
 		}
 	}
+	if f := mustFail(t, src, "boom :unstreamable"); f.Code != CodeStreamabilityUnknown || f.Message != "unstreamable: no" || f.Row != 1 || f.Column != 14 {
+		t.Errorf("boom :unstreamable: %v", f)
+	}
 	for _, c := range []struct{ src, expr, message string }{
-		{src, "boom :nope", "type_mismatch: the code of fail must be :invalid, :unrepresentable or :protocol-order, not :nope"},
+		{src, "boom :nope", "type_mismatch: the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :nope"},
 		{src, "boom 1", "type_mismatch: fail: the code must be a keyword, not a number"},
 		{`def boom [k] (fail k)`, "boom 1", "type_mismatch: fail: the message must be a string, not a number"},
 	} {

@@ -89,7 +89,7 @@ describe('check', () => {
     assert.equal(
       thrown(() => check('def export [input] (join "" (map (fn [x] (fail :nope "x")) (select (path each-index) input)))'))
         .message,
-      'type_mismatch: the code of fail must be :invalid, :unrepresentable or :protocol-order, not :nope',
+      'type_mismatch: the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :nope',
     )
     assert.equal(
       check('def export [input] (join "" (map (fn [x] (fail :unrepresentable "x")) (select (path each-index) input)))')

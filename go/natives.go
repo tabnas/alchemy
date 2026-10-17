@@ -1744,7 +1744,8 @@ func nRepeat(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 func nFail(rt *Runtime, a []Val, at SourceSpan) (Val, *Fail) {
 	// `(fail message)` is INPUT_INVALID, the code of a document the
 	// program refuses; `(fail :code message)` names what the failure is: a
-	// value the target cannot carry, or a stream that breaks its protocol.
+	// value the target cannot carry, a stream that breaks its protocol, or a
+	// document a transducer part does not stream.
 	var code Code
 	var message Val
 	switch len(a) {
@@ -1762,8 +1763,10 @@ func nFail(rt *Runtime, a []Val, at SourceSpan) (Val, *Fail) {
 			code = CodeTargetValueUnrepresentable
 		case "protocol-order":
 			code = CodeProtocolOrderError
+		case "unstreamable":
+			code = CodeStreamabilityUnknown
 		default:
-			return nil, typeError("the code of fail must be :invalid, :unrepresentable or :protocol-order, not :" + string(k))
+			return nil, typeError("the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :" + string(k))
 		}
 		message = a[1]
 	default:
@@ -1772,6 +1775,12 @@ func nFail(rt *Runtime, a []Val, at SourceSpan) (Val, *Fail) {
 	text, f := asStr("fail", "the message", message)
 	if f != nil {
 		return nil, f
+	}
+	// STREAMABILITY_UNKNOWN leads with its finer code, as the checker's own
+	// do: `unstreamable`, a transducer part's refusal of a document it does
+	// not stream, which a host that reads the part reads whole.
+	if code == CodeStreamabilityUnknown {
+		text = "unstreamable: " + text
 	}
 	return nil, rt.FailAt(NewFail(code, text), at)
 }

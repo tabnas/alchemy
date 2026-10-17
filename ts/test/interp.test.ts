@@ -373,8 +373,15 @@ describe('evaluation', () => {
       const f = evalFail(src, expr)
       assert.deepStrictEqual([f.code, f.message, f.row, f.col], [code, 'no', 1, 14], expr)
     }
+    // The fourth code leads its message with its finer code, as the
+    // checker's STREAMABILITY_UNKNOWN failures do.
+    const unstreamable = evalFail(src, 'boom :unstreamable')
+    assert.deepStrictEqual(
+      [unstreamable.code, unstreamable.message, unstreamable.row, unstreamable.col],
+      ['STREAMABILITY_UNKNOWN', 'unstreamable: no', 1, 14],
+    )
     for (const [program, expr, message] of [
-      [src, 'boom :nope', 'the code of fail must be :invalid, :unrepresentable or :protocol-order, not :nope'],
+      [src, 'boom :nope', 'the code of fail must be :invalid, :unrepresentable, :protocol-order or :unstreamable, not :nope'],
       [src, 'boom 1', 'fail: the code must be a keyword, not a number'],
       ['def boom [k] (fail k)', 'boom 1', 'fail: the message must be a string, not a number'],
     ]) {

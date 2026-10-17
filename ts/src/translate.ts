@@ -465,9 +465,15 @@ export function composeProgram(output: Output, target: Part, options: Options, m
 // writes from a tree, the events reaching it whole), the main holds the
 // transducer's events to it instead, before the lift and the adapters
 // (`tree-contract`), since what the host pushes is parser events; the front
-// is 'none'. A records target takes the events as they come, as it does a
-// source's. The composition is never run by a host's own renderer
-// (`Native`), which has no events to render.
+// is 'none'. The main holds them to it for a records target too, where a
+// source's events go as they come: a part's events are the document's only
+// as far as the walk of the grammar's value agrees, and a shape no tree has
+// (a second root, which an implicit list whose first element is a container
+// streams) must reach the host as the contract's refusal
+// (STREAMABILITY_UNKNOWN), which it reads the document whole on, not as the
+// root adapter's (PROTOCOL_ORDER_ERROR), which it does not. The composition
+// is never run by a host's own renderer (`Native`), which has no events to
+// render.
 export function composeParsed(
   source: Part,
   transducer: Alc,
@@ -475,13 +481,8 @@ export function composeParsed(
   options: Options,
   mainFile: string,
 ): Composition {
-  const events = `(${transducer.entry} input)`
-  const plain = composeOver(source, events, target, options, mainFile, 'tree')
-  const c =
-    'tree' === plain.front
-      ? composeOver(source, `(tree-contract ${events})`, target, options, mainFile, 'none')
-      : plain
-  return parsed(c, transducer)
+  const events = `(tree-contract (${transducer.entry} input))`
+  return parsed(composeOver(source, events, target, options, mainFile, 'none'), transducer)
 }
 
 // `composeProgram` over the parser's rule passes: the program reads the
