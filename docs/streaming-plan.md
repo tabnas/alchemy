@@ -58,12 +58,13 @@ and as the oracle every transducer is verified against.
 What the ruling removes, by repository:
 
 - transduce: `capability::INCREMENTAL` as a gate and the inference in
-  `rule_events.rs`, once every format on the list has its part
-  (section 7); and, once the engine reads its input in chunks
-  (decision 2), `LinesSource` and `LineFormat`. What stays general and
-  is kept: `Guarded`, `Prune` (the engine's tree is still built while
-  events leave, and pruning the streamed elements is format-neutral),
-  the router, the table transducer, `scan-emit`, the limits and metrics.
+  `rule_events.rs`, once every format on the list has its part or
+  declares `whole`, as markdown does (section 7); and, once the engine
+  reads its input in chunks (decision 2), `LinesSource` and
+  `LineFormat`. What stays general and is kept: `Guarded`, `Prune` (the
+  engine's tree is still built while events leave, and pruning the
+  streamed elements is format-neutral), the router, the table
+  transducer, `scan-emit`, the limits and metrics.
 - aless: `Plan::Incremental`, `Plan::Materialize` and every
   `capability::incremental` call in `src/export.rs`; with the line
   source, `Plan::Lines`, `line_format()` and the `--max-size`
@@ -261,8 +262,10 @@ state machine at all:
   width or length.
 - `transduce-step`, `transduce-finish` and the small helpers the step
   uses, so a format whose grammar does not fit the declarative form
-  (YAML, XML, Markdown, CSV) writes its own `scan-emit` over the same
-  pieces, as the render parts write theirs over `events`.
+  (YAML, XML, CSV) writes its own `scan-emit` over the same pieces, as
+  the render parts write theirs over `events`. Markdown, whose passes
+  never carry the finished document, has no part and declares `whole`
+  (section 7).
 
 The differential test in alchemy-cli (section 6) holds every part,
 declarative or hand-written, to the walk of the grammar's own value.
@@ -417,7 +420,7 @@ one proves:
    group is an empty cell, and a record's close fills the header cells
    it lacks with the empty string, as the grammar's `field.empty` does.
    Its events are compared with the walk as every part's are.
-4. **yaml, xml, markdown, jsonic, zon**: hand-written `scan-emit`s where
+4. **yaml, xml, jsonic, zon**: hand-written `scan-emit`s where
    the declarative form does not fit; each refusal the adapter documents
    today (a stream of several documents, a merge key, an implicit list)
    becomes an explicit `fail` in the part, or a shape the part follows
@@ -438,7 +441,11 @@ one proves:
    itself: a big integer, the one-member record a host's parser presents
    it as (its Rust reader always, alchemy-cli's TypeScript and Go parsers
    by a lex hook), as that object; an enum literal is its name, since the
-   wrapping reaches no pass.
+   wrapping reaches no pass. markdown has no part: its passes carry each
+   line's text, the grammar builds the blocks and the inlines in its
+   actions and sets the finished document as the root's node, which no
+   pass carries (decision 1), so its manifest declares `whole`, as item 6
+   allows where a package builds the tree after the parse.
 5. **toml, ini**: parts that build the tree in their state and emit it
    at `finish`, since a later header can add to an earlier table; the
    manifest's `whole` sentence stays, and `explain` reports the
@@ -458,7 +465,8 @@ route it has today until then (decided 2026-10-15): a format on
 transduce's incremental list streams through the inference as it does
 now, and any other is read whole, so the order is also the rollout and
 nothing streams less in between. The list and its inference go when
-every format on it has its part (step 13). A format may still join the
+every format on it has its part, or declares `whole` as markdown does
+(step 13). A format may still join the
 list before its part lands, as PGN did in transduce 0.2.8, and then
 switches like the others.
 
@@ -624,14 +632,14 @@ six were taken on 2026-10-15.
 | 3 | alchemy-cli | `transduce.tsv` runner with the differential rule; parts test; `translate` and `run --grammar` on the new source | 1, 2 |
 | 4 | json | the first `alchemy/transduce.alc`, manifest, embed, descriptor | 1, 3 |
 | 5 | jsonl, jsonc, json5, csv | parts, in that order | 4 |
-| 6 | yaml, xml, markdown, jsonic, zon | hand-written parts | 4; for zon, a big integer token presented as the `$big` object, as alchemy-cli's parsers present it |
+| 6 | yaml, xml, markdown, jsonic, zon | hand-written parts; markdown's `whole` | 4; for zon, a big integer token presented as the `$big` object, as alchemy-cli's parsers present it |
 | 7 | toml, ini, then the schema formats | buffering parts, or `whole` | 4, a path-insert operator if measured necessary |
 | 8 | bnf, abnf | the generated part and its differential test | 1, 3 |
 | 9 | aless | one plan over `ParserEventSource` for every format with a part but JSON Lines and CSV, the current routes for the rest; the generated part for `--grammar` | 2, 4, 8 |
 | 10 | parser | first the probe flag (decision 6), which step 2 needs; then the chunked lexer source, the lighter notification, the per-rule cost | the flag first; the rest measured first, in the maintainer's order |
 | 11 | admin | the ADR: translation between formats is composed from per-format parts, and every format's events come from its own alchemy transducer over the engine's parser events; no host or transducer knows a format by name, the line source excepted until step 12 and the incremental list until step 13 | 1 |
 | 12 | transduce, alchemy-cli, aless | `LinesSource` and `LineFormat` retired; JSON Lines and CSV read through their parts; aless's `Plan::Lines` and `line_format` go | 5, 10 (decision 2) |
-| 13 | transduce, alchemy-cli, aless | `capability::INCREMENTAL` and the inference in `rule_events.rs` retired; aless's `export::plan` and `Plan` go once step 12 has landed too | every listed format's part (steps 4 to 7) |
+| 13 | transduce, alchemy-cli, aless | `capability::INCREMENTAL` and the inference in `rule_events.rs` retired; aless's `export::plan` and `Plan` go once step 12 has landed too | every listed format's part (steps 4 to 7), or its `whole` |
 
 Under way: step 10's probe flag is tabnas/parser#309. Step 1 is
 tabnas/alchemy#66, in all three runtimes, with tabnas/alchemy-cli#33 for
@@ -787,6 +795,54 @@ side channel, so a walk in source order put them last; and Go's lexer
 handed an alias to a mapping or a sequence as the marker it hands an
 alias to nothing, which the passes cannot tell apart, where TypeScript
 hands the value's copy.
+
+XML's part, step 6's fourth (tabnas/xml#100, released as xml 0.7.19,
+which tabnas/alchemy-cli#41 reads; its rows are tabnas/alchemy#83),
+is hand-written, since the grammar builds an element's members past its
+start tag, and resolves its namespaces, in its actions, which the passes
+do not show: an `element`'s open carries its start tag's token, the
+element's name and its attributes in source order, and starts the
+element's object; `head`'s open on it yields the attributes and starts
+the children; a `child`'s open on a text yields the text; and the
+element's close ends the children and yields the members after them,
+resolved against the open elements' attributes as the grammar resolves
+them: the prefix before the name's first colon, the namespace the
+nearest declaration binds it to (for a name with no prefix the default
+namespace, which `xmlns` declares, and `xmlns:` too, as the grammar
+reads it, and which `xmlns=""` undeclares; `xml` is bound to the XML
+namespace), the innermost `xml:space` that is not `default`, and the
+innermost `xml:lang` that is not empty. A self-closing element, which
+has no `head`, leaves its closing items to the close of the `child` or
+`xml` rule around it. A step's outputs are one vector, so the part is
+two scans, as csv's is. One thing the passes did not show the lexer now
+gives them: a DOCTYPE's ATTLIST defaults were added in the element's
+action, and the lexer now applies them to the start tag's token, in all
+three ports. Over the 3,277 inputs of xml's fixtures with the default
+options and of the W3C conformance suite, the part writes what the walk
+writes for the 2,614 the grammar reads, and fails as the walk fails for
+the other 663, whose refusal the engine reports after the passes before
+it. Where the part met the ports, alchemy-cli's Go runner found them
+apart, and the same change repairs Go: under `xmlns=""` Go wrote an
+element's `namespace` as the empty string, where TypeScript and Rust
+write none.
+
+Markdown has no part, step 6's fifth (tabnas/markdown#96, released as
+markdown 0.7.13, which tabnas/alchemy-cli#42 reports): its rule
+passes are one `line` per source line, a replace loop whose token
+carries the line's text, and the grammar builds the blocks in its
+actions and the inlines once the last line is in, since a link or an
+image may name a link reference definition that comes later in the
+document. The finished document is the root rule's node, which the
+passes carry only when it is a scalar (decision 1), and a part could
+rebuild it only by running CommonMark itself, which alchemy has no
+operators for (no substring and no arithmetic, and no definition
+reaches itself). So markdown's manifest says why it is read whole, in a
+`whole` sentence, as the package-built trees of section 7's item 6 do,
+and alchemy-cli reports it. Nothing streams less: transduce's inference,
+through which aless reads markdown until step 13, sends the document's
+events only once its last line is in, since the grammar sets it whole
+as the root's node in its last action. Markdown leaves the incremental
+list with the list itself.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
