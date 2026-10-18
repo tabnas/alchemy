@@ -20,6 +20,7 @@ use std::sync::{Arc, OnceLock};
 use indexmap::IndexMap;
 
 use crate::ast::SourceSpan;
+use crate::fx::FxBuild;
 use crate::interp::Runtime;
 use crate::lex::is_json_number;
 use crate::shared::{CaptureSpec, Code, Fail, Selector};
@@ -99,7 +100,7 @@ impl std::fmt::Debug for Native {
 
 /// The native by name.
 pub fn native(name: &str) -> Option<&'static Native> {
-    static INDEX: OnceLock<HashMap<&'static str, &'static Native>> = OnceLock::new();
+    static INDEX: OnceLock<HashMap<&'static str, &'static Native, FxBuild>> = OnceLock::new();
     INDEX
         .get_or_init(|| NATIVES.iter().map(|n| (n.name, n)).collect())
         .get(name)

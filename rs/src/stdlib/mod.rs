@@ -95,7 +95,7 @@ pub fn load() -> Result<Stdlib, Fail> {
         for form in &forms {
             if let crate::ast::Expr::List { items, .. } = form {
                 if let Some(crate::ast::Expr::Symbol { name, .. }) = items.get(1) {
-                    names.push(Arc::from(name.as_str()));
+                    names.push(name.clone());
                 }
             }
         }
