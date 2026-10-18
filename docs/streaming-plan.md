@@ -920,6 +920,58 @@ for YAML and 3.9 times for XML, whose parts are interpreted; and
 incremental source prunes the exported array's elements, so the engine's
 tree holds the whole document.
 
+The work the maintainer put before both calls came next. On PGN's part
+the call was to speed up the interpreter first, and on the built-ins to
+prune first, then measure again. tabnas/transduce#56, released as
+transduce 0.2.11, made `ParserEventSource` prune: once the sink has seen
+a close pass, the source empties the array the closing rule's node is,
+for the grammars `capability::prunable` lists, and a differential suite
+keeps that list honest both ways. The interpreter work is three pull
+requests, released as alchemy 0.2.13, none of which changes an output, a
+failure or a limit:
+- tabnas/alchemy#91 looks a free name up once per scope, builds a rule
+  pass's record from a shape made once, hashes the evaluator's tables
+  with FxHash and shares an atom's text: 25% fewer instructions on
+  YAML's part.
+- tabnas/alchemy#92 makes vectors persistent, so `push` and `pop` cost
+  the same at any length, and measures a scan state from the sums its
+  vector's leaves keep: a state that keeps every item of 40,000 takes
+  0.47 s, against 42.94 s before.
+- tabnas/alchemy#93 keeps a long string as a rope, so the library's
+  `transduce-write` costs each pass its own tokens rather than the text
+  so far (tabnas/alchemy#86's thread on it): a `:text` rule over 160,000
+  items takes 8.01 s, against 40.40 s before.
+
+Measured again with both, the parts still cost what the two calls weigh.
+Over generated records in alchemy-cli's release build, a part read
+pruned by `run --grammar`, against aless 0.4.5's own read with
+`--render json`:
+
+| | aless 0.4.5 | the part, pruned |
+|---|---|---|
+| JSON, 10,000 records | 1.14 s, 32 MiB | 1.60 s, 126 MiB |
+| JSON, 40,000 records | 4.30 s, 99 MiB | 6.55 s, 474 MiB |
+| YAML, 10,000 records | 1.74 s, 53 MiB | 7.52 s, 83 MiB |
+| YAML, 40,000 records | 7.48 s, 177 MiB | 30.03 s, 296 MiB |
+| XML, 10,000 records | 1.12 s, 116 MiB | 5.00 s, 108 MiB |
+| XML, 40,000 records | 4.45 s, 394 MiB | 21.09 s, 400 MiB |
+
+PGN's part reads a 605 KB database in 5.76 s at 29 MiB pruned (87 MiB
+not), against aless 0.4.5's 0.49 s at 19 MiB. Every part's time grows
+in proportion to its input: four times the records take about four
+times as long. Pruning frees XML's element children and PGN's games, so
+XML's part holds what aless's own read holds, and PGN's a third of what
+it held unpruned. A JSON or YAML document's records sit in its root
+sequence, which is no closing rule's node until the document ends, so
+those parts hold the whole document, as the whole read does. Both calls
+stay with the maintainer, with two proposals:
+- transduce could empty the parent's array behind each element's close,
+  verified as pruning is now, so that a root sequence streams in what one
+  record holds.
+- For PGN, natives that join two vectors, compare two values and count
+  would replace what its part spells today as six scans an event and
+  `split` tricks.
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
