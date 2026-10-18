@@ -25,6 +25,11 @@ pub const ROPE_MIN: usize = 4096;
 /// otherwise the last chunk is complete and the piece begins the next.
 pub const CHUNK_MAX: usize = 256;
 
+/// The bytes a rope's flattening copies for each step it takes
+/// ([`Str::flat_with`]): the 4,096 characters the natives that read a
+/// string take a step for.
+pub const FLAT_STEP: usize = 4096;
+
 /// A string value's text.
 #[derive(Clone)]
 pub struct Str(Repr);
@@ -83,19 +88,44 @@ impl Str {
         }
     }
 
+    /// The text in one piece, as reading it gives it, with `step` taken
+    /// for each [`FLAT_STEP`] bytes a rope's flattening copies, before it
+    /// copies them, so that what bounds a native's read of a long string
+    /// (the plan's fuel, the host's abort flag) bounds the copy too. A text
+    /// already in one piece takes no step; a step's failure stops the copy
+    /// and leaves the rope as it was.
+    pub fn flat_with<E>(&self, mut step: impl FnMut() -> Result<(), E>) -> Result<&str, E> {
+        let Repr::Rope(rope) = &self.0 else {
+            return Ok(self);
+        };
+        if let Some(text) = rope.flat.get() {
+            return Ok(text);
+        }
+        let mut text = String::with_capacity(rope.len);
+        for chunk in rope.chunks.iter().chain(std::iter::once(&rope.last)) {
+            let steps = (text.len() + chunk.len()) / FLAT_STEP - text.len() / FLAT_STEP;
+            for _ in 0..steps {
+                step()?;
+            }
+            text.push_str(chunk);
+        }
+        Ok(rope.flat.get_or_init(|| Arc::from(text)))
+    }
+
     /// The strings of `items` joined, `separator` between them: `len`
     /// bytes in all, which the caller has counted (and bounded). From
     /// [`ROPE_MIN`] bytes it is a rope, which shares the chunks of a rope
     /// it begins with and copies what it joins to them at most
     /// [`CHUNK_MAX`] bytes at a time.
-    pub fn join(separator: &str, items: &[&Str], len: usize) -> Str {
-        let Some((first, rest)) = items.split_first() else {
+    pub fn join<'a>(separator: &str, items: impl IntoIterator<Item = &'a Str>, len: usize) -> Str {
+        let mut items = items.into_iter();
+        let Some(first) = items.next() else {
             return Str::from("");
         };
         if len < ROPE_MIN {
             let mut out = String::with_capacity(len);
             out.push_str(first);
-            for item in rest {
+            for item in items {
                 out.push_str(separator);
                 out.push_str(item);
             }
@@ -103,7 +133,7 @@ impl Str {
         }
         let mut parts = Parts::of(first);
         let separator = (!separator.is_empty()).then(|| Arc::<str>::from(separator));
-        for item in rest {
+        for item in items {
             if let Some(separator) = &separator {
                 parts.add(separator);
             }
@@ -267,7 +297,7 @@ mod tests {
     fn join(separator: &str, items: &[&Str]) -> Str {
         let len = items.iter().map(|item| item.len()).sum::<usize>()
             + separator.len() * items.len().saturating_sub(1);
-        Str::join(separator, items, len)
+        Str::join(separator, items.iter().copied(), len)
     }
 
     #[test]
@@ -296,7 +326,7 @@ mod tests {
         COPIED.with(|copied| copied.set(0));
         for _ in 0..100_000 {
             let len = text.len() + piece.len();
-            text = Str::join("", &[&text, &piece], len);
+            text = Str::join("", [&text, &piece], len);
             model.push_str(&piece);
         }
         let copied = COPIED.with(|copied| copied.get());
@@ -324,6 +354,43 @@ mod tests {
         let both = join("|", &[&left, &right]);
         assert_eq!(&*both, format!("{}|{}", &*left, &*right));
         assert_eq!(both.len(), 2 * (ROPE_MIN + 2) + 1);
+    }
+
+    #[test]
+    fn a_rope_is_flattened_a_step_per_flat_step_bytes_and_a_failed_step_stops_it() {
+        let piece = Str::from("p".repeat(1000));
+        let mut text = Str::from("");
+        for _ in 0..100 {
+            let len = text.len() + piece.len();
+            text = Str::join("", [&text, &piece], len);
+        }
+        assert!(text.is_rope() && text.len() == 100_000);
+        // Refused at the tenth step: nothing is kept, and a later read
+        // makes the text whole.
+        let mut taken = 0;
+        let refused = text.flat_with(|| {
+            taken += 1;
+            if taken == 10 {
+                Err("stop")
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(refused, Err("stop"));
+        let Repr::Rope(rope) = &text.0 else {
+            unreachable!("the text is a rope")
+        };
+        assert!(rope.flat.get().is_none());
+        let mut steps = 0;
+        let whole = text.flat_with(|| -> Result<(), ()> {
+            steps += 1;
+            Ok(())
+        });
+        assert_eq!(whole.map(str::len), Ok(100_000));
+        assert_eq!(steps, 100_000 / FLAT_STEP);
+        // Once whole, a read takes no step; nor does a text in one piece.
+        assert_eq!(text.flat_with(|| Err(())).map(str::len), Ok(100_000));
+        assert_eq!(piece.flat_with(|| Err(())).map(str::len), Ok(1000));
     }
 
     #[test]
