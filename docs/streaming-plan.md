@@ -963,14 +963,16 @@ times as long. Pruning frees XML's element children and PGN's games, so
 XML's part holds what aless's own read holds, and PGN's a third of what
 it held unpruned. A JSON or YAML document's records sit in its root
 sequence, which is no closing rule's node until the document ends, so
-those parts hold the whole document, as the whole read does. Both calls
-stay with the maintainer, with two proposals:
-- transduce could empty the parent's array behind each element's close,
+those parts hold the whole document, as the whole read does. The
+maintainer's calls, the same day, keep the built-in formats on their
+routes for now, and put two pieces of work first:
+- transduce empties the parent's array behind each element's close,
   verified as pruning is now, so that a root sequence streams in what one
-  record holds.
-- For PGN, natives that join two vectors, compare two values and count
-  would replace what its part spells today as six scans an event and
-  `split` tricks.
+  record holds; the built-ins are then measured again.
+- For PGN, alchemy gains natives that join two vectors, compare two
+  values and count, in all three runtimes, to replace what its part
+  spells today as six scans an event and `split` tricks; the part is
+  then rewritten on them and measured again.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
