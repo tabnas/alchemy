@@ -138,6 +138,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/effects.rs` | the effect summary and the `explain` report, as text and as JSON |
 | `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
 | `rs/src/pvec.rs` | the persistent vector `Val::Vector` holds: leaves of 32 under a trie and a tail of up to 32, so `push` and `pop` cost a bounded amount at any length and share every leaf with the vector they began with; each node keeps the `Summary` of its items once asked, which `measure` reads as the `Size` of a full leaf |
+| `rs/src/rope.rs` | `Str`, a string value's text: in one piece, or, once `string-join` makes one of `ROPE_MIN` bytes or more, a rope of chunks with its length kept, so a join onto it copies at most `CHUNK_MAX` bytes; read in one piece once, and kept |
 | `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
 | `rs/src/fx.rs` | FxHash, for the evaluator's tables, whose keys are a program's names and never its input's data |
 | `rs/src/shared/` | the shared types, moved from transduce and render: `event`, `sink`, `table`, `error` (`Fail`, `Code`), `limits`, `selector`, `datum`, the captures (`route`, `scan`, `matcher`), the text boundary and the renderers' options (`text`, `csv`, `json`), the parser's rule passes (`parser_event`), the spec a native `transduce-tree` runs (`tree`), and `inject`: the `Routers` and `Renderers` traits |

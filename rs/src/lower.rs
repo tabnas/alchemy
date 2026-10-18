@@ -384,7 +384,7 @@ fn cell_val(c: &Cell) -> Val {
             value: *value,
             lexeme: lexeme.as_deref().map(Arc::from),
         },
-        Cell::String(s) => Val::Str(Arc::from(&**s)),
+        Cell::String(s) => Val::str(s),
         Cell::Missing => Val::missing(),
     }
 }
@@ -1083,7 +1083,7 @@ impl TableSink for TableToTagged {
                     .iter()
                     .map(|c| {
                         let mut fields = indexmap::IndexMap::new();
-                        fields.insert(Arc::from("label"), Val::Str(Arc::from(&*c.label)));
+                        fields.insert(Arc::from("label"), Val::str(&c.label));
                         Val::Record(Arc::new(fields))
                     })
                     .collect();
@@ -1610,7 +1610,7 @@ impl<'a> Lowering<'a> {
         match result {
             // A string is a text where a text is expected (spec 10.4).
             Val::Str(s) => self.sink_as(
-                &Val::Text(Arc::new(Plan::Lit(s.clone()))),
+                &Val::Text(Arc::new(Plan::Lit(s.arc()))),
                 out,
                 render,
                 output,
