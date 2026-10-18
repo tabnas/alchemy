@@ -805,7 +805,7 @@ fn rule_record(pass: &RulePass) -> Val {
         )
     });
     let value = pass.value.as_ref().map(Val::from_datum);
-    let shape = usize::from(alt.is_some()) | usize::from(value.is_some()) << 1;
+    let shape = usize::from(alt.is_some()) | (usize::from(value.is_some()) << 1);
     let fields = [Val::str(&pass.name), count(pass.d), count(pass.i)]
         .into_iter()
         .chain(alt)
