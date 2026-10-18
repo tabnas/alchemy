@@ -68,6 +68,8 @@ pub mod desugar;
 #[cfg(feature = "language")]
 pub mod effects;
 #[cfg(feature = "language")]
+mod fx;
+#[cfg(feature = "language")]
 pub mod grammar;
 #[cfg(feature = "language")]
 pub mod interp;

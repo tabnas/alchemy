@@ -43,7 +43,7 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use indexmap::IndexMap;
 
@@ -706,76 +706,112 @@ pub struct ParserEventsToItems {
 
 impl ParserSink for ParserEventsToItems {
     fn event(&mut self, ev: &ParserEvent) -> Result<Flow, Fail> {
+        let shapes = pass_shapes();
         let item = match ev {
-            ParserEvent::Open(pass) => Val::tagged("open", vec![rule_record(pass)]),
-            ParserEvent::Close(pass) => Val::tagged("close", vec![rule_record(pass)]),
+            ParserEvent::Open(pass) => Val::Tagged {
+                tag: shapes.open.clone(),
+                fields: Arc::from([rule_record(pass)]),
+            },
+            ParserEvent::Close(pass) => Val::Tagged {
+                tag: shapes.close.clone(),
+                fields: Arc::from([rule_record(pass)]),
+            },
             ParserEvent::End => return self.down.end(),
         };
         self.down.item(item)
     }
 }
 
+/// The shapes of the records a rule pass is carried in, made once: each
+/// pass clones one, which copies its keys' table rather than hashing and
+/// allocating every key again, and fills in the values by position.
+struct PassShapes {
+    open: Arc<str>,
+    close: Arc<str>,
+    /// `name d i alt tokens forced n value`, by whether the pass has an
+    /// alternate (bit 0) and a value (bit 1): the fields it lacks are left
+    /// out, as `get` answers `missing` for them.
+    rule: [IndexMap<Arc<str>, Val>; 4],
+    alt: IndexMap<Arc<str>, Val>,
+    token: IndexMap<Arc<str>, Val>,
+}
+
+fn pass_shapes() -> &'static PassShapes {
+    static SHAPES: OnceLock<PassShapes> = OnceLock::new();
+    SHAPES.get_or_init(|| {
+        let shape = |keys: &[&str]| -> IndexMap<Arc<str>, Val> {
+            keys.iter().map(|k| (Arc::from(*k), Val::Null)).collect()
+        };
+        PassShapes {
+            open: Arc::from("open"),
+            close: Arc::from("close"),
+            rule: [
+                shape(&["name", "d", "i", "tokens", "forced", "n"]),
+                shape(&["name", "d", "i", "alt", "tokens", "forced", "n"]),
+                shape(&["name", "d", "i", "tokens", "forced", "n", "value"]),
+                shape(&["name", "d", "i", "alt", "tokens", "forced", "n", "value"]),
+            ],
+            alt: shape(&["p", "r", "b", "g"]),
+            token: shape(&["name", "val", "src", "row", "col"]),
+        }
+    })
+}
+
+/// A record of `shape`, its values `values` in the shape's order.
+fn shaped(shape: &IndexMap<Arc<str>, Val>, values: impl IntoIterator<Item = Val>) -> Val {
+    let mut record = shape.clone();
+    for (slot, value) in record.values_mut().zip(values) {
+        *slot = value;
+    }
+    Val::Record(Arc::new(record))
+}
+
 /// A rule pass as the record `(open rule)` and `(close rule)` carry.
 fn rule_record(pass: &RulePass) -> Val {
-    fn record(fields: Vec<(&str, Val)>) -> Val {
-        Val::Record(Arc::new(
-            fields
-                .into_iter()
-                .map(|(k, v)| (Arc::from(k), v))
-                .collect::<IndexMap<_, _>>(),
-        ))
-    }
+    let shapes = pass_shapes();
     let count = |n: u64| Val::num(n as f64);
-    let mut fields = vec![
-        ("name", Val::str(&pass.name)),
-        ("d", count(pass.d)),
-        ("i", count(pass.i)),
-    ];
-    if let Some(alt) = &pass.alt {
-        fields.push((
-            "alt",
-            record(vec![
-                ("p", Val::str(&alt.p)),
-                ("r", Val::str(&alt.r)),
-                ("b", count(alt.b)),
-                (
-                    "g",
-                    Val::vector(alt.g.iter().map(|g| Val::str(g)).collect()),
-                ),
-            ]),
-        ));
-    }
-    fields.push((
-        "tokens",
-        Val::vector(
-            pass.tokens
-                .iter()
-                .map(|t| {
-                    record(vec![
-                        ("name", Val::str(&t.name)),
-                        ("val", Val::from_datum(&t.val)),
-                        ("src", Val::str(&t.src)),
-                        ("row", count(t.row)),
-                        ("col", count(t.col)),
-                    ])
-                })
-                .collect(),
-        ),
+    let tokens = Val::Vector(
+        pass.tokens
+            .iter()
+            .map(|t| {
+                shaped(
+                    &shapes.token,
+                    [
+                        Val::str(&t.name),
+                        Val::from_datum(&t.val),
+                        Val::str(&t.src),
+                        count(t.row),
+                        count(t.col),
+                    ],
+                )
+            })
+            .collect(),
+    );
+    let n = Val::Record(Arc::new(
+        pass.n
+            .iter()
+            .map(|(k, v)| (Arc::from(&**k), Val::num(*v as f64)))
+            .collect(),
     ));
-    fields.push(("forced", Val::Bool(pass.forced)));
-    fields.push((
-        "n",
-        Val::Record(Arc::new(
-            pass.n
-                .iter()
-                .map(|(k, v)| (Arc::from(&**k), Val::num(*v as f64)))
-                .collect(),
-        )),
-    ));
-    if let Some(value) = &pass.value {
-        fields.push(("value", Val::from_datum(value)));
-    }
-    record(fields)
+    let alt = pass.alt.as_ref().map(|alt| {
+        shaped(
+            &shapes.alt,
+            [
+                Val::str(&alt.p),
+                Val::str(&alt.r),
+                count(alt.b),
+                Val::Vector(alt.g.iter().map(|g| Val::str(g)).collect()),
+            ],
+        )
+    });
+    let value = pass.value.as_ref().map(Val::from_datum);
+    let shape = usize::from(alt.is_some()) | (usize::from(value.is_some()) << 1);
+    let fields = [Val::str(&pass.name), count(pass.d), count(pass.i)]
+        .into_iter()
+        .chain(alt)
+        .chain([tokens, Val::Bool(pass.forced), n])
+        .chain(value);
+    shaped(&shapes.rule[shape], fields)
 }
 
 /// What the host pushes parser events into: the chain's head

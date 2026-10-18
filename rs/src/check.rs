@@ -391,7 +391,7 @@ impl Checker<'_> {
 
     fn pattern_binds_name(&self, pattern: &Expr, name: &str, env: &Env) -> bool {
         match pattern {
-            Expr::Symbol { name: n, .. } => n == name && self.pattern_binds(n, env),
+            Expr::Symbol { name: n, .. } => &**n == name && self.pattern_binds(n, env),
             Expr::Vector { items, .. } => {
                 items.iter().any(|p| self.pattern_binds_name(p, name, env))
             }
@@ -415,7 +415,7 @@ impl Checker<'_> {
             }
         }
         match expr {
-            Expr::Symbol { name: n, span } if n == name => Ok(vec![span.clone()]),
+            Expr::Symbol { name: n, span } if &**n == name => Ok(vec![span.clone()]),
             Expr::Symbol { .. }
             | Expr::Keyword { .. }
             | Expr::Str { .. }
@@ -500,7 +500,7 @@ impl Checker<'_> {
         match expr {
             Expr::Symbol { name, .. } => {
                 lookup(env, name).is_none()
-                    && (self.defs.contains_key(name.as_str())
+                    && (self.defs.contains_key(&**name)
                         || stdlib_signature(name).is_some()
                         || native(name).is_some_and(|n| n.kind != Kind::Constant))
             }
@@ -537,7 +537,7 @@ impl Checker<'_> {
             Expr::Symbol { name, .. } => {
                 if self.pattern_binds(name, env) {
                     env.push(Local {
-                        name: Arc::from(name.as_str()),
+                        name: name.clone(),
                         ty: matched.clone(),
                     });
                 }
@@ -779,9 +779,9 @@ impl Checker<'_> {
         }
         match head {
             Expr::Symbol { name, .. }
-                if lookup(env, name).is_none() && self.defs.contains_key(name.as_str()) =>
+                if lookup(env, name).is_none() && self.defs.contains_key(&**name) =>
             {
-                let def = self.defs[name.as_str()].clone();
+                let def = self.defs[&**name].clone();
                 let Expr::List { items, .. } = &*def.value else {
                     return Ok(None);
                 };
@@ -1352,7 +1352,7 @@ impl Checker<'_> {
                     self.expect("the code of fail", &Keyword, t(0), at(0))?;
                     if let Expr::Keyword { name, span } = &args[0] {
                         if !matches!(
-                            name.as_str(),
+                            &**name,
                             "invalid" | "unrepresentable" | "protocol-order" | "unstreamable"
                         ) {
                             return Err(self.type_error(
@@ -1461,7 +1461,7 @@ impl Checker<'_> {
 /// a callee the same way.
 pub(crate) fn describe(head: &Expr) -> String {
     match head {
-        Expr::Symbol { name, .. } => name.clone(),
+        Expr::Symbol { name, .. } => name.to_string(),
         other => crate::ast::canonical_form(other),
     }
 }

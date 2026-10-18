@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex};
 use crate::ast::{Expr, SourceSpan, Sources};
 use crate::check::describe;
 use crate::desugar::shape_error;
+use crate::fx::FxBuild;
 use crate::program::Input;
 use crate::resolve::{fn_form, fn_params, Resolved};
 use crate::shared::{AbortFlag, Code, Datum, Duplicates, Fail, Limits};
@@ -93,7 +94,27 @@ pub struct Runtime {
     steps: AtomicU64,
     depth: AtomicUsize,
     /// Definition values, evaluated on first use.
-    cache: Mutex<HashMap<(Scope, Arc<str>), Val>>,
+    cache: Mutex<HashMap<(Scope, Arc<str>), Val, FxBuild>>,
+    /// What each free name a scope's code names denotes, looked up on
+    /// first use ([`Runtime::resolved`]), by [`Scope`]: a name is looked up
+    /// on every reference, and the definitions' tables and the natives'
+    /// cost a hash of the name each. A name that denotes none of them, a
+    /// pattern's variable, is kept as `None`.
+    globals: Mutex<[Globals; 2]>,
+}
+
+/// One scope's free names and what each denotes.
+type Globals = HashMap<Arc<str>, Option<Global>, FxBuild>;
+
+/// What a free name denotes in a scope: a definition's value, a native
+/// constant's value or a native function.
+#[derive(Clone)]
+struct Global {
+    value: Val,
+    /// Whether a pattern naming it compares against its value (a
+    /// definition or a native constant) rather than binding the name (a
+    /// native function or constructor).
+    compares: bool,
 }
 
 /// One level of evaluation, given back when it ends.
@@ -111,6 +132,21 @@ impl std::fmt::Debug for Runtime {
             .field("file", &self.program.file)
             .field("native", &self.native)
             .finish_non_exhaustive()
+    }
+}
+
+/// The names of a `fn` form's parameters, which [`fn_form`] found to be
+/// symbols, shared with the form.
+fn param_names(params: &Expr) -> Vec<Arc<str>> {
+    match params {
+        Expr::Vector { items, .. } => items
+            .iter()
+            .filter_map(|p| match p {
+                Expr::Symbol { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -138,7 +174,8 @@ impl Runtime {
             fuel: None,
             steps: AtomicU64::new(0),
             depth: AtomicUsize::new(0),
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(HashMap::default()),
+            globals: Mutex::new([HashMap::default(), HashMap::default()]),
         }
     }
 
@@ -301,13 +338,13 @@ impl Runtime {
             return Ok(Some(v.clone()));
         }
         let value = match fn_params(&def.value) {
-            Some(params) => {
+            Some(_) => {
                 let Expr::List { items, span } = &*def.value else {
                     unreachable!("fn_params answered for a fn form");
                 };
                 Val::Fn(Func::Closure(Arc::new(Closure {
                     name: Some(def.name.clone()),
-                    params: params.iter().map(|p| Arc::from(*p)).collect(),
+                    params: param_names(&items[1]),
                     body: Arc::new(items[2].clone()),
                     env: Env::new(),
                     scope: found,
@@ -323,17 +360,50 @@ impl Runtime {
         Ok(Some(value))
     }
 
+    /// What a free symbol denotes in `scope`, looked up once: a
+    /// definition, a native constant's value, or a native function; `None`
+    /// for a name that is none of them. A native constant's value is the
+    /// same on every call, and a definition's is evaluated once, so the
+    /// answer is kept. The lock is not held while a definition is
+    /// evaluated, since that looks up the names it uses.
+    fn resolved(
+        &self,
+        scope: Scope,
+        name: &str,
+        span: &SourceSpan,
+    ) -> Result<Option<Global>, Fail> {
+        let slot = scope as usize;
+        if let Some(found) = self.globals.lock().map_err(poisoned)?[slot].get(name) {
+            return Ok(found.clone());
+        }
+        let found = if let Some(value) = self.def_value(scope, name)? {
+            Some(Global {
+                value,
+                compares: true,
+            })
+        } else if let Some(n) = native(name) {
+            Some(match n.kind {
+                Kind::Constant => Global {
+                    value: (n.call)(self, &[], span)?,
+                    compares: true,
+                },
+                Kind::Function | Kind::Constructor => Global {
+                    value: Val::Fn(Func::Native(n)),
+                    compares: false,
+                },
+            })
+        } else {
+            None
+        };
+        self.globals.lock().map_err(poisoned)?[slot].insert(Arc::from(name), found.clone());
+        Ok(found)
+    }
+
     /// The value a free symbol denotes in `scope`: a definition, a native
     /// constant's value, or a native function.
     fn global(&self, scope: Scope, name: &str, span: &SourceSpan) -> Result<Val, Fail> {
-        if let Some(v) = self.def_value(scope, name)? {
-            return Ok(v);
-        }
-        if let Some(n) = native(name) {
-            return match n.kind {
-                Kind::Constant => (n.call)(self, &[], span),
-                Kind::Function | Kind::Constructor => Ok(Val::Fn(Func::Native(n))),
-            };
+        if let Some(global) = self.resolved(scope, name, span)? {
+            return Ok(global.value);
         }
         Err(self.fail_at(
             Fail::new(
@@ -353,15 +423,15 @@ impl Runtime {
                 Some(v) => Ok(v.clone()),
                 None => self.global(scope, name, span),
             },
-            Expr::Keyword { name, .. } => Ok(Val::keyword(name)),
-            Expr::Str { value, .. } => Ok(Val::str(value)),
+            Expr::Keyword { name, .. } => Ok(Val::Keyword(name.clone())),
+            Expr::Str { value, .. } => Ok(Val::Str(value.clone())),
             Expr::Num { lexeme, span } => {
                 let value: f64 = lexeme.parse().map_err(|_| {
                     self.fail_at(type_error(format!("{lexeme} is not a number")), span)
                 })?;
                 Ok(Val::Num {
                     value,
-                    lexeme: Some(Arc::from(lexeme.as_str())),
+                    lexeme: Some(lexeme.clone()),
                 })
             }
             Expr::Bool { value, .. } => Ok(Val::Bool(*value)),
@@ -399,7 +469,7 @@ impl Runtime {
         };
         match head.symbol() {
             Some("fn") if env.get("fn").is_none() => {
-                let Some((params, body)) = fn_form(items) else {
+                let Some((_, body)) = fn_form(items) else {
                     return Err(self.fail_at(
                         Fail::new(
                             Code::DslTypeError,
@@ -410,7 +480,7 @@ impl Runtime {
                 };
                 Ok(Val::Fn(Func::Closure(Arc::new(Closure {
                     name: None,
-                    params: params.iter().map(|p| Arc::from(*p)).collect(),
+                    params: param_names(&items[1]),
                     body: Arc::new(body.clone()),
                     env: env.clone(),
                     scope,
@@ -426,15 +496,13 @@ impl Runtime {
                 else {
                     return Err(self.fail_at(shape_error("bad_let"), span));
                 };
-                let (Some(name), Some(value), 2) = (
-                    binding.first().and_then(Expr::symbol),
-                    binding.get(1),
-                    binding.len(),
-                ) else {
+                let (Some(Expr::Symbol { name, .. }), Some(value), 2) =
+                    (binding.first(), binding.get(1), binding.len())
+                else {
                     return Err(self.fail_at(shape_error("bad_let"), span));
                 };
                 let value = self.eval(value, env, scope)?;
-                let inner = env.bind(Arc::from(name), value);
+                let inner = env.bind(name.clone(), value);
                 self.eval(body, &inner, scope)
             }
             Some("if") if env.get("if").is_none() => {
@@ -593,13 +661,10 @@ impl Runtime {
         if env.has(name) {
             return Ok(None);
         }
-        if let Some(v) = self.def_value(scope, name)? {
-            return Ok(Some(v));
-        }
-        match native(name) {
-            Some(n) if n.kind == Kind::Constant => Ok(Some((n.call)(self, &[], span)?)),
-            _ => Ok(None),
-        }
+        Ok(self
+            .resolved(scope, name, span)?
+            .filter(|global| global.compares)
+            .map(|global| global.value))
     }
 
     /// Match `value` against `pattern`: the environment extended with the
@@ -612,18 +677,35 @@ impl Runtime {
         scope: Scope,
     ) -> Result<Option<Env>, Fail> {
         match pattern {
-            Expr::Symbol { name, .. } if name == "_" => Ok(Some(env.clone())),
+            Expr::Symbol { name, .. } if &**name == "_" => Ok(Some(env.clone())),
             Expr::Symbol { name, span } => match self.pattern_constant(name, env, scope, span)? {
                 Some(constant) => Ok((constant == *value).then(|| env.clone())),
-                None => Ok(Some(env.bind(Arc::from(name.as_str()), value.clone()))),
+                None => Ok(Some(env.bind(name.clone(), value.clone()))),
             },
+            // A literal compares as its value would, `==` on values, and
+            // takes the step and the level evaluating it would; it is not
+            // built, since the value it compares with is in hand.
             Expr::Keyword { .. }
             | Expr::Str { .. }
             | Expr::Num { .. }
             | Expr::Bool { .. }
             | Expr::Null { .. } => {
-                let literal = self.eval(pattern, env, scope)?;
-                Ok((literal == *value).then(|| env.clone()))
+                self.tick()?;
+                let _level = self.enter(Some(pattern.span()))?;
+                let same = match (pattern, value) {
+                    (Expr::Keyword { name, .. }, Val::Keyword(k)) => **k == **name,
+                    (Expr::Str { value: s, .. }, Val::Str(v)) => **v == **s,
+                    (Expr::Num { lexeme, span }, _) => {
+                        let n: f64 = lexeme.parse().map_err(|_| {
+                            self.fail_at(type_error(format!("{lexeme} is not a number")), span)
+                        })?;
+                        matches!(value, Val::Num { value: v, .. } if *v == n)
+                    }
+                    (Expr::Bool { value: b, .. }, Val::Bool(v)) => b == v,
+                    (Expr::Null { .. }, Val::Null) => true,
+                    _ => false,
+                };
+                Ok(same.then(|| env.clone()))
             }
             Expr::Vector { items, .. } => {
                 let Val::Vector(values) = value else {

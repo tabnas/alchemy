@@ -190,7 +190,7 @@ pub fn resolve(
             Expr::Symbol { name, .. } => name.clone(),
             other => return Err(shape_fail("bad_def", other.span(), sources)),
         };
-        if SPECIAL_FORMS.contains(&name.as_str()) {
+        if SPECIAL_FORMS.contains(&&*name) {
             return Err(type_fail(
                 "reserved",
                 format!("{name} is a special form and cannot be defined"),
@@ -198,7 +198,6 @@ pub fn resolve(
                 sources,
             ));
         }
-        let name: Arc<str> = Arc::from(name);
         if let Some(first) = defs.get(&name) {
             // Across several sources the first definition may be in
             // another file, so the message says where it is.
@@ -493,10 +492,10 @@ impl Walker<'_> {
 
     fn pattern(&mut self, pattern: &Expr, bound: &mut Vec<Arc<str>>) -> Result<(), Fail> {
         match pattern {
-            Expr::Symbol { name, .. } if name == "_" => Ok(()),
+            Expr::Symbol { name, .. } if &**name == "_" => Ok(()),
             Expr::Symbol { name, .. } => {
                 if !self.is_constant_pattern(name) {
-                    bound.push(Arc::from(name.as_str()));
+                    bound.push(name.clone());
                 }
                 Ok(())
             }

@@ -326,7 +326,7 @@ fn defines(form: &Expr, name: &str) -> bool {
 /// Recursive per level, which [`crate::MAX_NESTING`] bounds.
 fn mentions<'f>(form: &'f Expr, name: &str) -> Option<&'f crate::ast::SourceSpan> {
     match form {
-        Expr::Symbol { name: n, span } if n == name => Some(span),
+        Expr::Symbol { name: n, span } if &**n == name => Some(span),
         Expr::List { items, .. } | Expr::Vector { items, .. } => {
             items.iter().find_map(|item| mentions(item, name))
         }
@@ -340,7 +340,7 @@ fn mentions<'f>(form: &'f Expr, name: &str) -> Option<&'f crate::ast::SourceSpan
 /// Recursive per level, which [`crate::MAX_NESTING`] bounds.
 fn rename_symbol(form: &mut Expr, from: &str, to: &str) {
     match form {
-        Expr::Symbol { name, .. } if name == from => *name = to.to_string(),
+        Expr::Symbol { name, .. } if &**name == from => *name = Arc::from(to),
         Expr::List { items, .. } | Expr::Vector { items, .. } => {
             for item in items {
                 rename_symbol(item, from, to);
