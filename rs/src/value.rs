@@ -26,8 +26,16 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{Expr, SourceSpan};
+use crate::interp::Size;
+use crate::pvec::PVec;
 use crate::shared::{CaptureSpec, Code, Datum, Fail, Segment, Selector, Step};
 use crate::stdlib::registry::Native;
+
+/// A vector's items: persistent, so `push` and `pop` cost a bounded
+/// amount whatever its length and leave the vector they began with as it
+/// was, and each full leaf keeps the [`Size`] a measure walk reads instead
+/// of visiting its items again.
+pub type Vector = PVec<Val, Size>;
 
 /// The tag of the constant tagged value a `get` or `get-path` answers for
 /// an absent member.
@@ -46,7 +54,7 @@ pub enum Val {
     },
     Str(Arc<str>),
     Keyword(Arc<str>),
-    Vector(Arc<[Val]>),
+    Vector(Vector),
     /// Fields in construction order; keys are the keyword names.
     Record(Arc<IndexMap<Arc<str>, Val>>),
     Fn(Func),
@@ -193,7 +201,7 @@ impl fmt::Debug for Env {
 /// A finite or single-use sequence an operator was given.
 #[derive(Clone, Debug)]
 pub enum Seq {
-    Vector(Arc<[Val]>),
+    Vector(Vector),
     Stream(Arc<Plan>),
 }
 
@@ -431,7 +439,7 @@ impl Val {
     }
 
     pub fn vector(items: Vec<Val>) -> Val {
-        Val::Vector(Arc::from(items))
+        Val::Vector(Vector::from(items))
     }
 
     pub fn tagged(tag: &str, fields: Vec<Val>) -> Val {
@@ -455,7 +463,7 @@ impl Val {
     /// which only costs a re-measure where this is asked.
     pub fn same(&self, other: &Val) -> bool {
         match (self, other) {
-            (Val::Vector(a), Val::Vector(b)) => Arc::ptr_eq(a, b),
+            (Val::Vector(a), Val::Vector(b)) => a.ptr_eq(b),
             (Val::Record(a), Val::Record(b)) => Arc::ptr_eq(a, b),
             (Val::Tagged { fields: a, .. }, Val::Tagged { fields: b, .. }) => Arc::ptr_eq(a, b),
             (Val::Selector(a), Val::Selector(b)) => Arc::ptr_eq(a, b),

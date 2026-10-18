@@ -24,7 +24,7 @@ use crate::fx::FxBuild;
 use crate::interp::Runtime;
 use crate::lex::is_json_number;
 use crate::shared::{CaptureSpec, Code, Fail, Selector};
-use crate::value::{type_error, Func, NonFinite, Partial, Plan, Seq, Val, MISSING};
+use crate::value::{type_error, Func, NonFinite, Partial, Plan, Seq, Val, Vector, MISSING};
 
 /// How many arguments an operator takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,7 +227,7 @@ fn textlike(op: &str, v: &Val) -> Result<(), Fail> {
 /// The items of a vector the program built (its stack, its outputs), or
 /// the type error that names the operator: what is not a vector here is
 /// the program's mistake, not the data's (`as-vector` takes data).
-fn as_items<'a>(op: &str, v: &'a Val) -> Result<&'a Arc<[Val]>, Fail> {
+fn as_items<'a>(op: &str, v: &'a Val) -> Result<&'a Vector, Fail> {
     match v {
         Val::Vector(items) => Ok(items),
         other => Err(type_error(format!(
@@ -443,9 +443,12 @@ fn vector(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::vector(a.to_vec()))
 }
 
-/// `push item vector`: a new vector, the item last. Bounded by the vector's
-/// length, as the three below are: a stack of markers is as long as the
-/// document's nesting, never its length.
+/// `push item vector`: a new vector, the item last. A vector is
+/// persistent ([`Vector`]), so the push costs a bounded amount whatever the
+/// vector's length, and the vector it pushed onto is unchanged and shares
+/// its items with the new one: a program accumulating a list a pass at a
+/// time (a stack's markers, a game's moves) is linear in the passes. `pop`,
+/// `top` and `count` below are bounded the same way.
 fn push(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     if a[0].is_live() {
         return Err(type_error(format!(
@@ -454,20 +457,17 @@ fn push(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         )));
     }
     let items = as_items("push", &a[1])?;
-    let mut out = Vec::with_capacity(items.len() + 1);
-    out.extend_from_slice(items);
-    out.push(a[0].clone());
-    Ok(Val::vector(out))
+    Ok(Val::Vector(items.push(a[0].clone())))
 }
 
 fn pop(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let items = as_items("pop", &a[0])?;
-    let Some(last) = items.len().checked_sub(1) else {
+    let Some(rest) = items.pop() else {
         return Err(type_error(
             "pop: the vector is empty; there is no last item to remove",
         ));
     };
-    Ok(Val::vector(items[..last].to_vec()))
+    Ok(Val::Vector(rest))
 }
 
 fn top(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {

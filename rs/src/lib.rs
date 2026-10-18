@@ -80,6 +80,8 @@ pub mod lower;
 #[cfg(feature = "language")]
 pub mod program;
 #[cfg(feature = "language")]
+pub mod pvec;
+#[cfg(feature = "language")]
 pub mod resolve;
 #[cfg(feature = "language")]
 pub mod stdlib;
