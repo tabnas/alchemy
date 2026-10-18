@@ -84,6 +84,8 @@ pub mod pvec;
 #[cfg(feature = "language")]
 pub mod resolve;
 #[cfg(feature = "language")]
+pub mod rope;
+#[cfg(feature = "language")]
 pub mod stdlib;
 #[cfg(feature = "language")]
 pub mod translate;

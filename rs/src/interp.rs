@@ -433,7 +433,7 @@ impl Runtime {
                 None => self.global(scope, name, span),
             },
             Expr::Keyword { name, .. } => Ok(Val::Keyword(name.clone())),
-            Expr::Str { value, .. } => Ok(Val::Str(value.clone())),
+            Expr::Str { value, .. } => Ok(Val::Str(value.clone().into())),
             Expr::Num { lexeme, span } => {
                 let value: f64 = lexeme.parse().map_err(|_| {
                     self.fail_at(type_error(format!("{lexeme} is not a number")), span)
@@ -962,7 +962,8 @@ fn expand<'v>(
         Node::Val(v) => match v {
             Val::Null | Val::Bool(_) => 0,
             Val::Num { lexeme, .. } => lexeme.as_ref().map_or(8, |l| l.len()),
-            Val::Str(s) | Val::Keyword(s) => s.len(),
+            Val::Str(s) => s.len(),
+            Val::Keyword(s) => s.len(),
             Val::Vector(items) => {
                 push_items(items, depth, pending, &open);
                 0
@@ -1717,7 +1718,8 @@ mod tests {
             let payload = match v {
                 Val::Null | Val::Bool(_) => 0,
                 Val::Num { lexeme, .. } => lexeme.as_ref().map_or(8, |l| l.len()),
-                Val::Str(s) | Val::Keyword(s) => s.len(),
+                Val::Str(s) => s.len(),
+                Val::Keyword(s) => s.len(),
                 Val::Vector(items) => {
                     pending.extend(items.iter().map(|i| (i, depth + 1)));
                     0

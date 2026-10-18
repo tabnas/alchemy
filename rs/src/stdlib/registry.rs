@@ -24,7 +24,7 @@ use crate::fx::FxBuild;
 use crate::interp::Runtime;
 use crate::lex::is_json_number;
 use crate::shared::{CaptureSpec, Code, Fail, Selector};
-use crate::value::{type_error, Func, NonFinite, Partial, Plan, Seq, Val, Vector, MISSING};
+use crate::value::{type_error, Func, NonFinite, Partial, Plan, Seq, Str, Val, Vector, MISSING};
 
 /// How many arguments an operator takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,9 +129,16 @@ fn is_data(v: &Val) -> bool {
     ) || v.is_missing()
 }
 
-fn as_str<'a>(op: &str, what: &str, v: &'a Val) -> Result<&'a Arc<str>, Fail> {
+/// A string argument, a rope made one piece first, a step per
+/// [`crate::rope::FLAT_STEP`] bytes, so that a native's read of a long
+/// string is bounded by the fuel and the abort flag from its first byte,
+/// whatever made it.
+fn as_str<'a>(rt: &Runtime, op: &str, what: &str, v: &'a Val) -> Result<&'a Str, Fail> {
     match v {
-        Val::Str(s) => Ok(s),
+        Val::Str(s) => {
+            s.flat_with(|| rt.tick())?;
+            Ok(s)
+        }
         other => Err(type_error(format!(
             "{op}: {what} must be a string, not {}",
             other.kind()
@@ -320,7 +327,8 @@ pub fn number_text(value: f64, lexeme: Option<&str>) -> Result<String, Fail> {
 
 fn get(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let key: &str = match &a[0] {
-        Val::Keyword(k) | Val::Str(k) => k,
+        Val::Keyword(k) => k,
+        Val::Str(k) => k,
         other => {
             return Err(type_error(format!(
                 "get: the key must be a keyword or a string, not {}",
@@ -494,7 +502,7 @@ fn keys(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             let mut out = Vec::with_capacity(fields.len());
             for k in fields.keys() {
                 rt.tick()?;
-                out.push(Val::Str(k.clone()));
+                out.push(Val::Str(k.clone().into()));
             }
             Ok(Val::vector(out))
         }
@@ -513,7 +521,7 @@ const LENGTH_CHUNK: usize = 64 * 1024;
 /// at a time, an evaluation step each, so the host's abort flag stops the
 /// count as it stops any long evaluation.
 fn length(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let s = as_str("length", "the string", &a[0])?;
+    let s = as_str(rt, "length", "the string", &a[0])?;
     let mut count = 0usize;
     for chunk in s.as_bytes().chunks(LENGTH_CHUNK) {
         rt.tick()?;
@@ -531,7 +539,7 @@ fn length(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// it (XML's embedding writes a number as text). The string is read by
 /// [`read_number`], as `is-number` reads it.
 fn number(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let s = as_str("number", "the string", &a[0])?;
+    let s = as_str(rt, "number", "the string", &a[0])?;
     read_number(rt, s)?.ok_or_else(|| input_invalid(format!("number: {s:?} spells no number")))
 }
 
@@ -542,7 +550,7 @@ fn number(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// reverse, a number's text). The two read with [`read_number`], so
 /// `number` fails exactly where this answers false.
 fn is_number(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let s = as_str("is-number", "the string", &a[0])?;
+    let s = as_str(rt, "is-number", "the string", &a[0])?;
     Ok(Val::Bool(read_number(rt, s)?.is_some()))
 }
 
@@ -579,7 +587,7 @@ enum Spelled {
 /// step before the first of each [`NUMBER_STEP`] characters, and refused
 /// at the first character no spelling goes on with, so the host's abort
 /// flag stops the read of a long one, a number or not.
-fn read_number(rt: &Runtime, s: &Arc<str>) -> Result<Option<Val>, Fail> {
+fn read_number(rt: &Runtime, s: &Str) -> Result<Option<Val>, Fail> {
     use Spelled::*;
     let mut at = Start;
     // A spelling is ASCII, so a byte read is a character read up to the
@@ -614,7 +622,7 @@ fn read_number(rt: &Runtime, s: &Arc<str>) -> Result<Option<Val>, Fail> {
         _ => return Ok(None),
     };
     let lexeme = if value.is_finite() {
-        Some(s.clone())
+        Some(s.arc())
     } else {
         None
     };
@@ -632,9 +640,9 @@ fn read_number(rt: &Runtime, s: &Arc<str>) -> Result<Option<Val>, Fail> {
 /// `length` counts a long string in steps, so the host's abort flag stops
 /// the read of a long one.
 fn unquoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let s = as_str("unquoted", "the string", &a[0])?;
+    let s = as_str(rt, "unquoted", "the string", &a[0])?;
     match read_quoted(s, || rt.tick())? {
-        Some(text) => Ok(Val::Str(Arc::from(text))),
+        Some(text) => Ok(Val::Str(text.into())),
         None => Err(input_invalid(format!(
             "unquoted: {s:?} is not a double-quoted string"
         ))),
@@ -809,7 +817,7 @@ fn chars_within(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         }
         bounds.push((low, high));
     }
-    let s = as_str("chars-within", "the string", &a[1])?;
+    let s = as_str(rt, "chars-within", "the string", &a[1])?;
     // Comparisons made since the last step; a character costs at least
     // one, so an empty range vector still counts its characters.
     let mut work = 0usize;
@@ -952,8 +960,8 @@ fn each_member(_: &Runtime, _: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Selector(Arc::new(Selector::root().each_member())))
 }
 
-fn property(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let name = as_str("property", "the name", &a[0])?;
+fn property(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let name = as_str(rt, "property", "the name", &a[0])?;
     Ok(Val::Selector(Arc::new(Selector::root().property(&**name))))
 }
 
@@ -1130,8 +1138,8 @@ fn concat_map(_: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     })))
 }
 
-fn join(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let sep = as_str("join", "the separator", &a[0])?.clone();
+fn join(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let sep = as_str(rt, "join", "the separator", &a[0])?.arc();
     let items = as_seq("join", &a[1])?;
     if let Seq::Vector(items) = &items {
         // `:record-end` is no item: it marks the end of a record.
@@ -1155,14 +1163,14 @@ fn concat(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Text(Arc::new(Plan::concat(a.to_vec()))))
 }
 
-fn text(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let s = as_str("text", "the argument", &a[0])?.clone();
+fn text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str(rt, "text", "the argument", &a[0])?.arc();
     Ok(Val::Text(Arc::new(Plan::Lit(s))))
 }
 
-fn replace_text(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let from = as_str("replace-text", "the literal to find", &a[0])?.clone();
-    let to = as_str("replace-text", "the replacement", &a[1])?.clone();
+fn replace_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let from = as_str(rt, "replace-text", "the literal to find", &a[0])?.arc();
+    let to = as_str(rt, "replace-text", "the replacement", &a[1])?.arc();
     textlike("replace-text", &a[2])?;
     Ok(Val::Text(Arc::new(Plan::Replace {
         from,
@@ -1179,11 +1187,12 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let cell = &a[1];
     let text: Arc<str> = match cell {
         Val::Null => as_str(
+            rt,
             "scalar-text",
             ":null-text",
             &option("scalar-text", options, "null-text")?,
         )?
-        .clone(),
+        .arc(),
         Val::Bool(true) => Arc::from("true"),
         Val::Bool(false) => Arc::from("false"),
         Val::Num { value, .. }
@@ -1191,16 +1200,17 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         {
             match non_finite(options)? {
                 NonFinite::Null => as_str(
+                    rt,
                     "scalar-text",
                     ":null-text",
                     &option("scalar-text", options, "null-text")?,
                 )?
-                .clone(),
+                .arc(),
                 _ => Arc::from(NonFinite::word(*value)),
             }
         }
         Val::Num { value, lexeme } => Arc::from(number_text(*value, lexeme.as_deref())?),
-        Val::Str(s) => s.clone(),
+        Val::Str(s) => s.arc(),
         v if v.is_missing() => match option("scalar-text", options, "missing")? {
             Val::Keyword(k) if &*k == "error" => {
                 return Err(Fail::new(
@@ -1208,7 +1218,7 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
                     "a cell has no value and the options map missing to :error",
                 ))
             }
-            Val::Str(t) => t,
+            Val::Str(t) => t.arc(),
             other => {
                 return Err(type_error(format!(
                     "scalar-text: :missing must be :error or a string, not {}",
@@ -1224,7 +1234,7 @@ fn scalar_text(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             )))
         }
     };
-    Ok(Val::Str(text))
+    Ok(Val::Str(text.into()))
 }
 
 /// The `:non-finite` policy of an options record: `:reject` (the default,
@@ -1321,7 +1331,7 @@ pub fn quoted_len(s: &str) -> usize {
 /// the output, up to six bytes per byte of the string, so it is held to
 /// `max_scalar_bytes`, refused before it is built.
 fn quoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let s = as_str("quoted", "the string", &a[0])?;
+    let s = as_str(rt, "quoted", "the string", &a[0])?;
     let max = rt.limits().max_scalar_bytes;
     let len = quoted_len(s);
     if len > max {
@@ -1331,16 +1341,19 @@ fn quoted(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             format!("quoted: the quoted form is {len} bytes, more than {max}"),
         ));
     }
-    Ok(Val::Str(Arc::from(quote(s))))
+    Ok(Val::Str(quote(s).into()))
 }
 
 /// `string-join separator strings`: the strings of a vector joined into
 /// one string, the separator between them, so that a program can build
 /// one scalar from several: a table cell from the runs of a Markdown
 /// cell, a failure message that names a key. The result is one scalar,
-/// so it is held to `max_scalar_bytes`, refused before it is built.
+/// so it is held to `max_scalar_bytes`, refused before it is built. A
+/// long result is a rope ([`Str::join`]), so a text joined a piece at a
+/// time, the text so far and the next piece (the library's
+/// `transduce-write`), costs each join the piece, not the text so far.
 fn string_join(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let separator = as_str("string-join", "the separator", &a[0])?;
+    let separator = as_str(rt, "string-join", "the separator", &a[0])?;
     let items = as_items("string-join", &a[1])?;
     let mut len = 0usize;
     for (i, item) in items.iter().enumerate() {
@@ -1360,16 +1373,12 @@ fn string_join(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             format!("string-join: the joined string is {len} bytes, more than {max}"),
         ));
     }
-    let mut out = String::with_capacity(len);
-    for (i, item) in items.iter().enumerate() {
-        if i > 0 {
-            out.push_str(separator);
-        }
-        if let Val::Str(s) = item {
-            out.push_str(s);
-        }
-    }
-    Ok(Val::Str(Arc::from(out)))
+    // Every item is a string: the count above refused any other.
+    let strings = items.iter().filter_map(|item| match item {
+        Val::Str(s) => Some(s),
+        _ => None,
+    });
+    Ok(Val::Str(Str::join(separator, strings, len)))
 }
 
 /// `split separator string`: the strings between the separator's
@@ -1385,13 +1394,13 @@ fn string_join(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// the fuel and the host's abort flag bound a long split; every part is a
 /// piece of the string, so together they hold no more than it does.
 fn split(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let separator = as_str("split", "the separator", &a[0])?;
+    let separator = as_str(rt, "split", "the separator", &a[0])?;
     if separator.is_empty() {
         return Err(type_error(
             "split: the separator must be a non-empty string, not the empty string",
         ));
     }
-    let s = as_str("split", "the string", &a[1])?;
+    let s = as_str(rt, "split", "the string", &a[1])?;
     let separator_chars = separator.chars().count();
     // The characters read so far, and the steps taken for them.
     let (mut read, mut stepped) = (0usize, 0usize);
@@ -1403,7 +1412,7 @@ fn split(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             stepped += 1;
         }
         rt.tick()?;
-        parts.push(Val::Str(Arc::from(part)));
+        parts.push(Val::str(part));
     }
     Ok(Val::vector(parts))
 }
@@ -1435,7 +1444,7 @@ fn repeat(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             )))
         }
     };
-    let s = as_str("repeat", "the string", &a[1])?;
+    let s = as_str(rt, "repeat", "the string", &a[1])?;
     let max = rt.limits().max_scalar_bytes;
     if count * s.len() as f64 > max as f64 {
         return Err(Fail::limit(
@@ -1446,7 +1455,7 @@ fn repeat(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     }
     // Within the limit, the count fits a usize, or the string is empty.
     let n = if s.is_empty() { 0 } else { count as usize };
-    Ok(Val::Str(Arc::from(s.repeat(n))))
+    Ok(Val::Str(s.repeat(n).into()))
 }
 
 fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
@@ -1480,7 +1489,7 @@ fn fail(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
         }
         _ => return Err(type_error("fail takes a message, or a code and a message")),
     };
-    let message = as_str("fail", "the message", message)?;
+    let message = as_str(rt, "fail", "the message", message)?;
     // STREAMABILITY_UNKNOWN leads with its finer code, as the checker's
     // own do: `unstreamable`, a transducer part's refusal of a document it
     // does not stream, which a host that reads the part reads whole.
@@ -1605,8 +1614,8 @@ fn array_end(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     constructor("array-end")(rt, a, at)
 }
 
-fn key(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    as_str("key", "the name", &a[0])?;
+fn key(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    as_str(rt, "key", "the name", &a[0])?;
     Ok(Val::tagged("key", a.to_vec()))
 }
 
@@ -1979,7 +1988,7 @@ mod tests {
         let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
         let range = Val::vector(vec![Val::num(5.0), Val::num(5.0)]);
         let ranges = Val::vector(vec![range; 100_000]);
-        let s = Val::Str(Arc::from("a"));
+        let s = Val::str("a");
         let fail = chars_within(&fueled(), &[ranges, s], &span).unwrap_err();
         assert_eq!(
             fail.limit.as_ref().map(|l| l.name),
@@ -1993,7 +2002,7 @@ mod tests {
             Val::vector(vec![Val::num(0.0), Val::num(1.0)]),
             Val::vector(vec![Val::num(97.0), Val::num(97.0)]),
         ]);
-        let long = Val::Str(Arc::from("a".repeat(CHARS_WITHIN_STEP * 6)));
+        let long = Val::str(&"a".repeat(CHARS_WITHIN_STEP * 6));
         let fail = chars_within(&fueled(), &[few, long], &span).unwrap_err();
         assert_eq!(
             fail.limit.as_ref().map(|l| l.name),
@@ -2053,7 +2062,7 @@ mod tests {
             }
         };
         let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
-        let run = |text: String| unquoted(&fueled(), &[Val::Str(Arc::from(text))], &span);
+        let run = |text: String| unquoted(&fueled(), &[Val::Str(text.into())], &span);
         // A quoted form `n` characters long, its quotes included.
         let quoted = |n: usize, c: &str| format!("\"{}\"", c.repeat(n - 2));
         let limit = |fail: &Fail| fail.limit.as_ref().map(|l| l.name);
