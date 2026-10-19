@@ -1053,6 +1053,30 @@ So at 40,000 records a part read pruned holds about what aless's own
 read holds for JSON, and less for YAML and XML. alchemy-cli's parsers, which set no bound, take the
 engine's default once its lock names 0.12.14 (tabnas/alchemy-cli#48).
 
+For PGN's part, the natives came first (tabnas/alchemy#97, released as
+alchemy 0.2.14): `push-all` joins two vectors, `equal` compares two
+values as a `match` pattern compares a constant, and `inc` counts. The
+part, rewritten on
+them (tabnas/chess#69, released as chess 0.1.18), takes two scans an
+event rather than six: the second writes only a comment's commands, a
+list of lists that no native joins whole. `equal` and `inc` replace its
+`split` tricks, and with `inc` a count past 10,000 streams rather than
+being read whole. Over 500 generated games, in alchemy-cli's release
+build on tabnas-parser 0.12.13, before its default bound, against the
+streaming read alchemy-cli had before:
+
+| 500 games | the read before | the part, first | the part, rewritten |
+|---|---|---|---|
+| annotated, 603 KB | 0.94 s | 7.98 s | 4.97 s |
+| bare moves, 212 KB | 0.48 s | 4.27 s | 2.46 s |
+
+The rewritten part takes 5.3 and 5.1 times the read, within the two to
+six times the plan expected, and the same memory. The passes alone,
+through a step that does nothing, take 1.44 s and 0.83 s; the rest is
+the interpreter's reference counts, name lookups and allocation, not
+anything the part spells. alchemy-cli reads PGN through the part
+(tabnas/alchemy-cli#43).
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
