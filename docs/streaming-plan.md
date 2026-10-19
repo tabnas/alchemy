@@ -942,33 +942,42 @@ failure or a limit:
   so far (tabnas/alchemy#86's thread on it): a `:text` rule over 160,000
   items takes 8.01 s, against 40.40 s before.
 
-Measured again with both, the parts still cost what the two calls weigh.
-Over generated records in alchemy-cli's release build, a part read
-pruned by `run --grammar`, against aless 0.4.5's own read with
+Measured again with both, a part costs more time than aless's own read,
+and no more memory. Over generated records in alchemy-cli's release
+build, a part read pruned by `run --grammar`, with the engine's rule
+history bounded to three predecessors (`options.rule.history`, as aless
+sets it on every parser it makes), against aless 0.4.5's own read with
 `--render json`:
 
 | | aless 0.4.5 | the part, pruned |
 |---|---|---|
-| JSON, 10,000 records | 1.14 s, 32 MiB | 1.60 s, 126 MiB |
-| JSON, 40,000 records | 4.30 s, 99 MiB | 6.55 s, 474 MiB |
-| YAML, 10,000 records | 1.74 s, 53 MiB | 7.52 s, 83 MiB |
-| YAML, 40,000 records | 7.48 s, 177 MiB | 30.03 s, 296 MiB |
-| XML, 10,000 records | 1.12 s, 116 MiB | 5.00 s, 108 MiB |
-| XML, 40,000 records | 4.45 s, 394 MiB | 21.09 s, 400 MiB |
+| JSON, 10,000 records | 1.15 s, 32 MiB | 1.40 s, 32 MiB |
+| JSON, 40,000 records | 4.60 s, 98 MiB | 5.86 s, 99 MiB |
+| YAML, 10,000 records | 1.94 s, 53 MiB | 7.43 s, 33 MiB |
+| YAML, 40,000 records | 7.83 s, 177 MiB | 29.14 s, 97 MiB |
+| XML, 10,000 records | 1.14 s, 115 MiB | 5.26 s, 32 MiB |
+| XML, 40,000 records | 4.51 s, 394 MiB | 20.36 s, 96 MiB |
 
-PGN's part reads a 605 KB database in 5.76 s at 29 MiB pruned (87 MiB
-not), against aless 0.4.5's 0.49 s at 19 MiB. Every part's time grows
-in proportion to its input: four times the records take about four
-times as long. Pruning frees XML's element children and PGN's games, so
-XML's part holds what aless's own read holds, and PGN's a third of what
-it held unpruned. A JSON or YAML document's records sit in its root
-sequence, which is no closing rule's node until the document ends, so
-those parts hold the whole document, as the whole read does. The
-maintainer's calls, the same day, keep the built-in formats on their
-routes for now, and put two pieces of work first:
-- transduce empties the parent's array behind each element's close,
-  verified as pruning is now, so that a root sequence streams in what one
-  record holds; the built-ins are then measured again.
+PGN's part reads a 605 KB database in 5.75 s at 21 MiB, against aless
+0.4.5's 0.52 s at 19 MiB. Every part's time grows in proportion to its
+input: four times the records take about four times as long. Pruning
+empties each array a grammar builds behind the stream, a JSON or a YAML
+document's root sequence among them: the tree a pruned run leaves holds
+as many elements after 2,000 records as after 200. A part's memory still
+grows by about 2 KB a record, which the tree does not account for. A
+first measurement the same day left the rule history unbounded, as
+alchemy-cli's parsers leave it. The engine then keeps a snapshot of each
+rule a repetition replaces, 126 MiB for JSON's 10,000 records and 474
+MiB for 40,000, and that measurement read the memory as the root
+sequence's. The maintainer's calls, on the measurement above:
+- aless reads JSON, YAML and XML through their parts, at that cost.
+- The engine bounds its rule history by default, at three predecessors:
+  the default tabnas/parser's `doc/rule-history-bound.md` proposes once
+  every runtime carries the option, as all three now do.
+- What still grows by about 2 KB a record is traced before anything is
+  built for it. Emptying a parent's array behind each element's close,
+  proposed on the first measurement, would free nothing, and is not
+  built.
 - For PGN, alchemy gains natives that join two vectors, compare two
   values and count, in all three runtimes, to replace what its part
   spells today as six scans an event and `split` tricks; the part is
