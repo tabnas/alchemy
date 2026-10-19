@@ -326,7 +326,7 @@ fn defines(form: &Expr, name: &str) -> bool {
 /// Recursive per level, which [`crate::MAX_NESTING`] bounds.
 fn mentions<'f>(form: &'f Expr, name: &str) -> Option<&'f crate::ast::SourceSpan> {
     match form {
-        Expr::Symbol { name: n, span } if n == name => Some(span),
+        Expr::Symbol { name: n, span } if &**n == name => Some(span),
         Expr::List { items, .. } | Expr::Vector { items, .. } => {
             items.iter().find_map(|item| mentions(item, name))
         }
@@ -340,7 +340,7 @@ fn mentions<'f>(form: &'f Expr, name: &str) -> Option<&'f crate::ast::SourceSpan
 /// Recursive per level, which [`crate::MAX_NESTING`] bounds.
 fn rename_symbol(form: &mut Expr, from: &str, to: &str) {
     match form {
-        Expr::Symbol { name, .. } if name == from => *name = to.to_string(),
+        Expr::Symbol { name, .. } if &**name == from => *name = Arc::from(to),
         Expr::List { items, .. } | Expr::Vector { items, .. } => {
             for item in items {
                 rename_symbol(item, from, to);
@@ -635,6 +635,30 @@ impl Program {
         self.declared(Input::ParserEvents)?;
         let lowering = self.lowering(limits, metrics);
         let events = lowering.sink_as(&self.result, out, render, self.output)?;
+        Ok(lowering.parser_head(events))
+    }
+
+    /// The sink for one run over parser events whose JSON events go into
+    /// the host's own `down` rather than to a renderer, for a program
+    /// compiled over [`Input::ParserEvents`] that answers JSON events: a
+    /// format's transducer part, run in front of the host's own stages (a
+    /// renderer of its own, a scope over a path, another program's sink).
+    /// The host pushes each rule pass into the `ParserSink + Send` it
+    /// returns, then one `ParserEvent::End` once the parse has returned its
+    /// value, and `down` takes the events as the program makes them, then
+    /// one `End`. The source's limits hold on them as on a source's own. A
+    /// program that answers a text or a table is refused
+    /// (`protocol_mismatch`) before anything runs, as is one compiled over
+    /// JSON events.
+    pub fn parser_sink_into(
+        &self,
+        down: Box<dyn Sink + Send>,
+        limits: &Limits,
+        metrics: Arc<Metrics>,
+    ) -> Result<Box<dyn ParserSink + Send>, Fail> {
+        self.declared(Input::ParserEvents)?;
+        let lowering = self.lowering(limits, metrics);
+        let events = lowering.events_into(&self.result, self.output, down)?;
         Ok(lowering.parser_head(events))
     }
 

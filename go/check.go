@@ -146,7 +146,7 @@ func StdlibSignature(name string) (Type, bool) {
 	// pass's outputs, a vector of events.
 	case "transduce-token":
 		return Func([]Type{Unknown, RecordT}, ValueT), true
-	case "transduce-key", "transduce-scalar", "transduce-value":
+	case "transduce-named", "transduce-key", "transduce-scalar", "transduce-value":
 		return Func([]Type{Unknown, RecordT, VectorOf(Unknown)}, VectorOf(Unknown)), true
 	case "transduce-begin":
 		return Func([]Type{Unknown, Unknown, VectorOf(Unknown)}, Tagged("transition")), true
@@ -157,6 +157,27 @@ func StdlibSignature(name string) (Type, bool) {
 	case "transduce-step":
 		return Func([]Type{RecordT, Unknown, Unknown}, Tagged("transition")), true
 	case "transduce-finish":
+		return Func([]Type{Unknown}, VectorOf(EventT)), true
+	// transduce-tree's own step, which carries the open texts beside the
+	// tree's state: the texts are a vector of strings, and a close pass's
+	// text and outputs come back as a vector of the two.
+	case "transduce-member":
+		return Func([]Type{RecordT, RecordT, VectorOf(Unknown)}, VectorOf(Unknown)), true
+	case "transduce-write":
+		return Func([]Type{Unknown, StringT}, VectorOf(Unknown)), true
+	case "transduce-spell":
+		return Func([]Type{Unknown, RecordT}, Unknown), true
+	case "transduce-text-open":
+		return Func([]Type{RecordT, Unknown, RecordT}, Unknown), true
+	case "transduce-text-end":
+		return Func([]Type{StringT, Unknown, RecordT}, VectorOf(Unknown)), true
+	case "transduce-text-close":
+		return Func([]Type{RecordT, Unknown, RecordT}, VectorOf(Unknown)), true
+	case "transduce-then":
+		return Func([]Type{VectorOf(Unknown), VectorOf(Unknown)}, VectorOf(Unknown)), true
+	case "transduce-pass":
+		return Func([]Type{RecordT, Unknown, Unknown}, Tagged("transition")), true
+	case "transduce-done":
 		return Func([]Type{Unknown}, VectorOf(EventT)), true
 	case "transduce-tree":
 		return Func([]Type{RecordT, ParserEventsT}, JsonEvents), true
@@ -1200,6 +1221,17 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 			return VectorOf(JoinTypes(*t(1).Item, t(0))), nil
 		}
 		return VectorOf(Unknown), nil
+	case "push-all":
+		if f := c.expect("the items of push-all", VectorOf(Unknown), t(0), at(0)); f != nil {
+			return Type{}, f
+		}
+		if f := c.expect("the vector of push-all", VectorOf(Unknown), t(1), at(1)); f != nil {
+			return Type{}, f
+		}
+		if t(0).Kind == TVector && t(1).Kind == TVector {
+			return VectorOf(JoinTypes(*t(1).Item, *t(0).Item)), nil
+		}
+		return VectorOf(Unknown), nil
 	case "pop":
 		if f := c.expect("the vector of pop", VectorOf(Unknown), t(0), at(0)); f != nil {
 			return Type{}, f
@@ -1232,6 +1264,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(BoolT, first(exp("the ranges of chars-within", VectorOf(Unknown), 0), exp("the string of chars-within", StringT, 1)))
 	case "compare":
 		return ret(KeywordT, first(exp("the first number of compare", NumberT, 0), exp("the second number of compare", NumberT, 1)))
+	case "inc":
+		return ret(NumberT, exp("the count of inc", NumberT, 0)())
 	case "number-class":
 		return ret(KeywordT, exp("the number of number-class", NumberT, 0)())
 	case "kind":
@@ -1239,6 +1273,13 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 			return Type{}, c.mismatch("the value of kind", ValueT, t(0), at(0))
 		}
 		return KeywordT, nil
+	case "equal":
+		for i, what := range []string{"the first value of equal", "the second value of equal"} {
+			if t(i).IsAffine() {
+				return Type{}, c.mismatch(what, ValueT, t(i), at(i))
+			}
+		}
+		return BoolT, nil
 	case "path":
 		for i := range args {
 			switch t(i).Kind {

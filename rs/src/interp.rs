@@ -36,12 +36,14 @@ use std::sync::{Arc, Mutex};
 use crate::ast::{Expr, SourceSpan, Sources};
 use crate::check::describe;
 use crate::desugar::shape_error;
+use crate::fx::FxBuild;
 use crate::program::Input;
+use crate::pvec::Summary;
 use crate::resolve::{fn_form, fn_params, Resolved};
 use crate::shared::{AbortFlag, Code, Datum, Duplicates, Fail, Limits};
 use crate::stdlib::registry::{self, native, truth, Kind, Native};
 use crate::stdlib::{self, Stdlib};
-use crate::value::{type_error, Closure, Env, Func, Partial, Plan, Scope, Seq, Val};
+use crate::value::{type_error, Closure, Env, Func, Partial, Plan, Scope, Seq, Val, Vector};
 
 /// How deep evaluation may nest: a form inside a form, a function's body
 /// inside the call that applied it, a definition's value inside the form
@@ -93,7 +95,27 @@ pub struct Runtime {
     steps: AtomicU64,
     depth: AtomicUsize,
     /// Definition values, evaluated on first use.
-    cache: Mutex<HashMap<(Scope, Arc<str>), Val>>,
+    cache: Mutex<HashMap<(Scope, Arc<str>), Val, FxBuild>>,
+    /// What each free name a scope's code names denotes, looked up on
+    /// first use ([`Runtime::resolved`]), by [`Scope`]: a name is looked up
+    /// on every reference, and the definitions' tables and the natives'
+    /// cost a hash of the name each. A name that denotes none of them, a
+    /// pattern's variable, is kept as `None`.
+    globals: Mutex<[Globals; 2]>,
+}
+
+/// One scope's free names and what each denotes.
+type Globals = HashMap<Arc<str>, Option<Global>, FxBuild>;
+
+/// What a free name denotes in a scope: a definition's value, a native
+/// constant's value or a native function.
+#[derive(Clone)]
+struct Global {
+    value: Val,
+    /// Whether a pattern naming it compares against its value (a
+    /// definition or a native constant) rather than binding the name (a
+    /// native function or constructor).
+    compares: bool,
 }
 
 /// One level of evaluation, given back when it ends.
@@ -111,6 +133,21 @@ impl std::fmt::Debug for Runtime {
             .field("file", &self.program.file)
             .field("native", &self.native)
             .finish_non_exhaustive()
+    }
+}
+
+/// The names of a `fn` form's parameters, which [`fn_form`] found to be
+/// symbols, shared with the form.
+fn param_names(params: &Expr) -> Vec<Arc<str>> {
+    match params {
+        Expr::Vector { items, .. } => items
+            .iter()
+            .filter_map(|p| match p {
+                Expr::Symbol { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -138,7 +175,8 @@ impl Runtime {
             fuel: None,
             steps: AtomicU64::new(0),
             depth: AtomicUsize::new(0),
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(HashMap::default()),
+            globals: Mutex::new([HashMap::default(), HashMap::default()]),
         }
     }
 
@@ -176,9 +214,17 @@ impl Runtime {
     /// abort flag. Every form evaluated takes one, and so does every node
     /// a finite text or a measured value walks.
     pub fn tick(&self) -> Result<(), Fail> {
-        let n = self.steps.fetch_add(1, Ordering::Relaxed) + 1;
+        self.tick_n(1)
+    }
+
+    /// `n` evaluation steps at once, as `n` calls of [`Runtime::tick`]
+    /// take them: the fuel they spend, and the abort flag read when they
+    /// pass a multiple of [`ABORT_EVERY`].
+    fn tick_n(&self, n: u64) -> Result<(), Fail> {
+        let before = self.steps.fetch_add(n, Ordering::Relaxed);
+        let after = before.saturating_add(n);
         if let Some(max) = self.fuel {
-            if n > max {
+            if after > max {
                 return Err(Fail::limit(
                     "max_plan_steps",
                     max,
@@ -188,7 +234,7 @@ impl Runtime {
                 ));
             }
         }
-        if n % ABORT_EVERY == 0 && self.abort.is_aborted() {
+        if after / ABORT_EVERY != before / ABORT_EVERY && self.abort.is_aborted() {
             return Err(Fail::aborted());
         }
         Ok(())
@@ -301,13 +347,13 @@ impl Runtime {
             return Ok(Some(v.clone()));
         }
         let value = match fn_params(&def.value) {
-            Some(params) => {
+            Some(_) => {
                 let Expr::List { items, span } = &*def.value else {
                     unreachable!("fn_params answered for a fn form");
                 };
                 Val::Fn(Func::Closure(Arc::new(Closure {
                     name: Some(def.name.clone()),
-                    params: params.iter().map(|p| Arc::from(*p)).collect(),
+                    params: param_names(&items[1]),
                     body: Arc::new(items[2].clone()),
                     env: Env::new(),
                     scope: found,
@@ -323,17 +369,50 @@ impl Runtime {
         Ok(Some(value))
     }
 
+    /// What a free symbol denotes in `scope`, looked up once: a
+    /// definition, a native constant's value, or a native function; `None`
+    /// for a name that is none of them. A native constant's value is the
+    /// same on every call, and a definition's is evaluated once, so the
+    /// answer is kept. The lock is not held while a definition is
+    /// evaluated, since that looks up the names it uses.
+    fn resolved(
+        &self,
+        scope: Scope,
+        name: &str,
+        span: &SourceSpan,
+    ) -> Result<Option<Global>, Fail> {
+        let slot = scope as usize;
+        if let Some(found) = self.globals.lock().map_err(poisoned)?[slot].get(name) {
+            return Ok(found.clone());
+        }
+        let found = if let Some(value) = self.def_value(scope, name)? {
+            Some(Global {
+                value,
+                compares: true,
+            })
+        } else if let Some(n) = native(name) {
+            Some(match n.kind {
+                Kind::Constant => Global {
+                    value: (n.call)(self, &[], span)?,
+                    compares: true,
+                },
+                Kind::Function | Kind::Constructor => Global {
+                    value: Val::Fn(Func::Native(n)),
+                    compares: false,
+                },
+            })
+        } else {
+            None
+        };
+        self.globals.lock().map_err(poisoned)?[slot].insert(Arc::from(name), found.clone());
+        Ok(found)
+    }
+
     /// The value a free symbol denotes in `scope`: a definition, a native
     /// constant's value, or a native function.
     fn global(&self, scope: Scope, name: &str, span: &SourceSpan) -> Result<Val, Fail> {
-        if let Some(v) = self.def_value(scope, name)? {
-            return Ok(v);
-        }
-        if let Some(n) = native(name) {
-            return match n.kind {
-                Kind::Constant => (n.call)(self, &[], span),
-                Kind::Function | Kind::Constructor => Ok(Val::Fn(Func::Native(n))),
-            };
+        if let Some(global) = self.resolved(scope, name, span)? {
+            return Ok(global.value);
         }
         Err(self.fail_at(
             Fail::new(
@@ -353,15 +432,15 @@ impl Runtime {
                 Some(v) => Ok(v.clone()),
                 None => self.global(scope, name, span),
             },
-            Expr::Keyword { name, .. } => Ok(Val::keyword(name)),
-            Expr::Str { value, .. } => Ok(Val::str(value)),
+            Expr::Keyword { name, .. } => Ok(Val::Keyword(name.clone())),
+            Expr::Str { value, .. } => Ok(Val::Str(value.clone().into())),
             Expr::Num { lexeme, span } => {
                 let value: f64 = lexeme.parse().map_err(|_| {
                     self.fail_at(type_error(format!("{lexeme} is not a number")), span)
                 })?;
                 Ok(Val::Num {
                     value,
-                    lexeme: Some(Arc::from(lexeme.as_str())),
+                    lexeme: Some(lexeme.clone()),
                 })
             }
             Expr::Bool { value, .. } => Ok(Val::Bool(*value)),
@@ -399,7 +478,7 @@ impl Runtime {
         };
         match head.symbol() {
             Some("fn") if env.get("fn").is_none() => {
-                let Some((params, body)) = fn_form(items) else {
+                let Some((_, body)) = fn_form(items) else {
                     return Err(self.fail_at(
                         Fail::new(
                             Code::DslTypeError,
@@ -410,7 +489,7 @@ impl Runtime {
                 };
                 Ok(Val::Fn(Func::Closure(Arc::new(Closure {
                     name: None,
-                    params: params.iter().map(|p| Arc::from(*p)).collect(),
+                    params: param_names(&items[1]),
                     body: Arc::new(body.clone()),
                     env: env.clone(),
                     scope,
@@ -426,15 +505,13 @@ impl Runtime {
                 else {
                     return Err(self.fail_at(shape_error("bad_let"), span));
                 };
-                let (Some(name), Some(value), 2) = (
-                    binding.first().and_then(Expr::symbol),
-                    binding.get(1),
-                    binding.len(),
-                ) else {
+                let (Some(Expr::Symbol { name, .. }), Some(value), 2) =
+                    (binding.first(), binding.get(1), binding.len())
+                else {
                     return Err(self.fail_at(shape_error("bad_let"), span));
                 };
                 let value = self.eval(value, env, scope)?;
-                let inner = env.bind(Arc::from(name), value);
+                let inner = env.bind(name.clone(), value);
                 self.eval(body, &inner, scope)
             }
             Some("if") if env.get("if").is_none() => {
@@ -593,13 +670,10 @@ impl Runtime {
         if env.has(name) {
             return Ok(None);
         }
-        if let Some(v) = self.def_value(scope, name)? {
-            return Ok(Some(v));
-        }
-        match native(name) {
-            Some(n) if n.kind == Kind::Constant => Ok(Some((n.call)(self, &[], span)?)),
-            _ => Ok(None),
-        }
+        Ok(self
+            .resolved(scope, name, span)?
+            .filter(|global| global.compares)
+            .map(|global| global.value))
     }
 
     /// Match `value` against `pattern`: the environment extended with the
@@ -612,18 +686,35 @@ impl Runtime {
         scope: Scope,
     ) -> Result<Option<Env>, Fail> {
         match pattern {
-            Expr::Symbol { name, .. } if name == "_" => Ok(Some(env.clone())),
+            Expr::Symbol { name, .. } if &**name == "_" => Ok(Some(env.clone())),
             Expr::Symbol { name, span } => match self.pattern_constant(name, env, scope, span)? {
                 Some(constant) => Ok((constant == *value).then(|| env.clone())),
-                None => Ok(Some(env.bind(Arc::from(name.as_str()), value.clone()))),
+                None => Ok(Some(env.bind(name.clone(), value.clone()))),
             },
+            // A literal compares as its value would, `==` on values, and
+            // takes the step and the level evaluating it would; it is not
+            // built, since the value it compares with is in hand.
             Expr::Keyword { .. }
             | Expr::Str { .. }
             | Expr::Num { .. }
             | Expr::Bool { .. }
             | Expr::Null { .. } => {
-                let literal = self.eval(pattern, env, scope)?;
-                Ok((literal == *value).then(|| env.clone()))
+                self.tick()?;
+                let _level = self.enter(Some(pattern.span()))?;
+                let same = match (pattern, value) {
+                    (Expr::Keyword { name, .. }, Val::Keyword(k)) => **k == **name,
+                    (Expr::Str { value: s, .. }, Val::Str(v)) => **v == **s,
+                    (Expr::Num { lexeme, span }, _) => {
+                        let n: f64 = lexeme.parse().map_err(|_| {
+                            self.fail_at(type_error(format!("{lexeme} is not a number")), span)
+                        })?;
+                        matches!(value, Val::Num { value: v, .. } if *v == n)
+                    }
+                    (Expr::Bool { value: b, .. }, Val::Bool(v)) => b == v,
+                    (Expr::Null { .. }, Val::Null) => true,
+                    _ => false,
+                };
+                Ok(same.then(|| env.clone()))
             }
             Expr::Vector { items, .. } => {
                 let Val::Vector(values) = value else {
@@ -752,6 +843,234 @@ enum Node<'v> {
     /// partial applies, when it is itself a partial, or the one a plan
     /// applies.
     Fn(&'v Func),
+    /// The items of a vector's full leaves, by the [`Size`] the leaves
+    /// keep, at the vector's own depth: what visiting each item would
+    /// count, counted at once.
+    Summed(Size),
+}
+
+/// What a walk over a value counts: the nodes it visits, their payload
+/// bytes, and how deep they nest, the value walked from at depth 1. A
+/// vector's full leaves keep it for their items ([`crate::value::Vector`]),
+/// so a walk over a long vector reads the leaves' sums instead of visiting
+/// every item again. An item larger than [`SIZE_BUDGET`] nodes is too large
+/// to sum ([`Size::OVER`]), and a walk visits it, as it visits every item
+/// whose leaf it cannot read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Size {
+    pub nodes: u64,
+    pub payload: u64,
+    pub depth: usize,
+}
+
+/// The nodes an item may hold and still be summed: a value built by
+/// sharing (a vector of itself twice, forty times over) is walked, at its
+/// bound, rather than summed without one.
+pub const SIZE_BUDGET: u64 = 1 << 16;
+
+impl Size {
+    /// Too large to sum.
+    pub const OVER: Size = Size {
+        nodes: u64::MAX,
+        payload: u64::MAX,
+        depth: usize::MAX,
+    };
+
+    pub fn is_over(&self) -> bool {
+        self.nodes == u64::MAX
+    }
+}
+
+impl Summary for Size {
+    type Item = Val;
+
+    fn of(item: &Val) -> Size {
+        size_of(item)
+    }
+
+    fn join(self, other: Size) -> Size {
+        if self.is_over() || other.is_over() {
+            return Size::OVER;
+        }
+        Size {
+            nodes: self.nodes.saturating_add(other.nodes),
+            payload: self.payload.saturating_add(other.payload),
+            depth: self.depth.max(other.depth),
+        }
+    }
+}
+
+/// What a measure walk counts of `v`, without its bounds or its steps, and
+/// [`Size::OVER`] past [`SIZE_BUDGET`] nodes.
+fn size_of(v: &Val) -> Size {
+    let mut size = Size::default();
+    let mut pending: Vec<(Node<'_>, usize)> = vec![(Node::Val(v), 1)];
+    while let Some((node, depth)) = pending.pop() {
+        if let Node::Summed(sum) = node {
+            size.nodes = size.nodes.saturating_add(sum.nodes);
+            size.payload = size.payload.saturating_add(sum.payload);
+            size.depth = size.depth.max(depth.saturating_add(sum.depth));
+        } else {
+            size.nodes += 1;
+            size.depth = size.depth.max(depth);
+            let payload = expand(node, depth, &mut pending, |sum, _| sum.is_over());
+            size.payload = size.payload.saturating_add(payload as u64);
+        }
+        if size.nodes > SIZE_BUDGET {
+            return Size::OVER;
+        }
+    }
+    size
+}
+
+/// The items of a vector at `depth`, one level below it: its full leaves
+/// as one [`Node::Summed`] step at its own depth, which a walk takes after
+/// the tail's items as it would have taken the leaves' own, unless `open`
+/// asks for every item, as it does for leaves too large to sum.
+fn push_items<'v>(
+    items: &'v Vector,
+    depth: usize,
+    pending: &mut Vec<(Node<'v>, usize)>,
+    open: &impl Fn(Size, usize) -> bool,
+) {
+    if let Some(items) = items.as_slice() {
+        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
+        return;
+    }
+    match items.trie_summary() {
+        Some(sum) if !open(sum, depth) => {
+            pending.push((Node::Summed(sum), depth));
+            pending.extend(items.tail().iter().map(|i| (Node::Val(i), depth + 1)));
+        }
+        _ => {
+            for chunk in items.chunks() {
+                pending.extend(chunk.iter().map(|i| (Node::Val(i), depth + 1)));
+            }
+        }
+    }
+}
+
+/// One node of a walk at `depth`: its payload, with what it holds pushed
+/// onto `pending` one level below. A vector's items go by [`push_items`].
+fn expand<'v>(
+    node: Node<'v>,
+    depth: usize,
+    pending: &mut Vec<(Node<'v>, usize)>,
+    open: impl Fn(Size, usize) -> bool,
+) -> usize {
+    match node {
+        Node::Val(v) => match v {
+            Val::Null | Val::Bool(_) => 0,
+            Val::Num { lexeme, .. } => lexeme.as_ref().map_or(8, |l| l.len()),
+            Val::Str(s) => s.len(),
+            Val::Keyword(s) => s.len(),
+            Val::Vector(items) => {
+                push_items(items, depth, pending, &open);
+                0
+            }
+            Val::Record(fields) => {
+                pending.extend(fields.values().map(|i| (Node::Val(i), depth + 1)));
+                fields.keys().map(|k| k.len()).sum()
+            }
+            Val::Tagged { tag, fields } => {
+                pending.extend(fields.iter().map(|i| (Node::Val(i), depth + 1)));
+                tag.len()
+            }
+            Val::Selector(s) => s.to_string().len(),
+            Val::CaptureSpec(c) => c.tag.len() + c.selector.to_string().len(),
+            Val::Fn(f) => {
+                push_fn(f, depth, pending);
+                0
+            }
+            Val::Stream(plan) | Val::Text(plan) => {
+                pending.push((Node::Plan(plan), depth + 1));
+                0
+            }
+        },
+        Node::Plan(plan) => match plan {
+            Plan::Lit(s) => s.len(),
+            Plan::Concat { items, .. } => {
+                pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
+                0
+            }
+            Plan::Join {
+                sep,
+                items: Seq::Vector(items),
+            } => {
+                push_items(items, depth, pending, &open);
+                sep.len()
+            }
+            // A finite concat-map keeps the function it applies until it
+            // is written: a partial over the state before holds that
+            // state, so the function is walked like any value the plan
+            // holds.
+            Plan::ConcatMap { f, items, .. } => {
+                pending.push((Node::Fn(f), depth + 1));
+                if let Seq::Vector(items) = items {
+                    push_items(items, depth, pending, &open);
+                }
+                0
+            }
+            Plan::Replace { from, to, source } => {
+                pending.push((Node::Val(source), depth + 1));
+                from.len() + to.len()
+            }
+            // A live plan's source is the one pass over the input, not a
+            // retained value, and is not walked; what the plan itself
+            // holds (its functions, its options, a scan's initial state)
+            // is.
+            Plan::Map { f, .. } | Plan::Filter { f, .. } => {
+                pending.push((Node::Fn(f), depth + 1));
+                0
+            }
+            Plan::ScanEmit {
+                init, step, finish, ..
+            } => {
+                pending.push((Node::Val(init), depth + 1));
+                pending.push((Node::Fn(step), depth + 1));
+                pending.push((Node::Fn(finish), depth + 1));
+                0
+            }
+            Plan::TableFromJson { binding: v, .. }
+            | Plan::CsvTable { options: v, .. }
+            | Plan::Csv { options: v, .. } => {
+                pending.push((Node::Val(v), depth + 1));
+                0
+            }
+            Plan::Route { specs, .. } => specs
+                .iter()
+                .map(|c| c.tag.len() + c.selector.to_string().len())
+                .sum(),
+            Plan::Select { selector, .. } => selector.to_string().len(),
+            Plan::Join {
+                sep,
+                items: Seq::Stream(_),
+            } => sep.len(),
+            Plan::Input
+            | Plan::ParserInput
+            | Plan::Events { .. }
+            | Plan::ParserEvents { .. }
+            | Plan::AsEvents { .. }
+            | Plan::Records { .. }
+            | Plan::TreeContract { .. }
+            | Plan::Json { .. } => 0,
+        },
+        // A frame's value, and the frames outside it one level further: a
+        // chain of frames is dropped one inside another.
+        Node::Env(env) => match env.frame() {
+            Some((value, next)) => {
+                pending.push((Node::Val(value), depth + 1));
+                pending.push((Node::Env(next), depth + 1));
+                0
+            }
+            None => 0,
+        },
+        Node::Fn(f) => {
+            push_fn(f, depth, pending);
+            0
+        }
+        Node::Summed(_) => unreachable!("a walk counts a summed step itself"),
+    }
 }
 
 /// What a function value holds, one level below `depth`: a closure its
@@ -783,10 +1102,39 @@ impl Runtime {
     /// written, and the walk ends at the bound rather than visiting it
     /// all. Every node takes an evaluation step, so the abort flag stops
     /// it too.
+    ///
+    /// A vector's full leaves are counted by the [`Size`] they keep, at
+    /// the point the walk would have visited their items, so a long vector
+    /// costs its tail and a read per leaf, not its length: a scan's state
+    /// is measured on every step. The count is what visiting the items
+    /// gives, and so is the failure: where the leaves' items would nest
+    /// past `max_depth`, or are too large to sum, the walk visits them.
     pub fn measure(&self, v: &Val, bounds: Bounds) -> Result<Measure, Fail> {
+        let too_large = || {
+            Fail::limit(
+                bounds.bytes_limit,
+                bounds.max_bytes,
+                format!("{} holds more than {} bytes", bounds.what, bounds.max_bytes),
+            )
+        };
+        let open = |sum: Size, depth: usize| {
+            sum.is_over() || depth.saturating_add(sum.depth) > bounds.max_depth
+        };
         let mut found = Measure::default();
         let mut pending: Vec<(Node<'_>, usize)> = vec![(Node::Val(v), 1)];
         while let Some((node, depth)) = pending.pop() {
+            if let Node::Summed(sum) = node {
+                self.tick_n(sum.nodes)?;
+                found.depth = found.depth.max(depth + sum.depth);
+                found.bytes = found
+                    .bytes
+                    .saturating_add(sum.nodes.saturating_mul(bounds.node_bytes))
+                    .saturating_add(sum.payload);
+                if found.bytes > bounds.max_bytes {
+                    return Err(too_large());
+                }
+                continue;
+            }
             self.tick()?;
             if depth > bounds.max_depth {
                 return Err(Fail::limit(
@@ -799,127 +1147,13 @@ impl Runtime {
                 ));
             }
             found.depth = found.depth.max(depth);
-            let payload: usize = match node {
-                Node::Val(v) => match v {
-                    Val::Null | Val::Bool(_) => 0,
-                    Val::Num { lexeme, .. } => lexeme.as_ref().map_or(8, |l| l.len()),
-                    Val::Str(s) | Val::Keyword(s) => s.len(),
-                    Val::Vector(items) => {
-                        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
-                        0
-                    }
-                    Val::Record(fields) => {
-                        pending.extend(fields.values().map(|i| (Node::Val(i), depth + 1)));
-                        fields.keys().map(|k| k.len()).sum()
-                    }
-                    Val::Tagged { tag, fields } => {
-                        pending.extend(fields.iter().map(|i| (Node::Val(i), depth + 1)));
-                        tag.len()
-                    }
-                    Val::Selector(s) => s.to_string().len(),
-                    Val::CaptureSpec(c) => c.tag.len() + c.selector.to_string().len(),
-                    Val::Fn(f) => {
-                        push_fn(f, depth, &mut pending);
-                        0
-                    }
-                    Val::Stream(plan) | Val::Text(plan) => {
-                        pending.push((Node::Plan(plan), depth + 1));
-                        0
-                    }
-                },
-                Node::Plan(plan) => match plan {
-                    Plan::Lit(s) => s.len(),
-                    Plan::Concat { items, .. } => {
-                        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
-                        0
-                    }
-                    Plan::Join {
-                        sep,
-                        items: Seq::Vector(items),
-                    } => {
-                        pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
-                        sep.len()
-                    }
-                    // A finite concat-map keeps the function it applies
-                    // until it is written: a partial over the state before
-                    // holds that state, so the function is walked like any
-                    // value the plan holds.
-                    Plan::ConcatMap { f, items, .. } => {
-                        pending.push((Node::Fn(f), depth + 1));
-                        if let Seq::Vector(items) = items {
-                            pending.extend(items.iter().map(|i| (Node::Val(i), depth + 1)));
-                        }
-                        0
-                    }
-                    Plan::Replace { from, to, source } => {
-                        pending.push((Node::Val(source), depth + 1));
-                        from.len() + to.len()
-                    }
-                    // A live plan's source is the one pass over the input,
-                    // not a retained value, and is not walked; what the
-                    // plan itself holds (its functions, its options, a
-                    // scan's initial state) is.
-                    Plan::Map { f, .. } | Plan::Filter { f, .. } => {
-                        pending.push((Node::Fn(f), depth + 1));
-                        0
-                    }
-                    Plan::ScanEmit {
-                        init, step, finish, ..
-                    } => {
-                        pending.push((Node::Val(init), depth + 1));
-                        pending.push((Node::Fn(step), depth + 1));
-                        pending.push((Node::Fn(finish), depth + 1));
-                        0
-                    }
-                    Plan::TableFromJson { binding: v, .. }
-                    | Plan::CsvTable { options: v, .. }
-                    | Plan::Csv { options: v, .. } => {
-                        pending.push((Node::Val(v), depth + 1));
-                        0
-                    }
-                    Plan::Route { specs, .. } => specs
-                        .iter()
-                        .map(|c| c.tag.len() + c.selector.to_string().len())
-                        .sum(),
-                    Plan::Select { selector, .. } => selector.to_string().len(),
-                    Plan::Join {
-                        sep,
-                        items: Seq::Stream(_),
-                    } => sep.len(),
-                    Plan::Input
-                    | Plan::ParserInput
-                    | Plan::Events { .. }
-                    | Plan::ParserEvents { .. }
-                    | Plan::AsEvents { .. }
-                    | Plan::Records { .. }
-                    | Plan::TreeContract { .. }
-                    | Plan::Json { .. } => 0,
-                },
-                // A frame's value, and the frames outside it one level
-                // further: a chain of frames is dropped one inside another.
-                Node::Env(env) => match env.frame() {
-                    Some((value, next)) => {
-                        pending.push((Node::Val(value), depth + 1));
-                        pending.push((Node::Env(next), depth + 1));
-                        0
-                    }
-                    None => 0,
-                },
-                Node::Fn(f) => {
-                    push_fn(f, depth, &mut pending);
-                    0
-                }
-            };
+            let payload = expand(node, depth, &mut pending, open);
             found.bytes = found
                 .bytes
                 .saturating_add(bounds.node_bytes)
                 .saturating_add(payload as u64);
             if found.bytes > bounds.max_bytes {
-                return Err(Fail::limit(
-                    bounds.bytes_limit,
-                    bounds.max_bytes,
-                    format!("{} holds more than {} bytes", bounds.what, bounds.max_bytes),
-                ));
+                return Err(too_large());
             }
         }
         Ok(found)
@@ -1420,16 +1654,15 @@ mod tests {
             let Val::Fn(f) = partial(g(), vec![prev]) else {
                 unreachable!()
             };
-            let items: Arc<[Val]> = Arc::from(vec![Val::str("x")]);
             let text = Val::Text(Arc::new(Plan::ConcatMap {
                 f,
-                items: Seq::Vector(items),
+                items: Seq::Vector(Vector::from(vec![Val::str("x")])),
                 at: at.clone(),
             }));
-            Val::Vector(Arc::from(vec![text]))
+            Val::vector(vec![text])
         };
         let chain = |links: usize| {
-            let mut v = Val::Vector(Arc::from(Vec::<Val>::new()));
+            let mut v = Val::vector(Vec::new());
             for _ in 0..links {
                 v = link(v);
             }
@@ -1470,6 +1703,121 @@ mod tests {
             "max_metadata_bytes",
             "{fail}"
         );
+    }
+
+    /// The walk a measure made before vectors kept their leaves' sizes,
+    /// every item visited, for the data kinds: the reference the summed
+    /// walk is held to.
+    fn exact(v: &Val, node_bytes: u64) -> (Measure, u64) {
+        let mut found = Measure::default();
+        let mut nodes = 0;
+        let mut pending = vec![(v, 1usize)];
+        while let Some((v, depth)) = pending.pop() {
+            nodes += 1;
+            found.depth = found.depth.max(depth);
+            let payload = match v {
+                Val::Null | Val::Bool(_) => 0,
+                Val::Num { lexeme, .. } => lexeme.as_ref().map_or(8, |l| l.len()),
+                Val::Str(s) => s.len(),
+                Val::Keyword(s) => s.len(),
+                Val::Vector(items) => {
+                    pending.extend(items.iter().map(|i| (i, depth + 1)));
+                    0
+                }
+                Val::Record(fields) => {
+                    pending.extend(fields.values().map(|i| (i, depth + 1)));
+                    fields.keys().map(|k| k.len()).sum()
+                }
+                Val::Tagged { tag, fields } => {
+                    pending.extend(fields.iter().map(|i| (i, depth + 1)));
+                    tag.len()
+                }
+                other => unreachable!("not data: {other:?}"),
+            };
+            found.bytes += node_bytes + payload as u64;
+        }
+        (found, nodes)
+    }
+
+    fn state_bounds(max_bytes: u64, max_depth: usize) -> Bounds {
+        Bounds {
+            node_bytes: 16,
+            max_bytes,
+            bytes_limit: "max_metadata_bytes",
+            max_depth,
+            what: "the state",
+        }
+    }
+
+    /// A vector's full leaves are counted by the sizes they keep, and the
+    /// count, the depth and the steps it takes are what visiting every
+    /// item gives, for a vector at each length around a leaf's, past a
+    /// trie's first and second levels, nested, and built a push at a time.
+    #[test]
+    fn a_long_vector_measures_as_visiting_its_items_would() {
+        let rt = runtime("");
+        let item = |i: usize| match i % 4 {
+            0 => Val::str(&"s".repeat(i % 7)),
+            1 => Val::num(i as f64),
+            2 => Val::vector(vec![Val::keyword("k"), Val::Null]),
+            _ => Val::tagged("entry", vec![Val::str("a"), Val::Bool(true)]),
+        };
+        let mut values = Vec::new();
+        for n in [0, 1, 31, 32, 33, 64, 1023, 1024, 1025, 33_000] {
+            values.push(Val::vector((0..n).map(item).collect()));
+        }
+        let pushed = (0..2_000).fold(Val::vector(Vec::new()), |v, i| {
+            let Val::Vector(items) = v else {
+                unreachable!()
+            };
+            Val::Vector(items.push(item(i)))
+        });
+        values.push(pushed);
+        let nested = Val::vector(
+            (0..70)
+                .map(|i| Val::vector((0..40).map(|j| item(i + j)).collect()))
+                .collect(),
+        );
+        values.push(nested);
+        for v in &values {
+            let (want, nodes) = exact(v, 16);
+            let before = rt.steps.load(Ordering::Relaxed);
+            let got = rt.measure(v, state_bounds(u64::MAX, usize::MAX)).unwrap();
+            let steps = rt.steps.load(Ordering::Relaxed) - before;
+            assert_eq!(got, want);
+            assert_eq!(steps, nodes, "the steps of a walk of {} nodes", nodes);
+        }
+    }
+
+    /// The failures are the exact walk's too: past the byte bound, a long
+    /// vector fails naming it; where the items in its full leaves nest past
+    /// `max_depth`, the walk visits them and fails naming that; and a leaf
+    /// whose items are too large to sum, a value built by sharing, is
+    /// visited and fails at the bound rather than being summed.
+    #[test]
+    fn a_long_vector_fails_where_visiting_its_items_would() {
+        let rt = runtime("");
+        let strings = Val::vector((0..5_000).map(|_| Val::str("abcd")).collect());
+        let (all, _) = exact(&strings, 16);
+        let fail = rt
+            .measure(&strings, state_bounds(all.bytes / 2, usize::MAX))
+            .unwrap_err();
+        assert_eq!(fail.limit.as_ref().unwrap().name, "max_metadata_bytes");
+        assert!(rt.measure(&strings, state_bounds(all.bytes, 2)).is_ok());
+        let deep = |n: usize| (0..n).fold(Val::str("x"), |v, _| Val::vector(vec![v]));
+        let nests = Val::vector((0..100).map(|i| deep(i % 5)).collect());
+        let fail = rt.measure(&nests, state_bounds(u64::MAX, 4)).unwrap_err();
+        assert_eq!(fail.limit.as_ref().unwrap().name, "max_depth");
+        assert!(rt.measure(&nests, state_bounds(u64::MAX, 6)).is_ok());
+        let mut shared = Val::str("y");
+        for _ in 0..40 {
+            shared = Val::vector(vec![shared.clone(), shared]);
+        }
+        let huge = Val::vector(vec![shared; 40]);
+        let fail = rt
+            .measure(&huge, state_bounds(1 << 20, usize::MAX))
+            .unwrap_err();
+        assert_eq!(fail.limit.as_ref().unwrap().name, "max_metadata_bytes");
     }
 
     #[test]

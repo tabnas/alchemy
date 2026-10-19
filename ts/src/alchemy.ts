@@ -27,7 +27,7 @@
 
 // VERSION is this package's version. It MUST equal package.json "version",
 // which is the crate's (rs/Cargo.toml): the runtimes ship as one version.
-export const VERSION = '0.2.10'
+export const VERSION = '0.2.13'
 
 export {
   MAX_NESTING,
@@ -134,6 +134,7 @@ export type { Arity, Kind, Native } from './stdlib/registry'
 export {
   CAPTURE_LIMITS,
   CHARS_WITHIN_STEP,
+  INC_MAX,
   LENGTH_CHUNK,
   NUMBER_STEP,
   SPLIT_STEP,

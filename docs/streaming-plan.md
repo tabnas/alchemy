@@ -485,19 +485,27 @@ same annotations writes the alchemy part:
   nested, and nothing when it is, since the nested rule emits its own
   container;
 - the rule's final close emits the container's end;
-- a grammar with no annotations emits the compiler's `{rule, src, kids}`
-  tree, one object per rule pass, so that the viewer's value and the
-  stream agree.
+- a grammar with no annotations is read whole: its value is the
+  compiler's `{rule, src, kids}` tree, whose `src` holds the text of
+  every node beneath it and comes before its `kids`, so no stream can
+  write the root before the document has ended.
 
-`tabnas_bnf::transduce_alc(&spec) -> String` writes it;
-`tabnas_abnf::abnf_transduce(src, opts)` exposes it; and the test is the
-same differential suite over aless's grammar library and bnf's
-fixtures: the generated part's events equal the walk of the value the
-compiled grammar builds. aless registers the generated part for every
-`--grammar` and `--grammar-expr` format, and a custom format streams
-through the one path like any other. A render part for a custom format
-(so that a custom format can be a `--render` target) is not in this
-plan; it would be the same generator writing the reverse.
+The part is the library's `transduce-tree` over a spec keyed by rule
+name, which step 8's record in section 11 describes.
+`tabnas_bnf::transduce_alc(&spec, name)` writes it as
+`<name>-transduce`, or says why a host reads the grammar's documents
+whole, as it does for a grammar with no annotations and for the
+annotated shapes the spec cannot say (TypeScript's `transduceAlc` and
+Go's `TransduceAlc` alike); `tabnas_abnf::abnf_transduce(src, name,
+opts)` converts an ABNF grammar and writes it; and the test is a
+differential suite over abnf's fixtures, in alchemy-cli, and aless's
+grammar library, in aless: the generated part's events equal the walk of
+the value the compiled grammar builds. aless runs the generated part for
+every `--grammar` and `--grammar-expr` format the generator writes one
+for, through the one path a format's part takes, and reads the others
+whole, as it reads any format with no part. A render part for a custom
+format (so that a custom format can be a `--render` target) is not in
+this plan; it would be the same generator writing the reverse.
 
 ## 9. aless, and the engine
 
@@ -843,6 +851,207 @@ through which aless reads markdown until step 13, sends the document's
 events only once its last line is in, since the grammar sets it whole
 as the root's node in its last action. Markdown leaves the incremental
 list with the list itself.
+
+The generated part, step 8 (tabnas/bnf#117, released as bnf 0.1.31;
+tabnas/abnf#126, released as abnf 0.4.25; its tests
+tabnas/alchemy-cli#46), is alchemy's `transduce-tree` with a spec read
+off the value actions the compiler attaches to an annotated rule, keyed
+by rule name: a rule whose open alternate begins an object or an array
+is a container, a member named by a constant is a key or, on the head of
+an `@object` chain, a member, and a member that holds the text its
+pushed rule matched is a text. Two fields the spec lacked come with it
+(tabnas/alchemy#86, released as alchemy 0.2.11, with the natives in
+tabnas/transduce#53, released as transduce 0.2.10): `:member`, a member
+an open pass names after the container its rule begins, since the head
+of an `@object` chain begins the object and names the member its first
+link fills; and `:text`, a rule whose close pass yields first the source
+text of the tokens the passes between its open and its close consumed,
+the text `@setval$` and `@push$` read with `src`. The routers say
+whether their native reads the two fields, and the lowering hands a spec
+that names either only to routers that do; a native holds a text to
+`max_scalar_bytes` at the joins the library's `string-join` makes, in
+its order. `transduceAlc(spec, name)` writes `<name>-transduce`, the
+same text in TypeScript, Go (`TransduceAlc`) and Rust (`transduce_alc`),
+or `{whole}` with the reason a host reads the grammar's documents whole:
+a name alchemy cannot give a definition, or a rule's; alternates of one
+rule whose value actions differ, or a value action the spec cannot say;
+a rule two containers would carry on; a container or text rule an open
+alternate replaces; a value rule beneath a text member; and a start rule
+with no annotation. The tree of one object per rule pass that the plan
+first proposed for that last case is not what such a grammar builds: its
+value is the `{rule, src, kids}` tree, whose `src` comes before its
+`kids` and holds the text of every node beneath it, so no stream writes
+the root before the document has ended, and the generator declares it
+whole. abnf's `abnfTransduce(src, name, opts)` converts and writes it.
+Over abnf's `alignment-abnf-ast.tsv`, the parts of the 23 annotated
+grammars write the value each compiled grammar builds, natively and
+interpreted, in all three runtimes, and the generator declares the other
+49 read whole; a simulation over aless's grammar library before the
+change agreed on the ten grammars there.
+
+Step 9 began with the grammars from the command line
+(rjrodger/aless#76): a `--grammar` or `--grammar-expr` grammar that step
+8's generator writes a part for, as it does for every annotated grammar
+of abnf's fixtures and of aless's library, is read through it, compiled
+once with the grammar, and any other is read whole, for the reason the
+generator gives. The text's rule passes go from `ParserEventSource` into
+the part by `Program::parser_sink_into` (tabnas/alchemy#88, released as
+alchemy 0.2.12, in all three runtimes: a program of JSON events over
+parser events into a sink of the host's own, through the lowering's own
+events, so the source's limits hold on the part's events and the native
+`transduce-tree` runs where the routers offer it), then through a tree's
+contract into the path's scope and the export's chain, as before.
+aless's guard, its depth cap and its timeout, stays on the parser, and
+the program's abort flag reaches the part's steps. A document the part
+refuses is read whole once more when nothing was written, as an
+incremental grammar's is, and so is one that nests past the transducer's
+`max_depth` first, since the whole read holds a custom grammar's value
+to the measure it always has. Over a 100,000-line hosts file the first 4
+KB leave in 0.15 s instead of 6.37 s, and the whole run takes 1.5 to
+1.65 times the whole read (10.46 s against 6.84 s into JSON), the cost
+section 10 measured for recording each rule pass; the memory is the
+same, since the engine builds its tree either way. The built-in formats
+with parts keep their routes for now. Moving them is the rest of step 9,
+and it waits on the maintainer's call on its cost, as PGN's part does:
+over 10,000 records in alchemy-cli's release build, 1.2 times the whole
+read for JSON, whose part is the native `transduce-tree`, and 4.8 times
+for YAML and 3.9 times for XML, whose parts are interpreted; and
+`ParserEventSource` drops nothing behind the stream, where the
+incremental source prunes the exported array's elements, so the engine's
+tree holds the whole document.
+
+The work the maintainer put before both calls came next. On PGN's part
+the call was to speed up the interpreter first, and on the built-ins to
+prune first, then measure again. tabnas/transduce#56, released as
+transduce 0.2.11, made `ParserEventSource` prune: once the sink has seen
+a close pass, the source empties the array the closing rule's node is,
+for the grammars `capability::prunable` lists, and a differential suite
+keeps that list honest both ways. The interpreter work is three pull
+requests, released as alchemy 0.2.13, none of which changes an output, a
+failure or a limit:
+- tabnas/alchemy#91 looks a free name up once per scope, builds a rule
+  pass's record from a shape made once, hashes the evaluator's tables
+  with FxHash and shares an atom's text: 25% fewer instructions on
+  YAML's part.
+- tabnas/alchemy#92 makes vectors persistent, so `push` and `pop` cost
+  the same at any length, and measures a scan state from the sums its
+  vector's leaves keep: a state that keeps every item of 40,000 takes
+  0.47 s, against 42.94 s before.
+- tabnas/alchemy#93 keeps a long string as a rope, so the library's
+  `transduce-write` costs each pass its own tokens rather than the text
+  so far (tabnas/alchemy#86's thread on it): a `:text` rule over 160,000
+  items takes 8.01 s, against 40.40 s before.
+
+Measured again with both, a part costs more time than aless's own read,
+and no more memory. Over generated records in alchemy-cli's release
+build, a part read pruned by `run --grammar`, with the engine's rule
+history bounded to three predecessors (`options.rule.history`, as aless
+sets it on every parser it makes), against aless 0.4.5's own read with
+`--render json`:
+
+| | aless 0.4.5 | the part, pruned |
+|---|---|---|
+| JSON, 10,000 records | 1.15 s, 32 MiB | 1.40 s, 32 MiB |
+| JSON, 40,000 records | 4.60 s, 98 MiB | 5.86 s, 99 MiB |
+| YAML, 10,000 records | 1.94 s, 53 MiB | 7.43 s, 33 MiB |
+| YAML, 40,000 records | 7.83 s, 177 MiB | 29.14 s, 97 MiB |
+| XML, 10,000 records | 1.14 s, 115 MiB | 5.26 s, 32 MiB |
+| XML, 40,000 records | 4.51 s, 394 MiB | 20.36 s, 96 MiB |
+
+PGN's part reads a 605 KB database in 5.75 s at 21 MiB, against aless
+0.4.5's 0.52 s at 19 MiB. Every part's time grows in proportion to its
+input: four times the records take about four times as long. Pruning
+empties each array a grammar builds behind the stream, a JSON or a YAML
+document's root sequence among them: the tree a pruned run leaves holds
+as many elements after 2,000 records as after 200. A part's memory still
+grows by about 2 KB a record, and so does aless's own read: the Rust
+engine's lexer holds the whole text as a vector of its characters and
+another of their byte offsets, twelve bytes a character, up to
+twenty-four as the vectors double, 25 MiB of the 29.5 MiB a pruned run
+over JSON's 10,000 records peaks at. A
+first measurement the same day left the rule history unbounded, as
+alchemy-cli's parsers leave it. The engine then keeps a snapshot of each
+rule a repetition replaces, 126 MiB for JSON's 10,000 records and 474
+MiB for 40,000, and that measurement read the memory as the root
+sequence's. The maintainer's calls, on the measurement above:
+- aless reads JSON, YAML and XML through their parts, at that cost.
+- The engine bounds its rule history by default, at three predecessors:
+  the default tabnas/parser's `doc/rule-history-bound.md` proposes once
+  every runtime carries the option, as all three now do.
+- What still grows by about 2 KB a record is traced before anything is
+  built for it: it is the lexer's copy of the text, which step 10's
+  chunked lexer source is for. Emptying a parent's array behind each
+  element's close, proposed on the first measurement, would free
+  nothing, and is not built.
+- For PGN, alchemy gains natives that join two vectors, compare two
+  values and count, in all three runtimes, to replace what its part
+  spells today as six scans an event and `split` tricks; the part is
+  then rewritten on them and measured again.
+
+The engine's default came first. tabnas/parser#313, released as
+tabnas-parser 0.12.14, bounds Rust's rule history at three predecessors
+unless a grammar or a host sets the option, and admin's ADR-29 records
+the decision. TypeScript and Go keep theirs unbounded for now, a
+difference from TypeScript that tabnas/parser's `DIVERGENCE.md`
+registers, for two reasons that running the fleet's suites under a
+bound of three measured:
+- In TypeScript an unbounded link is the live rule, which costs nothing
+  to make, and a bounded one is a copy built on every step. Through
+  `@tabnas/json`, 20,000 records took 12.0 s bounded against 3.6 s
+  unbounded, and one record more than four times as long. TypeScript
+  takes the default once a bounded link costs about what a live one
+  does.
+- In Go a bounded link is a copy too, and a Go rule's node is a plain
+  field the copy cannot share, so a grammar's write through a linked
+  rule's node lands on the copy and is lost: 25 of the engine's own Go
+  tests failed, and with the parent link kept live the Go suites of
+  expr, csv, jsonic, toml, yaml and c still failed. Go takes the default
+  once its bounded links carry those writes.
+
+The same release fixes three things the bound and the trace turned up.
+Under a bound, a TypeScript pusher's after action can write the child it
+pushed, as the path plugin does, and an edit it makes to its own links
+stands; and a Rust pusher links its finished child as a bounded copy, as
+TypeScript does, so the child keeps nothing past itself alive. And Rust's lexer
+keeps a character's byte offset only for a text that holds a character
+outside ASCII, where the two differ, and allocates its vectors once, at
+their length: an ASCII text costs four bytes a character beside itself,
+where it cost twelve, and up to twenty-four as the vectors doubled.
+Measured as above, a part read pruned by `run --grammar` with the rule
+history bounded at three, before 0.12.14 and with it:
+
+| | before 0.12.14 | with 0.12.14 |
+|---|---|---|
+| JSON, 10,000 records | 1.54 s, 32 MiB | 1.43 s, 19 MiB |
+| JSON, 40,000 records | 5.94 s, 98 MiB | 5.99 s, 48 MiB |
+| YAML, 10,000 records | 7.46 s, 33 MiB | 7.75 s, 21 MiB |
+| YAML, 40,000 records | 30.08 s, 97 MiB | 28.51 s, 51 MiB |
+| XML, 10,000 records | 5.33 s, 32 MiB | 5.18 s, 22 MiB |
+| XML, 40,000 records | 20.88 s, 96 MiB | 20.09 s, 56 MiB |
+
+Every part writes the same bytes as before, in about the same time.
+What still grows, about 1 KB a record, is the text. A heap profile of
+JSON's 10,000 records puts 9.8 MB of the 11.4 MB peak in three copies of
+it: the lexer's vector of its characters at four bytes each (6.5 MB),
+the text as alchemy-cli reads it (1.6 MB), and the engine context's own
+copy (1.6 MB). That is six bytes a byte of the document, and step 10's
+chunked lexer source is for it. aless's own read, which sets the bound
+itself, gains the lexer's share with its pin on 0.12.14
+(rjrodger/aless#81), with `--render json` in the same build profile
+before and after, the same bytes in about the same time:
+
+| | aless on 0.12.13 | aless on 0.12.14 |
+|---|---|---|
+| JSON, 10,000 records | 32 MiB | 20 MiB |
+| JSON, 40,000 records | 99 MiB | 49 MiB |
+| YAML, 10,000 records | 53 MiB | 42 MiB |
+| YAML, 40,000 records | 178 MiB | 133 MiB |
+| XML, 10,000 records | 116 MiB | 106 MiB |
+| XML, 40,000 records | 394 MiB | 355 MiB |
+
+So at 40,000 records a part read pruned holds about what aless's own
+read holds for JSON, and less for YAML and XML. alchemy-cli's parsers, which set no bound, take the
+engine's default once its lock names 0.12.14 (tabnas/alchemy-cli#48).
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires

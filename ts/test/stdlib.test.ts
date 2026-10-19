@@ -64,6 +64,7 @@ describe('stdlib', () => {
         ],
         [
           'transduce-token',
+          'transduce-named',
           'transduce-key',
           'transduce-scalar',
           'transduce-value',
@@ -73,11 +74,20 @@ describe('stdlib', () => {
           'transduce-close',
           'transduce-step',
           'transduce-finish',
+          'transduce-member',
+          'transduce-write',
+          'transduce-spell',
+          'transduce-text-open',
+          'transduce-text-end',
+          'transduce-text-close',
+          'transduce-then',
+          'transduce-pass',
+          'transduce-done',
           'transduce-tree',
         ],
       ],
     )
-    assert.equal(lib.names().length, 34)
+    assert.equal(lib.names().length, 44)
     assert.deepStrictEqual(defParams(lib.get('table-from-json')!), ['binding', 'input'])
     assert.equal(defParams(lib.get('csv-options')!), undefined)
   })
@@ -112,7 +122,7 @@ describe('natives', () => {
       assert.ok(n.signature.startsWith(n.name), `${n.name}: ${n.signature}`)
     }
     assert.equal(native('nope'), undefined)
-    assert.equal(natives().length, 71)
+    assert.equal(natives().length, 74)
   })
 
   // `signature` and `effect` are what the reference prints: every native
@@ -142,7 +152,7 @@ describe('natives', () => {
       assert.equal(n.effect, row[1], `the effect of ${n.name}`)
       compared++
     }
-    assert.equal(compared, 53)
+    assert.equal(compared, 56)
   })
 
   it('constants take no arguments and constructors take their fields', () => {

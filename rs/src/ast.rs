@@ -169,12 +169,15 @@ impl fmt::Display for SourceSpan {
 /// A number keeps its lexeme rather than a value: the language's numbers
 /// are JSON numbers, and what a renderer prints is the text the author
 /// wrote, exactly as `tabnas-transduce` keeps a source number's lexeme.
+/// An atom's text is shared (`Arc<str>`), so the value a keyword, a
+/// string or a number evaluates to, and the name a binding binds, take it
+/// without copying it each time the form is evaluated.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
-    Symbol { name: String, span: SourceSpan },
-    Keyword { name: String, span: SourceSpan },
-    Str { value: String, span: SourceSpan },
-    Num { lexeme: String, span: SourceSpan },
+    Symbol { name: Arc<str>, span: SourceSpan },
+    Keyword { name: Arc<str>, span: SourceSpan },
+    Str { value: Arc<str>, span: SourceSpan },
+    Num { lexeme: Arc<str>, span: SourceSpan },
     Bool { value: bool, span: SourceSpan },
     Null { span: SourceSpan },
     List { items: Vec<Expr>, span: SourceSpan },
@@ -259,19 +262,19 @@ fn read_node<'v>(value: &'v Value, file: &Arc<str>) -> Result<Node<'v>, Fail> {
     let tag = text(fields, "$")?;
     Ok(match tag.as_str() {
         "sym" => Node::Atom(Expr::Symbol {
-            name: text(fields, "name")?,
+            name: text(fields, "name")?.into(),
             span,
         }),
         "kw" => Node::Atom(Expr::Keyword {
-            name: text(fields, "name")?,
+            name: text(fields, "name")?.into(),
             span,
         }),
         "str" => Node::Atom(Expr::Str {
-            value: text(fields, "value")?,
+            value: text(fields, "value")?.into(),
             span,
         }),
         "num" => Node::Atom(Expr::Num {
-            lexeme: text(fields, "lexeme")?,
+            lexeme: text(fields, "lexeme")?.into(),
             span,
         }),
         "bool" => match field(fields, "value")? {

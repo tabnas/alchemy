@@ -26,8 +26,17 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{Expr, SourceSpan};
+use crate::interp::Size;
+use crate::pvec::PVec;
+pub use crate::rope::Str;
 use crate::shared::{CaptureSpec, Code, Datum, Fail, Segment, Selector, Step};
 use crate::stdlib::registry::Native;
+
+/// A vector's items: persistent, so `push` and `pop` cost a bounded
+/// amount whatever its length and leave the vector they began with as it
+/// was, and each full leaf keeps the [`Size`] a measure walk reads instead
+/// of visiting its items again.
+pub type Vector = PVec<Val, Size>;
 
 /// The tag of the constant tagged value a `get` or `get-path` answers for
 /// an absent member.
@@ -44,9 +53,11 @@ pub enum Val {
         value: f64,
         lexeme: Option<Arc<str>>,
     },
-    Str(Arc<str>),
+    /// A string's text, which `string-join` keeps as a rope once it is
+    /// long ([`Str`]).
+    Str(Str),
     Keyword(Arc<str>),
-    Vector(Arc<[Val]>),
+    Vector(Vector),
     /// Fields in construction order; keys are the keyword names.
     Record(Arc<IndexMap<Arc<str>, Val>>),
     Fn(Func),
@@ -193,7 +204,7 @@ impl fmt::Debug for Env {
 /// A finite or single-use sequence an operator was given.
 #[derive(Clone, Debug)]
 pub enum Seq {
-    Vector(Arc<[Val]>),
+    Vector(Vector),
     Stream(Arc<Plan>),
 }
 
@@ -416,7 +427,7 @@ pub enum Protocol {
 
 impl Val {
     pub fn str(s: &str) -> Val {
-        Val::Str(Arc::from(s))
+        Val::Str(Str::from(s))
     }
 
     pub fn keyword(s: &str) -> Val {
@@ -431,7 +442,7 @@ impl Val {
     }
 
     pub fn vector(items: Vec<Val>) -> Val {
-        Val::Vector(Arc::from(items))
+        Val::Vector(Vector::from(items))
     }
 
     pub fn tagged(tag: &str, fields: Vec<Val>) -> Val {
@@ -455,7 +466,7 @@ impl Val {
     /// which only costs a re-measure where this is asked.
     pub fn same(&self, other: &Val) -> bool {
         match (self, other) {
-            (Val::Vector(a), Val::Vector(b)) => Arc::ptr_eq(a, b),
+            (Val::Vector(a), Val::Vector(b)) => a.ptr_eq(b),
             (Val::Record(a), Val::Record(b)) => Arc::ptr_eq(a, b),
             (Val::Tagged { fields: a, .. }, Val::Tagged { fields: b, .. }) => Arc::ptr_eq(a, b),
             (Val::Selector(a), Val::Selector(b)) => Arc::ptr_eq(a, b),
@@ -518,7 +529,7 @@ impl Val {
                 value: *value,
                 lexeme: lexeme.as_deref().map(Arc::from),
             },
-            Datum::String(s) => Val::Str(Arc::from(&**s)),
+            Datum::String(s) => Val::str(s),
             Datum::Array(items) => Val::Vector(items.iter().map(Val::from_datum).collect()),
             Datum::Object(members) => Val::Record(Arc::new(
                 members
@@ -556,7 +567,8 @@ impl Val {
                 value: *value,
                 lexeme: lexeme.as_deref().map(Box::from),
             },
-            Val::Str(s) | Val::Keyword(s) => Datum::String(Box::from(&**s)),
+            Val::Str(s) => Datum::String(Box::from(&**s)),
+            Val::Keyword(s) => Datum::String(Box::from(&**s)),
             Val::Vector(items) => {
                 Datum::Array(items.iter().map(Val::to_datum).collect::<Result<_, _>>()?)
             }
@@ -633,7 +645,8 @@ impl PartialEq for Val {
             (Val::Null, Val::Null) => true,
             (Val::Bool(a), Val::Bool(b)) => a == b,
             (Val::Num { value: a, .. }, Val::Num { value: b, .. }) => a == b,
-            (Val::Str(a), Val::Str(b)) | (Val::Keyword(a), Val::Keyword(b)) => a == b,
+            (Val::Str(a), Val::Str(b)) => a == b,
+            (Val::Keyword(a), Val::Keyword(b)) => a == b,
             (Val::Vector(a), Val::Vector(b)) => a == b,
             (Val::Record(a), Val::Record(b)) => {
                 a.len() == b.len() && a.iter().all(|(k, v)| b.get(k) == Some(v))

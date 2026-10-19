@@ -485,6 +485,32 @@ func (p *Program) ParserSinkOut(out shared.TextOut, render Renderer, limits shar
 	return l.ParserHead(events), nil
 }
 
+// ParserSinkInto is the sink for one run over parser events whose JSON
+// events go into the host's own down rather than to a renderer, for a
+// program compiled over InputParserEvents that answers JSON events: a
+// format's transducer part, run in front of the host's own stages (a
+// renderer of its own, a scope over a path, another program's sink). The
+// host pushes each rule pass into the sink it returns, then one ParserEnd
+// once the parse has returned its value, and down takes the events as the
+// program makes them, then one End. The source's limits hold on them as on
+// a source's own. A program that answers a text or a table is refused
+// (`protocol_mismatch`) before anything runs, as is one compiled over JSON
+// events. metrics is a fresh set when nil.
+func (p *Program) ParserSinkInto(down shared.Sink, limits shared.Limits, metrics *shared.Metrics) (shared.ParserSink, *Fail) {
+	if f := p.declared(InputParserEvents); f != nil {
+		return nil, f
+	}
+	if metrics == nil {
+		metrics = shared.NewMetrics()
+	}
+	l := p.lowering(limits, metrics)
+	events, f := l.EventsInto(p.result, p.output, down)
+	if f != nil {
+		return nil, f
+	}
+	return l.ParserHead(events), nil
+}
+
 // declared refuses a sink of the input the program was not compiled over:
 // a host's mistake, not a program's, refused before anything runs.
 func (p *Program) declared(input Input) *Fail {

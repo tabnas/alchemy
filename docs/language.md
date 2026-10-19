@@ -688,6 +688,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `record`, `entry` | `record entry... -> Record`, `entry :key value -> Entry` | a retained record; duplicate keys are `duplicate_key` |
 | `vector` | `vector item... -> Vector` | a retained vector; it cannot hold a stream or a live text |
 | `push` | `push item vector -> Vector` | a new vector with the item appended; it cannot hold a stream or a live text |
+| `push-all` | `push-all items vector -> Vector` | a new vector with every item of `items` appended, in their order: two vectors joined, a step for each item appended |
 | `pop` | `pop vector -> Vector` | the vector without its last item; an empty vector is a type error |
 | `top` | `top vector -> Value` | the last item; an empty vector is a type error |
 | `count` | `count vector -> Number` | how many items the vector holds |
@@ -699,8 +700,10 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `number` | `number string -> Number` | the number the string spells: a JSON number, its text kept as the lexeme, or `Infinity`, `-Infinity` or `NaN`; `INPUT_INVALID` for any other text |
 | `is-number` | `is-number string -> Bool` | whether `number` reads the string: a JSON number, or `Infinity`, `-Infinity` or `NaN`; `false` for any other text, where `number` fails. A program cannot catch a failure, so a part tests a string with it before it calls `number` |
 | `compare` | `compare a b -> Keyword` | how two numbers are ordered: `:less`, `:equal` or `:greater`, and `:unordered` when either is NaN |
+| `inc` | `inc count -> Number` | the count one more: a whole number from 0 to 9007199254740990, where every runtime counts exactly; any other number is a type error |
 | `number-class` | `number-class number -> Keyword` | `:finite`, `:infinity`, `:negative-infinity` or `:nan` |
 | `kind` | `kind value -> Keyword` | the kind of a value as a keyword: `:null`, `:boolean`, `:number`, `:string`, `:keyword`, `:vector`, `:record`, `:missing`, `:tagged`, `:function`, `:selector` or `:capture`; a stream or a text cannot be asked |
+| `equal` | `equal a b -> Bool` | whether two values are equal, as a `match` pattern compares a constant: structurally, numbers by value (NaN equals nothing), a record to one with the same members in any order, a function to nothing; a stream or a text cannot be asked; a step for each pair of values compared |
 | `path` | `path segment... -> Selector` | a selector from strings, indexes and selectors |
 | `root`, `each-index`, `each-member` | `-> Selector` | the document; every element of an array; every member value of an object |
 | `property`, `index`, `compose` | `property name`, `index n`, `compose outer inner -> Selector` | one member; one element; inner below every location outer names |
@@ -1317,14 +1320,27 @@ announces, a token's index (that token's `:val` names the member) or a
 string; `:scalar`, the scalar the rule yields, a token's index (that
 token of its open pass, when the pass consumed one: its `:val`, with the
 lexeme a number token carries) or `:value` (its close pass's own
-value). An open pass announces its key before it begins its container
-or yields its scalar; a pass of a rule the spec does not name yields
-nothing. A container whose rule is replaced by a rule the spec names a
-container (its close pass's alternate replaces it) is one container:
-that close yields no end and the replacing open no start. The state is
-`[stack carry]`, one `:open` marker per open container and whether a
-close handed its container on, so nothing grows with the document's
-width or length, only with its nesting. tabnas-json's part is the spec
+value); `:member`, a member name its open pass announces after what it
+begins or yields, read as `:key` is, so that a container rule can name
+the first member of its own container; and `:text`, `true` for a rule
+whose close pass yields, before anything else, the text the passes
+between its open pass and its close pass consumed: each of their
+tokens' `:src`, in order, the source text a grammar's tree builders
+gather for a rule's node. An open pass announces its key before it
+begins its container or yields its scalar, and its member after; a pass
+of a rule the spec does not name yields nothing. A container whose rule
+is replaced by a rule the spec names a container (its close pass's
+alternate replaces it) is one container: that close yields no end and
+the replacing open no start. The scan's step is `transduce-pass`, over
+the state `[[stack carry] texts]`: one `:open` marker per open
+container, whether a close handed its container on, and the text each
+open `:text` rule has gathered so far, the innermost last, which joins
+the text around it when its rule closes. So nothing grows with the
+document's width or length, only with its nesting and with the text of
+a `:text` rule still open. `transduce-step`, the step over `[stack
+carry]` alone, reads neither `:member` nor `:text`; a part that writes
+its own scan over it (ZON's) reads the rest of the spec as
+`transduce-tree` does. tabnas-json's part is the spec
 
 ```text
 record
@@ -1339,10 +1355,11 @@ the events of tabnas-json's own rule passes, lexemes kept.
 
 Over the host's parser events, `transduce-tree` runs natively where the
 spec has the standard shape (every entry a record, its `:container`
-`:object` or `:array`, its `:key` a string or a token's index, its
-`:scalar` a token's index or `:value`) and the host's routers offer a
-native one (`Routers::transduce_tree`, which transduce's do; the shared
-`TreeSpec` says what it must do). The native reads each pass as it
+`:object` or `:array`, its `:key` and its `:member` each a string or a
+token's index, its `:scalar` a token's index or `:value`, its `:text` a
+boolean) and the host's routers offer a native one
+(`Routers::transduce_tree`, which transduce's do; the shared `TreeSpec`
+says what it must do). The native reads each pass as it
 comes and builds no record of it; its events, its failures and its
 codes are this text's, and the source's guard holds on what it writes as
 on what the text's `as-events` writes. A spec of any other shape, routers
@@ -1357,8 +1374,8 @@ def transduce-token [n rule]
 ```
 
 ```alchemy
-def transduce-key [entry rule outputs]
-  match (get :key entry)
+def transduce-named [name rule outputs]
+  match name
     case missing outputs
     case name
       match (kind name)
@@ -1369,7 +1386,15 @@ def transduce-key [entry rule outputs]
             case token (push (key (get :val token)) outputs)
 ```
 ```core
-(def transduce-key (fn [entry rule outputs] (match (get :key entry) (case missing outputs) (case name (match (kind name) (case :string (push (key name) outputs)) (case _ (match (transduce-token name rule) (case missing outputs) (case token (push (key (get :val token)) outputs)))))))))
+(def transduce-named (fn [name rule outputs] (match name (case missing outputs) (case name (match (kind name) (case :string (push (key name) outputs)) (case _ (match (transduce-token name rule) (case missing outputs) (case token (push (key (get :val token)) outputs)))))))))
+```
+
+```alchemy
+def transduce-key [entry rule outputs]
+  transduce-named (get :key entry) rule outputs
+```
+```core
+(def transduce-key (fn [entry rule outputs] (transduce-named (get :key entry) rule outputs)))
 ```
 
 ```alchemy
@@ -1476,11 +1501,116 @@ def transduce-finish [state]
 ```
 
 ```alchemy
-def transduce-tree [spec input]
-  as-events (scan-emit [[] false] (partial transduce-step spec) transduce-finish (parser-events input))
+def transduce-member [spec rule outputs]
+  match (get (get :name rule) spec)
+    case missing outputs
+    case entry (transduce-named (get :member entry) rule outputs)
 ```
 ```core
-(def transduce-tree (fn [spec input] (as-events (scan-emit [[] false] (partial transduce-step spec) transduce-finish (parser-events input)))))
+(def transduce-member (fn [spec rule outputs] (match (get (get :name rule) spec) (case missing outputs) (case entry (transduce-named (get :member entry) rule outputs)))))
+```
+
+```alchemy
+def transduce-write [texts more]
+  push (string-join "" [(top texts) more]) (pop texts)
+```
+```core
+(def transduce-write (fn [texts more] (push (string-join "" [(top texts) more]) (pop texts))))
+```
+
+```alchemy
+def transduce-spell [texts rule]
+  match texts
+    case [] texts
+    case _
+      match (get :tokens rule)
+        case [] texts
+        case tokens (transduce-write texts (string-join "" (map (fn [token] (get :src token)) tokens)))
+```
+```core
+(def transduce-spell (fn [texts rule] (match texts (case [] texts) (case _ (match (get :tokens rule) (case [] texts) (case tokens (transduce-write texts (string-join "" (map (fn [token] (get :src token)) tokens)))))))))
+```
+
+```alchemy
+def transduce-text-open [spec texts rule]
+  let [spelled (transduce-spell texts rule)]
+    match (get (get :name rule) spec)
+      case missing spelled
+      case entry
+        match (get :text entry)
+          case true (push "" spelled)
+          case _ spelled
+```
+```core
+(def transduce-text-open (fn [spec texts rule] (let [spelled (transduce-spell texts rule)] (match (get (get :name rule) spec) (case missing spelled) (case entry (match (get :text entry) (case true (push "" spelled)) (case _ spelled)))))))
+```
+
+```alchemy
+def transduce-text-end [text texts rule]
+  match texts
+    case [] [texts [(scalar text)]]
+    case _ [(transduce-spell (transduce-write texts text) rule) [(scalar text)]]
+```
+```core
+(def transduce-text-end (fn [text texts rule] (match texts (case [] [texts [(scalar text)]]) (case _ [(transduce-spell (transduce-write texts text) rule) [(scalar text)]]))))
+```
+
+```alchemy
+def transduce-text-close [spec texts rule]
+  match (get (get :name rule) spec)
+    case missing [(transduce-spell texts rule) []]
+    case entry
+      match (get :text entry)
+        case true (transduce-text-end (top texts) (pop texts) rule)
+        case _ [(transduce-spell texts rule) []]
+```
+```core
+(def transduce-text-close (fn [spec texts rule] (match (get (get :name rule) spec) (case missing [(transduce-spell texts rule) []]) (case entry (match (get :text entry) (case true (transduce-text-end (top texts) (pop texts) rule)) (case _ [(transduce-spell texts rule) []]))))))
+```
+
+```alchemy
+def transduce-then [first outputs]
+  match outputs
+    case [] first
+    case [output] (push output first)
+```
+```core
+(def transduce-then (fn [first outputs] (match outputs (case [] first) (case [output] (push output first)))))
+```
+
+```alchemy
+def transduce-pass [spec state pass]
+  match state
+    case [tree texts]
+      match pass
+        case (open rule)
+          match (transduce-open spec tree rule)
+            case (transition next outputs) (transition [next (transduce-text-open spec texts rule)] (transduce-member spec rule outputs))
+        case (close rule)
+          match (transduce-text-close spec texts rule)
+            case [rest first]
+              match (transduce-close spec tree rule)
+                case (transition next outputs) (transition [next rest] (transduce-then first outputs))
+```
+```core
+(def transduce-pass (fn [spec state pass] (match state (case [tree texts] (match pass (case (open rule) (match (transduce-open spec tree rule) (case (transition next outputs) (transition [next (transduce-text-open spec texts rule)] (transduce-member spec rule outputs))))) (case (close rule) (match (transduce-text-close spec texts rule) (case [rest first] (match (transduce-close spec tree rule) (case (transition next outputs) (transition [next rest] (transduce-then first outputs))))))))))))
+```
+
+```alchemy
+def transduce-done [state]
+  match state
+    case [tree texts] (transduce-finish tree)
+```
+```core
+(def transduce-done (fn [state] (match state (case [tree texts] (transduce-finish tree)))))
+```
+
+```alchemy
+def transduce-tree [spec input]
+  as-events (scan-emit [[[] false] []] (partial transduce-pass spec) transduce-done (parser-events input))
+```
+```core
+(def transduce-tree (fn [spec input] (as-events (scan-emit [[[] false] []] (partial transduce-pass spec) transduce-done (parser-events input)))))
 ```
 ## Programs
 
@@ -1849,6 +1979,15 @@ The TypeScript and Go ports take the same two implementations:
   returned its value. `parser_sink_out` takes any `TextOut`. Each sink
   refuses a program compiled over the other input (`protocol_mismatch`)
   before anything runs.
+- `parser_sink_into(down, limits, metrics)` (`parserSinkInto` in
+  TypeScript, `ParserSinkInto` in Go) is `parser_sink` for a host that
+  runs a format's transducer part in front of stages of its own (a
+  renderer, a scope over a path, another program's sink): the program
+  must answer JSON events, and the host's `down` takes them as the
+  program makes them, then one `End`, rather than a renderer. The
+  source's limits hold on them as on a source's own. A program that
+  answers a text or a table is refused (`protocol_mismatch`) before
+  anything runs, as is one compiled over JSON events.
 - A failure comes back from the event call that found it, with
   `committed_output` set when text this crate wrote had reached the
   writer. A failure the source found (invalid JSON after the rows) never

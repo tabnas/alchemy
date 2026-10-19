@@ -95,7 +95,7 @@ pub fn load() -> Result<Stdlib, Fail> {
         for form in &forms {
             if let crate::ast::Expr::List { items, .. } = form {
                 if let Some(crate::ast::Expr::Symbol { name, .. }) = items.get(1) {
-                    names.push(Arc::from(name.as_str()));
+                    names.push(name.clone());
                 }
             }
         }
@@ -234,6 +234,7 @@ mod tests {
                 "wrap-array-step",
                 "wrap-array",
                 "transduce-token",
+                "transduce-named",
                 "transduce-key",
                 "transduce-scalar",
                 "transduce-value",
@@ -243,6 +244,15 @@ mod tests {
                 "transduce-close",
                 "transduce-step",
                 "transduce-finish",
+                "transduce-member",
+                "transduce-write",
+                "transduce-spell",
+                "transduce-text-open",
+                "transduce-text-end",
+                "transduce-text-close",
+                "transduce-then",
+                "transduce-pass",
+                "transduce-done",
                 "transduce-tree",
             ]
         );
