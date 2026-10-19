@@ -964,7 +964,11 @@ input: four times the records take about four times as long. Pruning
 empties each array a grammar builds behind the stream, a JSON or a YAML
 document's root sequence among them: the tree a pruned run leaves holds
 as many elements after 2,000 records as after 200. A part's memory still
-grows by about 2 KB a record, which the tree does not account for. A
+grows by about 2 KB a record, and so does aless's own read: the Rust
+engine's lexer holds the whole text as a vector of its characters and
+another of their byte offsets, twelve bytes a character, up to
+twenty-four as the vectors double, 25 MiB of the 29.5 MiB a pruned run
+over JSON's 10,000 records peaks at. A
 first measurement the same day left the rule history unbounded, as
 alchemy-cli's parsers leave it. The engine then keeps a snapshot of each
 rule a repetition replaces, 126 MiB for JSON's 10,000 records and 474
@@ -975,9 +979,10 @@ sequence's. The maintainer's calls, on the measurement above:
   the default tabnas/parser's `doc/rule-history-bound.md` proposes once
   every runtime carries the option, as all three now do.
 - What still grows by about 2 KB a record is traced before anything is
-  built for it. Emptying a parent's array behind each element's close,
-  proposed on the first measurement, would free nothing, and is not
-  built.
+  built for it: it is the lexer's copy of the text, which step 10's
+  chunked lexer source is for. Emptying a parent's array behind each
+  element's close, proposed on the first measurement, would free
+  nothing, and is not built.
 - For PGN, alchemy gains natives that join two vectors, compare two
   values and count, in all three runtimes, to replace what its part
   spells today as six scans an event and `split` tricks; the part is
