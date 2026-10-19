@@ -141,3 +141,16 @@ def export [input] (transduce-tree (record) input)	ERROR:protocol_mismatch@1:45
 # tree-contract holds a stream's events to a tree's: its report keeps each open object's keys, and a repeated member is rejected.
 def export [input] (json (tree-contract input))	"export: tree-contract → json\n\nSource reads:          1\nProtocol:              JsonEvents/1 → Text\nSelection:             none; every event passes through\nDuplicate members:     rejected where a tree's contract holds the events (DUPLICATE_MEMBER)\nTree contract:         the keys of each open object, each dropped as its object closes\nOutput order:          source order\nOrdering contract:     none\nContract verification: static\nJSON profile:          compact, one document, trailing newline\nExternal storage:      disabled\n\nGuarantee:\n  Memory is independent of the number of rows under the configured\n  depth, metadata, record, scalar/key and output limits.\n\nQualification:\n  A later error can occur after earlier output has been written.\n"
 def export [input] (tree-contract (select (path each-index) input))	ERROR:protocol_mismatch@1:35
+# push-all takes the items and the vector they join, both vectors, and answers a vector; inc takes a count, a number, and answers one; equal takes two values that are not a stream or a text, and answers a boolean, a text met at run time refused where the plan's evaluation reaches it.
+def export [input] (join "," (map (fn [x] (string-join "|" (push-all 1 []))) (select (path each-index) input)))	ERROR:type_mismatch@1:70	
+def export [input] (join "," (map (fn [x] (string-join "|" (push-all [] 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:73	
+def export [input] (join "," (map (fn [x] (string-join "|" (push-all []))) (select (path each-index) input)))	ERROR:arity@1:60	
+def export [input] (join "," (map (fn [x] (number (push-all [] []))) (select (path each-index) input)))	ERROR:type_mismatch@1:51	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (inc "1"))) (select (path each-index) input)))	ERROR:type_mismatch@1:73	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (inc 1 2))) (select (path each-index) input)))	ERROR:arity@1:68	
+def export [input] (join "," (map (fn [x] (string-join "|" (inc 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:60	
+def export [input] (join "," (map (fn [x] (if (equal (text "a") x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:54	
+def export [input] (join "," (map (fn [x] (if (equal x (text "a")) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:56	
+def export [input] (join "," (map (fn [x] (if (equal x) "y" "n")) (select (path each-index) input)))	ERROR:arity@1:47	
+def export [input] (join "," (map (fn [x] (number (equal x "a"))) (select (path each-index) input)))	ERROR:type_mismatch@1:51	
+def export [input] (let [x (map (partial equal "x") [(text "x")])] (json input))	ERROR:type_mismatch@1:28	

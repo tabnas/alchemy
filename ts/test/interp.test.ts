@@ -15,6 +15,7 @@ import {
   fileOf,
   kindWord,
   CHARS_WITHIN_STEP,
+  INC_MAX,
   LENGTH_CHUNK,
   NUMBER_STEP,
   SPLIT_STEP,
@@ -919,6 +920,143 @@ describe('natives', () => {
     assert.equal(run('.'.repeat(8)).v, 'vector')
     const f = thrown(() => run('.'.repeat(9)))
     assert.equal(f.limit?.name, 'max_plan_steps', String(f))
+  })
+
+  // `push-all` joins two vectors, the vector's items first, and leaves both
+  // as they were; what is not a vector is a type error naming the argument.
+  it('push-all joins two vectors', () => {
+    same(evalIn('', 'push-all [3 4] [1 2]'), evalIn('', '[1 2 3 4]'))
+    same(evalIn('', 'push-all [] [1]'), evalIn('', '[1]'))
+    same(evalIn('', 'push-all [1] []'), evalIn('', '[1]'))
+    same(evalIn('', 'push-all [] []'), evalIn('', '[]'))
+    const rt = runtime('def held [1]\ndef added [2]')
+    same(evalIn('', 'push-all added held', rt), evalIn('', '[1 2]'))
+    same(evalIn('', 'held', rt), evalIn('', '[1]'))
+    same(evalIn('', 'added', rt), evalIn('', '[2]'))
+    for (const [expr, message] of [
+      ['push-all 1 []', 'the items must be a vector, not a number'],
+      ['push-all [] "a"', 'the data must be a vector, not a string'],
+    ]) {
+      const f = evalFail('', expr)
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: push-all: ${message}`], expr)
+    }
+  })
+
+  // `push-all` takes a step for each item it appends, and none for the
+  // vector it extends: ten steps of fuel append ten items and no more.
+  it('push-all takes a step per item appended', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const pushAll: value.Func = { fn: 'native', native: native('push-all')! }
+    const nums = (k: number) => V.vectorVal(Array.from({ length: k }, (_, i) => n(i)))
+    const run = (k: number, held: number) => runtime('').withFuel(10).applyNow(pushAll, [nums(k), nums(held)], at)
+    assert.equal(run(10, 1000).v, 'vector')
+    const f = thrown(() => run(11, 0))
+    assert.equal(f.limit?.name, 'max_plan_steps', String(f))
+  })
+
+  // `inc` answers the count one more, exactly up to 2^53 - 1, and refuses a
+  // count that is not a whole number of at least 0 below it, as `repeat`
+  // refuses its count.
+  it('inc counts one more exactly', () => {
+    same(evalIn('', 'inc 0'), n(1))
+    same(evalIn('', 'inc -0'), n(1))
+    same(evalIn('', 'inc 41'), n(42))
+    same(evalIn('', 'inc 1e2'), n(101))
+    assert.equal(INC_MAX, 9007199254740991)
+    same(evalIn('', 'inc 9007199254740990'), n(INC_MAX))
+    assert.equal((evalIn('', 'inc 1e2') as any).lexeme, undefined)
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const inc: value.Func = { fn: 'native', native: native('inc')! }
+    for (const [arg, spelled] of [
+      [n(INC_MAX), '9007199254740991'],
+      [n(-1), '-1'],
+      [n(1.5), '1.5'],
+      [V.num(0.5, '5e-1'), '5e-1'],
+      [n(Infinity), 'inf'],
+      [n(NaN), 'NaN'],
+    ] as Array<[Val, string]>) {
+      const f = thrown(() => runtime('').applyNow(inc, [arg], at))
+      assert.deepStrictEqual(
+        [f.code, f.message],
+        ['DSL_TYPE_ERROR', `type_mismatch: inc: the count must be a whole number from 0 to 9007199254740990, not ${spelled}`],
+      )
+    }
+    const f = evalFail('', 'inc "1"')
+    assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', 'type_mismatch: inc: the count must be a number, not a string'])
+  })
+
+  // `equal` compares as a `match` pattern compares a constant: data
+  // structurally, numbers by value, a record's members in any order; a
+  // function equals nothing, and a stream or a text is refused.
+  it('equal compares values as a pattern compares a constant', () => {
+    const eq = (a: string, b: string): boolean => {
+      const v = evalIn('', `equal ${a} ${b}`)
+      assert.equal(v.v, 'bool')
+      return (v as any).value
+    }
+    assert.equal(eq('"FEN"', '"FEN"'), true)
+    assert.equal(eq('"FEN"', '"Fen"'), false)
+    assert.equal(eq('"1"', '1'), false)
+    assert.equal(eq('null', 'null'), true)
+    assert.equal(eq('null', 'missing'), false)
+    assert.equal(eq('missing', 'missing'), true)
+    assert.equal(eq(':w', ':w'), true)
+    assert.equal(eq(':w', '"w"'), false)
+    assert.equal(eq('true', 'true'), true)
+    assert.equal(eq('1e2', '100'), true)
+    assert.equal(eq('-0', '0'), true)
+    assert.equal(eq('[1 2]', '[1 2]'), true)
+    assert.equal(eq('[1 2]', '[2 1]'), false)
+    assert.equal(eq('[1]', '[1 1]'), false)
+    const ab = '(record (entry :a 1) (entry :b [2]))'
+    assert.equal(eq(ab, '(record (entry :b [2]) (entry :a 1))'), true)
+    assert.equal(eq(ab, '(record (entry :a 1) (entry :c [2]))'), false)
+    assert.equal(eq(ab, '(record (entry :a 1))'), false)
+    assert.equal(eq('(key "a")', '(key "a")'), true)
+    assert.equal(eq('(key "a")', '(key "b")'), false)
+    assert.equal(eq('(key "a")', '(scalar "a")'), false)
+    assert.equal(eq('count', 'count'), false)
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const equal: value.Func = { fn: 'native', native: native('equal')! }
+    const nan = V.num(NaN)
+    assert.equal((runtime('').applyNow(equal, [nan, nan], at) as any).value, false)
+    for (const expr of ['equal (text "x") "x"', 'equal "x" (text "x")']) {
+      const f = evalFail('', expr)
+      assert.deepStrictEqual(
+        [f.code, f.message],
+        [
+          'DSL_TYPE_ERROR',
+          'type_mismatch: equal: a text cannot be compared; a stream or a text is used where it is, not inspected',
+        ],
+        expr,
+      )
+    }
+  })
+
+  // `equal` takes a step for each pair of values it compares, depth first,
+  // and stops at the first that differs: ten steps of fuel compare two
+  // vectors of nine equal items, and two that differ at their first item of
+  // any length.
+  it('equal takes a step per pair compared', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const equal: value.Func = { fn: 'native', native: native('equal')! }
+    const nums = (xs: number[]) => V.vectorVal(xs.map(n))
+    const run = (a: number[], b: number[]) => runtime('').withFuel(10).applyNow(equal, [nums(a), nums(b)], at)
+    const nine = Array(9).fill(7)
+    assert.equal((run(nine, nine) as any).value, true)
+    const ten = Array(10).fill(7)
+    const f = thrown(() => run(ten, ten))
+    assert.equal(f.limit?.name, 'max_plan_steps', String(f))
+    const differ = Array(100).fill(7)
+    differ[0] = 8
+    assert.equal((run(differ, Array(100).fill(7)) as any).value, false)
+    // Nested: the vector, its first item's vector and the two items in it,
+    // then the second item: five steps.
+    const nested = (x: number) => V.vectorVal([nums([1, 2]), n(x)])
+    const rt = runtime('').withFuel(10)
+    assert.equal((rt.applyNow(equal, [nested(3), nested(3)], at) as any).value, true)
+    assert.equal((rt.applyNow(equal, [nested(3), nested(3)], at) as any).value, true)
+    assert.equal(thrown(() => rt.applyNow(equal, [nested(3), nested(3)], at)).limit?.name, 'max_plan_steps')
   })
 
   // A CSV options record's `:no-columns`: `:refuse`, the default, or

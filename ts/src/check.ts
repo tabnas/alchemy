@@ -918,6 +918,13 @@ class Checker {
         const v = t(1)
         return vectorOf('Vector' === v.t ? join(v.item, t(0)) : Unknown)
       }
+      case 'push-all': {
+        this.expect('the items of push-all', vectorOf(Unknown), t(0), at(0))
+        this.expect('the vector of push-all', vectorOf(Unknown), t(1), at(1))
+        const added = t(0)
+        const held = t(1)
+        return vectorOf('Vector' === added.t && 'Vector' === held.t ? join(held.item, added.item) : Unknown)
+      }
       case 'pop':
         this.expect('the vector of pop', vectorOf(Unknown), t(0), at(0))
         return 'Vector' === t(0).t ? t(0) : vectorOf(Unknown)
@@ -950,12 +957,19 @@ class Checker {
         this.expect('the first number of compare', Num, t(0), at(0))
         this.expect('the second number of compare', Num, t(1), at(1))
         return Keyword
+      case 'inc':
+        this.expect('the count of inc', Num, t(0), at(0))
+        return Num
       case 'number-class':
         this.expect('the number of number-class', Num, t(0), at(0))
         return Keyword
       case 'kind':
         if (isAffine(t(0))) throw this.mismatch('the value of kind', Value, t(0), at(0))
         return Keyword
+      case 'equal':
+        if (isAffine(t(0))) throw this.mismatch('the first value of equal', Value, t(0), at(0))
+        if (isAffine(t(1))) throw this.mismatch('the second value of equal', Value, t(1), at(1))
+        return Bool
       case 'path':
         for (let i = 0; i < args.length; i++) {
           if (!among(t(i), 'String', 'Number', 'Selector', 'Unknown', 'Never')) {

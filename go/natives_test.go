@@ -378,6 +378,202 @@ func TestSplitTakesAStepPerCharactersReadAndPerPart(t *testing.T) {
 	}
 }
 
+func numsVal(xs ...float64) *VectorVal {
+	items := make([]Val, len(xs))
+	for i, x := range xs {
+		items[i] = Num(x)
+	}
+	return Vector(items...)
+}
+
+func countTo(n int) []float64 {
+	xs := make([]float64, n)
+	for i := range xs {
+		xs[i] = float64(i)
+	}
+	return xs
+}
+
+// push-all joins two vectors, the vector's items first, and leaves both as
+// they were; what is not a vector is a type error naming the argument.
+func TestPushAllJoinsTwoVectors(t *testing.T) {
+	for _, c := range []struct{ expr, want string }{
+		{"push-all [3 4] [1 2]", "[1 2 3 4]"},
+		{"push-all [] [1]", "[1]"},
+		{"push-all [1] []", "[1]"},
+		{"push-all [] []", "[]"},
+	} {
+		if got := mustEval(t, "", c.expr); !Equal(got, mustEval(t, "", c.want)) {
+			t.Errorf("%s: %s", c.expr, DebugString(got))
+		}
+	}
+	rt := runtimeOf(t, "def held [1]\ndef added [2]")
+	for _, c := range []struct{ expr, want string }{
+		{"push-all added held", "[1 2]"},
+		{"held", "[1]"},
+		{"added", "[2]"},
+	} {
+		if got, f := evalWith(t, rt, c.expr); f != nil || !Equal(got, mustEval(t, "", c.want)) {
+			t.Errorf("%s: %s %v", c.expr, DebugString(got), f)
+		}
+	}
+	for _, c := range []struct{ expr, message string }{
+		{"push-all 1 []", "the items must be a vector, not a number"},
+		{`push-all [] "a"`, "the data must be a vector, not a string"},
+	} {
+		if f := mustFail(t, "", c.expr); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: push-all: "+c.message {
+			t.Errorf("%s: %v", c.expr, f)
+		}
+	}
+}
+
+// push-all takes a step for each item it appends, and none for the vector
+// it extends: ten steps of fuel append ten items and no more.
+func TestPushAllTakesAStepPerItemAppended(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	run := func(n, held int) (Val, *Fail) {
+		return nPushAll(runtimeOf(t, "").WithFuel(10), []Val{numsVal(countTo(n)...), numsVal(countTo(held)...)}, at)
+	}
+	if _, f := run(10, 1000); f != nil {
+		t.Errorf("%v", f)
+	}
+	if _, f := run(11, 0); f == nil || f.Limit == nil || f.Limit.Name != "max_plan_steps" {
+		t.Errorf("%v", f)
+	}
+}
+
+// inc answers the count one more, exactly up to 2^53 - 1, and refuses a
+// count that is not a whole number of at least 0 below it, as repeat
+// refuses its count.
+func TestIncCountsOneMoreExactly(t *testing.T) {
+	for _, c := range []struct {
+		expr string
+		want float64
+	}{
+		{"inc 0", 1},
+		{"inc -0", 1},
+		{"inc 41", 42},
+		{"inc 1e2", 101},
+		{"inc 9007199254740990", IncMax},
+	} {
+		got, ok := mustEval(t, "", c.expr).(NumVal)
+		if !ok || got.Value != c.want || got.HasLexeme {
+			t.Errorf("%s: %#v", c.expr, got)
+		}
+	}
+	at := SourceSpan{File: NewFile("t.alc")}
+	for _, c := range []struct {
+		arg     Val
+		spelled string
+	}{
+		{Num(IncMax), "9007199254740991"},
+		{Num(-1), "-1"},
+		{Num(1.5), "1.5"},
+		{NumLexeme(0.5, "5e-1"), "5e-1"},
+		{Num(math.Inf(1)), "inf"},
+		{Num(math.NaN()), "NaN"},
+	} {
+		_, f := nInc(runtimeOf(t, ""), []Val{c.arg}, at)
+		want := "type_mismatch: inc: the count must be a whole number from 0 to 9007199254740990, not " + c.spelled
+		if f == nil || f.Code != CodeDSLTypeError || f.Message != want {
+			t.Errorf("%s: %v", c.spelled, f)
+		}
+	}
+	if f := mustFail(t, "", `inc "1"`); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: inc: the count must be a number, not a string" {
+		t.Errorf("%v", f)
+	}
+}
+
+// equal compares as a match pattern compares a constant: data
+// structurally, numbers by value, a record's members in any order; a
+// function equals nothing, and a stream or a text is refused.
+func TestEqualComparesValuesAsAPatternComparesAConstant(t *testing.T) {
+	ab := "(record (entry :a 1) (entry :b [2]))"
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{`"FEN"`, `"FEN"`, true},
+		{`"FEN"`, `"Fen"`, false},
+		{`"1"`, "1", false},
+		{"null", "null", true},
+		{"null", "missing", false},
+		{"missing", "missing", true},
+		{":w", ":w", true},
+		{":w", `"w"`, false},
+		{"true", "true", true},
+		{"1e2", "100", true},
+		{"-0", "0", true},
+		{"[1 2]", "[1 2]", true},
+		{"[1 2]", "[2 1]", false},
+		{"[1]", "[1 1]", false},
+		{ab, "(record (entry :b [2]) (entry :a 1))", true},
+		{ab, "(record (entry :a 1) (entry :c [2]))", false},
+		{ab, "(record (entry :a 1))", false},
+		{`(key "a")`, `(key "a")`, true},
+		{`(key "a")`, `(key "b")`, false},
+		{`(key "a")`, `(scalar "a")`, false},
+		{"count", "count", false},
+	} {
+		expr := "equal " + c.a + " " + c.b
+		if got := mustEval(t, "", expr); got != BoolVal(c.want) {
+			t.Errorf("%s: %s", expr, DebugString(got))
+		}
+	}
+	at := SourceSpan{File: NewFile("t.alc")}
+	nan := Num(math.NaN())
+	if v, f := nEqual(runtimeOf(t, ""), []Val{nan, nan}, at); f != nil || v != BoolVal(false) {
+		t.Errorf("NaN: %v %v", v, f)
+	}
+	for _, expr := range []string{`equal (text "x") "x"`, `equal "x" (text "x")`} {
+		want := "type_mismatch: equal: a text cannot be compared; a stream or a text is used where it is, not inspected"
+		if f := mustFail(t, "", expr); f.Code != CodeDSLTypeError || f.Message != want {
+			t.Errorf("%s: %v", expr, f)
+		}
+	}
+}
+
+// equal takes a step for each pair of values it compares, depth first,
+// and stops at the first that differs: ten steps of fuel compare two
+// vectors of nine equal items, and two that differ at their first item of
+// any length.
+func TestEqualTakesAStepPerPairCompared(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	same := func(n int, x float64) []float64 {
+		xs := make([]float64, n)
+		for i := range xs {
+			xs[i] = x
+		}
+		return xs
+	}
+	run := func(a, b []float64) (Val, *Fail) {
+		return nEqual(runtimeOf(t, "").WithFuel(10), []Val{numsVal(a...), numsVal(b...)}, at)
+	}
+	if v, f := run(same(9, 7), same(9, 7)); f != nil || v != BoolVal(true) {
+		t.Errorf("nine: %v %v", v, f)
+	}
+	if _, f := run(same(10, 7), same(10, 7)); f == nil || f.Limit == nil || f.Limit.Name != "max_plan_steps" {
+		t.Errorf("ten: %v", f)
+	}
+	differ := same(100, 7)
+	differ[0] = 8
+	if v, f := run(differ, same(100, 7)); f != nil || v != BoolVal(false) {
+		t.Errorf("differ: %v %v", v, f)
+	}
+	// Nested: the vector, its first item's vector and the two items in it,
+	// then the second item: five steps.
+	nested := func(x float64) Val { return Vector(numsVal(1, 2), Num(x)) }
+	rt := runtimeOf(t, "").WithFuel(10)
+	for i := 0; i < 2; i++ {
+		if v, f := nEqual(rt, []Val{nested(3), nested(3)}, at); f != nil || v != BoolVal(true) {
+			t.Errorf("nested %d: %v %v", i, v, f)
+		}
+	}
+	if _, f := nEqual(rt, []Val{nested(3), nested(3)}, at); f == nil || f.Limit == nil || f.Limit.Name != "max_plan_steps" {
+		t.Errorf("nested: %v", f)
+	}
+}
+
 // A CSV options record's :no-columns: :refuse, the default, or :empty; any
 // other value is a type error where it is read.
 func TestNoColumnsNamesAPolicyForATableOfNoColumns(t *testing.T) {

@@ -688,6 +688,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `record`, `entry` | `record entry... -> Record`, `entry :key value -> Entry` | a retained record; duplicate keys are `duplicate_key` |
 | `vector` | `vector item... -> Vector` | a retained vector; it cannot hold a stream or a live text |
 | `push` | `push item vector -> Vector` | a new vector with the item appended; it cannot hold a stream or a live text |
+| `push-all` | `push-all items vector -> Vector` | a new vector with every item of `items` appended, in their order: two vectors joined, a step for each item appended |
 | `pop` | `pop vector -> Vector` | the vector without its last item; an empty vector is a type error |
 | `top` | `top vector -> Value` | the last item; an empty vector is a type error |
 | `count` | `count vector -> Number` | how many items the vector holds |
@@ -699,8 +700,10 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `number` | `number string -> Number` | the number the string spells: a JSON number, its text kept as the lexeme, or `Infinity`, `-Infinity` or `NaN`; `INPUT_INVALID` for any other text |
 | `is-number` | `is-number string -> Bool` | whether `number` reads the string: a JSON number, or `Infinity`, `-Infinity` or `NaN`; `false` for any other text, where `number` fails. A program cannot catch a failure, so a part tests a string with it before it calls `number` |
 | `compare` | `compare a b -> Keyword` | how two numbers are ordered: `:less`, `:equal` or `:greater`, and `:unordered` when either is NaN |
+| `inc` | `inc count -> Number` | the count one more: a whole number from 0 to 9007199254740990, where every runtime counts exactly; any other number is a type error |
 | `number-class` | `number-class number -> Keyword` | `:finite`, `:infinity`, `:negative-infinity` or `:nan` |
 | `kind` | `kind value -> Keyword` | the kind of a value as a keyword: `:null`, `:boolean`, `:number`, `:string`, `:keyword`, `:vector`, `:record`, `:missing`, `:tagged`, `:function`, `:selector` or `:capture`; a stream or a text cannot be asked |
+| `equal` | `equal a b -> Bool` | whether two values are equal, as a `match` pattern compares a constant: structurally, numbers by value (NaN equals nothing), a record to one with the same members in any order, a function to nothing; a stream or a text cannot be asked; a step for each pair of values compared |
 | `path` | `path segment... -> Selector` | a selector from strings, indexes and selectors |
 | `root`, `each-index`, `each-member` | `-> Selector` | the document; every element of an array; every member value of an object |
 | `property`, `index`, `compose` | `property name`, `index n`, `compose outer inner -> Selector` | one member; one element; inner below every location outer names |

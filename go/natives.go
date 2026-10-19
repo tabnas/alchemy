@@ -49,6 +49,7 @@ func init() {
 		"entry":           nEntry,
 		"vector":          nVector,
 		"push":            nPush,
+		"push-all":        nPushAll,
 		"pop":             nPop,
 		"top":             nTop,
 		"count":           nCount,
@@ -59,8 +60,10 @@ func init() {
 		"number":          nNumber,
 		"is-number":       nIsNumber,
 		"compare":         nCompare,
+		"inc":             nInc,
 		"number-class":    nNumberClass,
 		"kind":            nKind,
+		"equal":           nEqual,
 		"path":            nPath,
 		"root":            nRoot,
 		"each-index":      nEachIndex,
@@ -503,6 +506,32 @@ func nPush(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	out := make([]Val, 0, len(items)+1)
 	out = append(out, items...)
 	return Vector(append(out, a[0])...), nil
+}
+
+// nPushAll is `push-all items vector`: a new vector, the vector's items and
+// then the items', in their order: two vectors joined, as `push` appends
+// one item. A step for each item appended, as Rust and TypeScript take
+// them, so the fuel and the host's abort flag bound a long join. Neither
+// vector can hold a stream or a live text, which `vector` and `push`
+// refuse, so neither does the join.
+func nPushAll(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	items, ok := a[0].(*VectorVal)
+	if !ok {
+		return nil, typeError("push-all: the items must be a vector, not " + KindOf(a[0]))
+	}
+	held, f := asItems("push-all", a[1])
+	if f != nil {
+		return nil, f
+	}
+	out := make([]Val, 0, len(held)+len(items.Items))
+	out = append(out, held...)
+	for _, item := range items.Items {
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+		out = append(out, item)
+	}
+	return Vector(out...), nil
 }
 
 func nPop(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
@@ -1042,6 +1071,29 @@ func nCompare(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	return KeywordVal("unordered"), nil
 }
 
+// IncMax is the largest count `inc` answers, 2^53 - 1: below it a 64-bit
+// float holds every whole number, so the three runtimes count alike.
+const IncMax = 9007199254740991.0
+
+// nInc is `inc count`: the count one more. Alchemy has no arithmetic; a
+// part that counts (PGN's moves) counts with this. The count is a whole
+// number of at least 0, as `repeat`'s is, and below IncMax, so the answer
+// is exact; any other number is a type error, as `repeat`'s is.
+func nInc(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	n, ok := a[0].(NumVal)
+	if !ok {
+		return nil, typeError("inc: the count must be a number, not " + KindOf(a[0]))
+	}
+	if !(n.Value >= 0) || !isWhole(n.Value) || !(n.Value < IncMax) {
+		spelled := floatText(n.Value)
+		if n.HasLexeme {
+			spelled = n.Lexeme
+		}
+		return nil, typeError("inc: the count must be a whole number from 0 to 9007199254740990, not " + spelled)
+	}
+	return Num(n.Value + 1), nil
+}
+
 // nNumberClass is `number-class number`: `:finite`, `:infinity`,
 // `:negative-infinity` or `:nan`, so that a program writing a format with
 // spellings for the numbers JSON has none for (YAML's `.inf`, `-.inf` and
@@ -1075,6 +1127,74 @@ func nKind(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		return nil, typeError(fmt.Sprintf("kind: %s cannot be asked; a stream or a text is used where it is, not inspected", KindOf(a[0])))
 	}
 	return KeywordVal(word), nil
+}
+
+// nEqual is `equal a b`: whether two values are equal, as a `match` pattern
+// compares a constant (Equal): data structurally, numbers by value (NaN
+// equals nothing, -0 equals 0), a record to one with the same members in
+// any order, a tagged value to one of the same tag and fields; a function,
+// or a text a vector holds, equals nothing, itself included. A stream or a
+// text is refused, as `kind` refuses one.
+//
+// The values are walked depth first, each item and member in its order,
+// and the walk stops at the first pair that differs. A step for each pair,
+// the steps Rust and TypeScript take, so the fuel and the host's abort
+// flag bound the comparison of two long values as they bound building
+// them.
+func nEqual(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	for _, v := range a {
+		if _, ok := kindWord(v); !ok {
+			return nil, typeError(fmt.Sprintf("equal: %s cannot be compared; a stream or a text is used where it is, not inspected", KindOf(v)))
+		}
+	}
+	type pair struct{ x, y Val }
+	pending := []pair{{a[0], a[1]}}
+	for len(pending) > 0 {
+		p := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+		switch x := p.x.(type) {
+		case *VectorVal:
+			y, ok := p.y.(*VectorVal)
+			if !ok || len(x.Items) != len(y.Items) {
+				return BoolVal(false), nil
+			}
+			for i := len(x.Items) - 1; i >= 0; i-- {
+				pending = append(pending, pair{x.Items[i], y.Items[i]})
+			}
+		case *RecordVal:
+			y, ok := p.y.(*RecordVal)
+			if !ok || len(x.keys) != len(y.keys) {
+				return BoolVal(false), nil
+			}
+			pairs := make([]pair, 0, len(x.keys))
+			for i, k := range x.keys {
+				other, ok := y.Get(k)
+				if !ok {
+					return BoolVal(false), nil
+				}
+				pairs = append(pairs, pair{x.vals[i], other})
+			}
+			for i := len(pairs) - 1; i >= 0; i-- {
+				pending = append(pending, pairs[i])
+			}
+		case *TaggedVal:
+			y, ok := p.y.(*TaggedVal)
+			if !ok || x.Tag != y.Tag || len(x.Fields) != len(y.Fields) {
+				return BoolVal(false), nil
+			}
+			for i := len(x.Fields) - 1; i >= 0; i-- {
+				pending = append(pending, pair{x.Fields[i], y.Fields[i]})
+			}
+		default:
+			if !Equal(p.x, p.y) {
+				return BoolVal(false), nil
+			}
+		}
+	}
+	return BoolVal(true), nil
 }
 
 // kindWord is the word `kind` answers for a retained value; none for a

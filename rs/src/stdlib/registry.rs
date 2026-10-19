@@ -468,6 +468,28 @@ fn push(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     Ok(Val::Vector(items.push(a[0].clone())))
 }
 
+/// `push-all items vector`: a new vector, the vector's items and then the
+/// items', in their order: two vectors joined, as `push` appends one item.
+/// Each item is pushed as `push` pushes it, a bounded cost whatever the
+/// vector's length, so a join costs the items it appends, never the vector
+/// it extends; a step for each, so the fuel and the host's abort flag bound
+/// a long join. Neither vector can hold a stream or a live text, which
+/// `vector` and `push` refuse, so neither does the join.
+fn push_all(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let Val::Vector(items) = &a[0] else {
+        return Err(type_error(format!(
+            "push-all: the items must be a vector, not {}",
+            a[0].kind()
+        )));
+    };
+    let mut out = as_items("push-all", &a[1])?.clone();
+    for item in items.iter() {
+        rt.tick()?;
+        out = out.push(item.clone());
+    }
+    Ok(Val::Vector(out))
+}
+
 fn pop(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let items = as_items("pop", &a[0])?;
     let Some(rest) = items.pop() else {
@@ -872,6 +894,34 @@ fn compare(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     }))
 }
 
+/// The largest count `inc` answers, 2^53 - 1: below it a 64-bit float
+/// holds every whole number, so the three runtimes count alike.
+pub const INC_MAX: f64 = 9_007_199_254_740_991.0;
+
+/// `inc count`: the count one more. Alchemy has no arithmetic; a part that
+/// counts (PGN's moves) counts with this. The count is a whole number of
+/// at least 0, as `repeat`'s is, and below [`INC_MAX`], so the answer is
+/// exact; any other number is a type error, as `repeat`'s is.
+fn inc(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Num { value, .. } if *value >= 0.0 && value.fract() == 0.0 && *value < INC_MAX => {
+            Ok(Val::num(*value + 1.0))
+        }
+        Val::Num { value, lexeme } => {
+            let spelled = lexeme
+                .as_deref()
+                .map_or_else(|| value.to_string(), str::to_string);
+            Err(type_error(format!(
+                "inc: the count must be a whole number from 0 to 9007199254740990, not {spelled}"
+            )))
+        }
+        other => Err(type_error(format!(
+            "inc: the count must be a number, not {}",
+            other.kind()
+        ))),
+    }
+}
+
 /// `number-class number`: `:finite`, `:infinity`, `:negative-infinity` or
 /// `:nan`, so that a program writing a format with spellings for the
 /// numbers JSON has none for (YAML's `.inf`, `-.inf` and `.nan`) can choose
@@ -928,6 +978,79 @@ fn kind_word(v: &Val) -> Option<&'static str> {
         Val::Tagged { .. } => "tagged",
         Val::Stream(_) | Val::Text(_) => return None,
     })
+}
+
+/// `equal a b`: whether two values are equal, as a `match` pattern compares
+/// a constant (`Val`'s `==`): data structurally, numbers by value (NaN
+/// equals nothing, -0 equals 0), a record to one with the same members in
+/// any order, a tagged value to one of the same tag and fields; a function,
+/// or a text a vector holds, equals nothing, itself included. A stream or
+/// a text is refused, as `kind` refuses one.
+///
+/// The values are walked depth first, each item and member in its order,
+/// and the walk stops at the first pair that differs. A step for each
+/// pair, so the fuel and the host's abort flag bound the comparison of two
+/// long values as they bound building them; TypeScript and Go walk the
+/// same pairs in the same order, so all three take the same steps.
+fn equal(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    for v in a {
+        if kind_word(v).is_none() {
+            return Err(type_error(format!(
+                "equal: {} cannot be compared; a stream or a text is used where it is, not inspected",
+                v.kind()
+            )));
+        }
+    }
+    let mut pending: Vec<(&Val, &Val)> = vec![(&a[0], &a[1])];
+    while let Some((x, y)) = pending.pop() {
+        rt.tick()?;
+        match (x, y) {
+            (Val::Vector(xs), Val::Vector(ys)) => {
+                if xs.len() != ys.len() {
+                    return Ok(Val::Bool(false));
+                }
+                let start = pending.len();
+                pending.extend(xs.iter().zip(ys.iter()));
+                pending[start..].reverse();
+            }
+            (Val::Record(xs), Val::Record(ys)) => {
+                if xs.len() != ys.len() {
+                    return Ok(Val::Bool(false));
+                }
+                let start = pending.len();
+                for (k, xv) in xs.iter() {
+                    let Some(yv) = ys.get(k) else {
+                        return Ok(Val::Bool(false));
+                    };
+                    pending.push((xv, yv));
+                }
+                pending[start..].reverse();
+            }
+            (
+                Val::Tagged {
+                    tag: xt,
+                    fields: xf,
+                },
+                Val::Tagged {
+                    tag: yt,
+                    fields: yf,
+                },
+            ) => {
+                if xt != yt || xf.len() != yf.len() {
+                    return Ok(Val::Bool(false));
+                }
+                let start = pending.len();
+                pending.extend(xf.iter().zip(yf.iter()));
+                pending[start..].reverse();
+            }
+            (x, y) => {
+                if x != y {
+                    return Ok(Val::Bool(false));
+                }
+            }
+        }
+    }
+    Ok(Val::Bool(true))
 }
 
 fn path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -1805,6 +1928,7 @@ static NATIVES: &[Native] = &[
     k("entry", Exact(2), entry, "entry :key value -> Entry", "one record field"),
     f("vector", AtLeast(0), vector, "vector item... -> Vector", "a retained vector; it cannot hold a stream or a live text"),
     f("push", Exact(2), push, "push item vector -> Vector", "a new vector with the item appended; it cannot hold a stream or a live text"),
+    f("push-all", Exact(2), push_all, "push-all items vector -> Vector", "a new vector with every item of items appended, in their order: two vectors joined, a step for each item appended"),
     f("pop", Exact(1), pop, "pop vector -> Vector", "the vector without its last item; an empty vector is a type error"),
     f("top", Exact(1), top, "top vector -> Value", "the last item; an empty vector is a type error"),
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
@@ -1815,8 +1939,10 @@ static NATIVES: &[Native] = &[
     f("number", Exact(1), number, "number string -> Number", "the number the string spells: a JSON number, its text kept as the lexeme, or Infinity, -Infinity or NaN; INPUT_INVALID for any other text"),
     f("is-number", Exact(1), is_number, "is-number string -> Bool", "whether number reads the string: a JSON number, or Infinity, -Infinity or NaN; false for any other text, where number fails. A program cannot catch a failure, so a part tests a string with it before it calls number"),
     f("compare", Exact(2), compare, "compare a b -> Keyword", "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"),
+    f("inc", Exact(1), inc, "inc count -> Number", "the count one more: a whole number from 0 to 9007199254740990, where every runtime counts exactly; any other number is a type error"),
     f("number-class", Exact(1), number_class, "number-class number -> Keyword", ":finite, :infinity, :negative-infinity or :nan"),
     f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
+    f("equal", Exact(2), equal, "equal a b -> Bool", "whether two values are equal, as a match pattern compares a constant: structurally, numbers by value (NaN equals nothing), a record to one with the same members in any order, a function to nothing; a stream or a text cannot be asked; a step for each pair of values compared"),
     // Selectors.
     f("path", AtLeast(0), path, "path segment... -> Selector", "a selector from strings, indexes and selectors"),
     c("root", root, "root -> Selector", "the document"),
@@ -1932,7 +2058,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 53);
+        assert_eq!(compared, 56);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
@@ -2292,6 +2418,251 @@ mod tests {
         assert!(run(".".repeat(8)).is_ok());
         let fail = run(".".repeat(9)).unwrap_err();
         assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+    }
+
+    /// A runtime of its own with ten steps of fuel, for a native's steps.
+    fn fueled() -> Arc<Runtime> {
+        let rt = crate::lower::tests::runtime("def export [input] input", true);
+        match Arc::try_unwrap(rt) {
+            Ok(rt) => Arc::new(rt.with_fuel(Some(10))),
+            Err(_) => unreachable!("the test holds the one runtime"),
+        }
+    }
+
+    fn numbers(v: Val) -> Vec<f64> {
+        match v {
+            Val::Vector(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::Num { value, .. } => *value,
+                    other => panic!("{other:?}"),
+                })
+                .collect(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn nums(ns: &[f64]) -> Val {
+        Val::vector(ns.iter().map(|n| Val::num(*n)).collect())
+    }
+
+    /// `push-all` joins two vectors, the vector's items first, and leaves
+    /// both as they were; what is not a vector is a type error naming the
+    /// argument.
+    #[test]
+    fn push_all_joins_two_vectors() {
+        let rt = crate::lower::tests::runtime("", true);
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let join = |items: &[f64], vector: &[f64]| {
+            numbers(push_all(&rt, &[nums(items), nums(vector)], &at).unwrap())
+        };
+        assert_eq!(join(&[3.0, 4.0], &[1.0, 2.0]), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(join(&[], &[1.0]), [1.0]);
+        assert_eq!(join(&[1.0], &[]), [1.0]);
+        assert!(join(&[], &[]).is_empty());
+        // Past a leaf of the persistent vector, from both sides.
+        let long: Vec<f64> = (0..70).map(f64::from).collect();
+        assert_eq!(join(&long[40..], &long[..40]), long);
+        let (items, vector) = (nums(&[2.0]), nums(&[1.0]));
+        push_all(&rt, &[items.clone(), vector.clone()], &at).unwrap();
+        assert_eq!(numbers(items), [2.0]);
+        assert_eq!(numbers(vector), [1.0]);
+        for (args, message) in [
+            (
+                [Val::num(1.0), nums(&[])],
+                "the items must be a vector, not a number",
+            ),
+            (
+                [nums(&[]), Val::str("a")],
+                "the data must be a vector, not a string",
+            ),
+        ] {
+            let fail = push_all(&rt, &args, &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(fail.message, format!("type_mismatch: push-all: {message}"));
+        }
+    }
+
+    /// `push-all` takes a step for each item it appends, and none for the
+    /// vector it extends: ten steps of fuel append ten items and no more.
+    #[test]
+    fn push_all_takes_a_step_per_item_appended() {
+        let at = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let run = |n: u32, held: u32| {
+            let items: Vec<f64> = (0..n).map(f64::from).collect();
+            let vector: Vec<f64> = (0..held).map(f64::from).collect();
+            push_all(&fueled(), &[nums(&items), nums(&vector)], &at)
+        };
+        assert!(run(10, 1000).is_ok());
+        let fail = run(11, 0).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().map(|l| l.name),
+            Some("max_plan_steps"),
+            "{fail}"
+        );
+    }
+
+    /// `inc` answers the count one more, exactly up to 2^53 - 1, and
+    /// refuses a count that is not a whole number of at least 0 below it,
+    /// as `repeat` refuses its count.
+    #[test]
+    fn inc_counts_one_more_exactly() {
+        let rt = crate::lower::tests::runtime("", true);
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let next = |v: Val| match inc(&rt, &[v], &at).unwrap() {
+            Val::Num { value, lexeme } => {
+                assert_eq!(lexeme, None);
+                value
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(next(Val::num(0.0)), 1.0);
+        assert_eq!(next(Val::num(-0.0)), 1.0);
+        assert_eq!(next(Val::num(41.0)), 42.0);
+        assert_eq!(next(Val::num(INC_MAX - 1.0)), INC_MAX);
+        let lexeme = Val::Num {
+            value: 100.0,
+            lexeme: Some(Arc::from("1e2")),
+        };
+        assert_eq!(next(lexeme), 101.0);
+        let spelled = Val::Num {
+            value: 0.5,
+            lexeme: Some(Arc::from("5e-1")),
+        };
+        for (arg, message) in [
+            (
+                Val::num(INC_MAX),
+                "the count must be a whole number from 0 to 9007199254740990, not 9007199254740991",
+            ),
+            (
+                Val::num(-1.0),
+                "the count must be a whole number from 0 to 9007199254740990, not -1",
+            ),
+            (
+                Val::num(1.5),
+                "the count must be a whole number from 0 to 9007199254740990, not 1.5",
+            ),
+            (
+                spelled,
+                "the count must be a whole number from 0 to 9007199254740990, not 5e-1",
+            ),
+            (
+                Val::num(f64::INFINITY),
+                "the count must be a whole number from 0 to 9007199254740990, not inf",
+            ),
+            (
+                Val::num(f64::NAN),
+                "the count must be a whole number from 0 to 9007199254740990, not NaN",
+            ),
+            (Val::str("1"), "the count must be a number, not a string"),
+        ] {
+            let fail = inc(&rt, &[arg], &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(fail.message, format!("type_mismatch: inc: {message}"));
+        }
+    }
+
+    /// `equal` compares as a `match` pattern compares a constant: data
+    /// structurally, numbers by value, a record's members in any order;
+    /// a function equals nothing, and a stream or a text is refused.
+    #[test]
+    fn equal_compares_values_as_a_pattern_compares_a_constant() {
+        let rt = crate::lower::tests::runtime("", true);
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let eq = |a: Val, b: Val| match equal(&rt, &[a, b], &at).unwrap() {
+            Val::Bool(b) => b,
+            other => panic!("{other:?}"),
+        };
+        let rec = |fields: &[(&str, Val)]| {
+            Val::Record(Arc::new(
+                fields
+                    .iter()
+                    .map(|(k, v)| (Arc::from(*k), v.clone()))
+                    .collect(),
+            ))
+        };
+        assert!(eq(Val::str("FEN"), Val::str("FEN")));
+        assert!(!eq(Val::str("FEN"), Val::str("Fen")));
+        assert!(!eq(Val::str("1"), Val::num(1.0)));
+        assert!(eq(Val::Null, Val::Null));
+        assert!(!eq(Val::Null, Val::missing()));
+        assert!(eq(Val::missing(), Val::missing()));
+        assert!(eq(Val::keyword("w"), Val::keyword("w")));
+        assert!(!eq(Val::keyword("w"), Val::str("w")));
+        assert!(eq(Val::Bool(true), Val::Bool(true)));
+        // Numbers by value, whatever their lexemes.
+        let spelled = Val::Num {
+            value: 100.0,
+            lexeme: Some(Arc::from("1e2")),
+        };
+        assert!(eq(spelled, Val::num(100.0)));
+        assert!(eq(Val::num(-0.0), Val::num(0.0)));
+        assert!(!eq(Val::num(f64::NAN), Val::num(f64::NAN)));
+        // Vectors item by item; records member by member, in any order.
+        assert!(eq(nums(&[1.0, 2.0]), nums(&[1.0, 2.0])));
+        assert!(!eq(nums(&[1.0, 2.0]), nums(&[2.0, 1.0])));
+        assert!(!eq(nums(&[1.0]), nums(&[1.0, 1.0])));
+        let ab = rec(&[("a", Val::num(1.0)), ("b", nums(&[2.0]))]);
+        let ba = rec(&[("b", nums(&[2.0])), ("a", Val::num(1.0))]);
+        assert!(eq(ab.clone(), ba));
+        assert!(!eq(
+            ab.clone(),
+            rec(&[("a", Val::num(1.0)), ("c", nums(&[2.0]))])
+        ));
+        assert!(!eq(ab, rec(&[("a", Val::num(1.0))])));
+        // Tagged values by tag and fields.
+        let key = |k: &str| Val::tagged("key", vec![Val::str(k)]);
+        assert!(eq(key("a"), key("a")));
+        assert!(!eq(key("a"), key("b")));
+        assert!(!eq(key("a"), Val::tagged("scalar", vec![Val::str("a")])));
+        // A function equals nothing, itself included.
+        let f = Val::Fn(Func::Native(native("count").unwrap()));
+        assert!(!eq(f.clone(), f));
+        // A stream or a text is refused, either side.
+        let t = text(&rt, &[Val::str("x")], &at).unwrap();
+        for args in [[t.clone(), Val::str("x")], [Val::str("x"), t]] {
+            let fail = equal(&rt, &args, &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(
+                fail.message,
+                "type_mismatch: equal: a text cannot be compared; a stream or a text is used where it is, not inspected"
+            );
+        }
+    }
+
+    /// `equal` takes a step for each pair of values it compares, depth
+    /// first, and stops at the first that differs: ten steps of fuel
+    /// compare two vectors of nine equal items, and two that differ at
+    /// their first item of any length.
+    #[test]
+    fn equal_takes_a_step_per_pair_compared() {
+        let at = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let run = |a: &[f64], b: &[f64]| equal(&fueled(), &[nums(a), nums(b)], &at);
+        let nine = [7.0; 9];
+        assert!(matches!(run(&nine, &nine), Ok(Val::Bool(true))));
+        let ten = [7.0; 10];
+        let fail = run(&ten, &ten).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().map(|l| l.name),
+            Some("max_plan_steps"),
+            "{fail}"
+        );
+        let mut differ = [7.0; 100];
+        differ[0] = 8.0;
+        assert!(matches!(run(&differ, &[7.0; 100]), Ok(Val::Bool(false))));
+        // Nested: the vector, its first item's vector and the two items
+        // in it, then the second item: five steps.
+        let nested = |x: f64| Val::vector(vec![nums(&[1.0, 2.0]), Val::num(x)]);
+        let rt = fueled();
+        assert!(matches!(
+            equal(&rt, &[nested(3.0), nested(3.0)], &at),
+            Ok(Val::Bool(true))
+        ));
+        assert!(matches!(
+            equal(&rt, &[nested(3.0), nested(3.0)], &at),
+            Ok(Val::Bool(true))
+        ));
+        assert!(equal(&rt, &[nested(3.0), nested(3.0)], &at).is_err());
     }
 
     /// `kind` names every retained value's kind by one keyword, the word
