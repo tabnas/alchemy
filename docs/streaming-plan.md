@@ -988,6 +988,71 @@ sequence's. The maintainer's calls, on the measurement above:
   spells today as six scans an event and `split` tricks; the part is
   then rewritten on them and measured again.
 
+The engine's default came first. tabnas/parser#313, released as
+tabnas-parser 0.12.14, bounds Rust's rule history at three predecessors
+unless a grammar or a host sets the option, and admin's ADR-29 records
+the decision. TypeScript and Go keep theirs unbounded for now, a
+difference from TypeScript that tabnas/parser's `DIVERGENCE.md`
+registers, for two reasons that running the fleet's suites under a
+bound of three measured:
+- In TypeScript an unbounded link is the live rule, which costs nothing
+  to make, and a bounded one is a copy built on every step. Through
+  `@tabnas/json`, 20,000 records took 12.0 s bounded against 3.6 s
+  unbounded, and one record more than four times as long. TypeScript
+  takes the default once a bounded link costs about what a live one
+  does.
+- In Go a bounded link is a copy too, and a Go rule's node is a plain
+  field the copy cannot share, so a grammar's write through a linked
+  rule's node lands on the copy and is lost: 25 of the engine's own Go
+  tests failed, and with the parent link kept live the Go suites of
+  expr, csv, jsonic, toml, yaml and c still failed. Go takes the default
+  once its bounded links carry those writes.
+
+The same release fixes three things the bound and the trace turned up.
+Under a bound, a TypeScript pusher's after action can write the child it
+pushed, as the path plugin does, and an edit it makes to its own links
+stands; and a Rust pusher links its finished child as a bounded copy, as
+TypeScript does, so the child keeps nothing past itself alive. And Rust's lexer
+keeps a character's byte offset only for a text that holds a character
+outside ASCII, where the two differ, and allocates its vectors once, at
+their length: an ASCII text costs four bytes a character beside itself,
+where it cost twelve, and up to twenty-four as the vectors doubled.
+Measured as above, a part read pruned by `run --grammar` with the rule
+history bounded at three, before 0.12.14 and with it:
+
+| | before 0.12.14 | with 0.12.14 |
+|---|---|---|
+| JSON, 10,000 records | 1.54 s, 32 MiB | 1.43 s, 19 MiB |
+| JSON, 40,000 records | 5.94 s, 98 MiB | 5.99 s, 48 MiB |
+| YAML, 10,000 records | 7.46 s, 33 MiB | 7.75 s, 21 MiB |
+| YAML, 40,000 records | 30.08 s, 97 MiB | 28.51 s, 51 MiB |
+| XML, 10,000 records | 5.33 s, 32 MiB | 5.18 s, 22 MiB |
+| XML, 40,000 records | 20.88 s, 96 MiB | 20.09 s, 56 MiB |
+
+Every part writes the same bytes as before, in about the same time.
+What still grows, about 1 KB a record, is the text. A heap profile of
+JSON's 10,000 records puts 9.8 MB of the 11.4 MB peak in three copies of
+it: the lexer's vector of its characters at four bytes each (6.5 MB),
+the text as alchemy-cli reads it (1.6 MB), and the engine context's own
+copy (1.6 MB). That is six bytes a byte of the document, and step 10's
+chunked lexer source is for it. aless's own read, which sets the bound
+itself, gains the lexer's share with its pin on 0.12.14
+(rjrodger/aless#81), with `--render json` in the same build profile
+before and after, the same bytes in about the same time:
+
+| | aless on 0.12.13 | aless on 0.12.14 |
+|---|---|---|
+| JSON, 10,000 records | 32 MiB | 20 MiB |
+| JSON, 40,000 records | 99 MiB | 49 MiB |
+| YAML, 10,000 records | 53 MiB | 42 MiB |
+| YAML, 40,000 records | 178 MiB | 133 MiB |
+| XML, 10,000 records | 116 MiB | 106 MiB |
+| XML, 40,000 records | 394 MiB | 355 MiB |
+
+So at 40,000 records a part read pruned holds about what aless's own
+read holds for JSON, and less for YAML and XML. alchemy-cli's parsers, which set no bound, take the
+engine's default once its lock names 0.12.14 (tabnas/alchemy-cli#48).
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
