@@ -134,6 +134,7 @@ export type { Arity, Kind, Native } from './stdlib/registry'
 export {
   CAPTURE_LIMITS,
   CHARS_WITHIN_STEP,
+  INC_MAX,
   LENGTH_CHUNK,
   NUMBER_STEP,
   SPLIT_STEP,

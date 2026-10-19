@@ -60,6 +60,7 @@ import {
   taggedVal,
   textVal,
   typeError,
+  valEquals,
   vectorVal,
 } from '../value'
 import { Native, call, installCalls, natives } from './registry'
@@ -355,6 +356,24 @@ function push(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   }
   const items = asItems('push', a[1])
   return vectorVal([...items, a[0]])
+}
+
+// `push-all items vector`: a new vector, the vector's items and then the
+// items', in their order: two vectors joined, as `push` appends one item.
+// A step for each item appended, the steps Rust takes, so the fuel and the
+// host's abort flag bound a long join; the steps come first, so a join the
+// fuel refuses copies nothing. A vector here is an array, so the vector it
+// extends is copied, as `push` copies it, except where either is empty: the
+// join is then the other, shared. Neither vector can hold a stream or a
+// live text, which `vector` and `push` refuse, so neither does the join.
+function pushAll(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const items = a[0]
+  if ('vector' !== items.v) throw typeError(`push-all: the items must be a vector, not ${kindText(items)}`)
+  const held = asItems('push-all', a[1])
+  for (let i = 0; i < items.items.length; i++) rt.tick()
+  if (0 === items.items.length) return a[1]
+  if (0 === held.length) return items
+  return vectorVal([...held, ...items.items])
 }
 
 function pop(_rt: Runtime, a: ReadonlyArray<Val>): Val {
@@ -736,6 +755,25 @@ function compare(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   return keyword('unordered')
 }
 
+// The largest count `inc` answers, 2^53 - 1: below it a 64-bit float holds
+// every whole number, so the three runtimes count alike.
+export const INC_MAX = Number.MAX_SAFE_INTEGER
+
+// `inc count`: the count one more. Alchemy has no arithmetic; a part that
+// counts (PGN's moves) counts with this. The count is a whole number of at
+// least 0, as `repeat`'s is, and below `INC_MAX`, so the answer is exact;
+// any other number is a type error, as `repeat`'s is.
+function inc(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const c = a[0]
+  if ('num' !== c.v) throw typeError(`inc: the count must be a number, not ${kindText(c)}`)
+  const count = c.value
+  if (!(count >= 0 && 0 === count % 1 && count < INC_MAX)) {
+    const spelled = undefined !== c.lexeme ? c.lexeme : displayNumber(count)
+    throw typeError(`inc: the count must be a whole number from 0 to 9007199254740990, not ${spelled}`)
+  }
+  return num(count + 1)
+}
+
 // `number-class number`: `:finite`, `:infinity`, `:negative-infinity` or
 // `:nan`, so that a program writing a format with spellings for the numbers
 // JSON has none for (YAML's `.inf`, `-.inf` and `.nan`) can choose them;
@@ -795,6 +833,79 @@ function kind(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   }
   return keyword(word)
 }
+
+// `equal a b`: whether two values are equal, as a `match` pattern compares
+// a constant (`valEquals`): data structurally, numbers by value (NaN equals
+// nothing, -0 equals 0), a record to one with the same members in any
+// order, a tagged value to one of the same tag and fields; a function, or a
+// text a vector holds, equals nothing, itself included. A stream or a text
+// is refused, as `kind` refuses one.
+//
+// The values are walked depth first, each item and member in its order,
+// one pair at a time: a pair of containers that agree in kind and size
+// schedules only its next pair, so the walk stops at the first pair that
+// differs, or at the first member of one record the other lacks, having
+// done nothing for the pairs after it. A step for each pair compared, the
+// steps Rust and Go take, so the fuel and the host's abort flag bound the
+// comparison of two long values as they bound building them.
+function equal(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  for (const v of a) {
+    if (undefined === kindWord(v)) {
+      throw typeError(
+        `equal: ${kindText(v)} cannot be compared; a stream or a text is used where it is, not inspected`,
+      )
+    }
+  }
+  const walk: EqualWalk[] = [{ w: 'pair', x: a[0], y: a[1] }]
+  while (0 < walk.length) {
+    const next = walk.pop() as EqualWalk
+    switch (next.w) {
+      case 'pair': {
+        rt.tick()
+        const { x, y } = next
+        if ('vector' === x.v && 'vector' === y.v) {
+          if (x.items.length !== y.items.length) return bool(false)
+          walk.push({ w: 'seq', xs: x.items, ys: y.items, i: 0 })
+        } else if ('record' === x.v && 'record' === y.v) {
+          if (x.fields.size !== y.fields.size) return bool(false)
+          walk.push({ w: 'members', members: x.fields.entries(), ys: y.fields })
+        } else if ('tagged' === x.v && 'tagged' === y.v) {
+          if (x.tag !== y.tag || x.fields.length !== y.fields.length) return bool(false)
+          walk.push({ w: 'seq', xs: x.fields, ys: y.fields, i: 0 })
+        } else if (!valEquals(x, y)) {
+          return bool(false)
+        }
+        break
+      }
+      case 'seq':
+        if (next.i < next.xs.length) {
+          walk.push({ w: 'seq', xs: next.xs, ys: next.ys, i: next.i + 1 })
+          walk.push({ w: 'pair', x: next.xs[next.i], y: next.ys[next.i] })
+        }
+        break
+      case 'members': {
+        const member = next.members.next()
+        if (!member.done) {
+          const [k, x] = member.value
+          const y = next.ys.get(k)
+          if (undefined === y) return bool(false)
+          walk.push(next)
+          walk.push({ w: 'pair', x, y })
+        }
+        break
+      }
+    }
+  }
+  return bool(true)
+}
+
+// What `equal`'s walk does next: compare a pair, or schedule the next pair
+// of two vectors' items or two tagged values' fields, or of two records'
+// members, that already agree in kind and size.
+type EqualWalk =
+  | { w: 'pair'; x: Val; y: Val }
+  | { w: 'seq'; xs: ReadonlyArray<Val>; ys: ReadonlyArray<Val>; i: number }
+  | { w: 'members'; members: Iterator<[string, Val]>; ys: ReadonlyMap<string, Val> }
 
 function path(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   let selector = Selector.root()
@@ -1396,6 +1507,7 @@ const IMPLS: Record<string, NativeImpl> = {
   entry,
   vector,
   push,
+  'push-all': pushAll,
   pop,
   top,
   count,
@@ -1406,8 +1518,10 @@ const IMPLS: Record<string, NativeImpl> = {
   number,
   'is-number': isNumber,
   compare,
+  inc,
   'number-class': numberClass,
   kind,
+  equal,
   path,
   root,
   'each-index': eachIndex,

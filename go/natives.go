@@ -49,6 +49,7 @@ func init() {
 		"entry":           nEntry,
 		"vector":          nVector,
 		"push":            nPush,
+		"push-all":        nPushAll,
 		"pop":             nPop,
 		"top":             nTop,
 		"count":           nCount,
@@ -59,8 +60,10 @@ func init() {
 		"number":          nNumber,
 		"is-number":       nIsNumber,
 		"compare":         nCompare,
+		"inc":             nInc,
 		"number-class":    nNumberClass,
 		"kind":            nKind,
+		"equal":           nEqual,
 		"path":            nPath,
 		"root":            nRoot,
 		"each-index":      nEachIndex,
@@ -503,6 +506,40 @@ func nPush(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	out := make([]Val, 0, len(items)+1)
 	out = append(out, items...)
 	return Vector(append(out, a[0])...), nil
+}
+
+// nPushAll is `push-all items vector`: a new vector, the vector's items and
+// then the items', in their order: two vectors joined, as `push` appends
+// one item. A step for each item appended, the steps Rust takes, so the
+// fuel and the host's abort flag bound a long join; the steps come first,
+// so a join the fuel refuses copies nothing. A vector here is a slice, so
+// the vector it extends is copied, as `push` copies it, except where either
+// is empty: the join is then the other, shared. Neither vector can hold a
+// stream or a live text, which `vector` and `push` refuse, so neither does
+// the join.
+func nPushAll(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	items, ok := a[0].(*VectorVal)
+	if !ok {
+		return nil, typeError("push-all: the items must be a vector, not " + KindOf(a[0]))
+	}
+	held, f := asItems("push-all", a[1])
+	if f != nil {
+		return nil, f
+	}
+	for range items.Items {
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+	}
+	switch {
+	case len(items.Items) == 0:
+		return a[1], nil
+	case len(held) == 0:
+		return items, nil
+	}
+	out := make([]Val, 0, len(held)+len(items.Items))
+	out = append(out, held...)
+	return Vector(append(out, items.Items...)...), nil
 }
 
 func nPop(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
@@ -1042,6 +1079,29 @@ func nCompare(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	return KeywordVal("unordered"), nil
 }
 
+// IncMax is the largest count `inc` answers, 2^53 - 1: below it a 64-bit
+// float holds every whole number, so the three runtimes count alike.
+const IncMax = 9007199254740991.0
+
+// nInc is `inc count`: the count one more. Alchemy has no arithmetic; a
+// part that counts (PGN's moves) counts with this. The count is a whole
+// number of at least 0, as `repeat`'s is, and below IncMax, so the answer
+// is exact; any other number is a type error, as `repeat`'s is.
+func nInc(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	n, ok := a[0].(NumVal)
+	if !ok {
+		return nil, typeError("inc: the count must be a number, not " + KindOf(a[0]))
+	}
+	if !(n.Value >= 0) || !isWhole(n.Value) || !(n.Value < IncMax) {
+		spelled := floatText(n.Value)
+		if n.HasLexeme {
+			spelled = n.Lexeme
+		}
+		return nil, typeError("inc: the count must be a whole number from 0 to 9007199254740990, not " + spelled)
+	}
+	return Num(n.Value + 1), nil
+}
+
 // nNumberClass is `number-class number`: `:finite`, `:infinity`,
 // `:negative-infinity` or `:nan`, so that a program writing a format with
 // spellings for the numbers JSON has none for (YAML's `.inf`, `-.inf` and
@@ -1076,6 +1136,101 @@ func nKind(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	}
 	return KeywordVal(word), nil
 }
+
+// nEqual is `equal a b`: whether two values are equal, as a `match` pattern
+// compares a constant (Equal): data structurally, numbers by value (NaN
+// equals nothing, -0 equals 0), a record to one with the same members in
+// any order, a tagged value to one of the same tag and fields; a function,
+// or a text a vector holds, equals nothing, itself included. A stream or a
+// text is refused, as `kind` refuses one.
+//
+// The values are walked depth first, each item and member in its order,
+// one pair at a time: a pair of containers that agree in kind and size
+// schedules only its next pair, so the walk stops at the first pair that
+// differs, or at the first member of one record the other lacks, having
+// done nothing for the pairs after it. A step for each pair compared, the
+// steps Rust and TypeScript take, so the fuel and the host's abort flag
+// bound the comparison of two long values as they bound building them.
+func nEqual(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	for _, v := range a {
+		if _, ok := kindWord(v); !ok {
+			return nil, typeError(fmt.Sprintf("equal: %s cannot be compared; a stream or a text is used where it is, not inspected", KindOf(v)))
+		}
+	}
+	walk := []equalWalk{{step: walkPair, x: a[0], y: a[1]}}
+	for len(walk) > 0 {
+		next := walk[len(walk)-1]
+		walk = walk[:len(walk)-1]
+		switch next.step {
+		case walkSeq:
+			if next.i < len(next.xs) {
+				walk = append(walk,
+					equalWalk{step: walkSeq, xs: next.xs, ys: next.ys, i: next.i + 1},
+					equalWalk{step: walkPair, x: next.xs[next.i], y: next.ys[next.i]})
+			}
+			continue
+		case walkMembers:
+			if next.i < len(next.xr.keys) {
+				other, ok := next.yr.Get(next.xr.keys[next.i])
+				if !ok {
+					return BoolVal(false), nil
+				}
+				walk = append(walk,
+					equalWalk{step: walkMembers, xr: next.xr, yr: next.yr, i: next.i + 1},
+					equalWalk{step: walkPair, x: next.xr.vals[next.i], y: other})
+			}
+			continue
+		}
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+		switch x := next.x.(type) {
+		case *VectorVal:
+			y, ok := next.y.(*VectorVal)
+			if !ok || len(x.Items) != len(y.Items) {
+				return BoolVal(false), nil
+			}
+			walk = append(walk, equalWalk{step: walkSeq, xs: x.Items, ys: y.Items})
+		case *RecordVal:
+			y, ok := next.y.(*RecordVal)
+			if !ok || len(x.keys) != len(y.keys) {
+				return BoolVal(false), nil
+			}
+			walk = append(walk, equalWalk{step: walkMembers, xr: x, yr: y})
+		case *TaggedVal:
+			y, ok := next.y.(*TaggedVal)
+			if !ok || x.Tag != y.Tag || len(x.Fields) != len(y.Fields) {
+				return BoolVal(false), nil
+			}
+			walk = append(walk, equalWalk{step: walkSeq, xs: x.Fields, ys: y.Fields})
+		default:
+			if !Equal(next.x, next.y) {
+				return BoolVal(false), nil
+			}
+		}
+	}
+	return BoolVal(true), nil
+}
+
+// equalWalk is what nEqual's walk does next: compare the pair x and y
+// (walkPair), or schedule the pair at index i of two vectors' items or two
+// tagged values' fields, xs and ys (walkSeq), or of two records' members,
+// xr and yr (walkMembers), that already agree in kind and size.
+type equalWalk struct {
+	step   equalStep
+	x, y   Val
+	xs, ys []Val
+	xr, yr *RecordVal
+	i      int
+}
+
+type equalStep int
+
+const (
+	walkPair equalStep = iota
+	walkSeq
+	walkMembers
+)
 
 // kindWord is the word `kind` answers for a retained value; none for a
 // stream or a text, live or finite, which `kind` refuses.

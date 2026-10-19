@@ -92,6 +92,7 @@ const NATIVES: ReadonlyArray<Native> = [
   { name: "entry", arity: exact(2), kind: 'constructor', signature: "entry :key value -> Entry", effect: "one record field" },
   { name: "vector", arity: atLeast(0), kind: 'function', signature: "vector item... -> Vector", effect: "a retained vector; it cannot hold a stream or a live text" },
   { name: "push", arity: exact(2), kind: 'function', signature: "push item vector -> Vector", effect: "a new vector with the item appended; it cannot hold a stream or a live text" },
+  { name: "push-all", arity: exact(2), kind: 'function', signature: "push-all items vector -> Vector", effect: "a new vector with every item of items appended, in their order: two vectors joined, a step for each item appended" },
   { name: "pop", arity: exact(1), kind: 'function', signature: "pop vector -> Vector", effect: "the vector without its last item; an empty vector is a type error" },
   { name: "top", arity: exact(1), kind: 'function', signature: "top vector -> Value", effect: "the last item; an empty vector is a type error" },
   { name: "count", arity: exact(1), kind: 'function', signature: "count vector -> Number", effect: "how many items the vector holds" },
@@ -102,8 +103,10 @@ const NATIVES: ReadonlyArray<Native> = [
   { name: "number", arity: exact(1), kind: 'function', signature: "number string -> Number", effect: "the number the string spells: a JSON number, its text kept as the lexeme, or Infinity, -Infinity or NaN; INPUT_INVALID for any other text" },
   { name: "is-number", arity: exact(1), kind: 'function', signature: "is-number string -> Bool", effect: "whether number reads the string: a JSON number, or Infinity, -Infinity or NaN; false for any other text, where number fails. A program cannot catch a failure, so a part tests a string with it before it calls number" },
   { name: "compare", arity: exact(2), kind: 'function', signature: "compare a b -> Keyword", effect: "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN" },
+  { name: "inc", arity: exact(1), kind: 'function', signature: "inc count -> Number", effect: "the count one more: a whole number from 0 to 9007199254740990, where every runtime counts exactly; any other number is a type error" },
   { name: "number-class", arity: exact(1), kind: 'function', signature: "number-class number -> Keyword", effect: ":finite, :infinity, :negative-infinity or :nan" },
   { name: "kind", arity: exact(1), kind: 'function', signature: "kind value -> Keyword", effect: "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked" },
+  { name: "equal", arity: exact(2), kind: 'function', signature: "equal a b -> Bool", effect: "whether two values are equal, as a match pattern compares a constant: structurally, numbers by value (NaN equals nothing), a record to one with the same members in any order, a function to nothing; a stream or a text cannot be asked; a step for each pair of values compared" },
   // Selectors.
   { name: "path", arity: atLeast(0), kind: 'function', signature: "path segment... -> Selector", effect: "a selector from strings, indexes and selectors" },
   { name: "root", arity: exact(0), kind: 'constant', signature: "root -> Selector", effect: "the document" },

@@ -119,3 +119,14 @@ def step [s event]\n  match event\n    case array-start (transition s [(schema [
 def export [input] (json (tree-contract input))	"{\"a\":[1,2.50],\"b\":{}}\n"	{"a":[1,2.50],"b":{}}	
 def export [input] (json (tree-contract input))	ERROR:DUPLICATE_MEMBER	{"a":1,"a":2}	
 def step [s event] (transition s [event event])\n\ndef export [input]\n  json (tree-contract (as-events (scan-emit [] step (fn [s] []) (events input))))	ERROR:not_a_tree	{"a":1}	
+# push-all: two vectors joined, the vector's items first; a value from the document that is not a vector is a type error where it is met.
+def export [input] (join "|" (map (fn [x] (string-join "," (push-all x ["a" "b"]))) (select (path each-index) input)))	"a,b,c,d|a,b"	[["c","d"],[]]	
+def export [input] (join "|" (map (fn [x] (string-join "," (push-all x ["a" "b"]))) (select (path each-index) input)))	ERROR:type_mismatch@1:60	[1]	
+# inc: the count one more, without the lexeme it was spelled with, exactly up to 2^53 - 1; a count that is fractional, past that, or not a number is a type error where it is met.
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (inc x))) (select (path each-index) input)))	"1,42,101,9007199254740991"	[0,41,1e2,9007199254740990]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (inc x))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	[1.5]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (inc x))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	[9007199254740991]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (inc x))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	["1"]	
+# equal: whether two values are equal, numbers by value and an object's members in any order, a value of another kind unequal.
+def export [input] (join "," (map (fn [x] (if (equal x "FEN") "y" "n")) (select (path each-index) input)))	"y,n,n,n,n"	["FEN","Fen",1,null,["FEN"]]	
+def export [input] (join "," (map (fn [x] (if (equal x (record (entry :a 1) (entry :b [2 "c"]))) "y" "n")) (select (path each-index) input)))	"y,y,n,n,n"	[{"a":1,"b":[2,"c"]},{"b":[2.0,"c"],"a":1e0},{"a":1},{"a":1,"b":[2,"c"],"d":null},[1,[2,"c"]]]	

@@ -1110,6 +1110,19 @@ impl Checker<'_> {
                     _ => Unknown,
                 })
             }
+            "push-all" => {
+                self.expect("the items of push-all", &Type::vector(Unknown), t(0), at(0))?;
+                self.expect(
+                    "the vector of push-all",
+                    &Type::vector(Unknown),
+                    t(1),
+                    at(1),
+                )?;
+                Type::vector(match (t(0), t(1)) {
+                    (Vector(added), Vector(held)) => Type::join(held, added),
+                    _ => Unknown,
+                })
+            }
             "pop" => {
                 self.expect("the vector of pop", &Type::vector(Unknown), t(0), at(0))?;
                 match t(0) {
@@ -1160,6 +1173,10 @@ impl Checker<'_> {
                 self.expect("the second number of compare", &Number, t(1), at(1))?;
                 Keyword
             }
+            "inc" => {
+                self.expect("the count of inc", &Number, t(0), at(0))?;
+                Number
+            }
             "number-class" => {
                 self.expect("the number of number-class", &Number, t(0), at(0))?;
                 Keyword
@@ -1169,6 +1186,17 @@ impl Checker<'_> {
                     return Err(self.mismatch("the value of kind", &Value, t(0), at(0)));
                 }
                 Keyword
+            }
+            "equal" => {
+                for (i, what) in [
+                    (0, "the first value of equal"),
+                    (1, "the second value of equal"),
+                ] {
+                    if t(i).is_affine() {
+                        return Err(self.mismatch(what, &Value, t(i), at(i)));
+                    }
+                }
+                Bool
             }
             "path" => {
                 for i in 0..args.len() {
