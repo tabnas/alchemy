@@ -1015,6 +1015,9 @@ describe('natives', () => {
     assert.equal(eq('(key "a")', '(key "a")'), true)
     assert.equal(eq('(key "a")', '(key "b")'), false)
     assert.equal(eq('(key "a")', '(scalar "a")'), false)
+    assert.equal(eq('object-start', 'object-start'), true)
+    assert.equal(eq('object-start', 'object-end'), false)
+    assert.equal(eq('[object-start [array-end]]', '[object-start [array-end]]'), true)
     assert.equal(eq('count', 'count'), false)
     const at = span(sourceFile('t.alc'), 0, 0)
     const equal: value.Func = { fn: 'native', native: native('equal')! }
@@ -1050,6 +1053,18 @@ describe('natives', () => {
     const differ = Array(100).fill(7)
     differ[0] = 8
     assert.equal((run(differ, Array(100).fill(7)) as any).value, false)
+    // Two steps, the vectors and their first items, with fuel for two.
+    const wide = runtime('').withFuel(2).applyNow(equal, [nums(differ), nums(Array(100).fill(7))], at)
+    assert.equal((wide as any).value, false)
+    // A member the other record lacks ends the walk where it reaches that
+    // member: the records, a's vectors and their two items, four steps,
+    // then b, which the other lacks.
+    const rec = (last: string) => V.record([['a', nums([1, 2])], [last, n(1)]])
+    const records = runtime('').withFuel(10)
+    for (let i = 0; i < 2; i++) {
+      assert.equal((records.applyNow(equal, [rec('b'), rec('c')], at) as any).value, false)
+    }
+    assert.equal(thrown(() => records.applyNow(equal, [rec('b'), rec('c')], at)).limit?.name, 'max_plan_steps')
     // Nested: the vector, its first item's vector and the two items in it,
     // then the second item: five steps.
     const nested = (x: number) => V.vectorVal([nums([1, 2]), n(x)])

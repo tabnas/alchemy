@@ -473,7 +473,8 @@ fn push(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// Each item is pushed as `push` pushes it, a bounded cost whatever the
 /// vector's length, so a join costs the items it appends, never the vector
 /// it extends; a step for each, so the fuel and the host's abort flag bound
-/// a long join. Neither vector can hold a stream or a live text, which
+/// a long join. Where either is empty the join is the other, shared, after
+/// the same steps. Neither vector can hold a stream or a live text, which
 /// `vector` and `push` refuse, so neither does the join.
 fn push_all(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     let Val::Vector(items) = &a[0] else {
@@ -482,7 +483,14 @@ fn push_all(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             a[0].kind()
         )));
     };
-    let mut out = as_items("push-all", &a[1])?.clone();
+    let held = as_items("push-all", &a[1])?;
+    if held.is_empty() {
+        for _ in 0..items.len() {
+            rt.tick()?;
+        }
+        return Ok(a[0].clone());
+    }
+    let mut out = held.clone();
     for item in items.iter() {
         rt.tick()?;
         out = out.push(item.clone());
@@ -988,10 +996,13 @@ fn kind_word(v: &Val) -> Option<&'static str> {
 /// a text is refused, as `kind` refuses one.
 ///
 /// The values are walked depth first, each item and member in its order,
-/// and the walk stops at the first pair that differs. A step for each
-/// pair, so the fuel and the host's abort flag bound the comparison of two
-/// long values as they bound building them; TypeScript and Go walk the
-/// same pairs in the same order, so all three take the same steps.
+/// one pair at a time: a pair of containers that agree in kind and size
+/// schedules only its next pair, so the walk stops at the first pair that
+/// differs, or at the first member of one record the other lacks, having
+/// done nothing for the pairs after it. A step for each pair compared, so
+/// the fuel and the host's abort flag bound the comparison of two long
+/// values as they bound building them; TypeScript and Go walk the same
+/// pairs in the same order, so all three take the same steps.
 fn equal(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     for v in a {
         if kind_word(v).is_none() {
@@ -1001,56 +1012,84 @@ fn equal(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
             )));
         }
     }
-    let mut pending: Vec<(&Val, &Val)> = vec![(&a[0], &a[1])];
-    while let Some((x, y)) = pending.pop() {
-        rt.tick()?;
-        match (x, y) {
-            (Val::Vector(xs), Val::Vector(ys)) => {
-                if xs.len() != ys.len() {
-                    return Ok(Val::Bool(false));
+    let mut walk = vec![Walk::Pair(&a[0], &a[1])];
+    while let Some(next) = walk.pop() {
+        match next {
+            Walk::Pair(x, y) => {
+                rt.tick()?;
+                match (x, y) {
+                    (Val::Vector(xs), Val::Vector(ys)) => {
+                        if xs.len() != ys.len() {
+                            return Ok(Val::Bool(false));
+                        }
+                        walk.push(Walk::Items(xs, ys, 0));
+                    }
+                    (Val::Record(xs), Val::Record(ys)) => {
+                        if xs.len() != ys.len() {
+                            return Ok(Val::Bool(false));
+                        }
+                        walk.push(Walk::Members(xs, ys, 0));
+                    }
+                    (
+                        Val::Tagged {
+                            tag: xt,
+                            fields: xf,
+                        },
+                        Val::Tagged {
+                            tag: yt,
+                            fields: yf,
+                        },
+                    ) => {
+                        if xt != yt || xf.len() != yf.len() {
+                            return Ok(Val::Bool(false));
+                        }
+                        walk.push(Walk::Fields(xf, yf, 0));
+                    }
+                    (x, y) => {
+                        if x != y {
+                            return Ok(Val::Bool(false));
+                        }
+                    }
                 }
-                let start = pending.len();
-                pending.extend(xs.iter().zip(ys.iter()));
-                pending[start..].reverse();
             }
-            (Val::Record(xs), Val::Record(ys)) => {
-                if xs.len() != ys.len() {
-                    return Ok(Val::Bool(false));
+            Walk::Items(xs, ys, i) => {
+                if let (Some(x), Some(y)) = (xs.get(i), ys.get(i)) {
+                    walk.push(Walk::Items(xs, ys, i + 1));
+                    walk.push(Walk::Pair(x, y));
                 }
-                let start = pending.len();
-                for (k, xv) in xs.iter() {
-                    let Some(yv) = ys.get(k) else {
+            }
+            Walk::Members(xs, ys, i) => {
+                if let Some((k, x)) = xs.get_index(i) {
+                    let Some(y) = ys.get(k) else {
                         return Ok(Val::Bool(false));
                     };
-                    pending.push((xv, yv));
+                    walk.push(Walk::Members(xs, ys, i + 1));
+                    walk.push(Walk::Pair(x, y));
                 }
-                pending[start..].reverse();
             }
-            (
-                Val::Tagged {
-                    tag: xt,
-                    fields: xf,
-                },
-                Val::Tagged {
-                    tag: yt,
-                    fields: yf,
-                },
-            ) => {
-                if xt != yt || xf.len() != yf.len() {
-                    return Ok(Val::Bool(false));
-                }
-                let start = pending.len();
-                pending.extend(xf.iter().zip(yf.iter()));
-                pending[start..].reverse();
-            }
-            (x, y) => {
-                if x != y {
-                    return Ok(Val::Bool(false));
+            Walk::Fields(xs, ys, i) => {
+                if let (Some(x), Some(y)) = (xs.get(i), ys.get(i)) {
+                    walk.push(Walk::Fields(xs, ys, i + 1));
+                    walk.push(Walk::Pair(x, y));
                 }
             }
         }
     }
     Ok(Val::Bool(true))
+}
+
+/// What `equal`'s walk does next: compare a pair, or schedule the pair at
+/// an index of two vectors, two records or two tagged values' fields that
+/// already agree in kind and size.
+enum Walk<'a> {
+    Pair(&'a Val, &'a Val),
+    Items(&'a Vector, &'a Vector, usize),
+    Members(
+        &'a IndexMap<Arc<str>, Val>,
+        &'a IndexMap<Arc<str>, Val>,
+        usize,
+    ),
+    Fields(&'a [Val], &'a [Val], usize),
 }
 
 fn path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -2615,6 +2654,16 @@ mod tests {
         assert!(eq(key("a"), key("a")));
         assert!(!eq(key("a"), key("b")));
         assert!(!eq(key("a"), Val::tagged("scalar", vec![Val::str("a")])));
+        let start = || Val::tagged("object-start", vec![]);
+        assert!(eq(start(), start()));
+        assert!(!eq(start(), Val::tagged("object-end", vec![])));
+        let nested = || {
+            Val::vector(vec![
+                start(),
+                Val::vector(vec![Val::tagged("array-end", vec![])]),
+            ])
+        };
+        assert!(eq(nested(), nested()));
         // A function equals nothing, itself included.
         let f = Val::Fn(Func::Native(native("count").unwrap()));
         assert!(!eq(f.clone(), f));
@@ -2650,6 +2699,35 @@ mod tests {
         let mut differ = [7.0; 100];
         differ[0] = 8.0;
         assert!(matches!(run(&differ, &[7.0; 100]), Ok(Val::Bool(false))));
+        // Two steps, the vectors and their first items, with fuel for two.
+        let two = || {
+            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            match Arc::try_unwrap(rt) {
+                Ok(rt) => Arc::new(rt.with_fuel(Some(2))),
+                Err(_) => unreachable!("the test holds the one runtime"),
+            }
+        };
+        let wide = equal(&two(), &[nums(&differ), nums(&[7.0; 100])], &at);
+        assert!(matches!(wide, Ok(Val::Bool(false))), "{wide:?}");
+        // A member the other record lacks ends the walk where it reaches
+        // that member: the records, a's vectors and their two items, four
+        // steps, then b, which the other lacks.
+        let rec = |last: &str| {
+            Val::Record(Arc::new(
+                [("a", nums(&[1.0, 2.0])), (last, Val::num(1.0))]
+                    .iter()
+                    .map(|(k, v)| (Arc::from(*k), v.clone()))
+                    .collect(),
+            ))
+        };
+        let rt = fueled();
+        for _ in 0..2 {
+            assert!(matches!(
+                equal(&rt, &[rec("b"), rec("c")], &at),
+                Ok(Val::Bool(false))
+            ));
+        }
+        assert!(equal(&rt, &[rec("b"), rec("c")], &at).is_err());
         // Nested: the vector, its first item's vector and the two items
         // in it, then the second item: five steps.
         let nested = |x: f64| Val::vector(vec![nums(&[1.0, 2.0]), Val::num(x)]);

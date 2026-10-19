@@ -510,10 +510,13 @@ func nPush(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 
 // nPushAll is `push-all items vector`: a new vector, the vector's items and
 // then the items', in their order: two vectors joined, as `push` appends
-// one item. A step for each item appended, as Rust and TypeScript take
-// them, so the fuel and the host's abort flag bound a long join. Neither
-// vector can hold a stream or a live text, which `vector` and `push`
-// refuse, so neither does the join.
+// one item. A step for each item appended, the steps Rust takes, so the
+// fuel and the host's abort flag bound a long join; the steps come first,
+// so a join the fuel refuses copies nothing. A vector here is a slice, so
+// the vector it extends is copied, as `push` copies it, except where either
+// is empty: the join is then the other, shared. Neither vector can hold a
+// stream or a live text, which `vector` and `push` refuse, so neither does
+// the join.
 func nPushAll(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	items, ok := a[0].(*VectorVal)
 	if !ok {
@@ -523,15 +526,20 @@ func nPushAll(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	if f != nil {
 		return nil, f
 	}
-	out := make([]Val, 0, len(held)+len(items.Items))
-	out = append(out, held...)
-	for _, item := range items.Items {
+	for range items.Items {
 		if f := rt.Tick(); f != nil {
 			return nil, f
 		}
-		out = append(out, item)
 	}
-	return Vector(out...), nil
+	switch {
+	case len(items.Items) == 0:
+		return a[1], nil
+	case len(held) == 0:
+		return items, nil
+	}
+	out := make([]Val, 0, len(held)+len(items.Items))
+	out = append(out, held...)
+	return Vector(append(out, items.Items...)...), nil
 }
 
 func nPop(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
@@ -1137,65 +1145,92 @@ func nKind(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 // text is refused, as `kind` refuses one.
 //
 // The values are walked depth first, each item and member in its order,
-// and the walk stops at the first pair that differs. A step for each pair,
-// the steps Rust and TypeScript take, so the fuel and the host's abort
-// flag bound the comparison of two long values as they bound building
-// them.
+// one pair at a time: a pair of containers that agree in kind and size
+// schedules only its next pair, so the walk stops at the first pair that
+// differs, or at the first member of one record the other lacks, having
+// done nothing for the pairs after it. A step for each pair compared, the
+// steps Rust and TypeScript take, so the fuel and the host's abort flag
+// bound the comparison of two long values as they bound building them.
 func nEqual(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	for _, v := range a {
 		if _, ok := kindWord(v); !ok {
 			return nil, typeError(fmt.Sprintf("equal: %s cannot be compared; a stream or a text is used where it is, not inspected", KindOf(v)))
 		}
 	}
-	type pair struct{ x, y Val }
-	pending := []pair{{a[0], a[1]}}
-	for len(pending) > 0 {
-		p := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if f := rt.Tick(); f != nil {
-			return nil, f
-		}
-		switch x := p.x.(type) {
-		case *VectorVal:
-			y, ok := p.y.(*VectorVal)
-			if !ok || len(x.Items) != len(y.Items) {
-				return BoolVal(false), nil
+	walk := []equalWalk{{step: walkPair, x: a[0], y: a[1]}}
+	for len(walk) > 0 {
+		next := walk[len(walk)-1]
+		walk = walk[:len(walk)-1]
+		switch next.step {
+		case walkSeq:
+			if next.i < len(next.xs) {
+				walk = append(walk,
+					equalWalk{step: walkSeq, xs: next.xs, ys: next.ys, i: next.i + 1},
+					equalWalk{step: walkPair, x: next.xs[next.i], y: next.ys[next.i]})
 			}
-			for i := len(x.Items) - 1; i >= 0; i-- {
-				pending = append(pending, pair{x.Items[i], y.Items[i]})
-			}
-		case *RecordVal:
-			y, ok := p.y.(*RecordVal)
-			if !ok || len(x.keys) != len(y.keys) {
-				return BoolVal(false), nil
-			}
-			pairs := make([]pair, 0, len(x.keys))
-			for i, k := range x.keys {
-				other, ok := y.Get(k)
+			continue
+		case walkMembers:
+			if next.i < len(next.xr.keys) {
+				other, ok := next.yr.Get(next.xr.keys[next.i])
 				if !ok {
 					return BoolVal(false), nil
 				}
-				pairs = append(pairs, pair{x.vals[i], other})
+				walk = append(walk,
+					equalWalk{step: walkMembers, xr: next.xr, yr: next.yr, i: next.i + 1},
+					equalWalk{step: walkPair, x: next.xr.vals[next.i], y: other})
 			}
-			for i := len(pairs) - 1; i >= 0; i-- {
-				pending = append(pending, pairs[i])
+			continue
+		}
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+		switch x := next.x.(type) {
+		case *VectorVal:
+			y, ok := next.y.(*VectorVal)
+			if !ok || len(x.Items) != len(y.Items) {
+				return BoolVal(false), nil
 			}
+			walk = append(walk, equalWalk{step: walkSeq, xs: x.Items, ys: y.Items})
+		case *RecordVal:
+			y, ok := next.y.(*RecordVal)
+			if !ok || len(x.keys) != len(y.keys) {
+				return BoolVal(false), nil
+			}
+			walk = append(walk, equalWalk{step: walkMembers, xr: x, yr: y})
 		case *TaggedVal:
-			y, ok := p.y.(*TaggedVal)
+			y, ok := next.y.(*TaggedVal)
 			if !ok || x.Tag != y.Tag || len(x.Fields) != len(y.Fields) {
 				return BoolVal(false), nil
 			}
-			for i := len(x.Fields) - 1; i >= 0; i-- {
-				pending = append(pending, pair{x.Fields[i], y.Fields[i]})
-			}
+			walk = append(walk, equalWalk{step: walkSeq, xs: x.Fields, ys: y.Fields})
 		default:
-			if !Equal(p.x, p.y) {
+			if !Equal(next.x, next.y) {
 				return BoolVal(false), nil
 			}
 		}
 	}
 	return BoolVal(true), nil
 }
+
+// equalWalk is what nEqual's walk does next: compare the pair x and y
+// (walkPair), or schedule the pair at index i of two vectors' items or two
+// tagged values' fields, xs and ys (walkSeq), or of two records' members,
+// xr and yr (walkMembers), that already agree in kind and size.
+type equalWalk struct {
+	step   equalStep
+	x, y   Val
+	xs, ys []Val
+	xr, yr *RecordVal
+	i      int
+}
+
+type equalStep int
+
+const (
+	walkPair equalStep = iota
+	walkSeq
+	walkMembers
+)
 
 // kindWord is the word `kind` answers for a retained value; none for a
 // stream or a text, live or finite, which `kind` refuses.

@@ -360,19 +360,20 @@ function push(_rt: Runtime, a: ReadonlyArray<Val>): Val {
 
 // `push-all items vector`: a new vector, the vector's items and then the
 // items', in their order: two vectors joined, as `push` appends one item.
-// A step for each item appended, as Rust and Go take them, so the fuel and
-// the host's abort flag bound a long join. Neither vector can hold a stream
-// or a live text, which `vector` and `push` refuse, so neither does the
-// join.
+// A step for each item appended, the steps Rust takes, so the fuel and the
+// host's abort flag bound a long join; the steps come first, so a join the
+// fuel refuses copies nothing. A vector here is an array, so the vector it
+// extends is copied, as `push` copies it, except where either is empty: the
+// join is then the other, shared. Neither vector can hold a stream or a
+// live text, which `vector` and `push` refuse, so neither does the join.
 function pushAll(rt: Runtime, a: ReadonlyArray<Val>): Val {
   const items = a[0]
   if ('vector' !== items.v) throw typeError(`push-all: the items must be a vector, not ${kindText(items)}`)
-  const out = [...asItems('push-all', a[1])]
-  for (const item of items.items) {
-    rt.tick()
-    out.push(item)
-  }
-  return vectorVal(out)
+  const held = asItems('push-all', a[1])
+  for (let i = 0; i < items.items.length; i++) rt.tick()
+  if (0 === items.items.length) return a[1]
+  if (0 === held.length) return items
+  return vectorVal([...held, ...items.items])
 }
 
 function pop(_rt: Runtime, a: ReadonlyArray<Val>): Val {
@@ -841,9 +842,12 @@ function kind(_rt: Runtime, a: ReadonlyArray<Val>): Val {
 // is refused, as `kind` refuses one.
 //
 // The values are walked depth first, each item and member in its order,
-// and the walk stops at the first pair that differs. A step for each pair,
-// the steps Rust and Go take, so the fuel and the host's abort flag bound
-// the comparison of two long values as they bound building them.
+// one pair at a time: a pair of containers that agree in kind and size
+// schedules only its next pair, so the walk stops at the first pair that
+// differs, or at the first member of one record the other lacks, having
+// done nothing for the pairs after it. A step for each pair compared, the
+// steps Rust and Go take, so the fuel and the host's abort flag bound the
+// comparison of two long values as they bound building them.
 function equal(rt: Runtime, a: ReadonlyArray<Val>): Val {
   for (const v of a) {
     if (undefined === kindWord(v)) {
@@ -852,31 +856,56 @@ function equal(rt: Runtime, a: ReadonlyArray<Val>): Val {
       )
     }
   }
-  const pending: Array<[Val, Val]> = [[a[0], a[1]]]
-  while (0 < pending.length) {
-    const [x, y] = pending.pop() as [Val, Val]
-    rt.tick()
-    if ('vector' === x.v && 'vector' === y.v) {
-      if (x.items.length !== y.items.length) return bool(false)
-      for (let i = x.items.length - 1; i >= 0; i--) pending.push([x.items[i], y.items[i]])
-    } else if ('record' === x.v && 'record' === y.v) {
-      if (x.fields.size !== y.fields.size) return bool(false)
-      const pairs: Array<[Val, Val]> = []
-      for (const [k, xv] of x.fields) {
-        const yv = y.fields.get(k)
-        if (undefined === yv) return bool(false)
-        pairs.push([xv, yv])
+  const walk: EqualWalk[] = [{ w: 'pair', x: a[0], y: a[1] }]
+  while (0 < walk.length) {
+    const next = walk.pop() as EqualWalk
+    switch (next.w) {
+      case 'pair': {
+        rt.tick()
+        const { x, y } = next
+        if ('vector' === x.v && 'vector' === y.v) {
+          if (x.items.length !== y.items.length) return bool(false)
+          walk.push({ w: 'seq', xs: x.items, ys: y.items, i: 0 })
+        } else if ('record' === x.v && 'record' === y.v) {
+          if (x.fields.size !== y.fields.size) return bool(false)
+          walk.push({ w: 'members', members: x.fields.entries(), ys: y.fields })
+        } else if ('tagged' === x.v && 'tagged' === y.v) {
+          if (x.tag !== y.tag || x.fields.length !== y.fields.length) return bool(false)
+          walk.push({ w: 'seq', xs: x.fields, ys: y.fields, i: 0 })
+        } else if (!valEquals(x, y)) {
+          return bool(false)
+        }
+        break
       }
-      for (let i = pairs.length - 1; i >= 0; i--) pending.push(pairs[i])
-    } else if ('tagged' === x.v && 'tagged' === y.v) {
-      if (x.tag !== y.tag || x.fields.length !== y.fields.length) return bool(false)
-      for (let i = x.fields.length - 1; i >= 0; i--) pending.push([x.fields[i], y.fields[i]])
-    } else if (!valEquals(x, y)) {
-      return bool(false)
+      case 'seq':
+        if (next.i < next.xs.length) {
+          walk.push({ w: 'seq', xs: next.xs, ys: next.ys, i: next.i + 1 })
+          walk.push({ w: 'pair', x: next.xs[next.i], y: next.ys[next.i] })
+        }
+        break
+      case 'members': {
+        const member = next.members.next()
+        if (!member.done) {
+          const [k, x] = member.value
+          const y = next.ys.get(k)
+          if (undefined === y) return bool(false)
+          walk.push(next)
+          walk.push({ w: 'pair', x, y })
+        }
+        break
+      }
     }
   }
   return bool(true)
 }
+
+// What `equal`'s walk does next: compare a pair, or schedule the next pair
+// of two vectors' items or two tagged values' fields, or of two records'
+// members, that already agree in kind and size.
+type EqualWalk =
+  | { w: 'pair'; x: Val; y: Val }
+  | { w: 'seq'; xs: ReadonlyArray<Val>; ys: ReadonlyArray<Val>; i: number }
+  | { w: 'members'; members: Iterator<[string, Val]>; ys: ReadonlyMap<string, Val> }
 
 function path(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   let selector = Selector.root()

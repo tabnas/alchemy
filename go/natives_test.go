@@ -513,6 +513,9 @@ func TestEqualComparesValuesAsAPatternComparesAConstant(t *testing.T) {
 		{`(key "a")`, `(key "a")`, true},
 		{`(key "a")`, `(key "b")`, false},
 		{`(key "a")`, `(scalar "a")`, false},
+		{"object-start", "object-start", true},
+		{"object-start", "object-end", false},
+		{"[object-start [array-end]]", "[object-start [array-end]]", true},
 		{"count", "count", false},
 	} {
 		expr := "equal " + c.a + " " + c.b
@@ -559,6 +562,25 @@ func TestEqualTakesAStepPerPairCompared(t *testing.T) {
 	differ[0] = 8
 	if v, f := run(differ, same(100, 7)); f != nil || v != BoolVal(false) {
 		t.Errorf("differ: %v %v", v, f)
+	}
+	// Two steps, the vectors and their first items, with fuel for two.
+	if v, f := nEqual(runtimeOf(t, "").WithFuel(2), []Val{numsVal(differ...), numsVal(same(100, 7)...)}, at); f != nil || v != BoolVal(false) {
+		t.Errorf("wide: %v %v", v, f)
+	}
+	// A member the other record lacks ends the walk where it reaches that
+	// member: the records, a's vectors and their two items, four steps,
+	// then b, which the other lacks.
+	rec := func(last string) Val {
+		return mustEval(t, "", "(record (entry :a [1 2]) (entry :"+last+" 1))")
+	}
+	records := runtimeOf(t, "").WithFuel(10)
+	for i := 0; i < 2; i++ {
+		if v, f := nEqual(records, []Val{rec("b"), rec("c")}, at); f != nil || v != BoolVal(false) {
+			t.Errorf("records %d: %v %v", i, v, f)
+		}
+	}
+	if _, f := nEqual(records, []Val{rec("b"), rec("c")}, at); f == nil || f.Limit == nil || f.Limit.Name != "max_plan_steps" {
+		t.Errorf("records: %v", f)
 	}
 	// Nested: the vector, its first item's vector and the two items in it,
 	// then the second item: five steps.
