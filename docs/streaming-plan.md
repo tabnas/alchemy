@@ -1077,6 +1077,45 @@ the interpreter's reference counts, name lookups and allocation, not
 anything the part spells. alchemy-cli reads PGN through the part
 (tabnas/alchemy-cli#43).
 
+The maintainer's calls on both came on 2026-10-21: every format whose
+package ships a part is read through it, and step 13 moves its hosts now
+and transduce later.
+
+Step 9 is complete. rjrodger/aless#82 reads JSON, YAML and XML through
+their parts, and rjrodger/aless#83 JSONC, JSON5, jsonic, ZON and PGN,
+released with rjrodger/aless#85 below as aless 0.4.7. The records are
+the same: JSONC and JSON5 take about a tenth to a fifth longer than
+aless's own read, jsonic and ZON three and a half times as long, and PGN
+six times, and jsonic holds 65 MiB at 40,000 records where it held 167.
+The move found one thing a part leaves to its host: jsonic, JSON5 and
+YAML merge a repeated member, which their parts stream one after the
+other, and aless's table routes kept the last, as JSON's value does.
+rjrodger/aless#85 holds a part to a tree's contract unless its format's
+value keeps the last of a repeated member (JSON's, JSONC's and JSON
+Lines'), so such a document is read whole, as tabnas/alchemy#71 made a
+composition over a part refuse one.
+
+Step 13's hosts no longer choose the incremental route by a format's
+name. tabnas/alchemy-cli#50, in all three runtimes: `run` reads its JSON
+through JSON's part, pruned, where it read through the incremental
+source; `translate` reads a format with a part through it and any other
+whole; and `Format::read` reads through the part, so a number keeps the
+lexeme it was spelled with. The Go command no longer needs the
+`tabnas_nodecell` build tag, which the incremental source did.
+rjrodger/aless#86 does the same for aless: Markdown, the one format the
+list named that ships no part, is read whole, and JSON Lines handed over
+as one text goes through its part. transduce keeps
+`capability::INCREMENTAL` and the inference until step 12, since
+`LinesSource` still reads JSON Lines through it.
+
+Step 10's chunked source is designed and prototyped
+(tabnas/parser#315, `doc/chunked-source.md`). A Rust prototype reading a
+pruned JSON, JSON Lines or CSV document from a reader held 5.8 MB to
+7.4 MB from 10,000 records to 160,000, where the whole text grows to
+92 MB to 430 MB, for 0.9% more instructions on a whole text (1.1% on the
+wall clock) and 2.2% to 3.5% more from a reader (3% to 4%). The design
+waits on the maintainer's ruling, and step 12 on step 10.
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
