@@ -1113,8 +1113,37 @@ Step 10's chunked source is designed and prototyped
 pruned JSON, JSON Lines or CSV document from a reader held 5.8 MB to
 7.4 MB from 10,000 records to 160,000, where the whole text grows to
 92 MB to 430 MB, for 0.9% more instructions on a whole text (1.1% on the
-wall clock) and 2.2% to 3.5% more from a reader (3% to 4%). The design
-waits on the maintainer's ruling, and step 12 on step 10.
+wall clock) and 2.2% to 3.5% more from a reader (3% to 4%). The
+maintainer adopted it on 2026-10-22, Rust first (admin's ADR-30,
+tabnas/admin#155): a reader of bytes, a grammar that declares
+`lex.window`, a long line's error excerpt cut to the window and
+registered, the margin and the block fixed at 64 KiB, and the engine,
+json, jsonc, jsonl, csv and transduce shipped in one wave before the
+hosts read a file through a reader.
+
+The Rust engine reads a source through a window (tabnas/parser#316):
+`Tabnas::parse_reader`, `Lexer::window` and `Lexer::fill`, and the
+Rust-only error code `unreadable` for a reader that fails or bytes that
+are not UTF-8, for 1.0% more instructions on a whole text, with a
+differential test that holds 15,096 parses from a reader to the same
+text parsed whole. tabnas-json, tabnas-jsonc and tabnas-jsonl declare
+the option (tabnas/json#113, tabnas/jsonc#93, tabnas/jsonl#55), csv's
+quoted field scans the window and asks it to fill (tabnas/csv#106), and
+`ParserEventSource::from_reader` streams the passes of a source read so
+(tabnas/transduce#59). The wave shipped them as tabnas-parser 0.12.15,
+tabnas-json 0.5.19, tabnas-jsonc 0.5.16, tabnas-jsonl 0.1.19,
+tabnas-csv 0.6.8 and tabnas-transduce 0.2.12. What remains of step 10
+is the hosts reading a file through the reader, aless and alchemy-cli,
+and the measurement in transduce's `docs/BENCH.md`; step 12 follows it.
+
+A repeated key in a YAML sequence entry (`- a: ...`) was the one mapping
+whose later value tabnas-yaml kept rather than merging, so a host's
+whole read and its stream through YAML's part could disagree on it.
+tabnas/yaml#132 merges it as every mapping does, and tabnas/yaml#133
+fixes the bug found beside it: a key with an empty value in an entry
+took its sibling keys as its value. Released as tabnas-yaml 0.5.26, and
+the hosts moved to it (tabnas/alchemy-cli#51, rjrodger/aless#87),
+released as alchemy-cli 0.1.15 and aless 0.4.8.
 
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
