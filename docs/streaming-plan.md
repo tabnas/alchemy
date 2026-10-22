@@ -1132,9 +1132,30 @@ quoted field scans the window and asks it to fill (tabnas/csv#106), and
 `ParserEventSource::from_reader` streams the passes of a source read so
 (tabnas/transduce#59). The wave shipped them as tabnas-parser 0.12.15,
 tabnas-json 0.5.19, tabnas-jsonc 0.5.16, tabnas-jsonl 0.1.19,
-tabnas-csv 0.6.8 and tabnas-transduce 0.2.12. What remains of step 10
-is the hosts reading a file through the reader, aless and alchemy-cli,
-and the measurement in transduce's `docs/BENCH.md`; step 12 follows it.
+tabnas-csv 0.6.8 and tabnas-transduce 0.2.12.
+
+The hosts read a file through a reader. aless exports a JSON or JSONC
+file through its part a window at a time (rjrodger/aless#89). It skips a
+byte-order mark and replaces bytes that are not UTF-8 as its whole read
+does, and reads the file again whole where the part refuses the stream.
+alchemy-cli's Rust command reads `run`'s input, a file or standard input,
+through a reader, and so does `translate` for a file on the route
+through its part (tabnas/alchemy-cli#53). A read that fails, or bytes
+that are not UTF-8, met part way, fail as a file that cannot be read,
+with status 2, as before. `translate` and `run --grammar` do not prune,
+so on those routes the engine's tree still holds every record.
+
+transduce's `docs/BENCH.md` measures the change and the general path
+step 12 leaves (tabnas/transduce#61). A JSON file aless exports through
+its part from a reader holds 12 MiB; read whole, it held 136 MiB for
+21.6 MB and 261 MiB for 43.6 MB, in the same time. On the general path,
+through their parts from a reader, JSON Lines and CSV hold memory flat
+as well, but take longer than `LinesSource`. JSON Lines takes a fifth
+more: its part is a rule table for the native `transduce-tree`. CSV
+takes four times as long: its part is hand-written, and alchemy's
+evaluator runs its `scan-emit` steps on every pass. So step 12 waits on
+the maintainer's ruling for CSV: a native route for its part, a faster
+evaluator, or a line source kept for CSV.
 
 A repeated key in a YAML sequence entry (`- a: ...`) was the one mapping
 whose later value tabnas-yaml kept rather than merging, so a host's
