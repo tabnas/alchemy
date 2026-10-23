@@ -1142,8 +1142,10 @@ alchemy-cli's Rust command reads `run`'s input, a file or standard input,
 through a reader, and so does `translate` for a file on the route
 through its part (tabnas/alchemy-cli#53). A read that fails, or bytes
 that are not UTF-8, met part way, fail as a file that cannot be read,
-with status 2, as before. `translate` and `run --grammar` do not prune,
-so on those routes the engine's tree still holds every record.
+with status 2, as before. On the maintainer's ruling of 2026-10-22,
+`translate` and `run --grammar` prune too, for a grammar transduce lists
+(tabnas/alchemy-cli#54), and the hosts were released with all of it:
+aless 0.4.9 and alchemy-cli 0.1.16.
 
 transduce's `docs/BENCH.md` measures the change and the general path
 step 12 leaves (tabnas/transduce#61). A JSON file aless exports through
@@ -1153,9 +1155,33 @@ through their parts from a reader, JSON Lines and CSV hold memory flat
 as well, but take longer than `LinesSource`. JSON Lines takes a fifth
 more: its part is a rule table for the native `transduce-tree`. CSV
 takes four times as long: its part is hand-written, and alchemy's
-evaluator runs its `scan-emit` steps on every pass. So step 12 waits on
-the maintainer's ruling for CSV: a native route for its part, a faster
-evaluator, or a line source kept for CSV.
+evaluator runs its `scan-emit` steps on every pass.
+
+The maintainer had CSV's part profiled before ruling on it. Through
+alchemy-cli's `run --grammar csv`, a release build, 100,000 rows took
+5.5 s into the native `transduce-tree` (1.4 times the line source), 11.2 s
+into an alchemy step that does nothing (2.9 times), and 16.7 s through
+the part (4.3 times). The evaluator spends some 12,000 instructions on
+each pass before a step's own logic runs, most of it allocating and
+counting references (the pass made a record, the step applied), and the
+part runs two scans, since the language can join two vectors but not
+flatten one, so a short record's missing cells take the second.
+Interning the names a pass carries saved 3% to 4%. Tuning cannot close
+the gap, so on 2026-10-23 the maintainer ruled JSON Lines now, CSV
+later: step 12 retires the line source for JSON Lines, and CSV keeps it
+until its part has a native route, a step of its own.
+
+Step 12, for JSON Lines: aless reads JSON Lines through its part from a
+reader, a window at a time, from a file or standard input and with no
+`--max-size`, as before (rjrodger/aless#91), and transduce's
+`LinesSource` reads CSV alone, `LineFormat::Jsonl` gone
+(tabnas/transduce#62). One promise narrows, which the maintainer
+accepted and aless documents: the window is read ahead of what is
+written, so when a writer to standard input goes quiet and `--timeout`
+stops the run, the records in the window not yet parsed are not
+written, where the line source wrote every record received. What
+remains is CSV's native route, step 13 (transduce's incremental list
+and inference, which no line source reads now), and TypeScript and Go.
 
 A repeated key in a YAML sequence entry (`- a: ...`) was the one mapping
 whose later value tabnas-yaml kept rather than merging, so a host's
