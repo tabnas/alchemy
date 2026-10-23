@@ -1633,10 +1633,12 @@ the name of a cell past them (the empty string when it is left out).
 With `:header` true, the first record is read for its names and makes
 no events, and each later record is an object: its cells keyed by the
 names in order, a cell past them by `:unnamed` and its position from 0,
-a name it lacks holding `:fill`. A name is its cell's text
-(`scalar-text`), and a name the header repeats is announced as often,
-as the record spells it, so a tree's contract after the transducer
-refuses such a document. Left out or false, every record is an array of
+a name it lacks holding `:fill`. A name is its cell's text: a string as
+it is, null and a boolean as the words `null`, `true` and `false` (as
+the csv grammar names a column), a number as `scalar-text` writes it;
+and a name the header repeats is announced as often, as the record
+spells it, so a tree's contract after the transducer refuses such a
+document. Left out or false, every record is an array of
 its cells. The rules the spec names are read first, then the `:empty`
 group. The state is `[phase names cells]`: the phase (`:before` the
 document, `:header`, `:row`, `:done`), the header's names once read,
@@ -1706,10 +1708,15 @@ def transduce-records-empty [spec rule]
 def transduce-records-name [value]
   match (kind value)
     case :string value
+    case :null "null"
+    case :boolean
+      match value
+        case true "true"
+        case _ "false"
     case _ (scalar-text (record) value)
 ```
 ```core
-(def transduce-records-name (fn [value] (match (kind value) (case :string value) (case _ (scalar-text (record) value)))))
+(def transduce-records-name (fn [value] (match (kind value) (case :string value) (case :null "null") (case :boolean (match value (case true "true") (case _ "false"))) (case _ (scalar-text (record) value)))))
 ```
 
 ```alchemy
