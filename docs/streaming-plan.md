@@ -1218,6 +1218,51 @@ moved to parts. aless's `Plan` stays while CSV keeps its line source.
 The maintainer held the releases for the next wave: transduce 0.3.0, a
 breaking change, and the hosts' moves to it.
 
+CSV's native route, ruled on 2026-10-23. A probe wrote csv's part
+natively over `ParserEventSource`, reading the generated CSV from a file,
+pruned, into a table. It took 5.25 s for 100,000 rows and 36.9 s for
+700,000 (26.9 MB), against `LinesSource`'s 3.93 s and 27.8 s: a third
+longer, in half the memory (6.8 MB against 12.3 MB), where csv's
+interpreted part takes four times as long. The third is the source's
+passes, not the records: `ParserEventSource` into a sink that keeps
+nothing takes 5.00 s, and a profile puts the engine's notification and
+the pass building at 23% of the run, allocation at 29%
+(tabnas/parser#258).
+
+The maintainer chose a generic library function, `transduce-records`,
+run natively in Rust as `transduce-tree` is, with csv's part as its
+spec. Its spec names the rules that make the document, a record and a
+cell, the group whose alternates are empty cells, the fill, the header
+and the prefix of an unnamed cell. The maintainer also ruled that csv
+tags its two empty-cell alternates with the group `empty`, so the spec
+need not match alternates' fields.
+
+- tabnas/alchemy#105 added the library, two chained scans as csv's
+  hand-written part was. It also added the Rust lowering, which
+  recognises the two scans and asks `Routers::transduce_records` for the
+  native. The shared `RecordsSpec` documents the native's contract and
+  the measure its state is held to, the scan's own, so a native and the
+  text refuse an oversized header at the same pass.
+- alchemy#105's downstream run cloned csv and transduce at its branch's
+  name, and found that `transduce.tsv`'s copy of csv's hand-written part
+  matched the trailing empty cell's groups exactly. It now reads the
+  cell by `comma` being among the groups, which holds before csv's tag
+  and after it.
+- tabnas/csv#108 tagged the alternates, in Rust, TypeScript and Go, and
+  made the part the spec.
+- tabnas/transduce#65 is the native, `TransduceRecords`. Over the csv
+  grammar's own passes it streams 198 of 199 documents of csv's corpus,
+  the fixtures and the generated records as the walk; the other names a
+  header column twice and streams both cells, as the part documents.
+- tabnas/alchemy#106 runs csv's shipped part in `transduce.tsv`.
+- alchemy-cli's differential test holds the native to the text over
+  848 documents and every state bound.
+
+TypeScript and Go run the library's text until their natives come.
+What remains of step 12 for CSV is in the release wave: transduce
+retires `LinesSource` and `LineFormat`, and aless reads CSV and TSV
+through the part, retiring `Plan` and `line_format`.
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
