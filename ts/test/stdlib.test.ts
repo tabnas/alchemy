@@ -84,10 +84,26 @@ describe('stdlib', () => {
           'transduce-pass',
           'transduce-done',
           'transduce-tree',
+          'transduce-records-fill',
+          'transduce-records-unnamed',
+          'transduce-records-empty',
+          'transduce-records-name',
+          'transduce-records-cell',
+          'transduce-records-fills',
+          'transduce-records-begin',
+          'transduce-records-record',
+          'transduce-records-end',
+          'transduce-records-open',
+          'transduce-records-close',
+          'transduce-records-step',
+          'transduce-records-finish',
+          'transduce-records-expand',
+          'transduce-records-flush',
+          'transduce-records',
         ],
       ],
     )
-    assert.equal(lib.names().length, 44)
+    assert.equal(lib.names().length, 60)
     assert.deepStrictEqual(defParams(lib.get('table-from-json')!), ['binding', 'input'])
     assert.equal(defParams(lib.get('csv-options')!), undefined)
   })
