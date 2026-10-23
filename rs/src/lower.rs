@@ -54,9 +54,9 @@ use crate::shared::limits::NODE_BYTES;
 use crate::shared::{
     BoundColumn, CaptureSpec, Cell, Code, CsvOptions, Datum, Fail, Flow, JoinOut, JsonEvent,
     JsonOptions, Limits, Metrics, MissingText, Newline, Number, ParserEvent, ParserSink,
-    PublicColumn, Renderers, RouteSink, Routers, RulePass, ScanEmitter, ScanFinish, ScanOut,
-    ScanStep, Schema, Selected, Sink, TableBinding, TableEvent, TableSink, TextOut, Transition,
-    TreeContainer, TreeContract, TreeKey, TreeRule, TreeScalar, TreeSpec,
+    PublicColumn, RecordsSpec, Renderers, RouteSink, Routers, RulePass, ScanEmitter, ScanFinish,
+    ScanOut, ScanStep, Schema, Selected, Sink, TableBinding, TableEvent, TableSink, TextOut,
+    Transition, TreeContainer, TreeContract, TreeKey, TreeRule, TreeScalar, TreeSpec,
 };
 use crate::stdlib::registry::{as_index, capture_budget, get_field, number_text, truth};
 use crate::value::{
@@ -181,6 +181,46 @@ pub fn tree_spec(v: &Val) -> Option<TreeSpec> {
                 text,
             },
         );
+    }
+    Some(spec)
+}
+
+/// The spec of a `transduce-records`, when it has the standard shape
+/// [`RecordsSpec`] holds: a record whose `:document`, `:record` and
+/// `:cell` are strings, and, where they are given, whose `:empty` and
+/// `:unnamed` are strings, whose `:header` is a boolean and whose `:fill`
+/// is a scalar. Its other fields are not read, as the library reads none.
+/// Any other spec runs the library's own `transduce-records`.
+pub fn records_spec(v: &Val) -> Option<RecordsSpec> {
+    let Val::Record(fields) = v else {
+        return None;
+    };
+    let string = |field: &str| match fields.get(field) {
+        Some(Val::Str(s)) => Some(String::from(&**s)),
+        _ => None,
+    };
+    let mut spec = RecordsSpec::new(&string("document")?, &string("record")?, &string("cell")?);
+    match fields.get("empty") {
+        None => {}
+        Some(Val::Str(group)) => spec.empty = Some(Box::from(&**group)),
+        Some(_) => return None,
+    }
+    match fields.get("unnamed") {
+        None => {}
+        Some(Val::Str(prefix)) => spec.unnamed = Box::from(&**prefix),
+        Some(_) => return None,
+    }
+    match fields.get("header") {
+        None => {}
+        Some(Val::Bool(header)) => spec.header = *header,
+        Some(_) => return None,
+    }
+    match fields.get("fill") {
+        None => {}
+        Some(fill @ (Val::Str(_) | Val::Num { .. } | Val::Bool(_) | Val::Null)) => {
+            spec.fill = fill.to_datum().ok()?;
+        }
+        Some(_) => return None,
     }
     Some(spec)
 }
@@ -1564,6 +1604,69 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The spec of the scans the library's `transduce-records` builds,
+    /// when `plan` is they and the runtime's native compositions are on:
+    /// a `scan-emit` from `[]` whose step and finish are the library's
+    /// `transduce-records-expand` and `transduce-records-flush`, over a
+    /// `scan-emit` from `[:before [] []]` over the host's parser events,
+    /// its step the library's `transduce-records-step` given a spec of the
+    /// standard shape ([`records_spec`]), its finish the library's
+    /// `transduce-records-finish`. A program that writes those scans
+    /// itself means what `transduce-records` means, and is run the same
+    /// way.
+    fn native_records(&self, plan: &Plan) -> Option<RecordsSpec> {
+        if !self.rt.native() {
+            return None;
+        }
+        let Plan::ScanEmit {
+            init,
+            step,
+            finish,
+            source,
+            ..
+        } = plan
+        else {
+            return None;
+        };
+        if *init != Val::vector(vec![])
+            || !is_library(step, "transduce-records-expand")
+            || !is_library(finish, "transduce-records-flush")
+        {
+            return None;
+        }
+        let Plan::ScanEmit {
+            init,
+            step,
+            finish,
+            source,
+            ..
+        } = &**source
+        else {
+            return None;
+        };
+        let Plan::ParserEvents { source } = &**source else {
+            return None;
+        };
+        if !matches!(**source, Plan::ParserInput) {
+            return None;
+        }
+        let before = Val::vector(vec![
+            Val::keyword("before"),
+            Val::vector(vec![]),
+            Val::vector(vec![]),
+        ]);
+        if *init != before || !is_library(finish, "transduce-records-finish") {
+            return None;
+        }
+        match step {
+            Func::Partial(p) if is_library(&p.f, "transduce-records-step") => match &p.args[..] {
+                [spec] => records_spec(spec),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// What the host pushes parser events into, once [`Lowering::sink_as`]
     /// has answered `events`, the chain's JSON-events head: the head
     /// `parser-events` was lowered to, or, when the program reads nothing
@@ -1824,6 +1927,20 @@ impl<'a> Lowering<'a> {
                 // A spec that names a member or a text goes only to routers
                 // that read them, and its texts are bounded as the
                 // library's `string-join` bounds them.
+                // The library's `transduce-records` over the host's parser
+                // events, run natively when the routers offer it, its state
+                // held to `max_metadata_bytes` as the library's scan holds
+                // its own.
+                let guarded = match self.native_records(plan) {
+                    Some(spec) => {
+                        let spec = spec.with_max_state_bytes(self.limits.max_metadata_bytes);
+                        match self.routers.transduce_records(spec, guarded) {
+                            Ok(native) => return self.keep_parser_head(native),
+                            Err(guarded) => guarded,
+                        }
+                    }
+                    None => guarded,
+                };
                 let guarded = match self.native_tree(plan) {
                     Some(spec)
                         if !spec.uses_member_or_text()
@@ -2536,6 +2653,22 @@ pub(crate) mod tests {
         fn transduce_tree_reads_member_and_text(&self) -> bool {
             self.reads
         }
+
+        fn transduce_records(
+            &self,
+            spec: RecordsSpec,
+            downstream: Box<dyn Sink + Send>,
+        ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
+            self.log.lock().unwrap().push(format!(
+                "transduce-records of {}, {} and {}, state within {}",
+                spec.document, spec.record, spec.cell, spec.max_state_bytes
+            ));
+            if self.offer {
+                Ok(Box::new(NativeTree(downstream)))
+            } else {
+                Err(downstream)
+            }
+        }
     }
 
     /// The library's `transduce-tree` over the host's parser events runs
@@ -2660,6 +2793,347 @@ pub(crate) mod tests {
         );
         assert_eq!(lower_with(texts, true, true, false), scan);
         assert_eq!(lower_with(tree, true, true, false), native);
+    }
+
+    /// The csv grammar's spec for `transduce-records`.
+    const CSV_SPEC: &str = "def csv-spec\n  record\n    entry :document \"csv\"\n    entry :record \"record\"\n    entry :cell \"val\"\n    entry :empty \"empty\"\n    entry :header true\n    entry :unnamed \"field~\"\n\n";
+
+    /// A `transduce-records` spec of the standard shape is read whole, and
+    /// one of any other shape is not, so the library's text runs it.
+    #[test]
+    fn a_transduce_records_spec_of_the_standard_shape_is_read() {
+        let read = |spec: &str| {
+            let rt = runtime(
+                &format!("def s {spec}\ndef export [input] (transduce-records s input)\n"),
+                true,
+            );
+            records_spec(&rt.def_value(Scope::Program, "s").unwrap().unwrap())
+        };
+        let rt = runtime(
+            &format!("{CSV_SPEC}def export [input] (transduce-records csv-spec input)\n"),
+            true,
+        );
+        assert_eq!(
+            records_spec(&rt.def_value(Scope::Program, "csv-spec").unwrap().unwrap()),
+            Some(
+                RecordsSpec::new("csv", "record", "val")
+                    .with_empty("empty")
+                    .with_header("field~")
+            )
+        );
+        let three = r#"(entry :document "d") (entry :record "r") (entry :cell "c")"#;
+        assert_eq!(
+            read(&format!("(record {three})")),
+            Some(RecordsSpec::new("d", "r", "c"))
+        );
+        assert_eq!(
+            read(&format!(
+                "(record {three} (entry :fill null) (entry :header false))"
+            )),
+            Some(RecordsSpec::new("d", "r", "c").with_fill(Datum::Null))
+        );
+        for odd in [
+            r#"(record (entry :document "d") (entry :record "r"))"#.to_string(),
+            r#"(record (entry :document :d) (entry :record "r") (entry :cell "c"))"#.to_string(),
+            format!("(record {three} (entry :header \"yes\"))"),
+            format!("(record {three} (entry :fill [1]))"),
+            format!("(record {three} (entry :empty 1))"),
+            format!("(record {three} (entry :unnamed :x))"),
+            "[1]".to_string(),
+        ] {
+            assert_eq!(read(&odd), None, "{odd}");
+        }
+    }
+
+    /// The library's `transduce-records` over the host's parser events
+    /// runs natively where the routers offer it, its state held to
+    /// `max_metadata_bytes`, and through the library's two scans where
+    /// they decline, where the natives are off, and where the spec is not
+    /// of the standard shape. A program that writes the library's scans
+    /// itself is run the same way; one whose steps are its own is not.
+    #[test]
+    fn transduce_records_runs_natively_where_the_routers_offer_it() {
+        use crate::program::Input;
+
+        struct Ended(Arc<Mutex<Vec<String>>>);
+        impl Sink for Ended {
+            fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
+                self.0.lock().unwrap().push(ev.to_owned().to_string());
+                Ok(Flow::Continue)
+            }
+        }
+        let limits = Limits::default();
+        let lower = |export: &str, native: bool, offer: bool| -> Vec<String> {
+            let rt = runtime(&format!("{CSV_SPEC}{export}"), native);
+            let Val::Stream(plan) = rt.export_with(Input::ParserEvents).unwrap() else {
+                panic!("the export is a stream");
+            };
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let lowering = Lowering::new(
+                rt,
+                &limits,
+                Metrics::new(),
+                Arc::new(TreeRouters {
+                    offer,
+                    reads: true,
+                    log: log.clone(),
+                }),
+                Arc::new(Unlowered),
+            );
+            let events = lowering
+                .events(&plan, Box::new(Ended(log.clone())))
+                .unwrap();
+            lowering
+                .parser_head(events)
+                .event(&ParserEvent::End)
+                .unwrap();
+            let log = log.lock().unwrap().clone();
+            log
+        };
+        let records = "def export [input] (transduce-records csv-spec input)\n";
+        let asked = format!(
+            "transduce-records of csv, record and val, state within {}",
+            limits.max_metadata_bytes
+        );
+        let native = ["guarded".to_string(), asked.clone(), "end".to_string()];
+        assert_eq!(lower(records, true, true), native);
+        let declined = lower(records, true, false);
+        assert_eq!(declined[..2], ["guarded".to_string(), asked]);
+        assert!(
+            declined[2..].iter().filter(|l| *l == "scan-emit").count() == 2,
+            "{declined:?}"
+        );
+        let scans = lower(records, false, true);
+        assert_eq!(
+            scans.iter().filter(|l| *l == "scan-emit").count(),
+            2,
+            "{scans:?}"
+        );
+        assert!(!scans.iter().any(|l| l.starts_with("transduce-records")));
+        let interpreted = |export: &str| {
+            let log = lower(export, true, true);
+            !log.iter().any(|l| l.starts_with("transduce-records"))
+                && log.iter().filter(|l| *l == "scan-emit").count() == 2
+        };
+        assert!(interpreted(
+            "def export [input] (transduce-records (record (entry :document \"csv\") (entry :record \"record\") (entry :cell \"val\") (entry :header \"yes\")) input)\n"
+        ));
+        let scans_of = |outer: &str, flush: &str, step: &str, finish: &str| {
+            format!("def export [input] (as-events (scan-emit [] {outer} {flush} (scan-emit [:before [] []] (partial {step} csv-spec) {finish} (parser-events input))))\n")
+        };
+        assert_eq!(
+            lower(
+                &scans_of(
+                    "transduce-records-expand",
+                    "transduce-records-flush",
+                    "transduce-records-step",
+                    "transduce-records-finish"
+                ),
+                true,
+                true
+            ),
+            native
+        );
+        assert!(interpreted(&format!(
+            "def my-step [spec state pass] (transduce-records-step spec state pass)\n{}",
+            scans_of(
+                "transduce-records-expand",
+                "transduce-records-flush",
+                "my-step",
+                "transduce-records-finish"
+            )
+        )));
+        assert!(interpreted(&format!(
+            "def my-expand [state item] (transduce-records-expand state item)\n{}",
+            scans_of(
+                "my-expand",
+                "transduce-records-flush",
+                "transduce-records-step",
+                "transduce-records-finish"
+            )
+        )));
+    }
+
+    /// The library's two scans for `transduce-records`, run here by hand
+    /// over `passes` as transduce's scan-emit runs them: the inner step
+    /// from `[:before [] []]` and its finish, each output through the
+    /// outer step. The events, each as the value prints, or the failure.
+    fn records_scan(
+        rt: &Runtime,
+        spec: &str,
+        passes: Vec<ParserEvent>,
+    ) -> Result<Vec<String>, Fail> {
+        let spec = rt.def_value(Scope::Program, spec).unwrap().unwrap();
+        let library = |name: &str| match rt.def_value(Scope::Stdlib, name).unwrap() {
+            Some(Val::Fn(f)) => f,
+            _ => panic!("{name} is a function"),
+        };
+        let (step, finish, expand) = (
+            library("transduce-records-step"),
+            library("transduce-records-finish"),
+            library("transduce-records-expand"),
+        );
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let events = |items: &[Val], out: &mut Vec<String>| -> Result<(), Fail> {
+            for item in items {
+                let t = rt.apply(&expand, vec![Val::vector(vec![]), item.clone()], &at)?;
+                let Val::Tagged { fields, .. } = &t else {
+                    panic!("expand answers a transition");
+                };
+                let Val::Vector(outputs) = &fields[1] else {
+                    panic!("a transition's outputs are a vector");
+                };
+                out.extend(outputs.iter().map(|v| format!("{v:?}")));
+            }
+            Ok(())
+        };
+        let mut state = Val::vector(vec![
+            Val::keyword("before"),
+            Val::vector(vec![]),
+            Val::vector(vec![]),
+        ]);
+        let mut out = Vec::new();
+        for ev in passes {
+            let item = match &ev {
+                ParserEvent::Open(pass) => Val::tagged("open", vec![rule_record(pass)]),
+                ParserEvent::Close(pass) => Val::tagged("close", vec![rule_record(pass)]),
+                ParserEvent::End => {
+                    let Val::Vector(tail) = rt.apply(&finish, vec![state.clone()], &at)? else {
+                        panic!("finish answers a vector");
+                    };
+                    events(&tail.to_vec(), &mut out)?;
+                    break;
+                }
+            };
+            let next = rt.apply(&step, vec![spec.clone(), state.clone(), item], &at)?;
+            let Val::Tagged { fields, .. } = &next else {
+                panic!("the step answers a transition");
+            };
+            let Val::Vector(outputs) = &fields[1] else {
+                panic!("a transition's outputs are a vector");
+            };
+            events(&outputs.to_vec(), &mut out)?;
+            state = fields[0].clone();
+        }
+        Ok(out)
+    }
+
+    /// A record grammar's passes as the csv grammar makes them: `csv`
+    /// around the records, `record` around each, `val` closing with each
+    /// cell's value, and the two empty cells' alternates in the group
+    /// `empty`, one on an `elem`'s open pass (a cell before a comma) and
+    /// one on its close (a cell at the record's end).
+    fn record_passes(records: &[&[Option<&str>]], at_end: &[bool]) -> Vec<ParserEvent> {
+        use crate::shared::PassAlt;
+        let pass = |name: &str, alt: Option<PassAlt>, value: Option<Datum>| RulePass {
+            name: name.into(),
+            d: 0,
+            i: 0,
+            alt,
+            tokens: vec![],
+            forced: false,
+            n: vec![],
+            value,
+        };
+        let empty = |groups: &[&str]| {
+            Some(PassAlt {
+                p: "".into(),
+                r: "".into(),
+                b: 1,
+                g: groups.iter().map(|g| Box::from(*g)).collect(),
+            })
+        };
+        let mut passes = vec![ParserEvent::Open(pass("csv", None, None))];
+        for (k, record) in records.iter().enumerate() {
+            passes.push(ParserEvent::Open(pass("record", None, None)));
+            for cell in record.iter() {
+                passes.push(match cell {
+                    Some(text) => {
+                        ParserEvent::Close(pass("val", None, Some(Datum::String((*text).into()))))
+                    }
+                    None => ParserEvent::Open(pass("elem", empty(&["empty"]), None)),
+                });
+            }
+            if at_end.get(k) == Some(&true) {
+                passes.push(ParserEvent::Close(pass(
+                    "elem",
+                    empty(&["comma", "empty"]),
+                    None,
+                )));
+            }
+            passes.push(ParserEvent::Close(pass("record", None, None)));
+        }
+        passes.push(ParserEvent::Close(pass("csv", None, None)));
+        passes.push(ParserEvent::End);
+        passes
+    }
+
+    /// csv's part, as the library's text runs it over the passes the csv
+    /// grammar makes: a header's names key each row's cells, an empty
+    /// cell holds the fill, a short row takes the names it lacks with the
+    /// fill, a long row names its extra cells by the prefix and their
+    /// position, and without a header each record is an array.
+    #[test]
+    fn transduce_records_makes_a_documents_events_of_a_record_grammars_passes() {
+        let rt = runtime(
+            &format!(
+                "{CSV_SPEC}def bare\n  record\n    entry :document \"csv\"\n    entry :record \"record\"\n    entry :cell \"val\"\n    entry :empty \"empty\"\n    entry :fill null\n\ndef export [input] (transduce-records csv-spec input)\n"
+            ),
+            true,
+        );
+        let records: &[&[Option<&str>]] = &[
+            &[Some("a"), Some("b")],
+            &[Some("1"), Some("2")],
+            &[Some("3")],
+            &[None, Some("4")],
+            &[Some("5")],
+            &[Some("6"), Some("7"), Some("8")],
+        ];
+        let at_end = [false, false, true, false, false, false];
+        assert_eq!(
+            records_scan(&rt, "csv-spec", record_passes(records, &at_end)).unwrap().join(" "),
+            [
+                r#"array-start"#,
+                r#"object-start (key "a") (scalar "1") (key "b") (scalar "2") object-end"#,
+                r#"object-start (key "a") (scalar "3") (key "b") (scalar "") object-end"#,
+                r#"object-start (key "a") (scalar "") (key "b") (scalar "4") object-end"#,
+                r#"object-start (key "a") (scalar "5") (key "b") (scalar "") object-end"#,
+                r#"object-start (key "a") (scalar "6") (key "b") (scalar "7") (key "field~2") (scalar "8") object-end"#,
+                r#"array-end"#,
+            ]
+            .join(" ")
+        );
+        assert_eq!(
+            records_scan(&rt, "bare", record_passes(records, &at_end))
+                .unwrap()
+                .join(" "),
+            [
+                r#"array-start"#,
+                r#"array-start (scalar "a") (scalar "b") array-end"#,
+                r#"array-start (scalar "1") (scalar "2") array-end"#,
+                r#"array-start (scalar "3") (scalar null) array-end"#,
+                r#"array-start (scalar null) (scalar "4") array-end"#,
+                r#"array-start (scalar "5") array-end"#,
+                r#"array-start (scalar "6") (scalar "7") (scalar "8") array-end"#,
+                r#"array-end"#,
+            ]
+            .join(" ")
+        );
+        // A document that makes no pass is the empty array.
+        assert_eq!(
+            records_scan(&rt, "csv-spec", vec![ParserEvent::End])
+                .unwrap()
+                .join(" "),
+            "array-start array-end"
+        );
+        // Passes that end inside the document are refused.
+        let mut cut = record_passes(&[&[Some("a")]], &[false]);
+        cut.truncate(2);
+        cut.push(ParserEvent::End);
+        assert_eq!(
+            records_scan(&rt, "csv-spec", cut).unwrap_err().code,
+            Code::ProtocolOrderError
+        );
     }
 
     /// The host pushes the parser's rule passes into the head

@@ -183,6 +183,39 @@ export function stdlibSignature(name: string): Type | undefined {
       return func([Unknown], vectorOf(Event))
     case 'transduce-tree':
       return func([Record, ParserEvents], JsonEvents)
+    // The declarative records transducer: a spec and the rule passes in,
+    // a document of records' JSON events out, over two scans. The first
+    // scan's items are keywords and cells, a cell a vector of its name
+    // and value or of its value alone.
+    case 'transduce-records-fill':
+    case 'transduce-records-unnamed':
+      return func([Record], Unknown)
+    case 'transduce-records-empty':
+      return func([Record, Record], Bool)
+    case 'transduce-records-name':
+      return func([Unknown], Unknown)
+    case 'transduce-records-cell':
+      return func([Record, Unknown, Unknown], tagged('transition'))
+    case 'transduce-records-fills':
+      return func([Record, vectorOf(Unknown), vectorOf(Unknown)], vectorOf(Unknown))
+    case 'transduce-records-begin':
+      return func([Record], tagged('transition'))
+    case 'transduce-records-record':
+    case 'transduce-records-end':
+      return func([Record, Unknown], tagged('transition'))
+    case 'transduce-records-open':
+    case 'transduce-records-close':
+      return func([Record, Unknown, Record], tagged('transition'))
+    case 'transduce-records-step':
+      return func([Record, Unknown, Unknown], tagged('transition'))
+    case 'transduce-records-finish':
+      return func([Unknown], vectorOf(Unknown))
+    case 'transduce-records-expand':
+      return func([Unknown, Unknown], tagged('transition'))
+    case 'transduce-records-flush':
+      return func([Unknown], vectorOf(Event))
+    case 'transduce-records':
+      return func([Record, ParserEvents], JsonEvents)
     default:
       return undefined
   }

@@ -181,6 +181,36 @@ func StdlibSignature(name string) (Type, bool) {
 		return Func([]Type{Unknown}, VectorOf(EventT)), true
 	case "transduce-tree":
 		return Func([]Type{RecordT, ParserEventsT}, JsonEvents), true
+	// The declarative records transducer: a spec and the rule passes in,
+	// a document of records' JSON events out, over two scans. The first
+	// scan's items are keywords and cells, a cell a vector of its name
+	// and value or of its value alone.
+	case "transduce-records-fill", "transduce-records-unnamed":
+		return Func([]Type{RecordT}, Unknown), true
+	case "transduce-records-empty":
+		return Func([]Type{RecordT, RecordT}, BoolT), true
+	case "transduce-records-name":
+		return Func([]Type{Unknown}, Unknown), true
+	case "transduce-records-cell":
+		return Func([]Type{RecordT, Unknown, Unknown}, Tagged("transition")), true
+	case "transduce-records-fills":
+		return Func([]Type{RecordT, VectorOf(Unknown), VectorOf(Unknown)}, VectorOf(Unknown)), true
+	case "transduce-records-begin":
+		return Func([]Type{RecordT}, Tagged("transition")), true
+	case "transduce-records-record", "transduce-records-end":
+		return Func([]Type{RecordT, Unknown}, Tagged("transition")), true
+	case "transduce-records-open", "transduce-records-close":
+		return Func([]Type{RecordT, Unknown, RecordT}, Tagged("transition")), true
+	case "transduce-records-step":
+		return Func([]Type{RecordT, Unknown, Unknown}, Tagged("transition")), true
+	case "transduce-records-finish":
+		return Func([]Type{Unknown}, VectorOf(Unknown)), true
+	case "transduce-records-expand":
+		return Func([]Type{Unknown, Unknown}, Tagged("transition")), true
+	case "transduce-records-flush":
+		return Func([]Type{Unknown}, VectorOf(EventT)), true
+	case "transduce-records":
+		return Func([]Type{RecordT, ParserEventsT}, JsonEvents), true
 	}
 	return Type{}, false
 }

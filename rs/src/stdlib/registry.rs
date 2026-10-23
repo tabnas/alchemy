@@ -22,7 +22,6 @@ use indexmap::IndexMap;
 use crate::ast::SourceSpan;
 use crate::fx::FxBuild;
 use crate::interp::Runtime;
-use crate::lex::is_json_number;
 use crate::shared::{CaptureSpec, Code, Fail, Selector};
 use crate::value::{type_error, Func, NonFinite, Partial, Plan, Seq, Str, Val, Vector, MISSING};
 
@@ -277,49 +276,7 @@ fn option(op: &str, options: &Val, key: &str) -> Result<Val, Fail> {
 // Numbers
 // ---------------------------------------------------------------------------
 
-/// The magnitudes written positionally, as the renderers write them:
-/// from `1e-6` up to, not including, `1e21`.
-const POSITIONAL_MIN: f64 = 1e-6;
-const POSITIONAL_MAX: f64 = 1e21;
-
-/// The shortest text that reads back as `value`, laid out as the render
-/// crate lays it out (`number::write_value` there): positional within the
-/// JavaScript range, exponent form outside it. The two must agree byte for
-/// byte, which the differential test checks on every number without a
-/// lexeme.
-pub fn shortest_number(value: f64) -> String {
-    let magnitude = value.abs();
-    if magnitude == 0.0 || (POSITIONAL_MIN..POSITIONAL_MAX).contains(&magnitude) {
-        format!("{value}")
-    } else {
-        format!("{value:e}")
-    }
-}
-
-/// The text of a number as a renderer writes it, with the renderer's
-/// checks: a lexeme that is not a JSON number is `INVALID_NUMBER`, a
-/// non-finite value `TARGET_VALUE_UNREPRESENTABLE`.
-pub fn number_text(value: f64, lexeme: Option<&str>) -> Result<String, Fail> {
-    if let Some(l) = lexeme {
-        if !is_json_number(l) {
-            return Err(Fail::new(
-                Code::InvalidNumber,
-                format!("{l:?} is not a JSON number"),
-            ));
-        }
-    }
-    if !value.is_finite() {
-        let message = match lexeme {
-            Some(l) => format!("{l:?} is {value} as a number, which has no representation"),
-            None => format!("{value} has no representation as a number"),
-        };
-        return Err(Fail::new(Code::TargetValueUnrepresentable, message));
-    }
-    Ok(match lexeme {
-        Some(l) => l.to_string(),
-        None => shortest_number(value),
-    })
-}
+pub use crate::shared::number::{number_text, shortest_number};
 
 // ---------------------------------------------------------------------------
 // The implementations

@@ -139,6 +139,36 @@ pub fn stdlib_signature(name: &str) -> Option<Type> {
         "transduce-pass" => Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition")),
         "transduce-done" => Type::func(vec![Unknown], Type::vector(Event)),
         "transduce-tree" => Type::func(vec![Record, ParserEvents], JsonEvents),
+        // The declarative records transducer: a spec and the rule passes
+        // in, a document of records' JSON events out, over two scans. The
+        // first scan's items are keywords and cells, a cell a vector of
+        // its name and value or of its value alone.
+        "transduce-records-fill" | "transduce-records-unnamed" => Type::func(vec![Record], Unknown),
+        "transduce-records-empty" => Type::func(vec![Record, Record], Bool),
+        "transduce-records-name" => Type::func(vec![Unknown], Unknown),
+        "transduce-records-cell" => {
+            Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition"))
+        }
+        "transduce-records-fills" => Type::func(
+            vec![Record, Type::vector(Unknown), Type::vector(Unknown)],
+            Type::vector(Unknown),
+        ),
+        "transduce-records-begin" => Type::func(vec![Record], Type::tagged("transition")),
+        "transduce-records-record" | "transduce-records-end" => {
+            Type::func(vec![Record, Unknown], Type::tagged("transition"))
+        }
+        "transduce-records-open" | "transduce-records-close" => {
+            Type::func(vec![Record, Unknown, Record], Type::tagged("transition"))
+        }
+        "transduce-records-step" => {
+            Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition"))
+        }
+        "transduce-records-finish" => Type::func(vec![Unknown], Type::vector(Unknown)),
+        "transduce-records-expand" => {
+            Type::func(vec![Unknown, Unknown], Type::tagged("transition"))
+        }
+        "transduce-records-flush" => Type::func(vec![Unknown], Type::vector(Event)),
+        "transduce-records" => Type::func(vec![Record, ParserEvents], JsonEvents),
         _ => return None,
     })
 }
