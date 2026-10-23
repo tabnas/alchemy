@@ -880,8 +880,9 @@ The rest of the library is written in alchemy, embedded from
 signatures as it loads. The blocks below are those files' text, word for
 word (`rs/tests/spec_test.rs` holds the two together), and they are the
 reference: the runtime runs `table-from-json` and `csv` natively when
-their arguments have the standard shapes, and `transduce-tree` when its
-spec does and the host's routers offer a native one, and alchemy-cli's
+their arguments have the standard shapes, and `transduce-tree` and
+`transduce-records` when a spec does and the host's routers offer a
+native one, and alchemy-cli's
 `rs/tests/stdlib_test.rs` proves the native path and this text produce
 the same bytes, or fail with the same code.
 
@@ -1611,6 +1612,252 @@ def transduce-tree [spec input]
 ```
 ```core
 (def transduce-tree (fn [spec input] (as-events (scan-emit [[[] false] []] (partial transduce-pass spec) transduce-done (parser-events input)))))
+```
+
+The declarative records transducer, `ParserEvents` in and `JsonEvents`
+out: `transduce-records spec input` makes the JSON events of a document
+of records, each a sequence of cells, of the parser's rule passes. That
+is the shape a delimited format's grammar reads, and `transduce-tree`
+cannot say it, since a record's members are named by the first record's
+cells. The spec is a record of `:document`, the rule whose open pass
+begins the document's array and whose close pass ends it (a document
+that makes no pass is the empty array); `:record`, the rule whose open
+pass begins a record and whose close pass ends it; `:cell`, the rule
+whose close pass's `:value` is the record's next cell (a close pass
+with no value is none); `:empty`, a group: a pass of any rule whose
+alternate is in it is an empty cell, which holds `:fill` (left out, no
+pass is); `:fill`, what an empty cell holds, and a header cell a record
+lacks (the empty string when it is left out); `:header`, whether the
+first record's cells name the columns; and `:unnamed`, the prefix of
+the name of a cell past them (the empty string when it is left out).
+With `:header` true, the first record is read for its names and makes
+no events, and each later record is an object: its cells keyed by the
+names in order, a cell past them by `:unnamed` and its position from 0,
+a name it lacks holding `:fill`. A name is its cell's text
+(`scalar-text`), and a name the header repeats is announced as often,
+as the record spells it, so a tree's contract after the transducer
+refuses such a document. Left out or false, every record is an array of
+its cells. The rules the spec names are read first, then the `:empty`
+group. The state is `[phase names cells]`: the phase (`:before` the
+document, `:header`, `:row`, `:done`), the header's names once read,
+and a marker per cell of the current record so far, so nothing grows
+with the document's length, only with a record's width, under
+`max_metadata_bytes`. A step's outputs are one vector, and a record's
+missing cells are as many pairs as the header has left, so it is two
+scans: the first yields each cell as a vector, its name and its value
+or its value alone, and each container as a keyword, and the second
+writes each as its events. tabnas-csv's part is the spec
+
+```text
+record
+  entry :document "csv"
+  entry :record "record"
+  entry :cell "val"
+  entry :empty "empty"
+  entry :header true
+  entry :unnamed "field~"
+```
+
+Over the host's parser events, `transduce-records` runs natively where
+the spec has the standard shape (`:document`, `:record` and `:cell`
+strings, `:empty` and `:unnamed` strings and `:header` a boolean where
+they are given, `:fill` a scalar) and the host's routers offer a native
+one (`Routers::transduce_records`; the shared `RecordsSpec` says what it
+must do). Its events, its failures and its codes are this text's, and
+it holds the header's names to `max_metadata_bytes` as this text's scan
+holds its state. A spec of any other shape, routers that offer none,
+and `Runtime::with_native(false)` run this text.
+
+```alchemy
+def transduce-records-fill [spec]
+  match (get :fill spec)
+    case missing ""
+    case fill fill
+```
+```core
+(def transduce-records-fill (fn [spec] (match (get :fill spec) (case missing "") (case fill fill))))
+```
+
+```alchemy
+def transduce-records-unnamed [spec]
+  match (get :unnamed spec)
+    case missing ""
+    case prefix prefix
+```
+```core
+(def transduce-records-unnamed (fn [spec] (match (get :unnamed spec) (case missing "") (case prefix prefix))))
+```
+
+```alchemy
+def transduce-records-empty [spec rule]
+  match [(get :empty spec) (get :alt rule)]
+    case [missing _] false
+    case [_ missing] false
+    case [group alt]
+      match (count (filter (fn [g] (equal g group)) (get :g alt)))
+        case 0 false
+        case _ true
+```
+```core
+(def transduce-records-empty (fn [spec rule] (match [(get :empty spec) (get :alt rule)] (case [missing _] false) (case [_ missing] false) (case [group alt] (match (count (filter (fn [g] (equal g group)) (get :g alt))) (case 0 false) (case _ true))))))
+```
+
+```alchemy
+def transduce-records-name [value]
+  match (kind value)
+    case :string value
+    case _ (scalar-text (record) value)
+```
+```core
+(def transduce-records-name (fn [value] (match (kind value) (case :string value) (case _ (scalar-text (record) value)))))
+```
+
+```alchemy
+def transduce-records-cell [spec value state]
+  match state
+    case [:header names cells] (transition [:header (push (transduce-records-name value) names) cells] [])
+    case [:row names cells]
+      match (get :header spec)
+        case true
+          let [n (count cells)]
+            match (get-path (path n) names)
+              case missing (transition [:row names (push true cells)] [[(string-join "" [(transduce-records-unnamed spec) (scalar-text (record) n)]) value]])
+              case name (transition [:row names (push true cells)] [[name value]])
+        case _ (transition [:row names (push true cells)] [[value]])
+    case _ (transition state [])
+```
+```core
+(def transduce-records-cell (fn [spec value state] (match state (case [:header names cells] (transition [:header (push (transduce-records-name value) names) cells] [])) (case [:row names cells] (match (get :header spec) (case true (let [n (count cells)] (match (get-path (path n) names) (case missing (transition [:row names (push true cells)] [[(string-join "" [(transduce-records-unnamed spec) (scalar-text (record) n)]) value]])) (case name (transition [:row names (push true cells)] [[name value]]))))) (case _ (transition [:row names (push true cells)] [[value]])))) (case _ (transition state [])))))
+```
+
+```alchemy
+def transduce-records-fills [spec names cells]
+  map (fn [j] [(get-path (path j) names) (transduce-records-fill spec)]) (filter (fn [j] (match (compare j (count cells)) (case :less false) (case _ true))) (indices names))
+```
+```core
+(def transduce-records-fills (fn [spec names cells] (map (fn [j] [(get-path (path j) names) (transduce-records-fill spec)]) (filter (fn [j] (match (compare j (count cells)) (case :less false) (case _ true))) (indices names)))))
+```
+
+```alchemy
+def transduce-records-begin [spec]
+  match (get :header spec)
+    case true (transition [:header [] []] [:array-start])
+    case _ (transition [:row [] []] [:array-start])
+```
+```core
+(def transduce-records-begin (fn [spec] (match (get :header spec) (case true (transition [:header [] []] [:array-start])) (case _ (transition [:row [] []] [:array-start])))))
+```
+
+```alchemy
+def transduce-records-record [spec state]
+  match state
+    case [:row names cells]
+      match (get :header spec)
+        case true (transition [:row names []] [:object-start])
+        case _ (transition [:row names []] [:array-start])
+    case _ (transition state [])
+```
+```core
+(def transduce-records-record (fn [spec state] (match state (case [:row names cells] (match (get :header spec) (case true (transition [:row names []] [:object-start])) (case _ (transition [:row names []] [:array-start])))) (case _ (transition state [])))))
+```
+
+```alchemy
+def transduce-records-end [spec state]
+  match state
+    case [:header names cells] (transition [:row names []] [])
+    case [:row names cells]
+      match (get :header spec)
+        case true (transition [:row names []] (push :object-end (transduce-records-fills spec names cells)))
+        case _ (transition [:row names []] [:array-end])
+    case _ (transition state [])
+```
+```core
+(def transduce-records-end (fn [spec state] (match state (case [:header names cells] (transition [:row names []] [])) (case [:row names cells] (match (get :header spec) (case true (transition [:row names []] (push :object-end (transduce-records-fills spec names cells)))) (case _ (transition [:row names []] [:array-end])))) (case _ (transition state [])))))
+```
+
+```alchemy
+def transduce-records-open [spec state rule]
+  let [name (get :name rule)]
+    if (equal name (get :document spec))
+      transduce-records-begin spec
+      if (equal name (get :record spec))
+        transduce-records-record spec state
+        if (transduce-records-empty spec rule)
+          transduce-records-cell spec (transduce-records-fill spec) state
+          transition state []
+```
+```core
+(def transduce-records-open (fn [spec state rule] (let [name (get :name rule)] (if (equal name (get :document spec)) (transduce-records-begin spec) (if (equal name (get :record spec)) (transduce-records-record spec state) (if (transduce-records-empty spec rule) (transduce-records-cell spec (transduce-records-fill spec) state) (transition state [])))))))
+```
+
+```alchemy
+def transduce-records-close [spec state rule]
+  let [name (get :name rule)]
+    if (equal name (get :cell spec))
+      match (get :value rule)
+        case missing (transition state [])
+        case value (transduce-records-cell spec value state)
+      if (equal name (get :record spec))
+        transduce-records-end spec state
+        if (equal name (get :document spec))
+          transition [:done [] []] [:array-end]
+          if (transduce-records-empty spec rule)
+            transduce-records-cell spec (transduce-records-fill spec) state
+            transition state []
+```
+```core
+(def transduce-records-close (fn [spec state rule] (let [name (get :name rule)] (if (equal name (get :cell spec)) (match (get :value rule) (case missing (transition state [])) (case value (transduce-records-cell spec value state))) (if (equal name (get :record spec)) (transduce-records-end spec state) (if (equal name (get :document spec)) (transition [:done [] []] [:array-end]) (if (transduce-records-empty spec rule) (transduce-records-cell spec (transduce-records-fill spec) state) (transition state []))))))))
+```
+
+```alchemy
+def transduce-records-step [spec state pass]
+  match pass
+    case (open rule) (transduce-records-open spec state rule)
+    case (close rule) (transduce-records-close spec state rule)
+```
+```core
+(def transduce-records-step (fn [spec state pass] (match pass (case (open rule) (transduce-records-open spec state rule)) (case (close rule) (transduce-records-close spec state rule)))))
+```
+
+```alchemy
+def transduce-records-finish [state]
+  match state
+    case [:before names cells] [:array-start :array-end]
+    case [:done names cells] []
+    case _ (fail :protocol-order "the rule passes ended inside the document, which a records grammar's never do")
+```
+```core
+(def transduce-records-finish (fn [state] (match state (case [:before names cells] [:array-start :array-end]) (case [:done names cells] []) (case _ (fail :protocol-order "the rule passes ended inside the document, which a records grammar's never do")))))
+```
+
+```alchemy
+def transduce-records-expand [state item]
+  match item
+    case :array-start (transition state [array-start])
+    case :array-end (transition state [array-end])
+    case :object-start (transition state [object-start])
+    case :object-end (transition state [object-end])
+    case [name value] (transition state [(key name) (scalar value)])
+    case [value] (transition state [(scalar value)])
+```
+```core
+(def transduce-records-expand (fn [state item] (match item (case :array-start (transition state [array-start])) (case :array-end (transition state [array-end])) (case :object-start (transition state [object-start])) (case :object-end (transition state [object-end])) (case [name value] (transition state [(key name) (scalar value)])) (case [value] (transition state [(scalar value)])))))
+```
+
+```alchemy
+def transduce-records-flush [state]
+  []
+```
+```core
+(def transduce-records-flush (fn [state] []))
+```
+
+```alchemy
+def transduce-records [spec input]
+  as-events (scan-emit [] transduce-records-expand transduce-records-flush (scan-emit [:before [] []] (partial transduce-records-step spec) transduce-records-finish (parser-events input)))
+```
+```core
+(def transduce-records (fn [spec input] (as-events (scan-emit [] transduce-records-expand transduce-records-flush (scan-emit [:before [] []] (partial transduce-records-step spec) transduce-records-finish (parser-events input))))))
 ```
 ## Programs
 
