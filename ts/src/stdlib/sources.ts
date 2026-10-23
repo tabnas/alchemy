@@ -491,6 +491,184 @@ def transduce-done [state]
 ; A tree's JSON events from the rule passes, as \`spec\` says.
 def transduce-tree [spec input]
   as-events (scan-emit [[[] false] []] (partial transduce-pass spec) transduce-done (parser-events input))
+
+; The declarative records transducer: the JSON events of a document of
+; records, each a sequence of cells, from a grammar's rule passes. That
+; is the shape a delimited format's grammar reads, and transduce-tree
+; cannot say it, since a record's members are named by the first
+; record's cells. CSV's part is
+;
+;   def csv-transduce [input]
+;     transduce-records
+;       record
+;         entry :document "csv"
+;         entry :record "record"
+;         entry :cell "val"
+;         entry :empty "empty"
+;         entry :header true
+;         entry :unnamed "field~"
+;       input
+;
+; The spec is a record of: \`:document\`, the rule whose open pass begins
+; the document's array and whose close pass ends it (a document that
+; makes no pass is the empty array); \`:record\`, the rule whose open pass
+; begins a record and whose close pass ends it; \`:cell\`, the rule whose
+; close pass's \`:value\` is the record's next cell (a close pass with no
+; value is none); \`:empty\`, a group: a pass of any rule whose alternate
+; is in it is an empty cell, which holds \`:fill\` (left out, no pass is);
+; \`:fill\`, what an empty cell holds, and a header cell a record lacks
+; (the empty string when it is left out); \`:header\`, whether the first
+; record's cells name the columns; and \`:unnamed\`, the prefix of the name
+; of a cell past them (the empty string when it is left out). With
+; \`:header\` true, the first record is read for its names and makes no
+; events, and each later record is an object: its cells keyed by the
+; names in order, a cell past them by \`:unnamed\` and its position from
+; 0, a name it lacks holding \`:fill\`. A name is its cell's text
+; (\`scalar-text\`), and a name the header repeats is announced as often,
+; as the record spells it, so a tree's contract after the transducer
+; refuses such a document. Left out or false, every record is an array
+; of its cells. The rules the spec names are read first, then the
+; \`:empty\` group: a pass of the \`:cell\` rule is a cell by its value
+; whatever its alternate.
+;
+; The state is [phase names cells]: the phase (:before the document,
+; :header, :row, :done), the header's names once read, and a marker per
+; cell of the current record so far, so nothing grows with the
+; document's length, only with a record's width, under
+; max_metadata_bytes. A step's outputs are one vector, and a record's
+; missing cells are as many pairs as the header has left, so the
+; transducer is two scans: the first yields each cell as a vector, its
+; name and its value or its value alone, and each container as a
+; keyword, and the second writes each as its events.
+
+; What an empty cell holds.
+def transduce-records-fill [spec]
+  match (get :fill spec)
+    case missing ""
+    case fill fill
+
+; The prefix of the name of a cell past the header's.
+def transduce-records-unnamed [spec]
+  match (get :unnamed spec)
+    case missing ""
+    case prefix prefix
+
+; Whether a pass's alternate is in the spec's \`:empty\` group.
+def transduce-records-empty [spec rule]
+  match [(get :empty spec) (get :alt rule)]
+    case [missing _] false
+    case [_ missing] false
+    case [group alt]
+      match (count (filter (fn [g] (equal g group)) (get :g alt)))
+        case 0 false
+        case _ true
+
+; The name a header cell gives its column: its text.
+def transduce-records-name [value]
+  match (kind value)
+    case :string value
+    case _ (scalar-text (record) value)
+
+; A cell: a header cell is kept as a name; a record's cell is yielded
+; under the header's name at its position, or \`:unnamed\` and the
+; position, or alone when there is no header.
+def transduce-records-cell [spec value state]
+  match state
+    case [:header names cells] (transition [:header (push (transduce-records-name value) names) cells] [])
+    case [:row names cells]
+      match (get :header spec)
+        case true
+          let [n (count cells)]
+            match (get-path (path n) names)
+              case missing (transition [:row names (push true cells)] [[(string-join "" [(transduce-records-unnamed spec) (scalar-text (record) n)]) value]])
+              case name (transition [:row names (push true cells)] [[name value]])
+        case _ (transition [:row names (push true cells)] [[value]])
+    case _ (transition state [])
+
+; The header's names a record lacks, each with what an empty cell holds.
+def transduce-records-fills [spec names cells]
+  map (fn [j] [(get-path (path j) names) (transduce-records-fill spec)]) (filter (fn [j] (match (compare j (count cells)) (case :less false) (case _ true))) (indices names))
+
+; The document begins: its array, then its header when the spec has one.
+def transduce-records-begin [spec]
+  match (get :header spec)
+    case true (transition [:header [] []] [:array-start])
+    case _ (transition [:row [] []] [:array-start])
+
+; A record begins: an object when a header names the columns, an array
+; otherwise; the header's own record begins nothing.
+def transduce-records-record [spec state]
+  match state
+    case [:row names cells]
+      match (get :header spec)
+        case true (transition [:row names []] [:object-start])
+        case _ (transition [:row names []] [:array-start])
+    case _ (transition state [])
+
+; A record ends: the header's goes on to the rows, and a row's object
+; first takes the names it lacks.
+def transduce-records-end [spec state]
+  match state
+    case [:header names cells] (transition [:row names []] [])
+    case [:row names cells]
+      match (get :header spec)
+        case true (transition [:row names []] (push :object-end (transduce-records-fills spec names cells)))
+        case _ (transition [:row names []] [:array-end])
+    case _ (transition state [])
+
+def transduce-records-open [spec state rule]
+  let [name (get :name rule)]
+    if (equal name (get :document spec))
+      transduce-records-begin spec
+      if (equal name (get :record spec))
+        transduce-records-record spec state
+        if (transduce-records-empty spec rule)
+          transduce-records-cell spec (transduce-records-fill spec) state
+          transition state []
+
+def transduce-records-close [spec state rule]
+  let [name (get :name rule)]
+    if (equal name (get :cell spec))
+      match (get :value rule)
+        case missing (transition state [])
+        case value (transduce-records-cell spec value state)
+      if (equal name (get :record spec))
+        transduce-records-end spec state
+        if (equal name (get :document spec))
+          transition [:done [] []] [:array-end]
+          if (transduce-records-empty spec rule)
+            transduce-records-cell spec (transduce-records-fill spec) state
+            transition state []
+
+def transduce-records-step [spec state pass]
+  match pass
+    case (open rule) (transduce-records-open spec state rule)
+    case (close rule) (transduce-records-close spec state rule)
+
+; A document that makes no pass is the empty array.
+def transduce-records-finish [state]
+  match state
+    case [:before names cells] [:array-start :array-end]
+    case [:done names cells] []
+    case _ (fail :protocol-order "the rule passes ended inside the document, which a records grammar's never do")
+
+; Each item of the first scan as its events.
+def transduce-records-expand [state item]
+  match item
+    case :array-start (transition state [array-start])
+    case :array-end (transition state [array-end])
+    case :object-start (transition state [object-start])
+    case :object-end (transition state [object-end])
+    case [name value] (transition state [(key name) (scalar value)])
+    case [value] (transition state [(scalar value)])
+
+; The second scan ends with nothing more.
+def transduce-records-flush [state]
+  []
+
+; A document's JSON events from the rule passes, as \`spec\` says.
+def transduce-records [spec input]
+  as-events (scan-emit [] transduce-records-expand transduce-records-flush (scan-emit [:before [] []] (partial transduce-records-step spec) transduce-records-finish (parser-events input)))
 `,
   ],
 ]
