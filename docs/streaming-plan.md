@@ -1218,6 +1218,80 @@ moved to parts. aless's `Plan` stays while CSV keeps its line source.
 The maintainer held the releases for the next wave: transduce 0.3.0, a
 breaking change, and the hosts' moves to it.
 
+CSV's native route, ruled on 2026-10-23. A probe wrote csv's part
+natively over `ParserEventSource`, reading the generated CSV from a file,
+pruned, into a table. It took 5.25 s for 100,000 rows and 36.9 s for
+700,000 (26.9 MB), against `LinesSource`'s 3.93 s and 27.8 s: a third
+longer, in half the memory (6.8 MB against 12.3 MB), where csv's
+interpreted part takes four times as long. The third is the source's
+passes, not the records: `ParserEventSource` into a sink that keeps
+nothing takes 5.00 s, and a profile puts the engine's notification and
+the pass building at 23% of the run, allocation at 29%
+(tabnas/parser#258).
+
+The maintainer chose a generic library function, `transduce-records`,
+run natively in Rust as `transduce-tree` is, with csv's part as its
+spec. Its spec names the rules that make the document, a record and a
+cell, the group whose alternates are empty cells, the fill, the header
+and the prefix of an unnamed cell. The maintainer also ruled that csv
+tags its two empty-cell alternates with the group `empty`, so the spec
+need not match alternates' fields.
+
+- tabnas/alchemy#105 added the library, two chained scans as csv's
+  hand-written part was. It also added the Rust lowering, which
+  recognises the two scans and asks `Routers::transduce_records` for the
+  native. The shared `RecordsSpec` documents the native's contract and
+  the measure its state is held to, the scan's own, so a native and the
+  text refuse an oversized header at the same pass.
+- alchemy#105's downstream run cloned csv and transduce at its branch's
+  name, and found that `transduce.tsv`'s copy of csv's hand-written part
+  matched the trailing empty cell's groups exactly. It now reads the
+  cell by `comma` being among the groups, which holds before csv's tag
+  and after it.
+- tabnas/csv#108 tagged the alternates, in Rust, TypeScript and Go, and
+  made the part the spec.
+- tabnas/transduce#65 is the native, `TransduceRecords`. Over the csv
+  grammar's own passes it streams 198 of 199 documents of csv's corpus,
+  the fixtures and the generated records as the walk; the other names a
+  header column twice and streams both cells, as the part documents.
+- tabnas/alchemy#106 runs csv's shipped part in `transduce.tsv`.
+- alchemy-cli's differential test holds the native to the text over
+  848 documents and every state bound (tabnas/alchemy-cli#57).
+
+Step 12, for CSV. tabnas/transduce#66 retired `LinesSource`,
+`LineFormat` and `DEFAULT_CHUNK_BYTES`, so in Rust no format is read a
+line at a time: JSON Lines and CSV go through their parts. The shared
+fixtures keep the line-source rows the TypeScript and Go ports still
+run, and the Rust runners skip them by mode. On the maintainer's
+instruction, tabnas/transduce#67 made tabnas-json and tabnas-csv
+dev-dependencies, which only the tests now read with, and recorded in
+`tools/port-deps.json` that the TypeScript and Go ports keep both at
+runtime until their own step 12.
+
+The maintainer then had the wave released on 2026-10-23: csv 0.6.9,
+alchemy 0.2.15, transduce 0.3.0 (breaking: steps 12 and 13) and
+alchemy-cli 0.1.17. A dependency list that changed reaches every lock
+that names the crate, not only the released ones, so render's lock was
+refreshed as well (tabnas/render#27).
+
+aless reads CSV and TSV through csv's part, natively, and retires `Plan`
+and `line_format` (rjrodger/aless#94), released with JSON Lines' move as
+aless 0.4.10. TSV's part is CSV's, and it is
+pruned by CSV's verdict. Against the line source, aless's matrix builds,
+with the outputs byte for byte the same, 700,000 rows (26.9 MB) take
+43.98 s against 29.35 s through `--render csv`, and 40.72 s against
+29.27 s through `--render json`, at a peak of 14 MiB against 17: two
+fifths to a half longer, most of it the source's pass building, the
+per-rule cost tabnas/parser#258 tracks. A header that names a column twice, which the grammar's value
+settles by keeping each record's last cell, is settled as JSON's
+repeated member is. A table keeps the last, and a stream that cannot
+refuses the record before writing anything: a file is read again whole,
+and standard input fails with `DUPLICATE_MEMBER`, where the line source
+wrote the last cell.
+
+TypeScript and Go run the library's text until their natives come, and
+keep their line sources until their own steps 12 and 13.
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
