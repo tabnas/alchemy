@@ -1192,6 +1192,32 @@ took its sibling keys as its value. Released as tabnas-yaml 0.5.26, and
 the hosts moved to it (tabnas/alchemy-cli#51, rjrodger/aless#87),
 released as alchemy-cli 0.1.15 and aless 0.4.8.
 
+Step 13, in Rust: transduce retires `capability::INCREMENTAL`, the
+rule-event inference and `ParserSource`'s incremental mode
+(tabnas/transduce#63), on the maintainer's ruling of 2026-10-23.
+`ParserSource` keeps its walk, and pruning is `ParserEventSource::prune`,
+gated on `capability::PRUNABLE`. The hosts had moved already (step 13's
+host half, above). tabnas/alchemy-cli#56 and rjrodger/aless#92 drop the
+last calls that named a grammar to `ParserSource`, which only the
+incremental gate read.
+
+The shared fixtures run JSON's rows through JSON's part, natively, in
+all three runtimes. Go's run found something the inference never
+checked: through a part the source holds each token's source text,
+quotes included, to `max_scalar_bytes`. Two rows now pin it.
+
+The TypeScript and Go ports keep their inference, since their JSON Lines
+line sources read through it until their engines read a reader a window
+at a time. So `events.tsv` keeps its incremental rows for them, and
+their step 13 follows their step 12.
+
+transduce's `docs/BENCH.md` finds the part about a fifth slower than the
+inference on JSON: 1.87 s against 1.58 s from text to table rows, for
+20,000 records, on one machine. The hosts have paid that since they
+moved to parts. aless's `Plan` stays while CSV keeps its line source.
+The maintainer held the releases for the next wave: transduce 0.3.0, a
+breaking change, and the hosts' moves to it.
+
 Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
