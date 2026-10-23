@@ -143,15 +143,12 @@ pub fn stdlib_signature(name: &str) -> Option<Type> {
         // in, a document of records' JSON events out, over two scans. The
         // first scan's items are keywords and cells, a cell a vector of
         // its name and value or of its value alone.
-        "transduce-records-fill" | "transduce-records-unnamed" => {
-            Type::func(vec![Record], Unknown)
-        }
+        "transduce-records-fill" | "transduce-records-unnamed" => Type::func(vec![Record], Unknown),
         "transduce-records-empty" => Type::func(vec![Record, Record], Bool),
         "transduce-records-name" => Type::func(vec![Unknown], Unknown),
-        "transduce-records-cell" => Type::func(
-            vec![Record, Unknown, Unknown],
-            Type::tagged("transition"),
-        ),
+        "transduce-records-cell" => {
+            Type::func(vec![Record, Unknown, Unknown], Type::tagged("transition"))
+        }
         "transduce-records-fills" => Type::func(
             vec![Record, Type::vector(Unknown), Type::vector(Unknown)],
             Type::vector(Unknown),

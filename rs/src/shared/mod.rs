@@ -61,6 +61,9 @@ pub use json::JsonOptions;
 pub use limits::{AbortFlag, Limits, Metrics};
 pub use matcher::CaptureId;
 pub use parser_event::{ParserEvent, ParserSink, PassAlt, PassToken, RulePass};
+pub use records::{
+    records_name, records_state_bytes, records_state_refusal, RecordsPhase, RecordsSpec,
+};
 pub use route::{Budget, CaptureMode, CaptureSpec, FnRoute, RouteSink, Selected};
 pub use scan::Transition;
 pub use selector::{Path, Segment, Selector, Step};
@@ -70,7 +73,4 @@ pub use table::{
     TableBinding, TableEvent, TableSink,
 };
 pub use text::{JoinOut, TextOut};
-pub use records::{
-    records_name, records_state_bytes, records_state_refusal, RecordsPhase, RecordsSpec,
-};
 pub use tree::{tree_text_refusal, TreeContainer, TreeKey, TreeRule, TreeScalar, TreeSpec};
