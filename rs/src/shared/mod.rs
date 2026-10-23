@@ -21,8 +21,9 @@
 //!   `scan-emit` ([`scan`]);
 //! - the text boundary renderers write to ([`text`]) and the renderers'
 //!   options ([`csv`], [`json`]);
-//! - the spec of the library's `transduce-tree` ([`tree`]), for routers
-//!   that run it natively;
+//! - the specs of the library's `transduce-tree` ([`tree`]) and
+//!   `transduce-records` ([`records`]), for routers that run them
+//!   natively, and how a number is written as text ([`number`]);
 //! - [`Routers`] and [`Renderers`] ([`inject`]): what alchemy's runtime
 //!   makes its stages with, implemented by transduce and by render and
 //!   passed in by the host.
@@ -38,7 +39,9 @@ pub mod inject;
 pub mod json;
 pub mod limits;
 pub mod matcher;
+pub mod number;
 pub mod parser_event;
+pub mod records;
 pub mod route;
 pub mod scan;
 pub mod selector;
@@ -67,4 +70,7 @@ pub use table::{
     TableBinding, TableEvent, TableSink,
 };
 pub use text::{JoinOut, TextOut};
+pub use records::{
+    records_name, records_state_bytes, records_state_refusal, RecordsPhase, RecordsSpec,
+};
 pub use tree::{tree_text_refusal, TreeContainer, TreeKey, TreeRule, TreeScalar, TreeSpec};

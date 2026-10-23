@@ -156,50 +156,7 @@ pub fn is_symbol_char(c: char) -> bool {
         )
 }
 
-/// Whether `text` is exactly a JSON number:
-/// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`. Written out rather
-/// than as a regular expression so the crate takes no regex dependency
-/// for one pattern.
-pub fn is_json_number(text: &str) -> bool {
-    let b = text.as_bytes();
-    let mut i = 0;
-    if b.get(i) == Some(&b'-') {
-        i += 1;
-    }
-    match b.get(i) {
-        Some(b'0') => i += 1,
-        Some(c) if c.is_ascii_digit() => {
-            while b.get(i).is_some_and(u8::is_ascii_digit) {
-                i += 1;
-            }
-        }
-        _ => return false,
-    }
-    if b.get(i) == Some(&b'.') {
-        i += 1;
-        let start = i;
-        while b.get(i).is_some_and(u8::is_ascii_digit) {
-            i += 1;
-        }
-        if i == start {
-            return false;
-        }
-    }
-    if matches!(b.get(i), Some(b'e' | b'E')) {
-        i += 1;
-        if matches!(b.get(i), Some(b'+' | b'-')) {
-            i += 1;
-        }
-        let start = i;
-        while b.get(i).is_some_and(u8::is_ascii_digit) {
-            i += 1;
-        }
-        if i == start {
-            return false;
-        }
-    }
-    i == b.len()
-}
+pub use crate::shared::number::is_json_number;
 
 /// The layout state of one parse, as this matcher keeps it between calls.
 ///

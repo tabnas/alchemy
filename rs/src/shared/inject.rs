@@ -23,6 +23,7 @@ use crate::shared::error::Fail;
 use crate::shared::json::JsonOptions;
 use crate::shared::limits::{AbortFlag, Limits, Metrics};
 use crate::shared::parser_event::ParserSink;
+use crate::shared::records::RecordsSpec;
 use crate::shared::route::{CaptureSpec, RouteSink};
 use crate::shared::scan::Transition;
 use crate::shared::sink::{Flow, Sink};
@@ -133,6 +134,28 @@ pub trait Routers<V>: Send + Sync {
     /// native and the text never disagree.
     fn transduce_tree_reads_member_and_text(&self) -> bool {
         false
+    }
+
+    /// transduce's `TransduceRecords::new`: the library's
+    /// `transduce-records` run natively, the parser's rule passes in and a
+    /// document of records' JSON events out to `downstream`, as
+    /// [`RecordsSpec`] says a native must make them. The lowering asks for
+    /// it where a program applies `transduce-records` to the host's parser
+    /// events with a spec of the standard shape, the runtime's native
+    /// compositions on, and hands it the sink the library's `as-events`
+    /// would write to, the source's limits already guarding it, and the
+    /// spec's state held to the runtime's `max_metadata_bytes`.
+    ///
+    /// Routers that have no native transduce-records hand `downstream`
+    /// back, and the library's text runs instead; that is what this
+    /// method does unless an implementation says otherwise.
+    fn transduce_records(
+        &self,
+        spec: RecordsSpec,
+        downstream: Box<dyn Sink + Send>,
+    ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
+        let _ = spec;
+        Err(downstream)
     }
 }
 
