@@ -23,12 +23,8 @@ func rowSelectorText(p *Program) string {
 
 func TestAProgramKnowsItsOutputAndRowSelector(t *testing.T) {
 	p := mustCompile(t, workedExample, "t.alc")
-	if p.Output() != OutputText || rowSelectorText(p) != ".response.payload.deep.records[*]" || !p.Native() {
-		t.Errorf("%s %s %v", p.Output(), rowSelectorText(p), p.Native())
-	}
-	slow := interpreted(t, p)
-	if slow.Native() || rowSelectorText(slow) != ".response.payload.deep.records[*]" {
-		t.Errorf("%v %s", slow.Native(), rowSelectorText(slow))
+	if p.Output() != OutputText || rowSelectorText(p) != ".response.payload.deep.records[*]" {
+		t.Errorf("%s %s", p.Output(), rowSelectorText(p))
 	}
 	if table := mustCompile(t, strings.Replace(workedExample, "    csv csv-options\n", "", 1), "t.alc"); table.Output() != OutputTableRows {
 		t.Errorf("%s", table.Output())

@@ -41,7 +41,6 @@ type Program struct {
 	input Input
 	// output is what the checker decided from export's type.
 	output     Output
-	native     bool
 	duplicates shared.Duplicates
 	// abort is the host's cancellation, handed to every sink's runtime.
 	abort *shared.AbortFlag
@@ -108,14 +107,13 @@ func CompileSourcesWith(sources []Source, input Input, routers shared.Routers, r
 	if f != nil {
 		return nil, f
 	}
-	return buildProgram(a.Resolved, a.Sources, input, a.Checked.Output, true, shared.Reject, shared.NewAbortFlag(), routers, renderers)
+	return buildProgram(a.Resolved, a.Sources, input, a.Checked.Output, shared.Reject, shared.NewAbortFlag(), routers, renderers)
 }
 
-func buildProgram(resolved *Resolved, sources *Sources, input Input, output Output, native bool, duplicates shared.Duplicates, abort *shared.AbortFlag, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
+func buildProgram(resolved *Resolved, sources *Sources, input Input, output Output, duplicates shared.Duplicates, abort *shared.AbortFlag, routers shared.Routers, renderers shared.Renderers) (*Program, *Fail) {
 	// The plan is built on a runtime without the stages: evaluating asks
 	// nothing of them, and the program keeps them for its sinks.
 	result, f := NewRuntime(resolved, sources).
-		WithNative(native).
 		WithDuplicates(duplicates).
 		WithFuel(MaxPlanSteps).
 		WithAbort(abort).
@@ -128,7 +126,6 @@ func buildProgram(resolved *Resolved, sources *Sources, input Input, output Outp
 		sources:    sources,
 		input:      input,
 		output:     output,
-		native:     native,
 		duplicates: duplicates,
 		abort:      abort,
 		routers:    routers,
@@ -137,17 +134,10 @@ func buildProgram(resolved *Resolved, sources *Sources, input Input, output Outp
 	}, nil
 }
 
-// WithNative is the same program with the standard compositions run
-// through the library's own definitions (false) or natively (true, the
-// default). The differential test runs both.
-func (p *Program) WithNative(native bool) (*Program, *Fail) {
-	return buildProgram(p.resolved, p.sources, p.input, p.output, native, p.duplicates, p.abort, p.routers, p.renderers)
-}
-
 // WithDuplicates is the same program with another policy for repeated
 // member names in captured values; the default rejects them.
 func (p *Program) WithDuplicates(duplicates shared.Duplicates) (*Program, *Fail) {
-	return buildProgram(p.resolved, p.sources, p.input, p.output, p.native, duplicates, p.abort, p.routers, p.renderers)
+	return buildProgram(p.resolved, p.sources, p.input, p.output, duplicates, p.abort, p.routers, p.renderers)
 }
 
 // WithAbort is the same program with the host's cancellation: every sink
@@ -163,9 +153,6 @@ func (p *Program) WithAbort(abort *shared.AbortFlag) *Program {
 	q.abort = abort
 	return &q
 }
-
-// Native reports whether the standard compositions run natively.
-func (p *Program) Native() bool { return p.native }
 
 // Duplicates is the policy for a member name repeated in a captured scope.
 func (p *Program) Duplicates() shared.Duplicates { return p.duplicates }
@@ -198,8 +185,6 @@ func (p *Program) PlanOutput() Output {
 		switch s.Plan.Protocol() {
 		case ProtocolJSONEvents:
 			return OutputJsonEvents
-		case ProtocolTableRows:
-			return OutputTableRows
 		}
 		return p.output
 	}
@@ -227,12 +212,6 @@ func (p *Program) RowSelector() (shared.Selector, bool) {
 	}
 	root := rootStage(plan)
 	switch root.Kind {
-	case PlanTableFromJSON:
-		if rows, ok := Field(root.Binding, "rows"); ok {
-			if s, ok := rows.(*SelectorVal); ok {
-				return s.Selector, true
-			}
-		}
 	case PlanSelect:
 		return root.Selector, true
 	case PlanRoute:
@@ -262,7 +241,7 @@ func rootStage(plan *Plan) *Plan {
 		case PlanInput, PlanParserInput:
 			return here
 		case PlanRoute, PlanSelect, PlanEvents, PlanParserEvents, PlanScanEmit, PlanMap, PlanFilter,
-			PlanTableFromJSON, PlanRecords, PlanTreeContract, PlanAsEvents, PlanCsvTable, PlanCsv, PlanJSON:
+			PlanRecords, PlanTreeContract, PlanAsEvents, PlanCsvTable, PlanJSON:
 			if here.Source.Kind == PlanInput || here.Source.Kind == PlanParserInput {
 				return here
 			}
@@ -307,7 +286,7 @@ func stagesOf(plan *Plan) []*Plan {
 		switch here.Kind {
 		case PlanInput, PlanParserInput, PlanLit:
 		case PlanRoute, PlanSelect, PlanEvents, PlanParserEvents, PlanAsEvents, PlanScanEmit, PlanMap, PlanFilter,
-			PlanTableFromJSON, PlanRecords, PlanTreeContract, PlanCsvTable, PlanCsv, PlanJSON:
+			PlanRecords, PlanTreeContract, PlanCsvTable, PlanJSON:
 			next = here.Source
 		case PlanConcatMap, PlanJoin:
 			next = here.Seq.Stream
@@ -359,25 +338,13 @@ func stageOf(p *Plan) Stage {
 	kinds := map[PlanKind]StageKind{
 		PlanInput: StageInput, PlanLit: StageLit, PlanRoute: StageRoute, PlanSelect: StageSelect,
 		PlanEvents: StageEvents, PlanAsEvents: StageAsEvents, PlanScanEmit: StageScanEmit, PlanMap: StageMap, PlanFilter: StageFilter,
-		PlanTableFromJSON: StageTableFromJSON, PlanRecords: StageRecords, PlanCsvTable: StageCsvTable,
-		PlanCsv: StageCsv, PlanJSON: StageJSON, PlanConcatMap: StageConcatMap, PlanJoin: StageJoin,
+		PlanRecords: StageRecords, PlanCsvTable: StageCsvTable, PlanJSON: StageJSON, PlanConcatMap: StageConcatMap, PlanJoin: StageJoin,
 		PlanConcat: StageConcat, PlanReplace: StageReplace,
 		PlanParserInput: StageParserInput, PlanParserEvents: StageParserEvents,
 		PlanTreeContract: StageTreeContract,
 	}
 	s := Stage{Kind: kinds[p.Kind]}
 	switch p.Kind {
-	case PlanTableFromJSON:
-		selector := func(key string) Selector {
-			v, _ := Field(p.Binding, key)
-			if sv, ok := v.(*SelectorVal); ok {
-				return sv.Selector
-			}
-			return nil
-		}
-		s.Columns = selector("columns")
-		s.Rows = selector("rows")
-		s.Inferred = isInferred(p.Binding)
 	case PlanRoute:
 		for _, spec := range p.Specs {
 			c := Capture{Selector: spec.Selector}
@@ -390,15 +357,6 @@ func stageOf(p *Plan) Stage {
 		s.Selector = p.Selector
 	case PlanScanEmit:
 		s.LibraryTable = isLibraryTable(p.Init, p.Step)
-	case PlanCsv:
-		// The fast path builds a native csv only for options that map onto
-		// the renderer's dialect, and lowering builds the renderer with
-		// them.
-		options, ok := csvOptions(p.Options)
-		if !ok {
-			options = shared.DefaultCSVOptions()
-		}
-		s.Csv = csvProfile(options)
 	}
 	return s
 }
@@ -526,7 +484,6 @@ func (p *Program) declared(input Input) *Fail {
 
 func (p *Program) lowering(limits shared.Limits, metrics *shared.Metrics) *Lowering {
 	rt := NewRuntime(p.resolved, p.sources).
-		WithNative(p.native).
 		WithDuplicates(p.duplicates).
 		WithLimits(limits).
 		WithAbort(p.abort).

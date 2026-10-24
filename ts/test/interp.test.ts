@@ -494,13 +494,14 @@ describe('evaluation', () => {
     assert.ok(f.message.startsWith('type_mismatch: '), String(f))
   })
 
-  it('the fast paths switch', () => {
+  // The standard compositions build the plan their library text describes,
+  // and nothing stands in for either: `csv` over `table-from-json` is the
+  // library's `concat-map` over its table scan.
+  it('the standard compositions build the library plan', () => {
     const src =
       'def b\n  record\n    entry :columns (path "m")\n    entry :rows (path "r" each-index)\n    entry :column (fn [d] d)\ndef export [input] (csv csv-options (table-from-json b input))'
-    const fast = run(runtime(src).export())
-    assert.ok('text' === fast.v && 'csv' === fast.plan.p)
-    const slow = run(runtime(src).withNative(false).export())
-    assert.ok('text' === slow.v && 'concat-map' === slow.plan.p)
+    const plan = run(runtime(src).export())
+    assert.ok('text' === plan.v && 'concat-map' === plan.plan.p)
   })
 })
 

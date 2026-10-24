@@ -31,7 +31,6 @@ function noStage(): never {
 export const OPTIONS: alchemy.CompileOptions = {
   routers: {
     router: noStage,
-    tableFromJson: noStage,
     scanEmit: noStage,
     guarded: noStage,
   },

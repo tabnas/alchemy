@@ -14,9 +14,8 @@
 //   (`RecordsToJson`) over table events, or an adapter (`TaggedToJson`)
 //   reading the tagged events an interpreted stream yields, the reverse of
 //   `events`;
-// - table (`TableRows/1`): the native table transducer (`TableFromJson`)
-//   over events, or an adapter (`TaggedToTable`) reading the tagged
-//   `schema`, `row` and `table-end` values an interpreted stream yields;
+// - table (`TableRows/1`): an adapter (`TaggedToTable`) reading the tagged
+//   `schema`, `row` and `table-end` values a stream yields;
 // - items (a stream of values): `Router` over events for `route` and
 //   `select`, `EventsToItems` for `events`, `ScanEmit` for `scan-emit`,
 //   per-item stages for `map` and `filter`, and an adapter turning native
@@ -29,7 +28,7 @@
 // A text that does not reach the input is finite and is written whole
 // wherever it lands (`writeFinite`): a row of an interpreted CSV is
 // rendered into a scratch string and written as one fragment, so a failure
-// in the middle of a row leaves no half row behind, as the native renderer
+// in the middle of a row leaves no half row behind, as the host's CSV renderer
 // promises. Errors are `Fail`s (`./shared`) with the transduce and render
 // codes unchanged; a stream given to a stage of another protocol is
 // `DSL_TYPE_ERROR` with the `protocol_mismatch` finer code, the same word
@@ -41,7 +40,6 @@
 // (`Routers`, `Renderers`) and transduce and render implement.
 
 import {
-  BoundColumn,
   CaptureSpec,
   Cell,
   CsvOptions,
@@ -54,7 +52,6 @@ import {
   JsonOptions,
   Limits,
   Metrics,
-  MissingText,
   NODE_BYTES,
   ParserEvent,
   ParserSink,
@@ -63,25 +60,17 @@ import {
   RouteSink,
   RulePass,
   Scan,
-  Schema,
   Selected,
   Sink,
-  TableBinding,
   TableEvent,
   TableSink,
   TextOut,
   Transition,
   TreeContract,
-  TreeRule,
-  TreeSpec,
-  boundColumn,
-  usesMemberOrText,
   utf8Bytes,
-  withoutMemberAndText,
 } from './shared'
 
 import { SourceSpan } from './ast'
-import { csvDialect, isInferred } from './effects'
 import { isFail } from './fail'
 import type { Bounds, Runtime } from './interp'
 import type { Output } from './output'
@@ -146,101 +135,6 @@ function protocolMismatch(message: string): Fail {
   return new Fail('DSL_TYPE_ERROR', `protocol_mismatch: ${message}`)
 }
 
-// Whether a value has the shape of the standard table binding: a record
-// with `:columns` and `:rows` selectors and a `:column` function, or with
-// `:columns` the keyword `:infer` (the columns are the first row's keys,
-// and `:column` is not read) and a `:rows` selector.
-export function isTableBinding(v: Val): boolean {
-  if ('record' !== v.v) return false
-  const rows = 'selector' === v.fields.get('rows')?.v
-  const columns = v.fields.get('columns')
-  if (undefined === columns) return false
-  if ('selector' === columns.v) return rows && 'fn' === v.fields.get('column')?.v
-  if ('keyword' === columns.v) return rows && 'infer' === columns.name
-  return false
-}
-
-// The spec of a `transduce-tree`, when it has the standard shape `TreeSpec`
-// holds: a record of records, each entry's `:container` `:object` or
-// `:array`, its `:key` and its `:member` each a string or a token's index
-// (a non-negative integer, as `path` takes one), its `:scalar` a token's
-// index or `:value`, its `:text` a boolean, any of the five left out. An
-// entry's other fields are not read, as the library reads none. Any other
-// spec runs the library's own `transduce-tree`.
-export function treeSpec(v: Val): TreeSpec | undefined {
-  if ('record' !== v.v) return undefined
-  const rules = new Map<string, TreeRule>()
-  for (const [name, entry] of v.fields) {
-    if ('record' !== entry.v) return undefined
-    const rule: { -readonly [K in keyof TreeRule]: TreeRule[K] } = {}
-    const container = entry.fields.get('container')
-    if (undefined !== container) {
-      if ('keyword' !== container.v || ('object' !== container.name && 'array' !== container.name)) {
-        return undefined
-      }
-      rule.container = container.name
-    }
-    for (const field of ['key', 'member'] as const) {
-      const named = entry.fields.get(field)
-      if (undefined === named) continue
-      if ('str' === named.v) rule[field] = { name: named.value }
-      else {
-        const token = asIndex(named)
-        if (undefined === token) return undefined
-        rule[field] = { token }
-      }
-    }
-    const text = entry.fields.get('text')
-    if (undefined !== text) {
-      if ('bool' !== text.v) return undefined
-      if (text.value) rule.text = true
-    }
-    const scalar = entry.fields.get('scalar')
-    if (undefined !== scalar) {
-      if ('keyword' === scalar.v && 'value' === scalar.name) rule.scalar = 'value'
-      else {
-        const token = asIndex(scalar)
-        if (undefined === token) return undefined
-        rule.scalar = { token }
-      }
-    }
-    rules.set(name, rule)
-  }
-  return { rules }
-}
-
-// A non-negative whole number that fits an index, as `path` takes one.
-function asIndex(v: Val): number | undefined {
-  if ('num' !== v.v) return undefined
-  const value = v.value
-  return value >= 0 && 0 === value % 1 && value <= 0xffffffff ? value : undefined
-}
-
-// Whether `f` is the standard library's definition `name`, not a program's
-// own of that name.
-function isLibrary(f: Func, name: string): boolean {
-  return 'closure' === f.fn && 'stdlib' === f.closure.scope && name === f.closure.name
-}
-
-// The renderer's dialect for a `csv-options` record, when every field has a
-// value the renderer accepts: `:delimiter` one character, `:newline` CRLF
-// or LF, `:header` a boolean, `:null-text` a string, `:missing` `:error` or
-// a string, and `:non-finite` and `:no-columns`, when the record has them,
-// a policy (the report's `csvDialect`, which reads the same record). Any
-// other record runs the library's own `csv`.
-export function csvOptions(v: Val): CsvOptions | undefined {
-  const dialect = csvDialect(v)
-  if (undefined === dialect) return undefined
-  return {
-    ...CsvOptions.default(),
-    delimiter: dialect.delimiter,
-    newline: '\r\n' === dialect.newline ? 'crlf' : 'lf',
-    header: dialect.header,
-    nullText: dialect.nullText,
-    missing: 'error' === dialect.missing.kind ? MissingText.error : MissingText.text(dialect.missing.text),
-  }
-}
-
 // The `json` renderer's adapter for `:non-finite :null`: a number that is
 // not finite goes on as null, everything else as it came.
 class NullNonFinite implements Sink {
@@ -249,82 +143,6 @@ class NullNonFinite implements Sink {
   event(ev: JsonEvent): Flow {
     if ('number' === ev.type && !Number.isFinite(ev.value)) return this.next.event(Ev.null)
     return this.next.event(ev)
-  }
-}
-
-// The CSV renderer's adapter for `:no-columns :empty`: a table of no
-// columns is the empty document, so its schema, its rows (each of no
-// cells) and its end go no further, and the renderer, which refuses such a
-// schema, writes nothing; a table of columns passes as it came. The table
-// it keeps back is held to what the library's `csv-table` holds it to,
-// with the same codes and texts, so the native and the interpreted `csv`
-// fail alike: a row of any cell, a second schema, and anything after the
-// end are PROTOCOL_ORDER_ERROR. Exported for the tests, not from the
-// package.
-export class NoColumns implements TableSink {
-  // Where the adapter is in its table: no schema yet, a table of columns
-  // passed to the renderer, a table of no columns kept back, or that
-  // table ended.
-  private kept: 'before' | 'passed' | 'rows' | 'ended' = 'before'
-  // The rows the kept-back table has had, each of no cells.
-  private rows = 0
-
-  constructor(private readonly next: TableSink) {}
-
-  tableEvent(ev: TableEvent): Flow {
-    switch (this.kept) {
-      case 'before':
-        if ('schema' === ev.type) {
-          if (0 === ev.columns.length) {
-            this.kept = 'rows'
-            return 'continue'
-          }
-          this.kept = 'passed'
-        }
-        return this.next.tableEvent(ev)
-      case 'passed':
-        return this.next.tableEvent(ev)
-      case 'rows':
-        if ('schema' === ev.type) throw Fail.protocol('a second schema')
-        if ('row' === ev.type) {
-          if (0 !== ev.cells.length) {
-            throw Fail.protocol(`row ${this.rows + 1} has ${ev.cells.length} cells; the schema has 0 columns`)
-          }
-          this.rows += 1
-          return 'continue'
-        }
-        this.kept = 'ended'
-        return 'continue'
-      case 'ended':
-        if ('schema' === ev.type) throw Fail.protocol('a schema after the end')
-        if ('row' === ev.type) throw Fail.protocol('a row after the end')
-        throw Fail.protocol('a second end')
-    }
-  }
-}
-
-// Whether a cell is a number that is not finite.
-function isNonFiniteCell(c: Cell): c is Extract<Cell, { type: 'number' }> {
-  return 'number' === c.type && !Number.isFinite(c.value)
-}
-
-// The CSV renderer's adapter for `:non-finite` `:null` or `:literal`: a
-// number cell that is not finite goes on as a null cell, which the renderer
-// writes as the null text, or as the string `Infinity`, `-Infinity` or
-// `NaN`, as `scalar-text` writes it under the same options.
-class NonFiniteCells implements TableSink {
-  constructor(
-    private readonly policy: NonFinite,
-    private readonly next: TableSink,
-  ) {}
-
-  tableEvent(ev: TableEvent): Flow {
-    if ('row' !== ev.type || !ev.cells.some(isNonFiniteCell)) return this.next.tableEvent(ev)
-    const cells = ev.cells.map((c) => {
-      if (!isNonFiniteCell(c)) return c
-      return 'null' === this.policy ? Cell.null : Cell.string(nonFiniteWord(c.value))
-    })
-    return this.next.tableEvent({ type: 'row', cells })
   }
 }
 
@@ -351,29 +169,13 @@ function cell(rt: Runtime, v: Val): Cell {
   }
 }
 
-// A cell as a program sees it.
-function cellVal(c: Cell): Val {
-  switch (c.type) {
-    case 'null':
-      return NULL
-    case 'bool':
-      return bool(c.value)
-    case 'number':
-      return num(c.value, c.lexeme ?? undefined)
-    case 'string':
-      return str(c.value)
-    case 'missing':
-      return missing()
-  }
-}
-
 // The text of a column's label, one policy for every table: a string as it
 // is, a number by its lexeme, a boolean by its name (as `scalar-text` would
 // write the same header cell); `missing` is `MISSING_VALUE`, and anything
-// else `INPUT_INVALID`. The native table binds its columns by it, the
-// adapter reading a program's `schema` values by it, and `csv-table`
-// validates the library's schema by it, so a label is accepted or refused
-// alike whichever path renders it.
+// else `INPUT_INVALID`. The adapter reading a program's `schema` values
+// takes it, and `csv-table` validates the library's schema by it, so a
+// label is accepted or refused
+// alike whichever renders it.
 function labelText(label: Val): string {
   switch (label.v) {
     case 'str':
@@ -794,7 +596,7 @@ class TaggedToJson implements ItemSink {
 }
 
 // What a `scan-emit` state may hold: what a stage keeps from row to row, as
-// the native table keeps its bound columns, so `max_metadata_bytes` in the
+// the library's table keeps its bound columns, so `max_metadata_bytes` in the
 // transduce measure; and no deeper than a captured value may be,
 // `max_depth`, since a state that wraps itself once per item would
 // otherwise nest without bound.
@@ -926,67 +728,13 @@ class FilterStage implements ItemSink {
   }
 }
 
-// Native table events as the tagged values a program matches on.
-class TableToTagged implements TableSink {
-  constructor(private readonly down: ItemSink) {}
-
-  tableEvent(ev: TableEvent): Flow {
-    switch (ev.type) {
-      case 'schema': {
-        const columns = ev.columns.map((c) => record([['label', str(c.label)]]))
-        return this.down.item(taggedVal('schema', [vectorVal(columns)]))
-      }
-      case 'row':
-        return this.down.item(taggedVal('row', [vectorVal(ev.cells.map(cellVal))]))
-      case 'end':
-        if ('stop' === this.down.item(taggedVal('table-end'))) return 'stop'
-        return this.down.end()
-    }
-  }
-}
-
-// The native table's rows, with a string cell held to `max_scalar_bytes` as
-// the interpreted path holds a cell's text to it. A document's own strings
-// are within that bound already (the source refuses a longer one), so a
-// longer string cell here is the compact JSON text of a vector or a record,
-// which the library's `scalar-text` bounds the same way; so the two paths
-// fail alike, naming the same limit.
-//
-// The native table adds each row to `metrics.rows` as it hands it on. When
-// the row is not the native table's to count (`Lowering.items`: its rows
-// become items, which a later table stage counts if they reach one),
-// `uncount` takes that back as the row arrives, before anything else sees
-// it, so the count is the interpreted path's: the library's table is a
-// `scan-emit`, which counts nothing.
-class CellBound implements TableSink {
-  constructor(
-    private readonly max: number,
-    private readonly down: TableSink,
-    private readonly metrics: Metrics,
-    private readonly uncount: boolean,
-  ) {}
-
-  tableEvent(ev: TableEvent): Flow {
-    if ('row' === ev.type) {
-      if (this.uncount) this.metrics.rows -= 1
-      for (const c of ev.cells) {
-        if ('string' === c.type && utf8Bytes(c.value) > this.max) {
-          throw Fail.limit('max_scalar_bytes', this.max, `a cell's JSON text holds more than ${this.max} bytes`)
-        }
-      }
-    }
-    return this.down.tableEvent(ev)
-  }
-}
-
-// The tagged values an interpreted stream yields, as native table events.
-// One schema first, rows, one `table-end`: the renderer beneath validates
+// The tagged values a stream yields, as table events. One schema first, rows, one `table-end`: the renderer beneath validates
 // the sequence; what is validated here is that each item is a table event
 // at all, of the table protocol's shape (at most `max_columns` columns,
 // labels by `labelText`), and that the stream did end with `table-end`. It
 // is the last table stage before a renderer, so it counts each row in
-// `metrics.rows`, as the native table counts the rows it hands a renderer,
-// unless `countRows` says a later stage does (`Lowering.items`).
+// `metrics.rows`, unless `countRows` says a later stage does
+// (`Lowering.items`).
 class TaggedToTable implements ItemSink {
   private ended = false
 
@@ -1023,9 +771,9 @@ class TaggedToTable implements ItemSink {
 type Phase = 'before_schema' | 'rows' | 'done'
 
 // `csv-table options events`: the protocol validator of spec section 13.2
-// in the library's own `csv`. It checks exactly what the native path
-// checks, in the same order and with the same codes (the adapter above,
-// then the CSV renderer: the shape of each event, `max_columns` and the
+// in the library's own `csv`. It checks what the host's CSV renderer checks
+// of a table result, in the same order and with the same codes (the adapter
+// above, then the renderer: the shape of each event, `max_columns` and the
 // labels, then one schema first, at least one column, rows as wide as the
 // schema, one `table-end`), and passes each event on unchanged for the text
 // to render; the cells' own checks (a number's lexeme, a missing value) are
@@ -1261,36 +1009,6 @@ export class Lowering {
     return new ParserEventsOnly()
   }
 
-  // The spec of the scan the library's `transduce-tree` builds, when `plan`
-  // is one and the runtime's native compositions are on: a `scan-emit` from
-  // `[[[] false] []]` over the host's parser events, its step the library's
-  // `transduce-pass` given a spec of the standard shape (`treeSpec`), its
-  // finish the library's `transduce-done`. A program that writes that scan
-  // itself means what `transduce-tree` means, and is run the same way; so
-  // is one that writes the scan of `transduce-step` from `[[] false]` with
-  // `transduce-finish`, with the spec as that step reads it, without its
-  // members and texts.
-  private nativeTree(plan: Plan): TreeSpec | undefined {
-    if (!this.rt.native || 'scan-emit' !== plan.p) return undefined
-    const source = plan.source
-    if ('parser-events' !== source.p || 'parser-input' !== source.source.p) return undefined
-    const tree = vectorVal([vectorVal([]), bool(false)])
-    let pass: boolean
-    if (isLibrary(plan.finish, 'transduce-done') && valEquals(plan.init, vectorVal([tree, vectorVal([])]))) {
-      pass = true
-    } else if (isLibrary(plan.finish, 'transduce-finish') && valEquals(plan.init, tree)) {
-      pass = false
-    } else return undefined
-    const step = plan.step
-    const name = pass ? 'transduce-pass' : 'transduce-step'
-    if ('partial' !== step.fn || !isLibrary(step.partial.f, name)) return undefined
-    const args = step.partial.args
-    if (1 !== args.length) return undefined
-    const spec = treeSpec(args[0])
-    if (undefined === spec) return undefined
-    return pass ? spec : withoutMemberAndText(spec)
-  }
-
   // What the host pushes parser events into, once `sinkAs` has answered
   // `events`, the chain's JSON-events head: the head `parser-events` was
   // lowered to, or, when the program reads nothing of its input, the
@@ -1372,17 +1090,6 @@ export class Lowering {
   private text(plan: Plan, out: TextOut): Sink {
     if (!isLive(plan)) return new FiniteTextSink(this.rt, textVal(plan), out)
     switch (plan.p) {
-      case 'csv': {
-        const options = csvOptions(plan.options)
-        if (undefined === options) {
-          throw typeError("csv: the options record does not map to the renderer's dialect")
-        }
-        let renderer: TableSink = this.rt.renderers.csv(out, options)
-        if (noColumnsEmpty(plan.options)) renderer = new NoColumns(renderer)
-        const policy = nonFinite(plan.options)
-        if ('reject' === policy) return this.table(plan.source, renderer, false)
-        return this.table(plan.source, new NonFiniteCells(policy, renderer), false)
-      }
       case 'json': {
         const json = this.rt.renderers.json(out, jsonOptions())
         if ('null' === plan.nonFinite) return this.events(plan.source, new NullNonFinite(json))
@@ -1443,22 +1150,6 @@ export class Lowering {
         // own: the source's count the source's events, and these are the
         // program's.
         const guarded = this.rt.routers.guarded(sink, this.limits, this.rt.abort, new Metrics())
-        // The library's `transduce-tree` over the host's parser events, run
-        // natively when the routers offer it: the native reads each pass as
-        // it comes and writes the events the library's step would, so the
-        // head is the native.
-        // A spec that names a member or a text goes only to routers that
-        // read them, and its texts are bounded as the library's
-        // `string-join` bounds them.
-        const spec = this.nativeTree(plan)
-        if (
-          undefined !== spec &&
-          (!usesMemberOrText(spec) || true === this.rt.routers.transduceTreeReadsMemberAndText?.())
-        ) {
-          const bounded = { ...spec, maxTextBytes: this.limits.max_scalar_bytes }
-          const native = this.rt.routers.transduceTree?.(bounded, guarded)
-          if (undefined !== native) return this.keepParserHead(native)
-        }
         return this.items(plan, new TaggedToJson(guarded), false)
       }
       // A stream that never yields events: `select`'s values, `route`'s
@@ -1473,18 +1164,6 @@ export class Lowering {
   // counted after it rather than here.
   private table(plan: Plan, table: TableSink, countedLater: boolean): Sink {
     switch (plan.p) {
-      case 'table-from-json': {
-        const binding = this.tableBinding(plan.binding, plan.at)
-        const bounded = new CellBound(this.limits.max_scalar_bytes, table, this.metrics, countedLater)
-        const transducer = this.rt.routers.tableFromJson(
-          binding,
-          this.limits,
-          this.rt.duplicates,
-          this.metrics,
-          bounded,
-        )
-        return this.events(plan.source, transducer)
-      }
       case 'input':
       case 'records':
       case 'as-events':
@@ -1501,15 +1180,12 @@ export class Lowering {
   //
   // `countedLater` says whether a table stage after `down` counts the rows
   // these items carry. Each row is counted in `metrics.rows` once, by the
-  // last table stage it passes, as the interpreted path counts it: the
-  // adapter to a renderer, or a `csv-table` whose rows reach no later table
-  // stage, or the native table when it hands its rows straight to a
-  // renderer or to `records`. The flag passes through a `map`, a `filter`
-  // and a `scan-emit` unchanged, so a row a filter drops is not counted and
-  // one a scan adds is; a table stage sets it for its own source; a text
-  // over items, and `records`, clear it. The native table's rows that
-  // become items are never its own to count: the library's table, a
-  // `scan-emit`, counts none.
+  // last table stage it passes: the adapter to a renderer, or a `csv-table`
+  // whose rows reach no later table stage. The flag passes through a `map`,
+  // a `filter` and a `scan-emit` unchanged, so a row a filter drops is not
+  // counted and one a scan adds is; a table stage sets it for its own
+  // source; a text over items, and `records`, clear it. The library's
+  // table, a `scan-emit`, counts none.
   private items(plan: Plan, down: ItemSink, countedLater: boolean): Sink {
     switch (plan.p) {
       case 'route': {
@@ -1564,8 +1240,6 @@ export class Lowering {
         return this.items(plan.source, new MapStage(this.rt, plan.f, plan.at, down), countedLater)
       case 'filter':
         return this.items(plan.source, new FilterStage(this.rt, plan.f, plan.at, down), countedLater)
-      case 'table-from-json':
-        return this.table(plan, new TableToTagged(down), true)
       case 'csv-table': {
         checkDelimiter(plan.options)
         const noColumns = noColumnsEmpty(plan.options)
@@ -1583,49 +1257,4 @@ export class Lowering {
     }
   }
 
-  // The native transducer's binding from the standard binding record. The
-  // column function is the program's, applied to each descriptor as the
-  // metadata completes; its record must carry a string `:label` and a
-  // `:source` selector naming one location. An inferred binding is the
-  // transducer's `Schema.infer()`: the first row's keys.
-  private tableBinding(binding: Val, at: SourceSpan): TableBinding {
-    const get = (key: string): Val => field(binding, key) ?? missing()
-    if (isInferred(binding)) {
-      const rows = get('rows')
-      if ('selector' !== rows.v) {
-        throw this.rt.failAt(typeError('table-from-json: an inferred binding must carry a :rows selector'), at)
-      }
-      return { schema: Schema.infer(), rows: rows.selector }
-    }
-    const columns = get('columns')
-    const rows = get('rows')
-    const column = get('column')
-    if ('selector' !== columns.v || 'selector' !== rows.v || 'fn' !== column.v) {
-      throw this.rt.failAt(
-        typeError('table-from-json: the binding must carry :columns and :rows selectors and a :column function'),
-        at,
-      )
-    }
-    const rt = this.rt
-    const mapper = (descriptor: Datum): BoundColumn =>
-      boundColumnOf(rt.applyNow(column.f, [fromDatum(descriptor)], at))
-    return { schema: Schema.fromMetadata(columns.selector, mapper), rows: rows.selector }
-  }
-}
-
-// A column record (`:label`, `:source`) as the transducer binds it. The
-// label is read as the library's `public-column` reads it (`get :label`, so
-// a column function that answers something other than a record fails as
-// `get` does) and taken by `labelText`, the policy every table shares.
-function boundColumnOf(column: Val): BoundColumn {
-  const text = labelText(getField('label', column))
-  const source = field(column, 'source')
-  if (undefined === source || 'selector' !== source.v) {
-    throw typeError('table-from-json: a column record must carry a :source selector')
-  }
-  const segments = selectorSegments(source.selector)
-  if (undefined === segments) {
-    throw typeError(`table-from-json: a column's :source must name one location, not ${source.selector}`)
-  }
-  return boundColumn(text, segments)
 }

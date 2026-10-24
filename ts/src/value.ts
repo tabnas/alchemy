@@ -185,9 +185,6 @@ export type Plan =
     }
   | { readonly p: 'map'; readonly f: Func; readonly source: Plan; readonly at: SourceSpan }
   | { readonly p: 'filter'; readonly f: Func; readonly source: Plan; readonly at: SourceSpan }
-  // The standard table transducer, run natively: `TableRows/1` from
-  // `JsonEvents/1`.
-  | { readonly p: 'table-from-json'; readonly binding: Val; readonly source: Plan; readonly at: SourceSpan }
   // `records table-events`: `JsonEvents/1` from `TableRows/1`.
   | { readonly p: 'records'; readonly source: Plan }
   // `tree-contract events`: the events unchanged, held to a tree's
@@ -210,8 +207,6 @@ export type Plan =
   | { readonly p: 'concat-map'; readonly f: Func; readonly items: Seq; readonly at: SourceSpan }
   // `replace-text from to text`: `source` is a string or a text.
   | { readonly p: 'replace'; readonly from: string; readonly to: string; readonly source: Val }
-  // The standard CSV renderer, run natively.
-  | { readonly p: 'csv'; readonly options: Val; readonly source: Plan }
   // `json events`, or `json options events`.
   | { readonly p: 'json'; readonly source: Plan; readonly nonFinite: NonFinite }
 
@@ -235,9 +230,9 @@ export function nonFiniteWord(value: number): string {
 }
 
 // What a plan produces: `JsonEvents`, `ParserEvents` (the host's parser
-// input), `TableRows` (natively), or `Items` for a stream of values whose
-// shape the runtime learns item by item.
-export type Protocol = 'JsonEvents' | 'ParserEvents' | 'TableRows' | 'Items' | 'Text'
+// input), or `Items` for a stream of values whose shape the runtime learns
+// item by item.
+export type Protocol = 'JsonEvents' | 'ParserEvents' | 'Items' | 'Text'
 
 // A `concat` of `items`, with its live item found once.
 export function concatPlan(items: ReadonlyArray<Val>): Plan {
@@ -263,11 +258,9 @@ export function isLive(plan: Plan): boolean {
       case 'scan-emit':
       case 'map':
       case 'filter':
-      case 'table-from-json':
       case 'records':
       case 'tree-contract':
       case 'csv-table':
-      case 'csv':
       case 'json':
         here = here.source
         continue
@@ -296,7 +289,6 @@ export function isText(plan: Plan): boolean {
     case 'join':
     case 'concat-map':
     case 'replace':
-    case 'csv':
     case 'json':
       return true
     default:
@@ -314,8 +306,6 @@ export function protocol(plan: Plan): Protocol {
       return 'JsonEvents'
     case 'parser-input':
       return 'ParserEvents'
-    case 'table-from-json':
-      return 'TableRows'
     case 'route':
     case 'select':
     case 'events':

@@ -30,12 +30,6 @@ import (
 // natives. Lexical, so a program that defines its own `csv` changes what
 // its own code means and nothing the library does.
 //
-// The two standard compositions run natively when their arguments have
-// the standard shapes (`table-from-json BINDING input` and `csv OPTIONS
-// events`, from the library's own definitions, not a program's shadowing
-// ones); WithNative(false) turns that off so the differential test can
-// run the interpreted text.
-//
 // Failures: a wrong argument count is DSL_TYPE_ERROR (`arity`); a value
 // of the wrong kind where the program chose it is DSL_TYPE_ERROR
 // (`type_mismatch`); a `fail "message"` is INPUT_INVALID at the form's
@@ -84,7 +78,6 @@ type Runtime struct {
 	program    *Resolved
 	sources    *Sources
 	stdlib     *Stdlib
-	native     bool
 	duplicates shared.Duplicates
 	// limits are what the values a program builds are measured against (a
 	// cell's text under max_scalar_bytes, a scan-emit state under
@@ -120,8 +113,8 @@ func arityError(what, wanted string, got int) *Fail {
 }
 
 // NewRuntime is a runtime over a resolved program and its source texts
-// (read only for positions in diagnostics), with the fast paths on,
-// duplicate members rejected, and the default limits. The routers and the
+// (read only for positions in diagnostics), with duplicate members
+// rejected and the default limits. The routers and the
 // renderers it runs on are the host's: WithRouters and WithRenderers set
 // them, before anything is lowered. Evaluating asks nothing of them.
 func NewRuntime(program *Resolved, sources *Sources) *Runtime {
@@ -129,7 +122,6 @@ func NewRuntime(program *Resolved, sources *Sources) *Runtime {
 		program:    program,
 		sources:    sources,
 		stdlib:     StdlibLoaded(),
-		native:     true,
 		duplicates: shared.Reject,
 		limits:     shared.DefaultLimits(),
 		abort:      shared.NewAbortFlag(),
@@ -186,13 +178,6 @@ func (rt *Runtime) WithFuel(fuel uint64) *Runtime {
 	return rt
 }
 
-// WithNative runs the standard compositions natively (the default) or
-// through the library's own definitions.
-func (rt *Runtime) WithNative(native bool) *Runtime {
-	rt.native = native
-	return rt
-}
-
 // WithDuplicates sets how a materialized capture treats a repeated member
 // name; the default rejects it (spec section 18.2, the strict mapping
 // profile).
@@ -200,9 +185,6 @@ func (rt *Runtime) WithDuplicates(duplicates shared.Duplicates) *Runtime {
 	rt.duplicates = duplicates
 	return rt
 }
-
-// Native reports whether the standard compositions run natively.
-func (rt *Runtime) Native() bool { return rt.native }
 
 // Duplicates is the policy for a repeated member name.
 func (rt *Runtime) Duplicates() shared.Duplicates { return rt.duplicates }
@@ -533,11 +515,6 @@ func (rt *Runtime) Apply(fn Fn, args []Val, at SourceSpan) (Val, *Fail) {
 		if len(c.Params) != len(args) {
 			return nil, rt.FailAt(arityError(c.Describe(), strconv.Itoa(len(c.Params)), len(args)), at)
 		}
-		if rt.native && c.Scope == ScopeStdlib {
-			if fast := rt.fastPath(c, args, at); fast != nil {
-				return fast, nil
-			}
-		}
 		env := c.Env
 		for i, param := range c.Params {
 			env = env.Bind(param, args[i])
@@ -561,35 +538,6 @@ func (rt *Runtime) Apply(fn Fn, args []Val, at SourceSpan) (Val, *Fail) {
 	// Closures, natives and partials are every function there is; the
 	// switch needs an end, in the evaluator's sentence for a callee.
 	return nil, rt.FailAt(typeError(fn.Describe()+" is "+KindOf(fn)+" and cannot be called"), at)
-}
-
-// fastPath is the native plan for a standard composition, when the
-// arguments have the standard shapes; nil runs the library's text.
-func (rt *Runtime) fastPath(c *Closure, args []Val, at SourceSpan) Val {
-	switch c.Name {
-	case "table-from-json":
-		if len(args) != 2 {
-			return nil
-		}
-		input, ok := args[1].(StreamVal)
-		if !ok || !isTableBinding(args[0]) {
-			return nil
-		}
-		return StreamVal{Plan: &Plan{Kind: PlanTableFromJSON, Binding: args[0], Source: input.Plan, At: at}}
-	case "csv":
-		if len(args) != 2 {
-			return nil
-		}
-		events, ok := args[1].(StreamVal)
-		if !ok {
-			return nil
-		}
-		if _, ok := csvOptions(args[0]); !ok {
-			return nil
-		}
-		return TextVal{Plan: &Plan{Kind: PlanCsv, Options: args[0], Source: events.Plan}}
-	}
-	return nil
 }
 
 // patternConstant is whether a symbol in a pattern compares rather than
@@ -872,9 +820,7 @@ func (rt *Runtime) Measure(v Val, bounds Bounds) (Measure, *Fail) {
 					measureNode{kind: nodeVal, val: p.Init, depth: depth + 1},
 					measureNode{kind: nodeFn, fn: p.Step, depth: depth + 1},
 					measureNode{kind: nodeFn, fn: p.Finish, depth: depth + 1})
-			case PlanTableFromJSON:
-				pending = append(pending, measureNode{kind: nodeVal, val: p.Binding, depth: depth + 1})
-			case PlanCsvTable, PlanCsv:
+			case PlanCsvTable:
 				pending = append(pending, measureNode{kind: nodeVal, val: p.Options, depth: depth + 1})
 			case PlanRoute:
 				for _, c := range p.Specs {
@@ -912,8 +858,7 @@ func saturatingAdd(a, b uint64) uint64 {
 
 // jsonText is the compact JSON text of a vector or a record, as a cell
 // writes it (number lexemes kept), bounded by max_scalar_bytes: the text
-// is one scalar of the output, and the native table holds a container
-// cell's text to the same bound. The failure comes exactly when the text
+// is one scalar of the output. The failure comes exactly when the text
 // is longer than the bound; a lower bound of its length is counted first,
 // without writing it, so a value built by sharing (a vector of a vector of
 // itself, forty levels deep) fails at the limit rather than being written

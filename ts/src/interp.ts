@@ -18,12 +18,6 @@
 // natives. Lexical, so a program that defines its own `csv` changes what
 // its own code means and nothing the library does.
 //
-// The two standard compositions run natively when their arguments have the
-// standard shapes (`table-from-json BINDING input` and `csv OPTIONS
-// events`, from the library's own definitions, not a program's shadowing
-// ones); `withNative(false)` turns that off so the differential test can
-// run the interpreted text.
-//
 // Failures: a wrong argument count is `DSL_TYPE_ERROR` (`arity`); a value
 // of the wrong kind where the program chose it is `DSL_TYPE_ERROR`
 // (`type_mismatch`); a `fail "message"` is `INPUT_INVALID` at the form's
@@ -76,7 +70,7 @@ import {
   valEquals,
   vectorVal,
 } from './value'
-import { brief, csvOptions, isTableBinding } from './lower'
+import { brief } from './lower'
 import type { Input } from './output'
 
 // How deep evaluation may nest: a form inside a form, a function's body
@@ -178,7 +172,6 @@ export class Runtime {
   // in. Building a plan never calls them; the natives write a number's
   // text with this package's own `shortestNumber`.
   readonly renderers: Renderers
-  private isNative = true
   private policy: Duplicates = 'reject'
   // The limits values a program builds are measured against (a cell's text
   // under `max_scalar_bytes`, a `scan-emit` state under
@@ -196,9 +189,9 @@ export class Runtime {
   private cache = new Map<string, Val>()
 
   // A runtime over a resolved program and its source texts (read only for
-  // positions in diagnostics), with the fast paths on and duplicate members
-  // rejected, building its stages from the routers and renderers a host
-  // passes (`compile`'s options).
+  // positions in diagnostics), with duplicate members rejected, building its
+  // stages from the routers and renderers a host passes (`compile`'s
+  // options).
   constructor(program: Resolved, sources: Sources, options: CompileOptions) {
     if (null == options?.routers || null == options?.renderers) {
       throw new TypeError(
@@ -232,22 +225,11 @@ export class Runtime {
     return this
   }
 
-  // Run the standard compositions natively (the default) or through the
-  // library's own definitions.
-  withNative(native: boolean): this {
-    this.isNative = native
-    return this
-  }
-
   // How a materialized capture treats a repeated member name; the default
   // rejects it (spec section 18.2, the strict mapping profile).
   withDuplicates(duplicates: Duplicates): this {
     this.policy = duplicates
     return this
-  }
-
-  get native(): boolean {
-    return this.isNative
   }
 
   get duplicates(): Duplicates {
@@ -529,10 +511,6 @@ export class Runtime {
       if (c.params.length !== all.length) {
         throw this.failAt(arityError(funcDescribe(here), c.params.length, all.length), at)
       }
-      if (this.isNative && 'stdlib' === c.scope) {
-        const fast = this.fastPath(c, all, at)
-        if (undefined !== fast) return fast
-      }
       let env = c.env
       for (let i = 0; i < c.params.length; i++) env = bind(env, c.params[i], all[i])
       return yield this.eval(c.body, env, c.scope)
@@ -554,27 +532,6 @@ export class Runtime {
   // program's function per item, outside any evaluation.
   applyNow(f: Func, args: Val[], at: SourceSpan): Val {
     return run(this.apply(f, args, at))
-  }
-
-  // The native plan for a standard composition, when the arguments have the
-  // standard shapes; undefined runs the library's text.
-  private fastPath(closure: Closure, args: Val[], at: SourceSpan): Val | undefined {
-    switch (closure.name) {
-      case 'table-from-json': {
-        if (2 !== args.length) return undefined
-        const [binding, input] = args
-        if ('stream' !== input.v || !isTableBinding(binding)) return undefined
-        return streamVal({ p: 'table-from-json', binding, source: input.plan, at })
-      }
-      case 'csv': {
-        if (2 !== args.length) return undefined
-        const [options, events] = args
-        if ('stream' !== events.v || undefined === csvOptions(options)) return undefined
-        return textVal({ p: 'csv', options, source: events.plan })
-      }
-      default:
-        return undefined
-    }
   }
 
   // Whether a symbol in a pattern compares rather than binds: the same rule
@@ -771,11 +728,7 @@ export class Runtime {
               pending.push([{ node: 'fn', f: plan.step }, depth + 1])
               pending.push([{ node: 'fn', f: plan.finish }, depth + 1])
               break
-            case 'table-from-json':
-              pending.push([{ node: 'val', val: plan.binding }, depth + 1])
-              break
             case 'csv-table':
-            case 'csv':
               pending.push([{ node: 'val', val: plan.options }, depth + 1])
               break
             case 'route':
@@ -818,8 +771,7 @@ export class Runtime {
 
   // The compact JSON text of a vector or a record, as a cell writes it
   // (number lexemes kept), bounded by `max_scalar_bytes`: the text is one
-  // scalar of the output, and the native table holds a container cell's
-  // text to the same bound. The failure comes exactly when the text is
+  // scalar of the output. The failure comes exactly when the text is
   // longer than the bound; a lower bound of its length is counted first,
   // without writing it, so a value built by sharing (a vector of a vector of
   // itself, forty levels deep) fails at the limit rather than being written

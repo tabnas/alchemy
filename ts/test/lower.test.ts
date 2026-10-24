@@ -12,7 +12,6 @@ import assert from 'node:assert'
 import {
   Runtime,
   Sources,
-  csvOptions,
   desugarProgram,
   outer,
   parseFile,
@@ -24,85 +23,25 @@ import {
 } from '../dist/alchemy'
 import { make as makeJson } from '@tabnas/json'
 
-import { Lowering, NoColumns, ParserEventsOnly, ParserEventsToItems, treeSpec } from '../dist/lower'
-import { CsvOptions, Datum, Limits, Metrics, fromJSON, parserEventFromJSON, usesMemberOrText } from '../dist/shared'
+import { Lowering, ParserEventsOnly, ParserEventsToItems } from '../dist/lower'
+import { Datum, Limits, Metrics, fromJSON, parserEventFromJSON } from '../dist/shared'
 import type { ParserEvent, TableEvent, TableSink } from '../dist/shared'
 
 import { OPTIONS, PROGRAM, compile, thrown } from './common'
 
 const V = value
 
-// The json grammar's spec, as the plan writes it.
-const JSON_SPEC =
-  'def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n'
-
-function runtime(src: string, native: boolean): Runtime {
+function runtime(src: string): Runtime {
   const forms = desugarProgram(parseFile(src, 't.alc'), src)
   const sources = Sources.one('t.alc', src)
-  return new Runtime(resolve(forms, sources, outer), sources, OPTIONS).withNative(native)
+  return new Runtime(resolve(forms, sources, outer), sources, OPTIONS)
 }
-
-describe('lower', () => {
-  it('the csv options map to the dialect or not', () => {
-    const rt = runtime(
-      'def o csv-options\ndef lf (record (entry :delimiter ";") (entry :newline "\\n") (entry :header false) (entry :null-text "NULL") (entry :missing "-"))\ndef bad (record (entry :delimiter "ab"))',
-      true,
-    )
-    const o = run(rt.defValue('program', 'o')) as value.Val
-    assert.deepStrictEqual(csvOptions(o), CsvOptions.default())
-    const lf = run(rt.defValue('program', 'lf')) as value.Val
-    const opts = csvOptions(lf)!
-    assert.equal(opts.delimiter, ';')
-    assert.equal(opts.newline, 'lf')
-    assert.equal(opts.header, false)
-    assert.equal(opts.nullText, 'NULL')
-    assert.deepStrictEqual(opts.missing, { type: 'text', text: '-' })
-    const bad = run(rt.defValue('program', 'bad')) as value.Val
-    assert.equal(csvOptions(bad), undefined)
-    assert.equal(csvOptions(V.NULL), undefined)
-  })
-
-  // `:non-finite` and `:no-columns`, when the record has them, are
-  // policies, which the lowering applies around the renderer; one that is
-  // none maps to no dialect, and the library's `csv` runs, which refuses
-  // it where it is read.
-  it('a csv options record maps with a non-finite policy and not with another value', () => {
-    const base = '(entry :delimiter ",") (entry :newline "\\r\\n") (entry :header true) (entry :null-text "") (entry :missing :error)'
-    const rt = runtime(
-      `def lit (record ${base} (entry :non-finite :literal))\ndef nul (record ${base} (entry :non-finite :null))\ndef nope (record ${base} (entry :non-finite :nope))\ndef one (record ${base} (entry :non-finite 1))\ndef empty (record ${base} (entry :no-columns :empty))\ndef refuse (record ${base} (entry :no-columns :refuse))\ndef nocols (record ${base} (entry :no-columns :nope))`,
-      true,
-    )
-    const options = (name: string) => csvOptions(run(rt.defValue('program', name)) as value.Val)
-    assert.deepStrictEqual(options('lit'), CsvOptions.default())
-    assert.deepStrictEqual(options('nul'), CsvOptions.default())
-    assert.equal(options('nope'), undefined)
-    assert.equal(options('one'), undefined)
-    // `:no-columns` the same way: a policy maps, anything else does not.
-    assert.deepStrictEqual(options('empty'), CsvOptions.default())
-    assert.deepStrictEqual(options('refuse'), CsvOptions.default())
-    assert.equal(options('nocols'), undefined)
-    // The fast path takes the first two, and declines the others for the
-    // library's text.
-    const binding = 'def b\n  record\n    entry :columns (path "m")\n    entry :rows (path "r" each-index)\n    entry :column (fn [d] d)\n'
-    for (const [policy, fast] of [[':literal', true], [':null', true], [':nope', false]] as const) {
-      const result = compile(
-        `${binding}def o (record ${base} (entry :non-finite ${policy}))\ndef export [input] (csv o (table-from-json b input))`,
-        't.alc',
-      ).result
-      assert.equal('text' === result.v && 'csv' === result.plan.p, fast, policy)
-    }
-  })
-})
 
 describe('program', () => {
   it('a program knows its output and row selector', () => {
     const p = compile(PROGRAM, 't.alc')
     assert.equal(p.output, 'Text')
     assert.equal(p.rowSelector()!.toString(), '.response.payload.deep.records[*]')
-    assert.ok(p.native)
-    const slow = p.withNative(false)
-    assert.ok(!slow.native)
-    assert.equal(slow.rowSelector()?.toString(), '.response.payload.deep.records[*]')
     const table = compile(PROGRAM.replace('    csv csv-options\n', ''), 't.alc')
     assert.equal(table.output, 'TableRows/1')
     const echo = compile('def export [input] input', 't.alc')
@@ -129,7 +68,7 @@ describe('program', () => {
     )
     assert.equal(said.output, 'JsonEvents/1')
     // The checker's output and the plan's agree.
-    for (const program of [p, slow, table, echo, select, tree, said]) {
+    for (const program of [p, table, echo, select, tree, said]) {
       assert.equal(program.planOutput(), program.output)
     }
   })
@@ -142,59 +81,6 @@ describe('program', () => {
     assert.ok(f.message.startsWith('no_export: '), String(f))
   })
 
-  // The table `:no-columns :empty` keeps back from the renderer is held to
-  // what the library's `csv-table` holds it to, with its texts: a clean
-  // empty table reaches the renderer not at all, and a table of columns
-  // reaches it whole, a later schema too, for the renderer to refuse.
-  it('no-columns holds the table it keeps back', () => {
-    // The events through a fresh adapter: what reached the renderer, an
-    // event to a line, or the failure's text.
-    const run = (events: TableEvent[]): string[] | string => {
-      const seen: string[] = []
-      const log: TableSink = {
-        tableEvent(ev: TableEvent) {
-          seen.push(
-            'schema' === ev.type ? `schema ${ev.columns.length}` : 'row' === ev.type ? `row ${ev.cells.length}` : 'end',
-          )
-          return 'continue'
-        },
-      }
-      const n = new NoColumns(log)
-      try {
-        for (const ev of events) n.tableEvent(ev)
-      } catch (e: any) {
-        assert.equal(e.code, 'PROTOCOL_ORDER_ERROR', String(e))
-        return e.message
-      }
-      return seen
-    }
-    const schema = (...labels: string[]): TableEvent => ({
-      type: 'schema',
-      columns: labels.map((label) => ({ label })),
-    })
-    const row = (...cells: number[]): TableEvent => ({
-      type: 'row',
-      cells: cells.map((value) => ({ type: 'number', value, lexeme: null })),
-    })
-    const end: TableEvent = { type: 'end' }
-    // A clean empty table: nothing reaches the renderer.
-    assert.deepStrictEqual(run([schema(), row(), row(), end]), [])
-    // Each refusal, with the library's text.
-    assert.equal(run([schema(), row(), row(1)]), 'row 2 has 1 cells; the schema has 0 columns')
-    assert.equal(run([schema(), schema('a')]), 'a second schema')
-    assert.equal(run([schema(), end, schema()]), 'a schema after the end')
-    assert.equal(run([schema(), end, row()]), 'a row after the end')
-    assert.equal(run([schema(), end, end]), 'a second end')
-    // A table of columns passes as it came, and so does a later empty
-    // schema, for the renderer to refuse.
-    assert.deepStrictEqual(run([schema('a'), row(1), end, schema()]), ['schema 1', 'row 1', 'end', 'schema 0'])
-  })
-
-  // The host pushes the parser's rule passes into the head `parser-events`
-  // is lowered to: each pass reaches the items below as `(open rule)` or
-  // `(close rule)`, a field the pass lacks left out of the rule, and the
-  // parse's end as the stream's end. A program that reads nothing of its
-  // input hands the end alone to the sink that writes its text.
   it('parser events are items pushed into the head', () => {
     const passes = [
       parserEventFromJSON([
@@ -216,7 +102,7 @@ describe('program', () => {
         return 'continue'
       },
     }
-    const here: any = new Lowering(runtime('def export [input] (parser-events input)', true), Limits.default(), new Metrics())
+    const here: any = new Lowering(runtime('def export [input] (parser-events input)'), Limits.default(), new Metrics())
     const events = here.items(plan, down, false)
     // The parser events are read once.
     assert.equal(thrown(() => here.items(plan, down, false)).code, 'STREAM_REUSED')
@@ -238,7 +124,7 @@ describe('program', () => {
     }
 
     const text: string[] = []
-    const nothing: any = new Lowering(runtime('def export [input] "done"', true), Limits.default(), new Metrics())
+    const nothing: any = new Lowering(runtime('def export [input] "done"'), Limits.default(), new Metrics())
     const finite = nothing.parserHead({
       event(ev: any) {
         text.push(ev.type)
@@ -247,165 +133,6 @@ describe('program', () => {
     })
     for (const pass of passes) finite.event(pass)
     assert.deepStrictEqual(text, ['end'])
-  })
-
-  // A spec of the standard shape is read as one; a spec of any other shape
-  // is not, and runs the library's text (rs/src/lower.rs's test).
-  it('a transduce-tree spec of the standard shape is read', () => {
-    const rt = runtime(
-      JSON_SPEC +
-        'def named (record (entry :doc (record (entry :key "k") (entry :scalar :value) (entry :note 1))))\n' +
-        'def odd-container (record (entry :map (record (entry :container :set))))\n' +
-        'def odd-key (record (entry :pair (record (entry :key 1.5))))\n' +
-        'def odd-scalar (record (entry :val (record (entry :scalar "x"))))\n' +
-        'def odd-entry (record (entry :val 1))\n' +
-        'def texts (record (entry :row (record (entry :container :object) (entry :member "a") (entry :text true))) (entry :cell (record (entry :member 1) (entry :text false))))\n' +
-        'def odd-member (record (entry :row (record (entry :member -1))))\n' +
-        'def odd-text (record (entry :row (record (entry :text :yes))))\n',
-      true,
-    )
-    const val = (name: string) => run(rt.defValue('program', name)) as value.Val
-    assert.deepStrictEqual(
-      treeSpec(val('json-spec')),
-      {
-        rules: new Map<string, unknown>([
-          ['map', { container: 'object' }],
-          ['list', { container: 'array' }],
-          ['pair', { key: { token: 0 } }],
-          ['val', { scalar: { token: 0 } }],
-        ]),
-      },
-    )
-    // A field the library never reads is not read here either.
-    assert.deepStrictEqual(treeSpec(val('named')), {
-      rules: new Map([['doc', { key: { name: 'k' }, scalar: 'value' }]]),
-    })
-    // A member is read as a key is, and a text as a boolean.
-    assert.deepStrictEqual(treeSpec(val('texts')), {
-      rules: new Map<string, unknown>([
-        ['row', { container: 'object', member: { name: 'a' }, text: true }],
-        ['cell', { member: { token: 1 } }],
-      ]),
-    })
-    for (const odd of ['odd-container', 'odd-key', 'odd-scalar', 'odd-entry', 'odd-member', 'odd-text']) {
-      assert.equal(treeSpec(val(odd)), undefined, odd)
-    }
-    assert.equal(treeSpec(V.NULL), undefined)
-  })
-
-  // The library's `transduce-tree` over the host's parser events runs
-  // natively where the routers offer it, the source's guard in front of
-  // what it writes, and through the library's scan where they decline,
-  // where the natives are off, and where the spec is not of the standard
-  // shape. A program that writes the library's scan itself is run the same
-  // way; one whose step is its own is not (rs/src/lower.rs's test).
-  it('transduce-tree runs natively where the routers offer it', () => {
-    const lowerWith = (exp: string, native: boolean, offer: boolean | 'absent', reads: boolean): string[] => {
-      const log: string[] = []
-      const routers: any = {
-        ...OPTIONS.routers,
-        scanEmit() {
-          log.push('scan-emit')
-          return { item: () => 'continue', finish: () => 'continue' }
-        },
-        guarded(inner: any) {
-          log.push('guarded')
-          return inner
-        },
-      }
-      if ('absent' !== offer) {
-        if (reads) routers.transduceTreeReadsMemberAndText = () => true
-        routers.transduceTree = (spec: any, downstream: any) => {
-          const texts = usesMemberOrText(spec) ? `, texts within ${spec.maxTextBytes}` : ''
-          log.push(`transduce-tree of ${spec.rules.size} rules${texts}`)
-          if (!offer) return undefined
-          return {
-            event(ev: any) {
-              return 'end' === ev.type ? downstream.event({ type: 'end' }) : 'continue'
-            },
-          }
-        }
-      }
-      const src = JSON_SPEC + exp
-      const forms = desugarProgram(parseFile(src, 't.alc'), src)
-      const sources = Sources.one('t.alc', src)
-      const rt = new Runtime(resolve(forms, sources, outer), sources, { ...OPTIONS, routers }).withNative(native)
-      const result = run(rt.export('ParserEvents/1')) as any
-      const lowering: any = new Lowering(rt, Limits.default(), new Metrics())
-      const events = lowering.events(result.plan, {
-        event(ev: any) {
-          log.push(ev.type)
-          return 'continue'
-        },
-      })
-      lowering.parserHead(events).event({ type: 'end' })
-      return log
-    }
-    const lower = (exp: string, native: boolean, offer: boolean | 'absent') => lowerWith(exp, native, offer, true)
-    const tree = 'def export [input] (transduce-tree json-spec input)\n'
-    const native = ['guarded', 'transduce-tree of 4 rules', 'end']
-    const scan = ['guarded', 'scan-emit', 'end']
-    assert.deepStrictEqual(lower(tree, true, true), native)
-    assert.deepStrictEqual(lower(tree, true, false), ['guarded', 'transduce-tree of 4 rules', 'scan-emit', 'end'])
-    assert.deepStrictEqual(lower(tree, true, 'absent'), scan)
-    assert.deepStrictEqual(lower(tree, false, true), scan)
-    assert.deepStrictEqual(
-      lower('def export [input] (transduce-tree (record (entry :map (record (entry :container :set)))) input)\n', true, true),
-      scan,
-    )
-    assert.deepStrictEqual(
-      lower(
-        'def export [input] (as-events (scan-emit [[] false] (partial transduce-step json-spec) transduce-finish (parser-events input)))\n',
-        true,
-        true,
-      ),
-      native,
-    )
-    assert.deepStrictEqual(
-      lower(
-        'def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-pass json-spec) transduce-done (parser-events input)))\n',
-        true,
-        true,
-      ),
-      native,
-    )
-    // Each step from the other's state is a scan of the program's own.
-    assert.deepStrictEqual(
-      lower(
-        'def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-step json-spec) transduce-done (parser-events input)))\n',
-        true,
-        true,
-      ),
-      scan,
-    )
-    assert.deepStrictEqual(
-      lower(
-        'def export [input] (as-events (scan-emit [[] false] (partial transduce-pass json-spec) transduce-finish (parser-events input)))\n',
-        true,
-        true,
-      ),
-      scan,
-    )
-    assert.deepStrictEqual(
-      lower(
-        'def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n',
-        true,
-        true,
-      ),
-      scan,
-    )
-    // A spec that names a member or a text goes only to routers that read
-    // them, with its texts held to `max_scalar_bytes`; a spec that names
-    // neither goes to routers that read neither.
-    const texts =
-      'def export [input] (transduce-tree (record (entry :map (record (entry :container :object) (entry :member "m"))) (entry :pair (record (entry :key 0) (entry :text true)))) input)\n'
-    assert.deepStrictEqual(lowerWith(texts, true, true, true), [
-      'guarded',
-      `transduce-tree of 2 rules, texts within ${Limits.default().max_scalar_bytes}`,
-      'end',
-    ])
-    assert.deepStrictEqual(lowerWith(texts, true, true, false), scan)
-    assert.deepStrictEqual(lowerWith(tree, true, true, false), native)
   })
 
   // tabnas-json's passes, as a parser-events source makes them: each
@@ -496,7 +223,6 @@ describe('program', () => {
   it('transduce-tree makes JSON events of tabnas-json rule passes', () => {
     const rt = runtime(
       'def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n\ndef export [input] (transduce-tree json-spec input)\n',
-      true,
     )
     const tree = () => V.vectorVal([V.vectorVal([]), V.bool(false)])
     const stepped = (src: string) => treeScan(rt, 'json-spec', 'transduce-step', 'transduce-finish', tree(), src)
@@ -526,7 +252,6 @@ describe('program', () => {
   it('transduce-tree reads a member and a text', () => {
     const rt = runtime(
       'def values\n  record\n    entry :map (record (entry :container :object))\n    entry :pair (record (entry :key 0) (entry :text true))\n\ndef lists\n  record\n    entry :list (record (entry :container :object) (entry :member "items") (entry :text true))\n\ndef export [input] (transduce-tree values input)\n',
-      true,
     )
     const init = () => V.vectorVal([V.vectorVal([V.vectorVal([]), V.bool(false)]), V.vectorVal([])])
     const events = (spec: string, src: string) => treeScan(rt, spec, 'transduce-pass', 'transduce-done', init(), src)

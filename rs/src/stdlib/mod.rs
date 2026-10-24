@@ -21,10 +21,9 @@
 //! name shadows the library's for that program, never for the library
 //! itself, whose definitions resolve in their own scope.
 //!
-//! The library text is the reference: the runtime runs `table-from-json`
-//! and `csv` natively when their arguments have the standard shapes, and
-//! the differential test in `rs/tests/stdlib_test.rs` proves the native
-//! path and this text produce the same bytes.
+//! The library text is the implementation: the runtime runs each definition
+//! as it is written, in every runtime, and nothing stands in for one;
+//! `rs/tests/stdlib_test.rs` proves every definition resolves and checks.
 
 pub mod registry;
 

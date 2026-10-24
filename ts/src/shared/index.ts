@@ -25,8 +25,6 @@
 // - captures as data (`CaptureSpec`, `Selected`, `RouteSink`) and a
 //   `scan-emit` step's `Transition`;
 // - the text boundary (`TextOut`, `Writer`) and the renderers' options;
-// - the spec of the library's `transduce-tree` (`TreeSpec`), for routers
-//   that run it natively;
 // - `Routers` and `Renderers`, what alchemy's runtime constructs and calls:
 //   transduce implements the first (`routers`), render the second
 //   (`renderers`), and a host passes both to `compile`.
@@ -80,6 +78,4 @@ export type { TextOut, Writer } from './text'
 export { CsvOptions, JsonOptions, MissingText, Newline } from './options'
 export type { MissingRecord, Quoting } from './options'
 export type { Routers, Scan } from './routers'
-export { isTreeContainer, treeTextRefusal, usesMemberOrText, withoutMemberAndText } from './tree'
-export type { TreeContainer, TreeKey, TreeRule, TreeScalar, TreeSpec } from './tree'
 export type { CoalescingOut, JoinOut, Renderers } from './renderers'

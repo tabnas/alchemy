@@ -721,7 +721,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `concat` | `concat item... -> Text` | in order, without assembling the result |
 | `text` | `text string -> Text` | a string as a text |
 | `replace-text` | `replace-text from to text -> Text` | a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length |
-| `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' `:non-finite` is `:null`, the null text, or `:literal`, the word `Infinity`, `-Infinity` or `NaN`), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the native renderer writes the same cell the same way |
+| `scalar-text` | `scalar-text options cell -> String` | a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' `:non-finite` is `:null`, the null text, or `:literal`, the word `Infinity`, `-Infinity` or `NaN`), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under `max_scalar_bytes`; the host's CSV renderer writes the same cell the same way |
 | `quoted` | `quoted string -> String` | the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as `\n`, `\t`, `\r`, `\b`, `\f` or `\u00XX`, and U+007F to U+009F, U+FFFE and U+FFFF as `\uXXXX` (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls and the two noncharacters its printable set excludes, which XML's characters exclude too); refused past `max_scalar_bytes`, before it is built |
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `string-join` | `string-join separator strings -> String` | the strings of a vector joined into one string, the separator between them; refused past `max_scalar_bytes`, before it is built |
@@ -879,23 +879,19 @@ The rest of the library is written in alchemy, embedded from
 [`stdlib/transduce.alc`](../stdlib/transduce.alc), and checked against its declared
 signatures as it loads. The blocks below are those files' text, word for
 word (`rs/tests/spec_test.rs` holds the two together), and they are the
-reference: the runtime runs `table-from-json` and `csv` natively when
-their arguments have the standard shapes, and `transduce-tree` and
-`transduce-records` when a spec does and the host's routers offer a
-native one, and alchemy-cli's
-`rs/tests/stdlib_test.rs` proves the native path and this text produce
-the same bytes, or fail with the same code.
+reference and the implementation: the runtime runs each definition as it
+is written here, in every runtime, and nothing stands in for one.
 
 They are the spec's definitions (sections 12.2, 13.1 and 13.2) with
 four differences. The spec writes a `let` as a line `let columns` over
 two child lines, the value and the body; here `let` has one shape,
 `let [name value] body`, and the library is written in it. The two
-captures of `table-from-json` name the limits the native table holds the
-same scopes to (`:max_metadata_bytes`, `:max_record_bytes`), where the
+captures of `table-from-json` name the limits a table's metadata and its
+rows are held to (`:max_metadata_bytes`, `:max_record_bytes`), where the
 spec's generic `capture` would take `max_capture_bytes`. And `csv`
 passes its events through `csv-table`, the protocol validator section
-13.2 asks for, so a stream that breaks the table protocol fails as the
-native renderer fails it rather than being printed. And the binding may
+13.2 asks for, so a stream that breaks the table protocol fails rather
+than being printed. And the binding may
 take its columns from the first row rather than from metadata
 (`:columns :infer`), which the spec leaves to the host: `table-captures`
 routes only the rows then, `table-first-row` binds the columns from the
@@ -1078,11 +1074,9 @@ row's keys, in its order, each labelled by its key and reading that key
 later row has is not a column, and a later row that is not an object has
 only missing cells. A document with no rows, or a first row with no
 keys, is a table of no columns, which the CSV renderer refuses
-(`TARGET_VALUE_UNREPRESENTABLE`) as it refuses any. Natively the binding
-is transduce's `Schema::Infer`; the library infers with `keys`, and the
-differential test holds the two to the same bytes and codes. A host that
-reads rows of other shapes (a scalar row as a `value` column) puts that
-policy in front of the program.
+(`TARGET_VALUE_UNREPRESENTABLE`) as it refuses any. The library infers
+the columns with `keys`. A host that reads rows of other shapes (a scalar
+row as a `value` column) puts that policy in front of the program.
 
 The always-quoted CSV renderer, `TableEvents` in, `Text` out:
 
@@ -1153,32 +1147,28 @@ def csv [options events]
 (def csv (fn [options events] (concat-map (fn [event] (match event (case (schema columns) (match (count columns) (case 0 "") (case _ (if (get :header options) (csv-row options (map (fn [column] (get :label column)) columns)) "")))) (case (row cells) (match (count cells) (case 0 "") (case _ (csv-row options cells)))) (case table-end ""))) (csv-table options events))))
 ```
 
-The native path substitutes transduce's `TableFromJson` for
-`table-from-json` when the binding has the standard shape, and render's
-`CsvRenderer` for `csv` when every option maps onto the renderer's
-dialect (`:delimiter` one character, `:newline` CRLF or LF, `:header` a
-boolean, `:null-text` a string, `:missing` `:error` or a string, and
-`:non-finite`, when the record has it, `:reject`, `:null` or
-`:literal`, and `:no-columns`, when it has it, `:refuse` or `:empty`);
-any other options run the text above. `:non-finite` is what a number
-cell that is not finite becomes, as `scalar-text` writes it: refused
-(`:reject`, the default, `TARGET_VALUE_UNREPRESENTABLE`), the null text
-(`:null`), or the word `Infinity`, `-Infinity` or `NaN` (`:literal`).
-`:no-columns` is what a table of no columns becomes (the table of a
-document with no rows, or whose first row has no members): refused
-(`:refuse`, the default, `TARGET_VALUE_UNREPRESENTABLE`), or written as
-the empty document (`:empty`), with no header and no record, since a
-record of no fields is no line a reader could tell from none. The two paths agree on more than the
-standard shapes, and alchemy-cli's `rs/tests/stdlib_test.rs` pins each
-agreement:
+`csv` takes an options record (`csv-options` is the default):
+`:delimiter` one character, `:newline` CRLF or LF, `:header` a boolean,
+`:null-text` a string, `:missing` `:error` or a string, and, where the
+record has them, `:non-finite` and `:no-columns`. `:non-finite` is what a
+number cell that is not finite becomes, as `scalar-text` writes it:
+refused (`:reject`, the default, `TARGET_VALUE_UNREPRESENTABLE`), the
+null text (`:null`), or the word `Infinity`, `-Infinity` or `NaN`
+(`:literal`). `:no-columns` is what a table of no columns becomes (the
+table of a document with no rows, or whose first row has no members):
+refused (`:refuse`, the default, `TARGET_VALUE_UNREPRESENTABLE`), or
+written as the empty document (`:empty`), with no header and no record,
+since a record of no fields is no line a reader could tell from none.
+alchemy-cli's `rs/tests/stdlib_test.rs` pins what the text does on every
+fixture and generated document:
 
 - **the protocol**: a stream that has rows before its schema, a second
   schema, a row wider or narrower than the schema, no `table-end` or a
   second one, an item that is not a table event, or no items at all is
-  `PROTOCOL_ORDER_ERROR` both ways;
+  `PROTOCOL_ORDER_ERROR`;
 - **what has no CSV form**: a schema of no columns (a document whose
   metadata array is empty, say) and a delimiter that holds the quote, a
-  line break or NUL are `TARGET_VALUE_UNREPRESENTABLE` both ways;
+  line break or NUL are `TARGET_VALUE_UNREPRESENTABLE`;
 - **labels**: one policy for every table, a string as it is, a number by
   its lexeme, a boolean by its name, an absent one `MISSING_VALUE` and
   anything else `INPUT_INVALID`; a column function that answers
@@ -1187,18 +1177,16 @@ agreement:
   lexemes kept, under `max_scalar_bytes`;
 - **limits**: the metadata is held to `max_metadata_bytes`, each row to
   `max_record_bytes` and the schema to `max_columns`, and a failure names
-  the same limit both ways; `max_capture_bytes` decides neither table;
-  both count each row once in `metrics.rows`, by the last table stage
-  it passes (the host's renderer, a `csv`, or a `csv-table` whose rows
-  reach no later one), however the stages compose: a `map`, a `filter`
-  or a `scan-emit` between two of them hands the count on, so a row a
-  filter drops is not counted, and a table's events made into a text
-  some other way (a `join` over a `map` of them) count no rows at all.
+  the limit; `max_capture_bytes` decides neither table; each row is
+  counted once in `metrics.rows`, by the last table stage it passes (the
+  host's renderer, a `csv`, or a `csv-table` whose rows reach no later
+  one), however the stages compose: a `map`, a `filter` or a `scan-emit`
+  between two of them hands the count on, so a row a filter drops is not
+  counted, and a table's events made into a text some other way (a `join`
+  over a `map` of them) count no rows at all.
 
-One difference remains, in a shape the standard binding never reaches,
-and is pinned: metadata selected twice (a `:columns` selector naming
-several locations) is `INPUT_ORDER_VIOLATION` natively, since a table has
-one schema, and `INPUT_INVALID` interpreted, the text's own `fail`.
+Metadata selected twice (a `:columns` selector naming several locations)
+is `INPUT_INVALID`, the text's own `fail`.
 
 
 The root adapters, `JsonEvents` in and `JsonEvents` out: a render that
@@ -1354,17 +1342,10 @@ record
 and a unit test (`rs/src/lower.rs`) holds `transduce-tree` with it to
 the events of tabnas-json's own rule passes, lexemes kept.
 
-Over the host's parser events, `transduce-tree` runs natively where the
-spec has the standard shape (every entry a record, its `:container`
-`:object` or `:array`, its `:key` and its `:member` each a string or a
-token's index, its `:scalar` a token's index or `:value`, its `:text` a
-boolean) and the host's routers offer a native one
-(`Routers::transduce_tree`, which transduce's do; the shared `TreeSpec`
-says what it must do). The native reads each pass as it
-comes and builds no record of it; its events, its failures and its
-codes are this text's, and the source's guard holds on what it writes as
-on what the text's `as-events` writes. A spec of any other shape, routers
-that offer none, and `Runtime::with_native(false)` run this text.
+Over the host's parser events, `transduce-tree` runs as this text, in
+every runtime: the scan's step reads each pass as it comes and keeps one
+marker per open container, and the source's guard holds on the events
+its `as-events` writes.
 
 ```alchemy
 def transduce-token [n rule]
@@ -1660,15 +1641,10 @@ record
   entry :unnamed "field~"
 ```
 
-Over the host's parser events, `transduce-records` runs natively where
-the spec has the standard shape (`:document`, `:record` and `:cell`
-strings, `:empty` and `:unnamed` strings and `:header` a boolean where
-they are given, `:fill` a scalar) and the host's routers offer a native
-one (`Routers::transduce_records`; the shared `RecordsSpec` says what it
-must do). Its events, its failures and its codes are this text's, and
-it holds the header's names to `max_metadata_bytes` as this text's scan
-holds its state. A spec of any other shape, routers that offer none,
-and `Runtime::with_native(false)` run this text.
+Over the host's parser events, `transduce-records` runs as this text, in
+every runtime: its state, the phase, the header's names and a marker per
+cell of the current record, is held to `max_metadata_bytes` as every
+scan's is.
 
 ```alchemy
 def transduce-records-fill [spec]
@@ -1903,23 +1879,24 @@ def export [input]
 export: api-table → csv
 
 Source reads:          1
-Protocol:              JsonEvents/1 → TableRows/1 → Text
+Protocol:              JsonEvents/1 → Stream<Selected> → Stream<Value> → TableRows/1 → Text
 Selection:             shared prefix matcher, two capture routes
 Duplicate members:     rejected in captured scopes (DUPLICATE_MEMBER)
-Retained metadata:     .response.metadata.fields, capped at max_metadata_bytes
+Capture:               .response.metadata.fields, capped at max_metadata_bytes
 Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes
+Retained state:        the table's columns once bound, at most max_columns of them, no deeper than max_depth, capped at max_metadata_bytes
 Output order:          schema first; cells in schema order
-Ordering contract:     metadata completes before first row begins
+Ordering contract:     each item before its outputs
 Contract verification: runtime
-CSV quoting:           always
 External storage:      disabled
 
 Guarantee:
   Memory is independent of the number of rows under the configured
-  depth, metadata, record, scalar/key and output limits.
+  depth, capture, metadata, scalar/key and output limits: the state the
+  step returns is capped at max_metadata_bytes. What one step computes
+  is the program's, bounded by the host's abort flag.
 
 Qualification:
-  Valid JSON that violates the metadata-first contract is rejected.
   A later error can occur after earlier output has been written.
 ```
 
@@ -2085,16 +2062,16 @@ Qualification:
 (`chain`, `finite`, `protocol`, `selection`, `duplicates`, `retention`,
 `readiness`, `order_constraints`, `renderer`, `confidence`,
 `guarantee`, `qualification`, ...), for a host's `--explain`. A CSV
-`renderer` carries the dialect it is built with (`delimiter`, `newline`,
-`header`, `null_text`, and `missing`, `"error"` or `"text"` with its
-`missing_text`, `null` when there is none): the program's own options
-when its `csv` runs natively, the defaults when the host renders a
-table.
+`renderer` is the host's, rendering a table result, and carries the
+dialect it is built with (`delimiter`, `newline`, `header`, `null_text`,
+and `missing`, `"error"` or `"text"` with its `missing_text`, `null` when
+there is none), the defaults; a program's own `csv` writes a text, and
+its `renderer` is `text`.
 
 ## run
 
 ```text
-alchemy run [--grammar FORMAT] [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
+alchemy run [--grammar FORMAT] [--render csv|json] [--max-output-bytes N] PROGRAM INPUT
 ```
 
 Parses `INPUT`, a JSON document, with the tabnas JSON grammar through
@@ -2103,8 +2080,7 @@ the program's row selector when the plan knows one, and pushes the
 events through the program's sink to standard output, coalesced and
 flushed at the end. `--render` chooses how a table or JSON-events result
 is rendered (a program that renders its own text takes none:
-`render_of_text`); `--no-native` runs the standard compositions through
-the library's text; `--max-output-bytes` sets the writer's
+`render_of_text`); `--max-output-bytes` sets the writer's
 `max_output_bytes`, which also bounds what a finite text or one item's
 text may hold as it is built (the other limits are transduce's
 defaults). `--grammar FORMAT` parses `INPUT` with that format's grammar
@@ -2248,9 +2224,8 @@ The TypeScript and Go ports take the same two implementations:
   passes through the sink, so the host reads `metrics.output_bytes`
   after the run and marks the failure as partial when it is not zero;
   the `run` command does exactly that.
-- `with_native(false)` runs the standard compositions through the
-  library's text; `with_duplicates` sets the policy for repeated member
-  names in captured values (rejected by default, spec section 18.2).
+- `with_duplicates` sets the policy for repeated member names in
+  captured values (rejected by default, spec section 18.2).
 - `with_abort(flag)` hands the program the host's `AbortFlag`: the
   program's own functions read it every few evaluation steps, so a long
   computation on one item stops with `ABORTED` rather than finishing the
@@ -2338,7 +2313,7 @@ alchemy canon FILE       print the program in canonical form
 alchemy format FILE      print the program in layout form
 alchemy check FILE       parse, desugar, resolve, check and build the plan; print nothing and exit 0
 alchemy explain FILE     print the plan report
-alchemy run [--grammar FORMAT] [--render csv|json] [--no-native] [--max-output-bytes N] PROGRAM INPUT
+alchemy run [--grammar FORMAT] [--render csv|json] [--max-output-bytes N] PROGRAM INPUT
                          run the program over the JSON document INPUT; with --grammar, over
                          the rule passes of INPUT parsed as FORMAT (a transducer part's input)
 ```

@@ -36,7 +36,7 @@
 //!
 //! The standard library's own text is checked the same way, each
 //! definition's body against its declared signature; `stdlib::load` does
-//! it once, and the differential test asserts it holds.
+//! it once, and `rs/tests/stdlib_test.rs` asserts it holds.
 
 use std::collections::HashMap;
 use std::sync::Arc;

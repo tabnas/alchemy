@@ -258,13 +258,6 @@ pub enum Plan {
         source: Arc<Plan>,
         at: SourceSpan,
     },
-    /// The standard table transducer, run natively: `TableRows/1` from
-    /// `JsonEvents/1`.
-    TableFromJson {
-        binding: Val,
-        source: Arc<Plan>,
-        at: SourceSpan,
-    },
     /// `records table-events`: `JsonEvents/1` from `TableRows/1`.
     Records { source: Arc<Plan> },
     /// `tree-contract events`: the events unchanged, held to a tree's
@@ -295,8 +288,6 @@ pub enum Plan {
         to: Arc<str>,
         source: Val,
     },
-    /// The standard CSV renderer, run natively.
-    Csv { options: Val, source: Arc<Plan> },
     /// `json events`, or `json options events`.
     Json {
         source: Arc<Plan>,
@@ -361,11 +352,9 @@ impl Plan {
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
-            | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
             | Plan::TreeContract { source }
             | Plan::CsvTable { source, .. }
-            | Plan::Csv { source, .. }
             | Plan::Json { source, .. } => source.is_live(),
             Plan::Lit(_) => false,
             Plan::Concat { live, .. } => live.is_some(),
@@ -385,15 +374,13 @@ impl Plan {
                 | Plan::Join { .. }
                 | Plan::ConcatMap { .. }
                 | Plan::Replace { .. }
-                | Plan::Csv { .. }
                 | Plan::Json { .. }
         )
     }
 
     /// The protocol the plan produces, when it is a stream: `JsonEvents`,
-    /// `ParserEvents` (the host's parser input), `TableRows` (natively),
-    /// or `Items` for a stream of values whose shape the runtime learns
-    /// item by item.
+    /// `ParserEvents` (the host's parser input), or `Items` for a stream of
+    /// values whose shape the runtime learns item by item.
     pub fn protocol(&self) -> Protocol {
         match self {
             Plan::Input
@@ -401,7 +388,6 @@ impl Plan {
             | Plan::AsEvents { .. }
             | Plan::TreeContract { .. } => Protocol::JsonEvents,
             Plan::ParserInput => Protocol::ParserEvents,
-            Plan::TableFromJson { .. } => Protocol::TableRows,
             Plan::Route { .. }
             | Plan::Select { .. }
             | Plan::Events { .. }
@@ -420,7 +406,6 @@ impl Plan {
 pub enum Protocol {
     JsonEvents,
     ParserEvents,
-    TableRows,
     Items,
     Text,
 }
@@ -720,7 +705,6 @@ pub fn plan_name(plan: &Plan) -> &'static str {
         Plan::ScanEmit { .. } => "scan-emit",
         Plan::Map { .. } => "map",
         Plan::Filter { .. } => "filter",
-        Plan::TableFromJson { .. } => "table-from-json",
         Plan::Records { .. } => "records",
         Plan::TreeContract { .. } => "tree-contract",
         Plan::CsvTable { .. } => "csv-table",
@@ -729,7 +713,6 @@ pub fn plan_name(plan: &Plan) -> &'static str {
         Plan::Join { .. } => "join",
         Plan::ConcatMap { .. } => "concat-map",
         Plan::Replace { .. } => "replace-text",
-        Plan::Csv { .. } => "csv",
         Plan::Json { .. } => "json",
     }
 }

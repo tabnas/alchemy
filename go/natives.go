@@ -24,10 +24,9 @@ import (
 // stream answers a plan the runtime lowers once.
 //
 // Failures on data (a descriptor that is not an object, a path segment
-// that is not a string) are INPUT_INVALID, the code the native table
-// transducer raises for the same shapes, so the interpreted and the
-// native standard library fail alike; a value of the wrong kind where the
-// program, not the data, chose it is DSL_TYPE_ERROR.
+// that is not a string) are INPUT_INVALID: the data is at fault; a value
+// of the wrong kind where the program, not the data, chose it is
+// DSL_TYPE_ERROR.
 
 // nativeCall is the implementation of a native: the runtime (to apply
 // functions), the arguments, and the span of the form being evaluated,
@@ -263,9 +262,8 @@ const (
 // (FormatValue and appendValue), as the Rust crate's shortest_number
 // mirrors render's number::write_value: this package formats a number
 // itself, so that building a plan asks nothing of the renderers a host
-// hands in. The two must agree byte for byte, which the differential test
-// in alchemy-cli (go/e2e) checks on real documents, natively through
-// render's renderers and interpreted through this function.
+// hands in. The two must agree byte for byte; alchemy-cli (go/e2e), which
+// has both, holds them to it on real documents.
 //
 // A non-finite value has no such text and gives "", as FormatValue does;
 // numberText refuses one before it asks.
@@ -387,9 +385,7 @@ func nGet(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 
 // getField is `get key data`: a record's field, `missing` for an absent
 // one or from `missing`; INPUT_INVALID from other data, `type_mismatch`
-// from what is not data. The native table binds a column record by the
-// same rule, so a column function that answers something other than a
-// record fails alike both ways.
+// from what is not data.
 func getField(key string, data Val) (Val, *Fail) {
 	switch {
 	case isRecord(data):
@@ -1967,9 +1963,8 @@ func constructor(name string) nativeCall {
 
 // nSchema is `schema columns`: the table's one schema. A table has at most
 // max_columns columns, so a schema past it is refused where it is built,
-// whatever consumes it: the native table binds no more, and the library's
-// twin of it, whose events may reach no renderer that would check them, is
-// held to the same count.
+// whatever consumes it, since its events may reach no renderer that would
+// check them.
 func nSchema(rt *Runtime, a []Val, at SourceSpan) (Val, *Fail) {
 	if columns, ok := a[0].(*VectorVal); ok {
 		max := rt.Limits().MaxColumns

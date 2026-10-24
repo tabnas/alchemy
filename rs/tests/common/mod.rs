@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use tabnas_alchemy::shared::{
     AbortFlag, CaptureSpec, CsvOptions, Duplicates, Fail, JoinOut, JsonOptions, Limits, Metrics,
-    Renderers, RouteSink, Routers, ScanEmitter, ScanFinish, ScanOut, ScanStep, Sink, TableBinding,
-    TableSink, TextOut,
+    Renderers, RouteSink, Routers, ScanEmitter, ScanFinish, ScanOut, ScanStep, Sink, TableSink,
+    TextOut,
 };
 use tabnas_alchemy::value::Val;
 use tabnas_alchemy::{Input, Program, Source};
@@ -35,17 +35,6 @@ impl Routers<Val> for NoStages {
         _: Duplicates,
         _: Arc<Metrics>,
         _: Box<dyn RouteSink + Send>,
-    ) -> Result<Box<dyn Sink + Send>, Fail> {
-        panic!("{NO_STAGES}")
-    }
-
-    fn table_from_json(
-        &self,
-        _: TableBinding,
-        _: &Limits,
-        _: Duplicates,
-        _: Arc<Metrics>,
-        _: Box<dyn TableSink + Send>,
     ) -> Result<Box<dyn Sink + Send>, Fail> {
         panic!("{NO_STAGES}")
     }
