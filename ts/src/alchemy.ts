@@ -87,8 +87,6 @@ export type { Bounds, Measure } from './interp'
 export {
   Lowering,
   brief,
-  csvOptions,
-  isTableBinding,
   jsonOptions,
   rendererNamed,
   stateBounds,
@@ -108,7 +106,6 @@ export {
   defaultCsvDialect,
   explain,
   explainJson,
-  isInferred,
   summarize,
   summaryJson,
   summaryText,

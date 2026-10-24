@@ -5,10 +5,10 @@
 ; columns, unless the options say `(entry :no-columns :empty)`, and a
 ; delimiter no reader could take. A table of no columns that the options
 ; let through is written as the empty document: no header and no record,
-; since a record of no fields is no line a reader could tell from none. The runtime runs `csv`
-; natively when the options record maps onto the renderer's dialect, and
-; the differential test proves that path and this text produce the same
-; bytes, or fail with the same code.
+; since a record of no fields is no line a reader could tell from none.
+; This text is the implementation: the runtime runs it as it is written,
+; in every runtime, and nothing stands in for it; a program's `csv` is
+; always this text.
 
 def csv-options
   record

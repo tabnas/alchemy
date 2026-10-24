@@ -386,9 +386,6 @@ const (
 	PlanScanEmit
 	PlanMap
 	PlanFilter
-	// PlanTableFromJSON is the standard table transducer, run natively:
-	// TableRows/1 from JsonEvents/1.
-	PlanTableFromJSON
 	// PlanRecords is `records table-events`: JsonEvents/1 from TableRows/1.
 	PlanRecords
 	// PlanCsvTable is `csv-table options events`: the tagged table events,
@@ -406,8 +403,6 @@ const (
 	// PlanReplace is `replace-text from to text`: the text is a string or a
 	// text.
 	PlanReplace
-	// PlanCsv is the standard CSV renderer, run natively.
-	PlanCsv
 	// PlanJSON is `json events`, or `json options events`.
 	PlanJSON
 	// PlanParserInput is the host's ParserEvents/1, when it declares a
@@ -471,13 +466,12 @@ func NonFiniteWord(value float64) string {
 // says which fields apply:
 //
 //   - Source: the plan a stage reads (route, select, events, as-events,
-//     scan-emit, map, filter, table-from-json, records, csv-table, csv,
-//     json);
+//     scan-emit, map, filter, records, csv-table, json);
 //   - Specs: a route's captures; Selector: a select's;
 //   - Init, Step and Finish: a scan-emit's; F: a map's, a filter's or a
 //     concat-map's function; At: the form a scan-emit, map, filter,
-//     concat-map or native table was built at, for diagnostics;
-//   - Binding: the native table's; Options: a csv-table's or a csv's;
+//     concat-map was built at, for diagnostics;
+//   - Options: a csv-table's;
 //   - NonFinite: a json's policy for a number that is not finite;
 //   - Lit: a literal's text;
 //   - Items and Live: a concat's items and the position of the one item
@@ -499,7 +493,6 @@ type Plan struct {
 	Finish    Fn
 	F         Fn
 	At        SourceSpan
-	Binding   Val
 	Options   Val
 	NonFinite NonFinite
 	Lit       string
@@ -558,7 +551,7 @@ func (p *Plan) IsLive() bool {
 // IsText reports whether the plan is a text rather than a stream.
 func (p *Plan) IsText() bool {
 	switch p.Kind {
-	case PlanLit, PlanConcat, PlanJoin, PlanConcatMap, PlanReplace, PlanCsv, PlanJSON:
+	case PlanLit, PlanConcat, PlanJoin, PlanConcatMap, PlanReplace, PlanJSON:
 		return true
 	}
 	return false
@@ -570,7 +563,6 @@ type Protocol uint8
 // The protocols.
 const (
 	ProtocolJSONEvents Protocol = iota
-	ProtocolTableRows
 	// ProtocolItems is a stream of values whose shape the runtime learns
 	// item by item.
 	ProtocolItems
@@ -580,16 +572,13 @@ const (
 )
 
 // Protocol is the protocol the plan produces, when it is a stream:
-// JsonEvents, ParserEvents (the host's parser input), TableRows
-// (natively), or Items.
+// JsonEvents, ParserEvents (the host's parser input), or Items.
 func (p *Plan) Protocol() Protocol {
 	switch p.Kind {
 	case PlanInput, PlanRecords, PlanAsEvents, PlanTreeContract:
 		return ProtocolJSONEvents
 	case PlanParserInput:
 		return ProtocolParserEvents
-	case PlanTableFromJSON:
-		return ProtocolTableRows
 	case PlanRoute, PlanSelect, PlanEvents, PlanParserEvents, PlanScanEmit, PlanMap, PlanFilter, PlanCsvTable:
 		return ProtocolItems
 	}
@@ -617,8 +606,6 @@ func PlanName(p *Plan) string {
 		return "map"
 	case PlanFilter:
 		return "filter"
-	case PlanTableFromJSON:
-		return "table-from-json"
 	case PlanRecords:
 		return "records"
 	case PlanTreeContract:
@@ -635,8 +622,6 @@ func PlanName(p *Plan) string {
 		return "concat-map"
 	case PlanReplace:
 		return "replace-text"
-	case PlanCsv:
-		return "csv"
 	case PlanJSON:
 		return "json"
 	}

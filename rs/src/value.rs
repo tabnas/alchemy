@@ -379,9 +379,8 @@ impl Plan {
     }
 
     /// The protocol the plan produces, when it is a stream: `JsonEvents`,
-    /// `ParserEvents` (the host's parser input), `TableRows` (natively),
-    /// or `Items` for a stream of values whose shape the runtime learns
-    /// item by item.
+    /// `ParserEvents` (the host's parser input), or `Items` for a stream of
+    /// values whose shape the runtime learns item by item.
     pub fn protocol(&self) -> Protocol {
         match self {
             Plan::Input
@@ -407,7 +406,6 @@ impl Plan {
 pub enum Protocol {
     JsonEvents,
     ParserEvents,
-    TableRows,
     Items,
     Text,
 }

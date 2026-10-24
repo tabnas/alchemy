@@ -26,17 +26,6 @@ func mustCompile(t testing.TB, src, file string) *Program {
 	return p
 }
 
-// interpreted is p with the standard compositions run through the
-// library's text.
-func interpreted(t testing.TB, p *Program) *Program {
-	t.Helper()
-	q, f := p.WithNative(false)
-	if f != nil {
-		t.Fatal(f)
-	}
-	return q
-}
-
 func jsonMember(t testing.TB, o *JSONObject, path ...string) string {
 	t.Helper()
 	var v any = o
@@ -57,23 +46,24 @@ func TestTheWorkedExampleReportsInTheSpecLayout(t *testing.T) {
 	want := "export: api-table → csv\n" +
 		"\n" +
 		"Source reads:          1\n" +
-		"Protocol:              JsonEvents/1 → TableRows/1 → Text\n" +
+		"Protocol:              JsonEvents/1 → Stream<Selected> → Stream<Value> → TableRows/1 → Text\n" +
 		"Selection:             shared prefix matcher, two capture routes\n" +
 		"Duplicate members:     rejected in captured scopes (DUPLICATE_MEMBER)\n" +
-		"Retained metadata:     .response.metadata.fields, capped at max_metadata_bytes\n" +
+		"Capture:               .response.metadata.fields, capped at max_metadata_bytes\n" +
 		"Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes\n" +
+		"Retained state:        the table's columns once bound, at most max_columns of them, no deeper than max_depth, capped at max_metadata_bytes\n" +
 		"Output order:          schema first; cells in schema order\n" +
-		"Ordering contract:     metadata completes before first row begins\n" +
+		"Ordering contract:     each item before its outputs\n" +
 		"Contract verification: runtime\n" +
-		"CSV quoting:           always\n" +
 		"External storage:      disabled\n" +
 		"\n" +
 		"Guarantee:\n" +
 		"  Memory is independent of the number of rows under the configured\n" +
-		"  depth, metadata, record, scalar/key and output limits.\n" +
+		"  depth, capture, metadata, scalar/key and output limits: the state the\n" +
+		"  step returns is capped at max_metadata_bytes. What one step computes\n" +
+		"  is the program's, bounded by the host's abort flag.\n" +
 		"\n" +
 		"Qualification:\n" +
-		"  Valid JSON that violates the metadata-first contract is rejected.\n" +
 		"  A later error can occur after earlier output has been written.\n"
 	if got := program.Explain(); got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
@@ -84,10 +74,10 @@ func TestTheWorkedExampleReportsInTheSpecLayout(t *testing.T) {
 		want string
 	}{
 		{[]string{"chain"}, `["api-table","csv"]`},
-		{[]string{"protocol"}, `["JsonEvents/1","TableRows/1","Text"]`},
-		{[]string{"confidence"}, `"proven"`},
+		{[]string{"protocol"}, `["JsonEvents/1","Stream<Selected>","Stream<Value>","TableRows/1","Text"]`},
+		{[]string{"confidence"}, `"conditional"`},
 		{[]string{"readiness"}, `"record"`},
-		{[]string{"renderer", "name"}, `"csv"`},
+		{[]string{"renderer", "name"}, `"text"`},
 		{[]string{"output"}, `"Text"`},
 	} {
 		if got := jsonMember(t, j, c.path...); got != c.want {
@@ -96,10 +86,12 @@ func TestTheWorkedExampleReportsInTheSpecLayout(t *testing.T) {
 	}
 	text := EncodeJSON(j)
 	for _, part := range []string{
-		`"retention":[{"scope":"metadata","reason":"the column descriptors, bound once they complete","selector":".response.metadata.fields","limit":"max_metadata_bytes"},{"scope":"record","reason":"one row at a time, projected into schema order and released","selector":".response.payload.deep.records[*]","limit":"max_record_bytes"}]`,
-		`"order_constraints":[{"before":"metadata completes","after":"first row begins","enforcement":"runtime"},{"before":"schema","after":"rows, then one end","enforcement":"runtime"}]`,
-		`"renderer":{"name":"csv","quoting":"always","delimiter":",","newline":"\r\n","header":true,"null_text":"","missing":"error","missing_text":null,"host":false}`,
-		`"guarantee":"Memory is independent of the number of rows under the configured depth, metadata, record, scalar/key and output limits."`,
+		`"retention":[{"scope":"subtree",`,
+		`"selector":".response.metadata.fields","limit":"max_metadata_bytes"},{"scope":"record",`,
+		`"selector":".response.payload.deep.records[*]","limit":"max_record_bytes"},{"scope":"state",`,
+		`"selector":null,"limit":"max_metadata_bytes"}]`,
+		`"order_constraints":[{"before":"each item","after":"its outputs","enforcement":"static"},{"before":"schema","after":"rows, then one end","enforcement":"runtime"}]`,
+		`"renderer":{"name":"text"}`,
 	} {
 		if !strings.Contains(text, part) {
 			t.Errorf("%s\ndoes not hold\n%s", text, part)
@@ -107,10 +99,9 @@ func TestTheWorkedExampleReportsInTheSpecLayout(t *testing.T) {
 	}
 }
 
-// An inferred binding reads one capture route, retains the columns it
-// took from the first row under max_columns, and orders nothing before the
-// rows, since there is no metadata; the library's twin routes one capture
-// too.
+// An inferred binding routes one capture, the rows, keeps the columns it
+// took from the first row as its state under max_columns, and orders
+// nothing before the rows, since there is no metadata.
 func TestAnInferredBindingReportsOneRoute(t *testing.T) {
 	src := "def b (record (entry :columns :infer) (entry :rows (path each-index)))\ndef export [input] (csv csv-options (table-from-json b input))"
 	program := mustCompile(t, src, "inferred.alc")
@@ -118,31 +109,24 @@ func TestAnInferredBindingReportsOneRoute(t *testing.T) {
 	if s.Selection != "shared prefix matcher, one capture route" {
 		t.Errorf("%s", s.Selection)
 	}
+	// The one capture is the rows, one at a time; the state is the
+	// table's columns, taken from the first row and held to max_columns.
 	if len(s.Retention) != 2 ||
-		s.Retention[0].Scope != RetainMetadata || s.Retention[0].Label != "Inferred columns:" || s.Retention[0].Limit != "max_metadata_bytes" ||
-		s.Retention[1].Scope != RetainRecord || s.Retention[1].Label != "Row capture:" || s.Retention[1].Limit != "max_record_bytes" {
-		t.Errorf("%+v", s.Retention)
+		s.Retention[0].Scope != RetainRecord || s.Retention[0].Label != "Row capture:" || s.Retention[0].Limit != "max_record_bytes" ||
+		s.Retention[1].Scope != RetainState || s.Retention[1].Label != "Retained state:" || s.Retention[1].Limit != "max_metadata_bytes" {
+		t.Fatalf("%+v", s.Retention)
 	}
+	if !strings.Contains(s.Retention[1].Reason, "at most max_columns") {
+		t.Errorf("%+v", s.Retention[1])
+	}
+	// Nothing is ordered before the rows, since there is no metadata.
 	for _, o := range s.OrderConstraints {
 		if o.Before == "metadata completes" {
 			t.Errorf("%+v", s.OrderConstraints)
 		}
 	}
-	if !strings.Contains(program.Explain(), "Inferred columns:") {
+	if !strings.Contains(program.Explain(), "Retained state:        the table's columns once bound, at most max_columns of them") {
 		t.Error(program.Explain())
-	}
-	twin := interpreted(t, program).Summary()
-	if twin.Selection != "shared prefix matcher, one capture route" {
-		t.Errorf("%s", twin.Selection)
-	}
-	var state *Retention
-	for i := range twin.Retention {
-		if twin.Retention[i].Scope == RetainState {
-			state = &twin.Retention[i]
-		}
-	}
-	if state == nil || !strings.Contains(state.Reason, "at most max_columns") || state.Limit != "max_metadata_bytes" {
-		t.Errorf("%+v", state)
 	}
 }
 
@@ -185,7 +169,7 @@ func TestEventsAfterASelectingStageKeepItsSelection(t *testing.T) {
 	if !strings.Contains(strings.Join(s.Protocol, " "), "Stream<Event>") {
 		t.Errorf("%v", s.Protocol)
 	}
-	if len(s.Retention) != 2 || s.Retention[0].Scope != RetainMetadata || s.Retention[1].Scope != RetainRecord {
+	if len(s.Retention) != 3 || s.Retention[0].Scope != RetainSubtree || s.Retention[1].Scope != RetainRecord || s.Retention[2].Scope != RetainState {
 		t.Errorf("%+v", s.Retention)
 	}
 	plain := mustCompile(t, "def export [input] (join \"\" (map (fn [e] \"x\") (events input)))", "plain.alc")
@@ -194,11 +178,10 @@ func TestEventsAfterASelectingStageKeepItsSelection(t *testing.T) {
 	}
 }
 
-func TestTheInterpretedLibraryReportsItsRouteAndState(t *testing.T) {
-	s := interpreted(t, mustCompile(t, workedExample, "export.alc")).Summary()
+func TestTheLibraryTableReportsItsRouteAndState(t *testing.T) {
+	s := mustCompile(t, workedExample, "export.alc").Summary()
 	// The library's csv validates the table events it renders
-	// (csv-table), so the chain passes through TableRows/1 as the native
-	// one does.
+	// (csv-table), so the chain passes through TableRows/1.
 	if got := strings.Join(s.Protocol, " "); got != "JsonEvents/1 Stream<Selected> Stream<Value> TableRows/1 Text" {
 		t.Errorf("%s", got)
 	}
@@ -210,12 +193,12 @@ func TestTheInterpretedLibraryReportsItsRouteAndState(t *testing.T) {
 	}
 	text := s.Text()
 	for _, part := range []string{
-		// The library's captures name the limits the native table holds the
-		// same scopes to, and the state is capped.
+		// The library's captures name the limit each scope is held to, and
+		// the state is capped.
 		"Capture:               .response.metadata.fields, capped at max_metadata_bytes\n",
 		"Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes\n",
 		// Its state is the table's columns, whose count the schema it
-		// builds holds to max_columns, as the native table's is.
+		// builds holds to max_columns.
 		"Retained state:        the table's columns once bound, at most max_columns of them, no deeper than max_depth, capped at max_metadata_bytes\n",
 		"Contract verification: runtime\n",
 		"Ordering contract:     each item before its outputs\n",
@@ -259,7 +242,7 @@ func TestTheJSONEchoAndAHostRenderedTable(t *testing.T) {
 	text := table.Explain()
 	for _, part := range []string{
 		"export: api-table\n",
-		"Protocol:              JsonEvents/1 → TableRows/1 → Text\n",
+		"Protocol:              JsonEvents/1 → Stream<Selected> → Stream<Value> → TableRows/1 → Text\n",
 		"CSV quoting:           always (the host's renderer)\n",
 	} {
 		if !strings.Contains(text, part) {
@@ -359,10 +342,8 @@ func TestTheCheckersOutputIsThePlans(t *testing.T) {
 		"def step [s x] (transition s [x])\ndef fin [s] []\ndef export [input] (as-events (scan-emit null step fin (events input)))",
 	} {
 		p := mustCompile(t, src, "t.alc")
-		for _, q := range []*Program{p, interpreted(t, p)} {
-			if q.Output() != q.PlanOutput() {
-				t.Errorf("%q (native %v): the checker says %s, the plan %s", src, q.Native(), q.Output(), q.PlanOutput())
-			}
+		if p.Output() != p.PlanOutput() {
+			t.Errorf("%q: the checker says %s, the plan %s", src, p.Output(), p.PlanOutput())
 		}
 	}
 }

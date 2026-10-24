@@ -226,7 +226,6 @@ export function compileSources(sources: ReadonlyArray<Source>, options: CompileO
     analyzed.resolved,
     analyzed.sources,
     analyzed.checked.output,
-    true,
     'reject',
     new AbortFlag(),
     options,
@@ -250,12 +249,10 @@ function rootStage(plan: Plan): Plan {
       case 'scan-emit':
       case 'map':
       case 'filter':
-      case 'table-from-json':
       case 'records':
       case 'tree-contract':
       case 'as-events':
       case 'csv-table':
-      case 'csv':
       case 'json':
         if ('input' === here.source.p || 'parser-input' === here.source.p) return here
         next = here.source
@@ -289,9 +286,6 @@ export class Program {
     // What the checker decided from `export`'s type, and so what the host
     // renders.
     readonly output: Output,
-    // Whether the standard compositions run natively (the default) or
-    // through the library's own definitions.
-    readonly native: boolean,
     // The policy for a member name repeated in a captured scope.
     readonly duplicates: Duplicates,
     // The host's cancellation, handed to every sink's runtime.
@@ -309,31 +303,22 @@ export class Program {
     resolved: Resolved,
     sources: Sources,
     output: Output,
-    native: boolean,
     duplicates: Duplicates,
     abort: AbortFlag,
     options: CompileOptions,
   ): Program {
     const rt = new Runtime(resolved, sources, options)
-      .withNative(native)
       .withDuplicates(duplicates)
       .withFuel(MAX_PLAN_STEPS)
       .withAbort(abort)
     const result = run(rt.export(options.input))
-    return new Program(resolved, sources, output, native, duplicates, abort, result, options)
-  }
-
-  // The same program with the standard compositions run through the
-  // library's own definitions (`false`) or natively (`true`, the default).
-  // The differential test runs both.
-  withNative(native: boolean): Program {
-    return Program.build(this.resolved, this.sources, this.output, native, this.duplicates, this.abort, this.options)
+    return new Program(resolved, sources, output, duplicates, abort, result, options)
   }
 
   // The same program with another policy for repeated member names in
   // captured values; the default rejects them.
   withDuplicates(duplicates: Duplicates): Program {
-    return Program.build(this.resolved, this.sources, this.output, this.native, duplicates, this.abort, this.options)
+    return Program.build(this.resolved, this.sources, this.output, duplicates, this.abort, this.options)
   }
 
   // The same program with the host's cancellation: every sink it makes
@@ -346,7 +331,6 @@ export class Program {
       this.resolved,
       this.sources,
       this.output,
-      this.native,
       this.duplicates,
       abort,
       this.result,
@@ -375,8 +359,6 @@ export class Program {
       switch (protocolOf(this.result.plan)) {
         case 'JsonEvents':
           return 'JsonEvents/1'
-        case 'TableRows':
-          return 'TableRows/1'
         default:
           return this.output
       }
@@ -397,11 +379,6 @@ export class Program {
     if (undefined === plan) return undefined
     const stage = rootStage(plan)
     switch (stage.p) {
-      case 'table-from-json': {
-        if ('record' !== stage.binding.v) return undefined
-        const rows = stage.binding.fields.get('rows')
-        return undefined !== rows && 'selector' === rows.v ? rows.selector : undefined
-      }
       case 'select':
         return stage.selector
       case 'route': {
@@ -507,7 +484,6 @@ export class Program {
 
   private lowering(limits: Limits, metrics: Metrics): Lowering {
     const rt = new Runtime(this.resolved, this.sources, this.options)
-      .withNative(this.native)
       .withDuplicates(this.duplicates)
       .withLimits(limits)
       .withAbort(this.abort)

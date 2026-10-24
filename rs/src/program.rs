@@ -478,7 +478,6 @@ impl Program {
         match &self.result {
             Val::Stream(plan) => match plan.protocol() {
                 Protocol::JsonEvents => Output::JsonEvents,
-                Protocol::TableRows => Output::TableRows,
                 // The parser's input is never a result: the checker
                 // refuses an export that answers it (`bad_output`).
                 Protocol::Items | Protocol::Text | Protocol::ParserEvents => self.output,

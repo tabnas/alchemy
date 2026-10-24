@@ -15,10 +15,10 @@ export const SOURCES: ReadonlyArray<readonly [string, string]> = [
 ; columns, unless the options say \`(entry :no-columns :empty)\`, and a
 ; delimiter no reader could take. A table of no columns that the options
 ; let through is written as the empty document: no header and no record,
-; since a record of no fields is no line a reader could tell from none. The runtime runs \`csv\`
-; natively when the options record maps onto the renderer's dialect, and
-; the differential test proves that path and this text produce the same
-; bytes, or fail with the same code.
+; since a record of no fields is no line a reader could tell from none.
+; This text is the implementation: the runtime runs it as it is written,
+; in every runtime, and nothing stands in for it; a program's \`csv\` is
+; always this text.
 
 def csv-options
   record
@@ -164,13 +164,13 @@ def wrap-array [input]
 ; metadata-first policy (design document section 12.2), or with the
 ; columns taken from the first row when the binding's \`:columns\` is the
 ; keyword \`:infer\`. The only engine operations here are route capture,
-; transitions, value operations and stream scanning; the runtime runs
-; \`table-from-json\` natively when the binding is a record of two
-; selectors and a column function, or of \`:infer\` and a rows selector,
-; and the differential test proves that path and this text produce the
-; same bytes. The captures name the limits the native table holds the
-; same scopes to: the metadata under max_metadata_bytes, each row under
-; max_record_bytes.
+; transitions, value operations and stream scanning. This text is the
+; implementation: the runtime runs it as it is written, in every runtime,
+; and nothing stands in for it; a program's \`table-from-json\` is always
+; this text, whatever the shape of its binding. The captures name the
+; limit each scope is held to: the metadata under max_metadata_bytes,
+; each row under max_record_bytes, so a host's limits hold on the
+; library's table as on any route.
 
 def public-column [column]
   record

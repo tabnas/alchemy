@@ -13,17 +13,15 @@ import (
 // effects.go: the effect summary and the plan report (rs/src/effects.rs).
 //
 // The summary is computed from the plan the program built, not from its
-// text: the plan knows which stages run (the native table transducer or a
-// route and a scan-emit, a renderer or the text algebra) and what each
-// retains. Explain prints the report in the layout of spec 15.5;
+// text: the plan knows which stages run (a route and a scan-emit, a
+// renderer or the text algebra) and what each retains. Explain prints the report in the layout of spec 15.5;
 // EffectSummary.JSON is the same information as one object.
 //
 // The summary reads the plan through a view: PlanView, the facts the
 // summary needs, with the plan's stages from the input outward as Stage
 // values. Program.PlanView builds the view from the plan the program built
-// (the Rust `stages` walk, the library-table test, the CSV dialect and the
-// inferred-binding test, in program.go); the summary, the text and the
-// JSON are all here.
+// (the Rust `stages` walk and the library-table test, in program.go); the
+// summary, the text and the JSON are all here.
 
 // StageKind is the kind of one stage of a plan.
 type StageKind uint8
@@ -39,10 +37,8 @@ const (
 	StageScanEmit
 	StageMap
 	StageFilter
-	StageTableFromJSON
 	StageRecords
 	StageCsvTable
-	StageCsv
 	StageJSON
 	StageConcatMap
 	StageJoin
@@ -71,8 +67,8 @@ type Capture struct {
 }
 
 // CsvProfile is the CSV renderer's dialect as the report prints it: the
-// program's own options for its csv, or the defaults when the host renders
-// a table.
+// defaults, which the host renders a table result with; a program's own
+// csv is the library's text, and renders as text.
 type CsvProfile struct {
 	Delimiter      rune
 	Newline        string
@@ -91,11 +87,6 @@ func DefaultCsvProfile() CsvProfile {
 // Stage is one stage of a plan, with what the summary reads from it.
 type Stage struct {
 	Kind StageKind
-	// StageTableFromJSON: the binding's `columns` and `rows` selectors (nil
-	// when the field is not one) and whether its columns are inferred.
-	Columns  Selector
-	Rows     Selector
-	Inferred bool
 	// StageRoute: its captures.
 	Captures []Capture
 	// StageSelect: its selector.
@@ -103,8 +94,6 @@ type Stage struct {
 	// StageScanEmit: whether the scan is the standard library's table (its
 	// table-step, bare or partially applied, from no-schema).
 	LibraryTable bool
-	// StageCsv: the dialect lowering builds the renderer with.
-	Csv CsvProfile
 }
 
 // Duplicates is the policy for a member name an object of the source
@@ -230,7 +219,8 @@ const (
 )
 
 // RendererProfile is the renderer that writes the text: Host says the host
-// chose it for a table or events result.
+// chose it, as it does every CSV renderer (a program's own csv is the
+// library's text) and the JSON renderer of an events result.
 type RendererProfile struct {
 	Kind RendererKind
 	Host bool
@@ -266,7 +256,7 @@ func protocolOf(s StageKind) string {
 		return "JsonEvents/1"
 	case StageParserInput:
 		return "ParserEvents/1"
-	case StageTableFromJSON, StageCsvTable:
+	case StageCsvTable:
 		return "TableRows/1"
 	case StageRoute:
 		return "Stream<Selected>"
@@ -312,12 +302,12 @@ func chainOf(body *Expr) []string {
 	return chain
 }
 
-// tabular is whether the plan produces table events, natively or as
-// tagged values the host's adapter reads.
+// tabular is whether the plan produces table events, as tagged values a
+// renderer's adapter reads.
 func tabular(stages []Stage, output Output) bool {
 	for _, s := range stages {
 		switch s.Kind {
-		case StageTableFromJSON, StageCsvTable, StageCsv, StageRecords:
+		case StageCsvTable, StageRecords:
 			return true
 		}
 	}
@@ -336,7 +326,7 @@ func duplicatesOf(stages []Stage, policy Duplicates, finite bool) string {
 	}
 	for _, s := range stages {
 		switch s.Kind {
-		case StageRoute, StageSelect, StageTableFromJSON:
+		case StageRoute, StageSelect:
 			switch policy {
 			case DuplicatesLastWins:
 				return "the last value wins in captured scopes"
@@ -421,11 +411,13 @@ func Summarize(resolved *Resolved, view PlanView) *EffectSummary {
 		last = &stages[len(stages)-1]
 	}
 	switch {
-	case last != nil && last.Kind == StageCsv:
-		renderer = RendererProfile{Kind: RendererCsv, Csv: last.Csv}
 	case last != nil && last.Kind == StageJSON:
 		renderer = RendererProfile{Kind: RendererJSON}
 	case output == OutputTableRows:
+		// The items become table events for the host's renderer.
+		if protocol[len(protocol)-1] != "TableRows/1" {
+			protocol = append(protocol, "TableRows/1")
+		}
 		protocol = append(protocol, "Text")
 		renderer = RendererProfile{Kind: RendererCsv, Host: true, Csv: DefaultCsvProfile()}
 	case output == OutputJsonEvents:
@@ -443,39 +435,10 @@ func Summarize(resolved *Resolved, view PlanView) *EffectSummary {
 	outputOrder := "source order"
 	for _, stage := range stages {
 		switch stage.Kind {
-		case StageTableFromJSON:
-			readiness = ReadyRecord
+		case StageCsvTable:
+			// The library's csv validates its table and writes it in schema
+			// order.
 			outputOrder = "schema first; cells in schema order"
-			if stage.Inferred {
-				selection = "shared prefix matcher, one capture route"
-				retention = append(retention, Retention{
-					Scope:  RetainMetadata,
-					Label:  "Inferred columns:",
-					Reason: "the first row's keys, taken as the columns once it completes, at most max_columns of them",
-					Limit:  "max_metadata_bytes",
-				})
-			} else {
-				selection = "shared prefix matcher, two capture routes"
-				retention = append(retention, Retention{
-					Scope:    RetainMetadata,
-					Label:    "Retained metadata:",
-					Reason:   "the column descriptors, bound once they complete",
-					Selector: stage.Columns,
-					Limit:    "max_metadata_bytes",
-				})
-			}
-			retention = append(retention, Retention{
-				Scope:    RetainRecord,
-				Label:    "Row capture:",
-				Reason:   "one row at a time, projected into schema order and released",
-				Selector: stage.Rows,
-				Limit:    "max_record_bytes",
-			})
-			if !stage.Inferred {
-				orderConstraints = append(orderConstraints, OrderConstraint{
-					Before: "metadata completes", After: "first row begins", Enforcement: "runtime",
-				})
-			}
 		case StageRoute:
 			plural := "s"
 			if len(stage.Captures) == 1 {
@@ -549,7 +512,7 @@ func Summarize(resolved *Resolved, view PlanView) *EffectSummary {
 			})
 		}
 	}
-	if tabular(stages, output) && !(len(stages) > 0 && stages[0].Kind == StageTableFromJSON) {
+	if tabular(stages, output) {
 		// Table events reach a renderer: it validates the protocol.
 		has := false
 		for _, c := range orderConstraints {
@@ -645,11 +608,7 @@ func (s *EffectSummary) Text() string {
 	lines = append(lines, line{"Ordering contract:", contract}, line{"Contract verification:", verification})
 	switch s.Renderer.Kind {
 	case RendererCsv:
-		v := "always"
-		if s.Renderer.Host {
-			v = "always (the host's renderer)"
-		}
-		lines = append(lines, line{"CSV quoting:", v})
+		lines = append(lines, line{"CSV quoting:", "always (the host's renderer)"})
 	case RendererJSON:
 		v := "compact, one document, trailing newline"
 		if s.Renderer.Host {
@@ -733,7 +692,7 @@ func (s *EffectSummary) JSON() *JSONObject {
 			set("null_text", c.NullText).
 			set("missing", missing).
 			set("missing_text", missingText).
-			set("host", s.Renderer.Host)
+			set("host", true)
 	case RendererJSON:
 		renderer = (&JSONObject{}).set("name", "json").set("indent", nil).set("trailing_newline", true).set("host", s.Renderer.Host)
 	default:

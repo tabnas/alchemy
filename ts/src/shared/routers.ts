@@ -12,12 +12,10 @@
 
 import { Duplicates } from './datum'
 import { AbortFlag, Limits, Metrics } from './limits'
-import { ParserSink } from './parser-event'
 import { CaptureSpec, RouteSink } from './route'
 import { Transition } from './scan'
 import { Flow, Sink } from './sink'
-import { TableBinding, TableSink } from './table'
-import { TreeSpec } from './tree'
+import { TableSink } from './table'
 
 // What `Routers.scanEmit` makes: the operator, fed its items with `item`
 // and finished with `finish` exactly once, when the input completed
@@ -41,17 +39,6 @@ export interface Routers {
     downstream: RouteSink,
   ): Sink
 
-  // A `TableFromJson`: the metadata-first table transducer, `JsonEvents/1`
-  // in and `TableRows/1` out to `sink`, rows materialized under
-  // `max_record_bytes` and metadata under `max_metadata_bytes`.
-  tableFromJson(
-    binding: TableBinding,
-    limits: Limits,
-    duplicates: Duplicates,
-    metrics: Metrics,
-    sink: TableSink,
-  ): Sink
-
   // A `ScanEmit`: the state evolved from `initial` by `step` over each
   // item, `finish` turning the final state into the closing items, every
   // output handed to `out`.
@@ -66,21 +53,4 @@ export interface Routers {
   // `max_key_bytes`, `max_scalar_bytes`), the abort flag, polled per event,
   // and the source metrics, counted into `metrics`.
   guarded(inner: Sink, limits: Limits, abort: AbortFlag, metrics: Metrics): Sink
-
-  // A `TransduceTree`: the library's `transduce-tree` run natively, the
-  // parser's rule passes in and a tree's JSON events out to `downstream`,
-  // as `TreeSpec` says a native must make them. The lowering asks for it
-  // where a program applies `transduce-tree` to the host's parser events
-  // with a spec of the standard shape, the runtime's native compositions
-  // on, and hands it the sink the library's `as-events` would write to,
-  // the source's limits already guarding it. Optional: routers that leave
-  // it out, or answer `undefined`, have the library's text run instead.
-  transduceTree?(spec: TreeSpec, downstream: Sink): ParserSink | undefined
-
-  // Whether `transduceTree`'s native reads a spec's `:member` and `:text`,
-  // and holds a `:text` rule's text to `TreeSpec.maxTextBytes` as it grows.
-  // Optional: routers written before those fields leave it out, and the
-  // lowering then runs the library's text for a spec that uses either, so
-  // the native and the text never disagree.
-  transduceTreeReadsMemberAndText?(): boolean
 }

@@ -234,8 +234,8 @@ fn chain_of(body: &Expr) -> Vec<String> {
     chain
 }
 
-/// Whether the plan produces table events, natively or as tagged values
-/// the host's adapter reads.
+/// Whether the plan produces table events, as tagged values a renderer's
+/// adapter reads.
 fn tabular(stages: &[&Plan], output: Output) -> bool {
     stages
         .iter()
@@ -449,9 +449,9 @@ pub fn summarize(program: &Program) -> EffectSummary {
             }
             Plan::ScanEmit { init, step, .. } => {
                 confidence = Confidence::Conditional;
-                // The library's twin of `table-from-json` keeps the table's
-                // columns as its state, and the `schema` it builds holds
-                // them to `max_columns`, as the native table does.
+                // The library's `table-from-json` keeps the table's columns
+                // as its state, and the `schema` it builds holds them to
+                // `max_columns`.
                 let reason = if is_library_table(init, step) {
                     "the table's columns once bound, at most max_columns of them, no deeper than max_depth"
                 } else {

@@ -15,14 +15,6 @@
 //! natives. Lexical, so a program that defines its own `csv` changes what
 //! its own code means and nothing the library does.
 //!
-//! The two standard compositions run natively when their arguments have
-//! the standard shapes (`table-from-json BINDING input` and `csv OPTIONS
-//! events`, from the library's own definitions, not a program's shadowing
-//! ones), and the lowering runs the library's `transduce-tree` natively
-//! where the host's routers offer it (`crate::lower`);
-//! [`Runtime::with_native`] turns both off so the differential test can
-//! run the interpreted text.
-//!
 //! Failures: a wrong argument count is `DSL_TYPE_ERROR` (`arity`); a value
 //! of the wrong kind where the program chose it is `DSL_TYPE_ERROR`
 //! (`type_mismatch`); a `fail "message"` is `INPUT_INVALID` at the form's
@@ -1095,8 +1087,7 @@ impl Runtime {
 
     /// The compact JSON text of a vector or a record, as a cell writes it
     /// (number lexemes kept), bounded by `max_scalar_bytes`: the text is
-    /// one scalar of the output, and the native table holds a container
-    /// cell's text to the same bound. The failure comes exactly when the
+    /// one scalar of the output. The failure comes exactly when the
     /// text is longer than the bound; a lower bound of its length is
     /// counted first, without writing it, so a value built by sharing (a
     /// vector of a vector of itself, forty levels deep) fails at the limit

@@ -27,10 +27,6 @@ func (inertRouters) Router([]shared.CaptureSpec, shared.Limits, shared.Duplicate
 	panic(noStages)
 }
 
-func (inertRouters) TableFromJSON(shared.TableBinding, shared.Limits, shared.Duplicates, *shared.Metrics, shared.TableSink) (shared.Sink, *Fail) {
-	panic(noStages)
-}
-
 func (inertRouters) ScanEmit(any, func(any, any) (shared.Transition[any, any], *Fail), func(any) ([]any, *Fail), func(any) (shared.Flow, *Fail)) shared.ScanEmitter {
 	panic(noStages)
 }

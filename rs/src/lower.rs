@@ -14,29 +14,28 @@
 //!   ([`Renderers::records_to_json`]) over table events, or an adapter
 //!   ([`TaggedToJson`]) reading the tagged events an interpreted stream
 //!   yields, the reverse of `events`;
-//! - **table** (`TableRows/1`): the native table transducer
-//!   ([`Routers::table_from_json`]) over events, or an adapter reading the
-//!   tagged `schema`, `row` and `table-end` values an interpreted stream
-//!   yields;
+//! - **table** (`TableRows/1`): an adapter reading the tagged `schema`,
+//!   `row` and `table-end` values a stream yields;
 //! - **items** (a stream of values): a router ([`Routers::router`]) over
 //!   events for `route` and `select`, [`EventsToItems`] for `events`,
 //!   [`ParserEventsToItems`] for `parser-events` (the head of the chain
 //!   when the host declares parser events: it is what the host pushes the
 //!   rule passes into, [`Lowering::parser_head`]), the
-//!   operator [`Routers::scan_emit`] answers for `scan-emit`, per-item
-//!   stages for `map` and `filter`, and an adapter turning native table
-//!   events into the tagged values a program pattern-matches;
-//! - **text**: the CSV and JSON renderers ([`Renderers::csv`],
-//!   [`Renderers::json`]) over their protocols, `concat-map` and `join`
+//!   operator [`Routers::scan_emit`] answers for `scan-emit`, and per-item
+//!   stages for `map` and `filter`;
+//! - **text**: the JSON renderer ([`Renderers::json`]) over events for
+//!   `json`, the host's CSV renderer ([`Renderers::csv`]) or
+//!   [`Renderers::records_to_json`] over a table result
+//!   ([`Lowering::sink_as`]), `concat-map` and `join`
 //!   over a stream of items, `replace-text` as [`Renderers::replace_text`],
 //!   and `concat` around one live text as a frame that writes its prefix
 //!   before the first fragment and its suffix at the flush.
 //!
 //! A text that does not reach the input is finite and is written whole
-//! wherever it lands ([`write_finite`]): a row of an interpreted CSV is
+//! wherever it lands ([`write_finite`]): a row of the library's CSV is
 //! rendered into a scratch string and written as one fragment, so a
-//! failure in the middle of a row leaves no half row behind, as the native
-//! renderer promises. Errors are `Fail`s with the transduce and render
+//! failure in the middle of a row leaves no half row behind, as the host's
+//! CSV renderer promises. Errors are `Fail`s with the transduce and render
 //! codes unchanged; a stream given to a stage of another protocol is
 //! `DSL_TYPE_ERROR` with the `protocol_mismatch` finer code, the same word
 //! the checker uses when it can see it first.
@@ -145,10 +144,9 @@ fn cell(rt: &Runtime, v: &Val) -> Result<Cell, Fail> {
 /// The text of a column's label, one policy for every table: a string as
 /// it is, a number by its lexeme, a boolean by its name (as `scalar-text`
 /// would write the same header cell); `missing` is `MISSING_VALUE`, and
-/// anything else `INPUT_INVALID`. The native table binds its columns by
-/// it, the adapter reading a program's `schema` values by it, and
-/// `csv-table` validates the library's schema by it, so a label is
-/// accepted or refused alike whichever path renders it.
+/// anything else `INPUT_INVALID`. The adapter reading a program's `schema`
+/// values takes it, and `csv-table` validates the library's schema by it,
+/// so a label is accepted or refused alike whichever renders it.
 fn label_text(label: &Val) -> Result<Box<str>, Fail> {
     Ok(match label {
         Val::Str(s) => Box::from(&**s),
@@ -665,7 +663,7 @@ struct ScanStage {
 }
 
 /// What a `scan-emit` state may hold: what a stage keeps from row to row,
-/// as the native table keeps its bound columns, so `max_metadata_bytes`
+/// as the library's table keeps its bound columns, so `max_metadata_bytes`
 /// in the transduce measure; and no deeper than a captured value may be,
 /// `max_depth`, since a state that wraps itself once per item would
 /// otherwise nest without bound (and be dropped, one level inside the
@@ -823,15 +821,13 @@ impl ItemSink for FilterStage {
     }
 }
 
-/// The tagged values an interpreted stream yields, as native table
-/// events. One schema first, rows, one `table-end`: the renderer beneath
+/// The tagged values a stream yields, as table events. One schema first, rows, one `table-end`: the renderer beneath
 /// validates the sequence; what is validated here is that each item is a
 /// table event at all, of the table protocol's shape (at most
 /// `max_columns` columns, labels by [`label_text`]), and that the stream
 /// did end with `table-end`. It is the last table stage before a
-/// renderer, so it counts each row in `metrics.rows`, as the native table
-/// counts the rows it hands a renderer, unless `count_rows` says a later
-/// stage does ([`Lowering::items`]).
+/// renderer, so it counts each row in `metrics.rows`, unless `count_rows`
+/// says a later stage does ([`Lowering::items`]).
 struct TaggedToTable {
     rt: Arc<Runtime>,
     metrics: Arc<Metrics>,
@@ -890,13 +886,14 @@ enum Phase {
 }
 
 /// `csv-table options events`: the protocol validator of spec section
-/// 13.2 in the library's own `csv`. It checks exactly what the native path
-/// checks, in the same order and with the same codes (the adapter above,
-/// then the CSV renderer: the shape of each event, `max_columns` and the
-/// labels, then one schema first, at least one column, rows as wide as the
-/// schema, one `table-end`), and passes each event on unchanged for the
-/// text to render; the cells' own checks (a number's lexeme, a missing
-/// value) are the text's `scalar-text`, as they are the renderer's.
+/// 13.2 in the library's own `csv`. It checks what the host's CSV renderer
+/// checks of a table result, in the same order and with the same codes
+/// (the adapter above, then the renderer: the shape of each event,
+/// `max_columns` and the labels, then one schema first, at least one
+/// column, rows as wide as the schema, one `table-end`), and passes each
+/// event on unchanged for the text to render; the cells' own checks (a
+/// number's lexeme, a missing value) are the text's `scalar-text`, as they
+/// are the renderer's.
 struct CsvTableStage {
     rt: Arc<Runtime>,
     metrics: Arc<Metrics>,
@@ -1457,15 +1454,12 @@ impl<'a> Lowering<'a> {
     ///
     /// `counted_later` says whether a table stage after `down` counts the
     /// rows these items carry. Each row is counted in `metrics.rows` once,
-    /// by the last table stage it passes, as the interpreted path counts
-    /// it: the adapter to a renderer, or a `csv-table` whose rows reach no
-    /// later table stage, or the native table when it hands its rows
-    /// straight to a renderer or to `records`. The flag passes through a
-    /// `map`, a `filter` and a `scan-emit` unchanged, so a row a filter
-    /// drops is not counted and one a scan adds is; a table stage sets it
-    /// for its own source; a text over items, and `records`, clear it. The
-    /// native table's rows that become items are never its own to count:
-    /// the library's table, a `scan-emit`, counts none.
+    /// by the last table stage it passes: the adapter to a renderer, or a
+    /// `csv-table` whose rows reach no later table stage. The flag passes
+    /// through a `map`, a `filter` and a `scan-emit` unchanged, so a row a
+    /// filter drops is not counted and one a scan adds is; a table stage
+    /// sets it for its own source; a text over items, and `records`, clear
+    /// it. The library's table, a `scan-emit`, counts none.
     fn items(&self, plan: &Arc<Plan>, down: Items, counted_later: bool) -> Result<EventSink, Fail> {
         match &**plan {
             Plan::Route { specs, source } => {

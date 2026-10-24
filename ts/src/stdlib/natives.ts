@@ -12,10 +12,8 @@
 // stream answers a plan the runtime lowers once.
 //
 // Failures on data (a descriptor that is not an object, a path segment that
-// is not a string) are `INPUT_INVALID`, the code the native table
-// transducer raises for the same shapes, so the interpreted and the native
-// standard library fail alike; a value of the wrong kind where the program,
-// not the data, chose it is `DSL_TYPE_ERROR`.
+// is not a string) are `INPUT_INVALID`: the data is at fault; a value of the
+// wrong kind where the program, not the data, chose it is `DSL_TYPE_ERROR`.
 //
 // An implementation answers its value, or, when it applies functions
 // (`map` and `filter` over a vector), the generator of a walk the
@@ -188,8 +186,8 @@ const POSITIONAL_MAX = 1e21
 // is, so that building a plan asks nothing of the renderers a host passes.
 // The digits are the shortest that round-trip, as `toExponential()` with no
 // argument gives them; only the layout is chosen here. The two must agree
-// byte for byte, which the differential test checks on every number without
-// a lexeme (alchemy-cli runs it, on render's renderers).
+// byte for byte; alchemy-cli, which has both, holds them to it on every
+// number without a lexeme.
 //
 // The form that takes the renderers first is the one 0.2.3 published,
 // kept so a caller of it still gets the right text; they are not consulted.
@@ -258,9 +256,7 @@ export function numberText(
 
 // `get key data`: a record's field, `missing` for an absent one or from
 // `missing`; `INPUT_INVALID` from other data, `type_mismatch` from what is
-// not data. The native table binds a column record by the same rule, so a
-// column function that answers something other than a record fails alike
-// both ways.
+// not data.
 export function getField(key: string, data: Val): Val {
   if ('record' === data.v) return field(data, key) as Val
   if (isMissing(data)) return missingVal()
@@ -1396,9 +1392,8 @@ function constructor(name: string): NativeImpl {
 
 // `schema columns`: the table's one schema. A table has at most
 // `max_columns` columns, so a schema past it is refused where it is built,
-// whatever consumes it: the native table binds no more, and the library's
-// twin of it, whose events may reach no renderer that would check them, is
-// held to the same count.
+// whatever consumes it, since its events may reach no renderer that would
+// check them.
 function schema(rt: Runtime, a: ReadonlyArray<Val>): Val {
   const columns = a[0]
   if ('vector' === columns.v) {
