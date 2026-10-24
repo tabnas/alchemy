@@ -15,7 +15,6 @@ import { AbortFlag, Limits, Metrics } from './limits'
 import { CaptureSpec, RouteSink } from './route'
 import { Transition } from './scan'
 import { Flow, Sink } from './sink'
-import { TableSink } from './table'
 
 // What `Routers.scanEmit` makes: the operator, fed its items with `item`
 // and finished with `finish` exactly once, when the input completed
