@@ -90,7 +90,6 @@ pub struct Program {
     input: Input,
     /// What the checker decided from `export`'s type.
     output: Output,
-    native: bool,
     duplicates: Duplicates,
     /// The host's cancellation, handed to every sink's runtime.
     abort: AbortFlag,
@@ -113,7 +112,6 @@ impl std::fmt::Debug for Program {
             .field("file", &self.resolved.file)
             .field("input", &self.input)
             .field("output", &self.output())
-            .field("native", &self.native)
             .finish()
     }
 }
@@ -303,7 +301,6 @@ pub fn compile_sources_with(
             linked,
             input,
             checked.output,
-            true,
             Duplicates::Reject,
             AbortFlag::new(),
             injected.clone(),
@@ -372,37 +369,32 @@ fn on_stack<T: Send>(work: impl FnOnce() -> Result<T, Fail> + Send) -> Result<T,
 }
 
 impl Program {
-    #[allow(clippy::too_many_arguments)]
     fn build(
         resolved: Arc<Resolved>,
         sources: Sources,
         input: Input,
         output: Output,
-        native: bool,
         duplicates: Duplicates,
         abort: AbortFlag,
         injected: Injected,
     ) -> Result<Program, Fail> {
         on_stack(|| {
             Program::build_here(
-                resolved, sources, input, output, native, duplicates, abort, injected,
+                resolved, sources, input, output, duplicates, abort, injected,
             )
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build_here(
         resolved: Arc<Resolved>,
         sources: Sources,
         input: Input,
         output: Output,
-        native: bool,
         duplicates: Duplicates,
         abort: AbortFlag,
         injected: Injected,
     ) -> Result<Program, Fail> {
         let result = Runtime::new(resolved.clone(), sources.clone())
-            .with_native(native)
             .with_duplicates(duplicates)
             .with_fuel(Some(MAX_PLAN_STEPS))
             .with_abort(abort.clone())
@@ -412,28 +404,11 @@ impl Program {
             sources,
             input,
             output,
-            native,
             duplicates,
             abort,
             result,
             injected,
         })
-    }
-
-    /// The same program with the standard compositions run through the
-    /// library's own definitions (`false`) or natively (`true`, the
-    /// default). The differential test runs both.
-    pub fn with_native(&self, native: bool) -> Result<Program, Fail> {
-        Program::build(
-            self.resolved.clone(),
-            self.sources.clone(),
-            self.input,
-            self.output,
-            native,
-            self.duplicates,
-            self.abort.clone(),
-            self.injected.clone(),
-        )
     }
 
     /// The same program with another policy for repeated member names in
@@ -444,7 +419,6 @@ impl Program {
             self.sources.clone(),
             self.input,
             self.output,
-            self.native,
             duplicates,
             self.abort.clone(),
             self.injected.clone(),
@@ -461,10 +435,6 @@ impl Program {
             abort,
             ..self.clone()
         }
-    }
-
-    pub fn native(&self) -> bool {
-        self.native
     }
 
     /// The policy for a member name repeated in a captured scope.
@@ -524,13 +494,6 @@ impl Program {
     /// under it.
     pub fn row_selector(&self) -> Option<&Selector> {
         match root_stage(self.plan()?) {
-            Plan::TableFromJson {
-                binding: Val::Record(fields),
-                ..
-            } => match fields.get("rows") {
-                Some(Val::Selector(s)) => Some(&**s),
-                _ => None,
-            },
             Plan::Select { selector, .. } => Some(selector),
             Plan::Route { specs, .. } => {
                 let multi: Vec<&Selector> = specs
@@ -684,7 +647,6 @@ impl Program {
     fn lowering<'l>(&self, limits: &'l Limits, metrics: Arc<Metrics>) -> Lowering<'l> {
         let rt = Arc::new(
             Runtime::new(self.resolved.clone(), self.sources.clone())
-                .with_native(self.native)
                 .with_duplicates(self.duplicates)
                 .with_limits(limits)
                 .with_abort(self.abort.clone()),
@@ -713,12 +675,10 @@ fn root_stage(plan: &Plan) -> &Plan {
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
-            | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
             | Plan::TreeContract { source }
             | Plan::AsEvents { source }
             | Plan::CsvTable { source, .. }
-            | Plan::Csv { source, .. }
             | Plan::Json { source, .. } => {
                 if matches!(**source, Plan::Input | Plan::ParserInput) {
                     return here;
@@ -759,13 +719,6 @@ mod tests {
         assert_eq!(
             p.row_selector().unwrap().to_string(),
             ".response.payload.deep.records[*]"
-        );
-        assert!(p.native());
-        let slow = p.with_native(false).unwrap();
-        assert!(!slow.native());
-        assert_eq!(
-            slow.row_selector().map(ToString::to_string).as_deref(),
-            Some(".response.payload.deep.records[*]")
         );
         let table = compile(&PROGRAM.replace("    csv csv-options\n", ""), "t.alc").unwrap();
         assert_eq!(table.output(), Output::TableRows);

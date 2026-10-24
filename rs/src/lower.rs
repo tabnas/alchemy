@@ -42,7 +42,6 @@
 //! the checker uses when it can see it first.
 
 use std::cell::RefCell;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use indexmap::IndexMap;
@@ -52,16 +51,13 @@ use crate::interp::{Bounds, Runtime};
 use crate::program::Output;
 use crate::shared::limits::NODE_BYTES;
 use crate::shared::{
-    BoundColumn, CaptureSpec, Cell, Code, CsvOptions, Datum, Fail, Flow, JoinOut, JsonEvent,
-    JsonOptions, Limits, Metrics, MissingText, Newline, Number, ParserEvent, ParserSink,
-    PublicColumn, RecordsSpec, Renderers, RouteSink, Routers, RulePass, ScanEmitter, ScanFinish,
-    ScanOut, ScanStep, Schema, Selected, Sink, TableBinding, TableEvent, TableSink, TextOut,
-    Transition, TreeContainer, TreeContract, TreeKey, TreeRule, TreeScalar, TreeSpec,
+    CaptureSpec, Cell, Code, CsvOptions, Datum, Fail, Flow, JoinOut, JsonEvent, JsonOptions,
+    Limits, Metrics, Number, ParserEvent, ParserSink, PublicColumn, Renderers, RouteSink, Routers,
+    RulePass, ScanEmitter, ScanFinish, ScanOut, ScanStep, Selected, Sink, TableEvent, TableSink,
+    TextOut, Transition, TreeContract,
 };
-use crate::stdlib::registry::{as_index, capture_budget, get_field, number_text, truth};
-use crate::value::{
-    selector_segments, type_error, Func, NonFinite, Plan, Protocol, Scope, Seq, Val,
-};
+use crate::stdlib::registry::{capture_budget, number_text, truth};
+use crate::value::{type_error, Func, NonFinite, Plan, Protocol, Seq, Val};
 
 /// The output every text stage writes to.
 pub type Out = Box<dyn TextOut + Send>;
@@ -109,178 +105,6 @@ fn protocol_mismatch(message: impl std::fmt::Display) -> Fail {
     Fail::new(Code::DslTypeError, format!("protocol_mismatch: {message}"))
 }
 
-/// Whether a value has the shape of the standard table binding: a record
-/// with `:columns` and `:rows` selectors and a `:column` function, or
-/// with `:columns` the keyword `:infer` (the columns are the first row's
-/// keys, and `:column` is not read) and a `:rows` selector.
-pub fn is_table_binding(v: &Val) -> bool {
-    let Val::Record(fields) = v else {
-        return false;
-    };
-    let rows = matches!(fields.get("rows"), Some(Val::Selector(_)));
-    match fields.get("columns") {
-        Some(Val::Selector(_)) => rows && matches!(fields.get("column"), Some(Val::Fn(_))),
-        Some(Val::Keyword(k)) => rows && &**k == "infer",
-        _ => false,
-    }
-}
-
-/// Whether a table binding takes its columns from the first row:
-/// `:columns` is the keyword `:infer`.
-pub fn is_inferred(binding: &Val) -> bool {
-    matches!(binding.field("columns"), Some(Val::Keyword(k)) if &*k == "infer")
-}
-
-/// The spec of a `transduce-tree`, when it has the standard shape
-/// [`TreeSpec`] holds: a record of records, each entry's `:container`
-/// `:object` or `:array`, its `:key` and its `:member` each a string or a
-/// token's index (a non-negative integer, as `path` takes one), its
-/// `:scalar` a token's index or `:value`, its `:text` a boolean, any of
-/// the five left out. An entry's other fields are not read, as the
-/// library reads none. Any other spec runs the library's own
-/// `transduce-tree`.
-pub fn tree_spec(v: &Val) -> Option<TreeSpec> {
-    let Val::Record(rules) = v else {
-        return None;
-    };
-    let mut spec = TreeSpec::new();
-    for (name, entry) in rules.iter() {
-        let Val::Record(fields) = entry else {
-            return None;
-        };
-        let container = match fields.get("container") {
-            None => None,
-            Some(Val::Keyword(k)) if &**k == "object" => Some(TreeContainer::Object),
-            Some(Val::Keyword(k)) if &**k == "array" => Some(TreeContainer::Array),
-            Some(_) => return None,
-        };
-        let named = |field: &str| match fields.get(field) {
-            None => Some(None),
-            Some(Val::Str(name)) => Some(Some(TreeKey::Name(Box::from(&**name)))),
-            Some(index) => Some(Some(TreeKey::Token(as_index(index)?))),
-        };
-        let key = named("key")?;
-        let member = named("member")?;
-        let scalar = match fields.get("scalar") {
-            None => None,
-            Some(Val::Keyword(k)) if &**k == "value" => Some(TreeScalar::Value),
-            Some(index) => Some(TreeScalar::Token(as_index(index)?)),
-        };
-        let text = match fields.get("text") {
-            None => false,
-            Some(Val::Bool(b)) => *b,
-            Some(_) => return None,
-        };
-        spec = spec.with(
-            name,
-            TreeRule {
-                container,
-                key,
-                scalar,
-                member,
-                text,
-            },
-        );
-    }
-    Some(spec)
-}
-
-/// The spec of a `transduce-records`, when it has the standard shape
-/// [`RecordsSpec`] holds: a record whose `:document`, `:record` and
-/// `:cell` are strings, and, where they are given, whose `:empty` and
-/// `:unnamed` are strings, whose `:header` is a boolean and whose `:fill`
-/// is a scalar. Its other fields are not read, as the library reads none.
-/// Any other spec runs the library's own `transduce-records`.
-pub fn records_spec(v: &Val) -> Option<RecordsSpec> {
-    let Val::Record(fields) = v else {
-        return None;
-    };
-    let string = |field: &str| match fields.get(field) {
-        Some(Val::Str(s)) => Some(String::from(&**s)),
-        _ => None,
-    };
-    let mut spec = RecordsSpec::new(&string("document")?, &string("record")?, &string("cell")?);
-    match fields.get("empty") {
-        None => {}
-        Some(Val::Str(group)) => spec.empty = Some(Box::from(&**group)),
-        Some(_) => return None,
-    }
-    match fields.get("unnamed") {
-        None => {}
-        Some(Val::Str(prefix)) => spec.unnamed = Box::from(&**prefix),
-        Some(_) => return None,
-    }
-    match fields.get("header") {
-        None => {}
-        Some(Val::Bool(header)) => spec.header = *header,
-        Some(_) => return None,
-    }
-    match fields.get("fill") {
-        None => {}
-        Some(fill @ (Val::Str(_) | Val::Num { .. } | Val::Bool(_) | Val::Null)) => {
-            spec.fill = fill.to_datum().ok()?;
-        }
-        Some(_) => return None,
-    }
-    Some(spec)
-}
-
-/// Whether `f` is the standard library's definition `name`, not a
-/// program's own of that name.
-fn is_library(f: &Func, name: &str) -> bool {
-    matches!(f, Func::Closure(c) if c.scope == Scope::Stdlib && c.name.as_deref() == Some(name))
-}
-
-/// The renderer's dialect for a `csv-options` record, when every field
-/// has a value the renderer accepts: `:delimiter` one character,
-/// `:newline` CRLF or LF, `:header` a boolean, `:null-text` a string,
-/// `:missing` `:error` or a string. Any other record runs the library's
-/// own `csv`.
-pub fn csv_options(v: &Val) -> Option<CsvOptions> {
-    let Val::Record(fields) = v else {
-        return None;
-    };
-    let delimiter = match fields.get("delimiter")? {
-        Val::Str(s) => {
-            let mut chars = s.chars();
-            let c = chars.next()?;
-            if chars.next().is_some() {
-                return None;
-            }
-            c
-        }
-        _ => return None,
-    };
-    let newline = match fields.get("newline")? {
-        Val::Str(s) if &**s == "\r\n" => Newline::CrLf,
-        Val::Str(s) if &**s == "\n" => Newline::Lf,
-        _ => return None,
-    };
-    let header = match fields.get("header")? {
-        Val::Bool(b) => *b,
-        _ => return None,
-    };
-    let null_text = match fields.get("null-text")? {
-        Val::Str(s) => Box::from(&**s),
-        _ => return None,
-    };
-    let missing = match fields.get("missing")? {
-        Val::Keyword(k) if &**k == "error" => MissingText::Error,
-        Val::Str(s) => MissingText::Text(Box::from(&**s)),
-        _ => return None,
-    };
-    crate::stdlib::registry::non_finite(v).ok()?;
-    crate::stdlib::registry::no_columns_empty(v).ok()?;
-    Some(CsvOptions {
-        delimiter,
-        newline,
-        header,
-        null_text,
-        missing,
-        ..CsvOptions::default()
-    })
-}
-
 /// The `json` renderer's adapter for `:non-finite :null`: a number that
 /// is not finite goes on as null, everything else as it came.
 struct NullNonFinite(Box<dyn Sink + Send>);
@@ -290,103 +114,6 @@ impl Sink for NullNonFinite {
         match ev {
             JsonEvent::Number(n) if !n.value.is_finite() => self.0.event(JsonEvent::Null),
             ev => self.0.event(ev),
-        }
-    }
-}
-
-/// The CSV renderer's adapter for `:no-columns :empty`: a table of no
-/// columns is the empty document, so its schema, its rows (each of no
-/// cells) and its end go no further, and the renderer, which refuses such
-/// a schema, writes nothing; a table of columns passes as it came. The
-/// table it keeps back is held to what the library's `csv-table` holds it
-/// to, with the same codes and texts, so the native and the interpreted
-/// `csv` fail alike: a row of any cell, a second schema, and anything after
-/// the end are PROTOCOL_ORDER_ERROR.
-struct NoColumns {
-    kept: Kept,
-    next: Box<dyn TableSink + Send>,
-}
-
-/// Where [`NoColumns`] is in its table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kept {
-    /// No schema has come.
-    Before,
-    /// A table of columns, which the renderer holds to the protocol.
-    Passed,
-    /// A table of no columns, kept back: the rows it has had, each of no
-    /// cells.
-    Rows(u64),
-    /// The kept-back table has ended.
-    Ended,
-}
-
-impl TableSink for NoColumns {
-    fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
-        match (self.kept, ev) {
-            (Kept::Before, TableEvent::Schema([])) => {
-                self.kept = Kept::Rows(0);
-                Ok(Flow::Continue)
-            }
-            (Kept::Before, ev @ TableEvent::Schema(_)) => {
-                self.kept = Kept::Passed;
-                self.next.table_event(ev)
-            }
-            (Kept::Before | Kept::Passed, ev) => self.next.table_event(ev),
-            (Kept::Rows(_), TableEvent::Schema(_)) => Err(Fail::protocol("a second schema")),
-            (Kept::Rows(rows), TableEvent::Row(cells)) if !cells.is_empty() => {
-                Err(Fail::protocol(format!(
-                    "row {} has {} cells; the schema has 0 columns",
-                    rows + 1,
-                    cells.len()
-                )))
-            }
-            (Kept::Rows(rows), TableEvent::Row(_)) => {
-                self.kept = Kept::Rows(rows + 1);
-                Ok(Flow::Continue)
-            }
-            (Kept::Rows(_), TableEvent::End) => {
-                self.kept = Kept::Ended;
-                Ok(Flow::Continue)
-            }
-            (Kept::Ended, TableEvent::Schema(_)) => Err(Fail::protocol("a schema after the end")),
-            (Kept::Ended, TableEvent::Row(_)) => Err(Fail::protocol("a row after the end")),
-            (Kept::Ended, TableEvent::End) => Err(Fail::protocol("a second end")),
-        }
-    }
-}
-
-/// The CSV renderer's adapter for `:non-finite` `:null` or `:literal`: a
-/// number cell that is not finite goes on as a null cell, which the
-/// renderer writes as the null text, or as the string `Infinity`,
-/// `-Infinity` or `NaN`, as `scalar-text` writes it under the same
-/// options.
-struct NonFiniteCells {
-    policy: NonFinite,
-    next: Box<dyn TableSink + Send>,
-}
-
-impl TableSink for NonFiniteCells {
-    fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
-        match ev {
-            TableEvent::Row(cells)
-                if cells
-                    .iter()
-                    .any(|c| matches!(c, Cell::Number { value, .. } if !value.is_finite())) =>
-            {
-                let cells: Vec<Cell> = cells
-                    .iter()
-                    .map(|c| match c {
-                        Cell::Number { value, .. } if !value.is_finite() => match self.policy {
-                            NonFinite::Null => Cell::Null,
-                            _ => Cell::String(NonFinite::word(*value).into()),
-                        },
-                        c => c.clone(),
-                    })
-                    .collect();
-                self.next.table_event(TableEvent::Row(&cells))
-            }
-            ev => self.next.table_event(ev),
         }
     }
 }
@@ -413,20 +140,6 @@ fn cell(rt: &Runtime, v: &Val) -> Result<Cell, Fail> {
             )))
         }
     })
-}
-
-/// A cell as a program sees it.
-fn cell_val(c: &Cell) -> Val {
-    match c {
-        Cell::Null => Val::Null,
-        Cell::Bool(b) => Val::Bool(*b),
-        Cell::Number { value, lexeme } => Val::Num {
-            value: *value,
-            lexeme: lexeme.as_deref().map(Arc::from),
-        },
-        Cell::String(s) => Val::str(s),
-        Cell::Missing => Val::missing(),
-    }
 }
 
 /// The text of a column's label, one policy for every table: a string as
@@ -1110,82 +823,6 @@ impl ItemSink for FilterStage {
     }
 }
 
-/// Native table events as the tagged values a program matches on.
-struct TableToTagged {
-    down: Items,
-}
-
-impl TableSink for TableToTagged {
-    fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
-        match ev {
-            TableEvent::Schema(columns) => {
-                let columns: Vec<Val> = columns
-                    .iter()
-                    .map(|c| {
-                        let mut fields = indexmap::IndexMap::new();
-                        fields.insert(Arc::from("label"), Val::str(&c.label));
-                        Val::Record(Arc::new(fields))
-                    })
-                    .collect();
-                self.down
-                    .item(Val::tagged("schema", vec![Val::vector(columns)]))
-            }
-            TableEvent::Row(cells) => self.down.item(Val::tagged(
-                "row",
-                vec![Val::vector(cells.iter().map(cell_val).collect())],
-            )),
-            TableEvent::End => {
-                if self.down.item(Val::tagged("table-end", vec![]))? == Flow::Stop {
-                    return Ok(Flow::Stop);
-                }
-                self.down.end()
-            }
-        }
-    }
-}
-
-/// The native table's rows, with a string cell held to `max_scalar_bytes`
-/// as the interpreted path holds a cell's text to it. A document's own
-/// strings are within that bound already (the source refuses a longer
-/// one), so a longer string cell here is the compact JSON text of a vector
-/// or a record, which the library's `scalar-text` bounds the same way; so
-/// the two paths fail alike, naming the same limit.
-///
-/// The native table adds each row to `metrics.rows` as it hands it on.
-/// When the row is not the native table's to count ([`Lowering::items`]:
-/// its rows become items, which a later table stage counts if they reach
-/// one), `uncount` takes that back as the row arrives, before anything
-/// else sees it, so the count is the interpreted path's: the library's
-/// table is a `scan-emit`, which counts nothing.
-struct CellBound {
-    max: usize,
-    down: Table,
-    metrics: Arc<Metrics>,
-    uncount: bool,
-}
-
-impl TableSink for CellBound {
-    fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
-        if let TableEvent::Row(cells) = &ev {
-            if self.uncount {
-                self.metrics.rows.fetch_sub(1, Ordering::Relaxed);
-            }
-            for cell in cells.iter() {
-                if let Cell::String(text) = cell {
-                    if text.len() > self.max {
-                        return Err(Fail::limit(
-                            "max_scalar_bytes",
-                            self.max as u64,
-                            format!("a cell's JSON text holds more than {} bytes", self.max),
-                        ));
-                    }
-                }
-            }
-        }
-        self.down.table_event(ev)
-    }
-}
-
 /// The tagged values an interpreted stream yields, as native table
 /// events. One schema first, rows, one `table-end`: the renderer beneath
 /// validates the sequence; what is validated here is that each item is a
@@ -1543,130 +1180,6 @@ impl<'a> Lowering<'a> {
         Ok(Box::new(ParserEventsOnly))
     }
 
-    /// The spec of the scan the library's `transduce-tree` builds, when
-    /// `plan` is one and the runtime's native compositions are on: a
-    /// `scan-emit` from `[[[] false] []]` over the host's parser events,
-    /// its step the library's `transduce-pass` given a spec of the
-    /// standard shape ([`tree_spec`]), its finish the library's
-    /// `transduce-done`. A program that writes that scan itself means what
-    /// `transduce-tree` means, and is run the same way; so is one that
-    /// writes the scan of `transduce-step` from `[[] false]` with
-    /// `transduce-finish`, with the spec as that step reads it, without
-    /// its members and texts.
-    fn native_tree(&self, plan: &Plan) -> Option<TreeSpec> {
-        if !self.rt.native() {
-            return None;
-        }
-        let Plan::ScanEmit {
-            init,
-            step,
-            finish,
-            source,
-            ..
-        } = plan
-        else {
-            return None;
-        };
-        let Plan::ParserEvents { source } = &**source else {
-            return None;
-        };
-        if !matches!(**source, Plan::ParserInput) {
-            return None;
-        }
-        let tree = Val::vector(vec![Val::vector(vec![]), Val::Bool(false)]);
-        let pass = if is_library(finish, "transduce-done")
-            && *init == Val::vector(vec![tree.clone(), Val::vector(vec![])])
-        {
-            true
-        } else if is_library(finish, "transduce-finish") && *init == tree {
-            false
-        } else {
-            return None;
-        };
-        let name = if pass {
-            "transduce-pass"
-        } else {
-            "transduce-step"
-        };
-        match step {
-            Func::Partial(p) if is_library(&p.f, name) => match &p.args[..] {
-                [spec] => {
-                    let spec = tree_spec(spec)?;
-                    Some(if pass {
-                        spec
-                    } else {
-                        spec.without_member_and_text()
-                    })
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// The spec of the scans the library's `transduce-records` builds,
-    /// when `plan` is they and the runtime's native compositions are on:
-    /// a `scan-emit` from `[]` whose step and finish are the library's
-    /// `transduce-records-expand` and `transduce-records-flush`, over a
-    /// `scan-emit` from `[:before [] []]` over the host's parser events,
-    /// its step the library's `transduce-records-step` given a spec of the
-    /// standard shape ([`records_spec`]), its finish the library's
-    /// `transduce-records-finish`. A program that writes those scans
-    /// itself means what `transduce-records` means, and is run the same
-    /// way.
-    fn native_records(&self, plan: &Plan) -> Option<RecordsSpec> {
-        if !self.rt.native() {
-            return None;
-        }
-        let Plan::ScanEmit {
-            init,
-            step,
-            finish,
-            source,
-            ..
-        } = plan
-        else {
-            return None;
-        };
-        if *init != Val::vector(vec![])
-            || !is_library(step, "transduce-records-expand")
-            || !is_library(finish, "transduce-records-flush")
-        {
-            return None;
-        }
-        let Plan::ScanEmit {
-            init,
-            step,
-            finish,
-            source,
-            ..
-        } = &**source
-        else {
-            return None;
-        };
-        let Plan::ParserEvents { source } = &**source else {
-            return None;
-        };
-        if !matches!(**source, Plan::ParserInput) {
-            return None;
-        }
-        let before = Val::vector(vec![
-            Val::keyword("before"),
-            Val::vector(vec![]),
-            Val::vector(vec![]),
-        ]);
-        if *init != before || !is_library(finish, "transduce-records-finish") {
-            return None;
-        }
-        match step {
-            Func::Partial(p) if is_library(&p.f, "transduce-records-step") => match &p.args[..] {
-                [spec] => records_spec(spec),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// What the host pushes parser events into, once [`Lowering::sink_as`]
     /// has answered `events`, the chain's JSON-events head: the head
     /// `parser-events` was lowered to, or, when the program reads nothing
@@ -1799,30 +1312,6 @@ impl<'a> Lowering<'a> {
             }));
         }
         match &**plan {
-            Plan::Csv { options, source } => {
-                let options_val = options;
-                let options = csv_options(options).ok_or_else(|| {
-                    type_error("csv: the options record does not map to the renderer's dialect")
-                })?;
-                let mut renderer = self.renderers.csv(out, options.clone())?;
-                if crate::stdlib::registry::no_columns_empty(options_val)? {
-                    renderer = Box::new(NoColumns {
-                        kept: Kept::Before,
-                        next: renderer,
-                    });
-                }
-                match crate::stdlib::registry::non_finite(options_val)? {
-                    NonFinite::Reject => self.table(source, renderer, false),
-                    policy => self.table(
-                        source,
-                        Box::new(NonFiniteCells {
-                            policy,
-                            next: renderer,
-                        }),
-                        false,
-                    ),
-                }
-            }
             Plan::Json { source, non_finite } => {
                 let json = self.renderers.json(out, json_options());
                 match non_finite {
@@ -1920,40 +1409,6 @@ impl<'a> Lowering<'a> {
                 let guarded =
                     self.routers
                         .guarded(sink, self.limits, self.rt.abort(), Metrics::new());
-                // The library's `transduce-tree` over the host's parser
-                // events, run natively when the routers offer it: the
-                // native reads each pass as it comes and writes the events
-                // the library's step would, so the head is the native.
-                // A spec that names a member or a text goes only to routers
-                // that read them, and its texts are bounded as the
-                // library's `string-join` bounds them.
-                // The library's `transduce-records` over the host's parser
-                // events, run natively when the routers offer it, its state
-                // held to `max_metadata_bytes` as the library's scan holds
-                // its own.
-                let guarded = match self.native_records(plan) {
-                    Some(spec) => {
-                        let spec = spec.with_max_state_bytes(self.limits.max_metadata_bytes);
-                        match self.routers.transduce_records(spec, guarded) {
-                            Ok(native) => return self.keep_parser_head(native),
-                            Err(guarded) => guarded,
-                        }
-                    }
-                    None => guarded,
-                };
-                let guarded = match self.native_tree(plan) {
-                    Some(spec)
-                        if !spec.uses_member_or_text()
-                            || self.routers.transduce_tree_reads_member_and_text() =>
-                    {
-                        let spec = spec.with_max_text_bytes(self.limits.max_scalar_bytes);
-                        match self.routers.transduce_tree(spec, guarded) {
-                            Ok(native) => return self.keep_parser_head(native),
-                            Err(guarded) => guarded,
-                        }
-                    }
-                    _ => guarded,
-                };
                 self.items(plan, Box::new(TaggedToJson { down: guarded }), false)
             }
             // A stream that never yields events: `select`'s values,
@@ -1975,27 +1430,6 @@ impl<'a> Lowering<'a> {
         counted_later: bool,
     ) -> Result<EventSink, Fail> {
         match &**plan {
-            Plan::TableFromJson {
-                binding,
-                source,
-                at,
-            } => {
-                let binding = self.table_binding(binding, at)?;
-                let table = Box::new(CellBound {
-                    max: self.limits.max_scalar_bytes,
-                    down: table,
-                    metrics: self.metrics.clone(),
-                    uncount: counted_later,
-                });
-                let transducer = self.routers.table_from_json(
-                    binding,
-                    self.limits,
-                    self.rt.duplicates(),
-                    self.metrics.clone(),
-                    table,
-                )?;
-                self.events(source, transducer)
-            }
             Plan::Input
             | Plan::Records { .. }
             | Plan::AsEvents { .. }
@@ -2125,9 +1559,6 @@ impl<'a> Lowering<'a> {
                 }),
                 counted_later,
             ),
-            Plan::TableFromJson { .. } => {
-                self.table(plan, Box::new(TableToTagged { down }), true)
-            }
             Plan::CsvTable { options, source } => {
                 check_delimiter(options)?;
                 let no_columns = crate::stdlib::registry::no_columns_empty(options)?;
@@ -2162,70 +1593,6 @@ impl<'a> Lowering<'a> {
             ))),
         }
     }
-
-    /// The native transducer's binding from the standard binding record.
-    /// The column function is the program's, applied to each descriptor
-    /// as the metadata completes; its record must carry a string `:label`
-    /// and a `:source` selector naming one location. An inferred binding
-    /// is the transducer's `Schema::Infer`: the first row's keys.
-    fn table_binding(&self, binding: &Val, at: &SourceSpan) -> Result<TableBinding, Fail> {
-        let get = |key: &str| binding.field(key).unwrap_or_else(Val::missing);
-        if is_inferred(binding) {
-            let Val::Selector(rows) = get("rows") else {
-                return Err(self.rt.fail_at(
-                    type_error("table-from-json: an inferred binding must carry a :rows selector"),
-                    at,
-                ));
-            };
-            return Ok(TableBinding {
-                schema: Schema::Infer,
-                rows: (*rows).clone(),
-            });
-        }
-        let (Val::Selector(columns), Val::Selector(rows), Val::Fn(column)) =
-            (get("columns"), get("rows"), get("column"))
-        else {
-            return Err(self.rt.fail_at(
-                type_error(
-                    "table-from-json: the binding must carry :columns and :rows selectors and a :column function",
-                ),
-                at,
-            ));
-        };
-        let rt = self.rt.clone();
-        let at = at.clone();
-        let mapper = move |descriptor: &Datum| -> Result<BoundColumn, Fail> {
-            let column = rt.apply(&column, vec![Val::from_datum(descriptor)], &at)?;
-            bound_column(&column)
-        };
-        Ok(TableBinding {
-            schema: Schema::FromMetadata {
-                columns: (*columns).clone(),
-                column: Box::new(mapper),
-            },
-            rows: (*rows).clone(),
-        })
-    }
-}
-
-/// A column record (`:label`, `:source`) as the transducer binds it. The
-/// label is read as the library's `public-column` reads it (`get :label`,
-/// so a column function that answers something other than a record fails
-/// as `get` does) and taken by [`label_text`], the policy every table
-/// shares.
-fn bound_column(column: &Val) -> Result<BoundColumn, Fail> {
-    let label = label_text(&get_field("label", column)?)?;
-    let Some(Val::Selector(source)) = column.field("source") else {
-        return Err(type_error(
-            "table-from-json: a column record must carry a :source selector",
-        ));
-    };
-    let segments = selector_segments(&source).ok_or_else(|| {
-        type_error(format!(
-            "table-from-json: a column's :source must name one location, not {source}"
-        ))
-    })?;
-    Ok(BoundColumn::new(&*label, segments))
 }
 
 #[cfg(test)]
@@ -2235,16 +1602,17 @@ pub(crate) mod tests {
     use crate::program::Program;
     use crate::resolve::resolve;
     use crate::shared::{AbortFlag, Duplicates};
+    use crate::value::Scope;
     use crate::{desugar, parse_file, stdlib};
 
     /// The spec's program: sections 12.1 and 13.4.
     pub(crate) const PROGRAM: &str = "def column-from-meta [source]\n  record\n    entry :label (get \"title\" source)\n    entry :source\n      as-path\n        get \"path\" source\n\ndef api-binding\n  record\n    entry :columns\n      path \"response\" \"metadata\" \"fields\"\n    entry :rows\n      path \"response\" \"payload\" \"deep\" \"records\" each-index\n    entry :column column-from-meta\n\ndef api-table [input]\n  table-from-json api-binding input\n\ndef export [input]\n  pipe input\n    api-table\n    csv csv-options\n";
 
-    pub(crate) fn runtime(src: &str, native: bool) -> Arc<Runtime> {
+    pub(crate) fn runtime(src: &str) -> Arc<Runtime> {
         let forms = desugar::program(parse_file(src, "t.alc").unwrap(), src).unwrap();
         let sources = Sources::one("t.alc", src);
         let resolved = resolve(forms, &sources, &stdlib::outer).unwrap();
-        Arc::new(Runtime::new(Arc::new(resolved), sources).with_native(native))
+        Arc::new(Runtime::new(Arc::new(resolved), sources))
     }
 
     /// [`runtime`] with the host's abort flag handed to it.
@@ -2273,17 +1641,6 @@ pub(crate) mod tests {
             _: Duplicates,
             _: Arc<Metrics>,
             _: Box<dyn RouteSink + Send>,
-        ) -> Result<Box<dyn Sink + Send>, Fail> {
-            unreachable!("{UNLOWERED}")
-        }
-
-        fn table_from_json(
-            &self,
-            _: TableBinding,
-            _: &Limits,
-            _: Duplicates,
-            _: Arc<Metrics>,
-            _: Box<dyn TableSink + Send>,
         ) -> Result<Box<dyn Sink + Send>, Fail> {
             unreachable!("{UNLOWERED}")
         }
@@ -2349,610 +1706,8 @@ pub(crate) mod tests {
         crate::compile(src, file, Arc::new(Unlowered), Arc::new(Unlowered))
     }
 
-    #[test]
-    fn the_csv_options_map_to_the_dialect_or_not() {
-        let rt = runtime("def o csv-options\ndef lf (record (entry :delimiter \";\") (entry :newline \"\\n\") (entry :header false) (entry :null-text \"NULL\") (entry :missing \"-\"))\ndef bad (record (entry :delimiter \"ab\"))", true);
-        let o = rt
-            .def_value(crate::value::Scope::Program, "o")
-            .unwrap()
-            .unwrap();
-        assert_eq!(csv_options(&o), Some(CsvOptions::default()));
-        let lf = rt
-            .def_value(crate::value::Scope::Program, "lf")
-            .unwrap()
-            .unwrap();
-        let opts = csv_options(&lf).unwrap();
-        assert_eq!(opts.delimiter, ';');
-        assert_eq!(opts.newline, Newline::Lf);
-        assert!(!opts.header);
-        assert_eq!(&*opts.null_text, "NULL");
-        assert_eq!(opts.missing, MissingText::Text("-".into()));
-        let bad = rt
-            .def_value(crate::value::Scope::Program, "bad")
-            .unwrap()
-            .unwrap();
-        assert_eq!(csv_options(&bad), None);
-        assert_eq!(csv_options(&Val::Null), None);
-    }
-
-    /// The table `:no-columns :empty` keeps back from the renderer is held
-    /// to what the library's `csv-table` holds it to, with its texts: a
-    /// clean empty table reaches the renderer not at all, and a table of
-    /// columns reaches it whole, a later schema too, for the renderer to
-    /// refuse.
-    #[test]
-    fn no_columns_holds_the_table_it_keeps_back() {
-        use std::sync::Mutex;
-
-        /// What reaches the renderer, an event to a line.
-        struct Log(Arc<Mutex<Vec<String>>>);
-        impl TableSink for Log {
-            fn table_event(&mut self, ev: TableEvent<'_>) -> Result<Flow, Fail> {
-                self.0.lock().unwrap().push(match ev {
-                    TableEvent::Schema(columns) => format!("schema {}", columns.len()),
-                    TableEvent::Row(cells) => format!("row {}", cells.len()),
-                    TableEvent::End => "end".to_string(),
-                });
-                Ok(Flow::Continue)
-            }
-        }
-        // The events through a fresh adapter: what reached the renderer,
-        // or the failure's text.
-        let run = |events: &[TableEvent<'_>]| -> Result<Vec<String>, String> {
-            let log = Arc::new(Mutex::new(Vec::new()));
-            let mut n = NoColumns {
-                kept: Kept::Before,
-                next: Box::new(Log(log.clone())),
-            };
-            for ev in events {
-                if let Err(f) = n.table_event(*ev) {
-                    assert_eq!(f.code, Code::ProtocolOrderError, "{f}");
-                    return Err(f.message);
-                }
-            }
-            let seen = log.lock().unwrap().clone();
-            Ok(seen)
-        };
-        let empty: &[PublicColumn] = &[];
-        let a = [PublicColumn { label: "a".into() }];
-        let one = [Cell::Number {
-            value: 1.0,
-            lexeme: None,
-        }];
-        // A clean empty table: nothing reaches the renderer.
-        assert_eq!(
-            run(&[
-                TableEvent::Schema(empty),
-                TableEvent::Row(&[]),
-                TableEvent::Row(&[]),
-                TableEvent::End
-            ]),
-            Ok(vec![])
-        );
-        // Each refusal, with the library's text.
-        let refused = |events: &[TableEvent<'_>]| run(events).unwrap_err();
-        assert_eq!(
-            refused(&[
-                TableEvent::Schema(empty),
-                TableEvent::Row(&[]),
-                TableEvent::Row(&one)
-            ]),
-            "row 2 has 1 cells; the schema has 0 columns"
-        );
-        assert_eq!(
-            refused(&[TableEvent::Schema(empty), TableEvent::Schema(&a)]),
-            "a second schema"
-        );
-        assert_eq!(
-            refused(&[
-                TableEvent::Schema(empty),
-                TableEvent::End,
-                TableEvent::Schema(empty)
-            ]),
-            "a schema after the end"
-        );
-        assert_eq!(
-            refused(&[
-                TableEvent::Schema(empty),
-                TableEvent::End,
-                TableEvent::Row(&[])
-            ]),
-            "a row after the end"
-        );
-        assert_eq!(
-            refused(&[TableEvent::Schema(empty), TableEvent::End, TableEvent::End]),
-            "a second end"
-        );
-        // A table of columns passes as it came, and so does a later empty
-        // schema, for the renderer to refuse.
-        assert_eq!(
-            run(&[
-                TableEvent::Schema(&a),
-                TableEvent::Row(&one),
-                TableEvent::End,
-                TableEvent::Schema(empty)
-            ]),
-            Ok(vec![
-                "schema 1".to_string(),
-                "row 1".to_string(),
-                "end".to_string(),
-                "schema 0".to_string()
-            ])
-        );
-    }
-
-    /// The json grammar's spec, as the plan writes it.
-    const JSON_SPEC: &str = "def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n";
-
-    /// A spec of the standard shape is read as one; a spec of any other
-    /// shape is not, and runs the library's text.
-    #[test]
-    fn a_transduce_tree_spec_of_the_standard_shape_is_read() {
-        let src = format!(
-            "{JSON_SPEC}def named (record (entry :doc (record (entry :key \"k\") (entry :scalar :value) (entry :note 1))))\ndef texts (record (entry :row (record (entry :container :object) (entry :member \"a\") (entry :text true))) (entry :cell (record (entry :member 1) (entry :text false))))\ndef odd-container (record (entry :map (record (entry :container :set))))\ndef odd-key (record (entry :pair (record (entry :key 1.5))))\ndef odd-scalar (record (entry :val (record (entry :scalar \"x\"))))\ndef odd-entry (record (entry :val 1))\ndef odd-member (record (entry :row (record (entry :member -1))))\ndef odd-text (record (entry :row (record (entry :text :yes))))\n"
-        );
-        let rt = runtime(&src, true);
-        let value = |name: &str| rt.def_value(Scope::Program, name).unwrap().unwrap();
-        let rule = |container, key, scalar| TreeRule {
-            container,
-            key,
-            scalar,
-            ..TreeRule::default()
-        };
-        assert_eq!(
-            tree_spec(&value("json-spec")),
-            Some(
-                TreeSpec::new()
-                    .with("map", rule(Some(TreeContainer::Object), None, None))
-                    .with("list", rule(Some(TreeContainer::Array), None, None))
-                    .with("pair", rule(None, Some(TreeKey::Token(0)), None))
-                    .with("val", rule(None, None, Some(TreeScalar::Token(0))))
-            )
-        );
-        // A field the library never reads is not read here either.
-        assert_eq!(
-            tree_spec(&value("named")),
-            Some(TreeSpec::new().with(
-                "doc",
-                rule(
-                    None,
-                    Some(TreeKey::Name("k".into())),
-                    Some(TreeScalar::Value)
-                )
-            ))
-        );
-        // A member is read as a key is, and a text as a boolean.
-        assert_eq!(
-            tree_spec(&value("texts")),
-            Some(
-                TreeSpec::new()
-                    .with(
-                        "row",
-                        TreeRule {
-                            container: Some(TreeContainer::Object),
-                            member: Some(TreeKey::Name("a".into())),
-                            text: true,
-                            ..TreeRule::default()
-                        }
-                    )
-                    .with(
-                        "cell",
-                        TreeRule {
-                            member: Some(TreeKey::Token(1)),
-                            ..TreeRule::default()
-                        }
-                    )
-            )
-        );
-        for odd in [
-            "odd-container",
-            "odd-key",
-            "odd-scalar",
-            "odd-entry",
-            "odd-member",
-            "odd-text",
-        ] {
-            assert_eq!(tree_spec(&value(odd)), None, "{odd}");
-        }
-        assert_eq!(tree_spec(&Val::Null), None);
-    }
-
-    /// Routers with a guard that passes the events through and a native
-    /// `transduce-tree` offered or declined, each call logged.
-    struct TreeRouters {
-        offer: bool,
-        /// Whether the native reads `:member` and `:text`.
-        reads: bool,
-        log: Arc<Mutex<Vec<String>>>,
-    }
-
-    /// The native [`TreeRouters`] offers: it hands the parse's end on.
-    struct NativeTree(Box<dyn Sink + Send>);
-
-    impl ParserSink for NativeTree {
-        fn event(&mut self, ev: &ParserEvent) -> Result<Flow, Fail> {
-            match ev {
-                ParserEvent::End => self.0.event(JsonEvent::End),
-                _ => Ok(Flow::Continue),
-            }
-        }
-    }
-
-    /// The scan [`TreeRouters`] makes, which does nothing.
-    struct InertScan;
-
-    impl ScanEmitter<Val> for InertScan {
-        fn item(&mut self, _: Val) -> Result<Flow, Fail> {
-            Ok(Flow::Continue)
-        }
-        fn finish(&mut self) -> Result<Flow, Fail> {
-            Ok(Flow::Continue)
-        }
-    }
-
-    impl Routers<Val> for TreeRouters {
-        fn router(
-            &self,
-            _: Vec<CaptureSpec>,
-            _: &Limits,
-            _: Duplicates,
-            _: Arc<Metrics>,
-            _: Box<dyn RouteSink + Send>,
-        ) -> Result<Box<dyn Sink + Send>, Fail> {
-            unreachable!("{UNLOWERED}")
-        }
-
-        fn table_from_json(
-            &self,
-            _: TableBinding,
-            _: &Limits,
-            _: Duplicates,
-            _: Arc<Metrics>,
-            _: Box<dyn TableSink + Send>,
-        ) -> Result<Box<dyn Sink + Send>, Fail> {
-            unreachable!("{UNLOWERED}")
-        }
-
-        fn scan_emit(&self, _: Val, _: StepFn, _: FinishFn, _: OutFn) -> Box<dyn ScanEmitter<Val>> {
-            self.log.lock().unwrap().push("scan-emit".into());
-            Box::new(InertScan)
-        }
-
-        fn guarded(
-            &self,
-            inner: Box<dyn Sink + Send>,
-            _: &Limits,
-            _: AbortFlag,
-            _: Arc<Metrics>,
-        ) -> Box<dyn Sink + Send> {
-            self.log.lock().unwrap().push("guarded".into());
-            inner
-        }
-
-        fn transduce_tree(
-            &self,
-            spec: TreeSpec,
-            downstream: Box<dyn Sink + Send>,
-        ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
-            let texts = if spec.uses_member_or_text() {
-                format!(", texts within {}", spec.max_text_bytes)
-            } else {
-                String::new()
-            };
-            self.log.lock().unwrap().push(format!(
-                "transduce-tree of {} rules{texts}",
-                spec.rules.len()
-            ));
-            if self.offer {
-                Ok(Box::new(NativeTree(downstream)))
-            } else {
-                Err(downstream)
-            }
-        }
-
-        fn transduce_tree_reads_member_and_text(&self) -> bool {
-            self.reads
-        }
-
-        fn transduce_records(
-            &self,
-            spec: RecordsSpec,
-            downstream: Box<dyn Sink + Send>,
-        ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
-            self.log.lock().unwrap().push(format!(
-                "transduce-records of {}, {} and {}, state within {}",
-                spec.document, spec.record, spec.cell, spec.max_state_bytes
-            ));
-            if self.offer {
-                Ok(Box::new(NativeTree(downstream)))
-            } else {
-                Err(downstream)
-            }
-        }
-    }
-
-    /// The library's `transduce-tree` over the host's parser events runs
-    /// natively where the routers offer it, the source's guard in front
-    /// of what it writes, and through the library's scan where they
-    /// decline, where the natives are off, and where the spec is not of
-    /// the standard shape. A program that writes the library's scan
-    /// itself is run the same way; one whose step is its own is not.
-    #[test]
-    fn transduce_tree_runs_natively_where_the_routers_offer_it() {
-        use crate::program::Input;
-
-        struct Ended(Arc<Mutex<Vec<String>>>);
-        impl Sink for Ended {
-            fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
-                self.0.lock().unwrap().push(ev.to_owned().to_string());
-                Ok(Flow::Continue)
-            }
-        }
-        let limits = Limits::default();
-        let lower_with = |export: &str, native: bool, offer: bool, reads: bool| -> Vec<String> {
-            let rt = runtime(&format!("{JSON_SPEC}{export}"), native);
-            let Val::Stream(plan) = rt.export_with(Input::ParserEvents).unwrap() else {
-                panic!("the export is a stream");
-            };
-            let log = Arc::new(Mutex::new(Vec::new()));
-            let lowering = Lowering::new(
-                rt,
-                &limits,
-                Metrics::new(),
-                Arc::new(TreeRouters {
-                    offer,
-                    reads,
-                    log: log.clone(),
-                }),
-                Arc::new(Unlowered),
-            );
-            let events = lowering
-                .events(&plan, Box::new(Ended(log.clone())))
-                .unwrap();
-            lowering
-                .parser_head(events)
-                .event(&ParserEvent::End)
-                .unwrap();
-            let log = log.lock().unwrap().clone();
-            log
-        };
-        let lower =
-            |export: &str, native: bool, offer: bool| lower_with(export, native, offer, true);
-        let tree = "def export [input] (transduce-tree json-spec input)\n";
-        let native = ["guarded", "transduce-tree of 4 rules", "end"];
-        assert_eq!(lower(tree, true, true), native);
-        assert_eq!(
-            lower(tree, true, false),
-            ["guarded", "transduce-tree of 4 rules", "scan-emit", "end"]
-        );
-        let scan = ["guarded", "scan-emit", "end"];
-        assert_eq!(lower(tree, false, true), scan);
-        assert_eq!(
-            lower(
-                "def export [input] (transduce-tree (record (entry :map (record (entry :container :set)))) input)\n",
-                true,
-                true
-            ),
-            scan
-        );
-        assert_eq!(
-            lower(
-                "def export [input] (as-events (scan-emit [[] false] (partial transduce-step json-spec) transduce-finish (parser-events input)))\n",
-                true,
-                true
-            ),
-            native
-        );
-        assert_eq!(
-            lower(
-                "def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-pass json-spec) transduce-done (parser-events input)))\n",
-                true,
-                true
-            ),
-            native
-        );
-        // Each step from the other's state is a scan of the program's own.
-        assert_eq!(
-            lower(
-                "def export [input] (as-events (scan-emit [[[] false] []] (partial transduce-step json-spec) transduce-done (parser-events input)))\n",
-                true,
-                true
-            ),
-            scan
-        );
-        assert_eq!(
-            lower(
-                "def export [input] (as-events (scan-emit [[] false] (partial transduce-pass json-spec) transduce-finish (parser-events input)))\n",
-                true,
-                true
-            ),
-            scan
-        );
-        assert_eq!(
-            lower(
-                "def my-step [spec state pass] (transduce-step spec state pass)\ndef export [input] (as-events (scan-emit [[] false] (partial my-step json-spec) transduce-finish (parser-events input)))\n",
-                true,
-                true
-            ),
-            scan
-        );
-        // A spec that names a member or a text goes only to routers that
-        // read them, with its texts held to `max_scalar_bytes`; a spec that
-        // names neither goes to routers that read neither.
-        let texts = "def export [input] (transduce-tree (record (entry :map (record (entry :container :object) (entry :member \"m\"))) (entry :pair (record (entry :key 0) (entry :text true)))) input)\n";
-        assert_eq!(
-            lower_with(texts, true, true, true),
-            [
-                "guarded".to_string(),
-                format!(
-                    "transduce-tree of 2 rules, texts within {}",
-                    limits.max_scalar_bytes
-                ),
-                "end".to_string()
-            ]
-        );
-        assert_eq!(lower_with(texts, true, true, false), scan);
-        assert_eq!(lower_with(tree, true, true, false), native);
-    }
-
     /// The csv grammar's spec for `transduce-records`.
     const CSV_SPEC: &str = "def csv-spec\n  record\n    entry :document \"csv\"\n    entry :record \"record\"\n    entry :cell \"val\"\n    entry :empty \"empty\"\n    entry :header true\n    entry :unnamed \"field~\"\n\n";
-
-    /// A `transduce-records` spec of the standard shape is read whole, and
-    /// one of any other shape is not, so the library's text runs it.
-    #[test]
-    fn a_transduce_records_spec_of_the_standard_shape_is_read() {
-        let read = |spec: &str| {
-            let rt = runtime(
-                &format!("def s {spec}\ndef export [input] (transduce-records s input)\n"),
-                true,
-            );
-            records_spec(&rt.def_value(Scope::Program, "s").unwrap().unwrap())
-        };
-        let rt = runtime(
-            &format!("{CSV_SPEC}def export [input] (transduce-records csv-spec input)\n"),
-            true,
-        );
-        assert_eq!(
-            records_spec(&rt.def_value(Scope::Program, "csv-spec").unwrap().unwrap()),
-            Some(
-                RecordsSpec::new("csv", "record", "val")
-                    .with_empty("empty")
-                    .with_header("field~")
-            )
-        );
-        let three = r#"(entry :document "d") (entry :record "r") (entry :cell "c")"#;
-        assert_eq!(
-            read(&format!("(record {three})")),
-            Some(RecordsSpec::new("d", "r", "c"))
-        );
-        assert_eq!(
-            read(&format!(
-                "(record {three} (entry :fill null) (entry :header false))"
-            )),
-            Some(RecordsSpec::new("d", "r", "c").with_fill(Datum::Null))
-        );
-        for odd in [
-            r#"(record (entry :document "d") (entry :record "r"))"#.to_string(),
-            r#"(record (entry :document :d) (entry :record "r") (entry :cell "c"))"#.to_string(),
-            format!("(record {three} (entry :header \"yes\"))"),
-            format!("(record {three} (entry :fill [1]))"),
-            format!("(record {three} (entry :empty 1))"),
-            format!("(record {three} (entry :unnamed :x))"),
-            "[1]".to_string(),
-        ] {
-            assert_eq!(read(&odd), None, "{odd}");
-        }
-    }
-
-    /// The library's `transduce-records` over the host's parser events
-    /// runs natively where the routers offer it, its state held to
-    /// `max_metadata_bytes`, and through the library's two scans where
-    /// they decline, where the natives are off, and where the spec is not
-    /// of the standard shape. A program that writes the library's scans
-    /// itself is run the same way; one whose steps are its own is not.
-    #[test]
-    fn transduce_records_runs_natively_where_the_routers_offer_it() {
-        use crate::program::Input;
-
-        struct Ended(Arc<Mutex<Vec<String>>>);
-        impl Sink for Ended {
-            fn event(&mut self, ev: JsonEvent<'_>) -> Result<Flow, Fail> {
-                self.0.lock().unwrap().push(ev.to_owned().to_string());
-                Ok(Flow::Continue)
-            }
-        }
-        let limits = Limits::default();
-        let lower = |export: &str, native: bool, offer: bool| -> Vec<String> {
-            let rt = runtime(&format!("{CSV_SPEC}{export}"), native);
-            let Val::Stream(plan) = rt.export_with(Input::ParserEvents).unwrap() else {
-                panic!("the export is a stream");
-            };
-            let log = Arc::new(Mutex::new(Vec::new()));
-            let lowering = Lowering::new(
-                rt,
-                &limits,
-                Metrics::new(),
-                Arc::new(TreeRouters {
-                    offer,
-                    reads: true,
-                    log: log.clone(),
-                }),
-                Arc::new(Unlowered),
-            );
-            let events = lowering
-                .events(&plan, Box::new(Ended(log.clone())))
-                .unwrap();
-            lowering
-                .parser_head(events)
-                .event(&ParserEvent::End)
-                .unwrap();
-            let log = log.lock().unwrap().clone();
-            log
-        };
-        let records = "def export [input] (transduce-records csv-spec input)\n";
-        let asked = format!(
-            "transduce-records of csv, record and val, state within {}",
-            limits.max_metadata_bytes
-        );
-        let native = ["guarded".to_string(), asked.clone(), "end".to_string()];
-        assert_eq!(lower(records, true, true), native);
-        let declined = lower(records, true, false);
-        assert_eq!(declined[..2], ["guarded".to_string(), asked]);
-        assert!(
-            declined[2..].iter().filter(|l| *l == "scan-emit").count() == 2,
-            "{declined:?}"
-        );
-        let scans = lower(records, false, true);
-        assert_eq!(
-            scans.iter().filter(|l| *l == "scan-emit").count(),
-            2,
-            "{scans:?}"
-        );
-        assert!(!scans.iter().any(|l| l.starts_with("transduce-records")));
-        let interpreted = |export: &str| {
-            let log = lower(export, true, true);
-            !log.iter().any(|l| l.starts_with("transduce-records"))
-                && log.iter().filter(|l| *l == "scan-emit").count() == 2
-        };
-        assert!(interpreted(
-            "def export [input] (transduce-records (record (entry :document \"csv\") (entry :record \"record\") (entry :cell \"val\") (entry :header \"yes\")) input)\n"
-        ));
-        let scans_of = |outer: &str, flush: &str, step: &str, finish: &str| {
-            format!("def export [input] (as-events (scan-emit [] {outer} {flush} (scan-emit [:before [] []] (partial {step} csv-spec) {finish} (parser-events input))))\n")
-        };
-        assert_eq!(
-            lower(
-                &scans_of(
-                    "transduce-records-expand",
-                    "transduce-records-flush",
-                    "transduce-records-step",
-                    "transduce-records-finish"
-                ),
-                true,
-                true
-            ),
-            native
-        );
-        assert!(interpreted(&format!(
-            "def my-step [spec state pass] (transduce-records-step spec state pass)\n{}",
-            scans_of(
-                "transduce-records-expand",
-                "transduce-records-flush",
-                "my-step",
-                "transduce-records-finish"
-            )
-        )));
-        assert!(interpreted(&format!(
-            "def my-expand [state item] (transduce-records-expand state item)\n{}",
-            scans_of(
-                "my-expand",
-                "transduce-records-flush",
-                "transduce-records-step",
-                "transduce-records-finish"
-            )
-        )));
-    }
 
     /// The library's two scans for `transduce-records`, run here by hand
     /// over `passes` as transduce's scan-emit runs them: the inner step
@@ -3079,7 +1834,6 @@ pub(crate) mod tests {
             &format!(
                 "{CSV_SPEC}def bare\n  record\n    entry :document \"csv\"\n    entry :record \"record\"\n    entry :cell \"val\"\n    entry :empty \"empty\"\n    entry :fill null\n\ndef export [input] (transduce-records csv-spec input)\n"
             ),
-            true,
         );
         let records: &[&[Option<&str>]] = &[
             &[Some("a"), Some("b")],
@@ -3189,7 +1943,7 @@ pub(crate) mod tests {
         });
 
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let here = lowering(runtime("def export [input] (parser-events input)", true));
+        let here = lowering(runtime("def export [input] (parser-events input)"));
         let events = here
             .items(&plan, Box::new(Seen(seen.clone())), false)
             .unwrap();
@@ -3213,7 +1967,7 @@ pub(crate) mod tests {
         assert!(fail.message.starts_with("protocol_mismatch: "), "{fail}");
 
         let text = Arc::new(Mutex::new(Vec::new()));
-        let nothing = lowering(runtime("def export [input] \"done\"", true));
+        let nothing = lowering(runtime("def export [input] \"done\""));
         let mut head = nothing.parser_head(Box::new(Seen(text.clone())));
         for pass in &passes {
             head.event(pass).unwrap();
@@ -3306,7 +2060,6 @@ pub(crate) mod tests {
         init: Val,
         src: &str,
     ) -> Vec<String> {
-        use crate::value::Scope;
         let spec = rt.def_value(Scope::Program, spec).unwrap().unwrap();
         let Some(Val::Fn(step)) = rt.def_value(Scope::Stdlib, step).unwrap() else {
             panic!("{step} is a function");
@@ -3354,7 +2107,6 @@ pub(crate) mod tests {
     fn transduce_tree_makes_json_events_of_tabnas_jsons_rule_passes() {
         let rt = runtime(
             "def json-spec\n  record\n    entry :map (record (entry :container :object))\n    entry :list (record (entry :container :array))\n    entry :pair (record (entry :key 0))\n    entry :val (record (entry :scalar 0))\n\ndef export [input] (transduce-tree json-spec input)\n",
-            true,
         );
         let tree = || Val::vector(vec![Val::vector(vec![]), Val::Bool(false)]);
         let stepped = |src: &str| {
@@ -3401,7 +2153,6 @@ pub(crate) mod tests {
     fn transduce_tree_reads_a_member_and_a_text() {
         let rt = runtime(
             "def values\n  record\n    entry :map (record (entry :container :object))\n    entry :pair (record (entry :key 0) (entry :text true))\n\ndef lists\n  record\n    entry :list (record (entry :container :object) (entry :member \"items\") (entry :text true))\n\ndef export [input] (transduce-tree values input)\n",
-            true,
         );
         let init = || {
             Val::vector(vec![

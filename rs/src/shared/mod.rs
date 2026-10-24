@@ -21,9 +21,7 @@
 //!   `scan-emit` ([`scan`]);
 //! - the text boundary renderers write to ([`text`]) and the renderers'
 //!   options ([`csv`], [`json`]);
-//! - the specs of the library's `transduce-tree` ([`tree`]) and
-//!   `transduce-records` ([`records`]), for routers that run them
-//!   natively, and how a number is written as text ([`number`]);
+//! - how a number is written as text ([`number`]);
 //! - [`Routers`] and [`Renderers`] ([`inject`]): what alchemy's runtime
 //!   makes its stages with, implemented by transduce and by render and
 //!   passed in by the host.
@@ -41,14 +39,12 @@ pub mod limits;
 pub mod matcher;
 pub mod number;
 pub mod parser_event;
-pub mod records;
 pub mod route;
 pub mod scan;
 pub mod selector;
 pub mod sink;
 pub mod table;
 pub mod text;
-pub mod tree;
 
 pub use csv::{CsvOptions, MissingText, Newline, Quoting};
 pub use datum::{
@@ -61,9 +57,6 @@ pub use json::JsonOptions;
 pub use limits::{AbortFlag, Limits, Metrics};
 pub use matcher::CaptureId;
 pub use parser_event::{ParserEvent, ParserSink, PassAlt, PassToken, RulePass};
-pub use records::{
-    records_name, records_state_bytes, records_state_refusal, RecordsPhase, RecordsSpec,
-};
 pub use route::{Budget, CaptureMode, CaptureSpec, FnRoute, RouteSink, Selected};
 pub use scan::Transition;
 pub use selector::{Path, Segment, Selector, Step};
@@ -73,4 +66,3 @@ pub use table::{
     TableBinding, TableEvent, TableSink,
 };
 pub use text::{JoinOut, TextOut};
-pub use tree::{tree_text_refusal, TreeContainer, TreeKey, TreeRule, TreeScalar, TreeSpec};

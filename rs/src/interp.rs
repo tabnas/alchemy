@@ -80,7 +80,6 @@ pub struct Runtime {
     program: Arc<Resolved>,
     sources: Sources,
     stdlib: &'static Stdlib,
-    native: bool,
     duplicates: Duplicates,
     /// The limits values a program builds are measured against (a cell's
     /// text under `max_scalar_bytes`, a `scan-emit` state under
@@ -131,7 +130,6 @@ impl std::fmt::Debug for Runtime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Runtime")
             .field("file", &self.program.file)
-            .field("native", &self.native)
             .finish_non_exhaustive()
     }
 }
@@ -161,14 +159,12 @@ pub fn arity_error(what: &str, wanted: impl std::fmt::Display, got: usize) -> Fa
 
 impl Runtime {
     /// A runtime over a resolved program and its source texts (read only
-    /// for positions in diagnostics), with the fast paths on and duplicate
-    /// members rejected.
+    /// for positions in diagnostics), with duplicate members rejected.
     pub fn new(program: Arc<Resolved>, sources: Sources) -> Runtime {
         Runtime {
             program,
             sources,
             stdlib: stdlib::stdlib(),
-            native: true,
             duplicates: Duplicates::Reject,
             limits: Limits::default(),
             abort: AbortFlag::new(),
@@ -263,22 +259,11 @@ impl Runtime {
         Ok(level)
     }
 
-    /// Run the standard compositions natively (the default) or through
-    /// the library's own definitions.
-    pub fn with_native(mut self, native: bool) -> Runtime {
-        self.native = native;
-        self
-    }
-
     /// How a materialized capture treats a repeated member name; the
     /// default rejects it (spec section 18.2, the strict mapping profile).
     pub fn with_duplicates(mut self, duplicates: Duplicates) -> Runtime {
         self.duplicates = duplicates;
         self
-    }
-
-    pub fn native(&self) -> bool {
-        self.native
     }
 
     pub fn duplicates(&self) -> Duplicates {
@@ -588,11 +573,6 @@ impl Runtime {
                         self.fail_at(arity_error(&f.describe(), c.params.len(), args.len()), at)
                     );
                 }
-                if self.native && c.scope == Scope::Stdlib {
-                    if let Some(fast) = self.fast_path(c, &args, at)? {
-                        return Ok(fast);
-                    }
-                }
                 let mut env = c.env.clone();
                 for (param, arg) in c.params.iter().zip(args) {
                     env = env.bind(param.clone(), arg);
@@ -610,50 +590,6 @@ impl Runtime {
                 all.extend(args);
                 self.apply(&p.f, all, at)
             }
-        }
-    }
-
-    /// The native plan for a standard composition, when the arguments have
-    /// the standard shapes; `None` runs the library's text.
-    fn fast_path(
-        &self,
-        closure: &Closure,
-        args: &[Val],
-        at: &SourceSpan,
-    ) -> Result<Option<Val>, Fail> {
-        match closure.name.as_deref() {
-            Some("table-from-json") => {
-                let [binding, input] = args else {
-                    return Ok(None);
-                };
-                let Val::Stream(source) = input else {
-                    return Ok(None);
-                };
-                if !crate::lower::is_table_binding(binding) {
-                    return Ok(None);
-                }
-                Ok(Some(Val::Stream(Arc::new(Plan::TableFromJson {
-                    binding: binding.clone(),
-                    source: source.clone(),
-                    at: at.clone(),
-                }))))
-            }
-            Some("csv") => {
-                let [options, events] = args else {
-                    return Ok(None);
-                };
-                let Val::Stream(source) = events else {
-                    return Ok(None);
-                };
-                if crate::lower::csv_options(options).is_none() {
-                    return Ok(None);
-                }
-                Ok(Some(Val::Text(Arc::new(Plan::Csv {
-                    options: options.clone(),
-                    source: source.clone(),
-                }))))
-            }
-            _ => Ok(None),
         }
     }
 
@@ -1031,9 +967,7 @@ fn expand<'v>(
                 pending.push((Node::Fn(finish), depth + 1));
                 0
             }
-            Plan::TableFromJson { binding: v, .. }
-            | Plan::CsvTable { options: v, .. }
-            | Plan::Csv { options: v, .. } => {
+            Plan::CsvTable { options: v, .. } => {
                 pending.push((Node::Val(v), depth + 1));
                 0
             }
@@ -1820,12 +1754,13 @@ mod tests {
         assert_eq!(fail.limit.as_ref().unwrap().name, "max_metadata_bytes");
     }
 
+    /// The standard compositions build the plan their library text
+    /// describes, and nothing stands in for either: `csv` over
+    /// `table-from-json` is the library's `concat-map` over its table scan.
     #[test]
-    fn the_fast_paths_switch() {
+    fn the_standard_compositions_build_the_librarys_plan() {
         let src = "def b\n  record\n    entry :columns (path \"m\")\n    entry :rows (path \"r\" each-index)\n    entry :column (fn [d] d)\ndef export [input] (csv csv-options (table-from-json b input))";
-        let fast = runtime(src).export().unwrap();
-        assert!(matches!(fast, Val::Text(ref p) if matches!(**p, Plan::Csv { .. })));
-        let slow = runtime(src).with_native(false).export().unwrap();
-        assert!(matches!(slow, Val::Text(ref p) if matches!(**p, Plan::ConcatMap { .. })));
+        let plan = runtime(src).export().unwrap();
+        assert!(matches!(plan, Val::Text(ref p) if matches!(**p, Plan::ConcatMap { .. })));
     }
 }

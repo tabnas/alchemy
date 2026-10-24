@@ -2,8 +2,8 @@
 //! 15.5; design brief 4.3).
 //!
 //! The summary is computed from the plan the program built, not from its
-//! text: the plan knows which stages run (the native table transducer or
-//! a `route` and a `scan-emit`, a renderer or the text algebra) and what
+//! text: the plan knows which stages run (a `route` and a `scan-emit`, a
+//! renderer or the text algebra) and what
 //! each retains, and the registry's effect metadata says what each
 //! operator promises. Live retention requirements are summed rather than
 //! maxed (15.2): the standard table holds its metadata and one row at the
@@ -115,10 +115,9 @@ impl Confidence {
 /// The renderer that writes the text, when one does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RendererProfile {
-    /// The CSV renderer, always quoted, in the dialect it is built with:
-    /// the program's own options for its `csv`, the defaults (CRLF, a
-    /// header) when the host chose it for a table result (`host`).
-    Csv { host: bool, options: CsvOptions },
+    /// The CSV renderer the host chose for a table result, always quoted,
+    /// in its default dialect (CRLF, a header).
+    Csv { options: CsvOptions },
     /// The JSON renderer: compact, one document, a trailing newline.
     Json { host: bool },
     /// The program's own text algebra.
@@ -171,11 +170,9 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }
-            | Plan::TableFromJson { source, .. }
             | Plan::Records { source }
             | Plan::TreeContract { source }
             | Plan::CsvTable { source, .. }
-            | Plan::Csv { source, .. }
             | Plan::Json { source, .. } => source,
             Plan::ConcatMap {
                 items: Seq::Stream(source),
@@ -208,7 +205,7 @@ fn protocol_of(stage: &Plan) -> &'static str {
             "JsonEvents/1"
         }
         Plan::ParserInput => "ParserEvents/1",
-        Plan::TableFromJson { .. } | Plan::CsvTable { .. } => "TableRows/1",
+        Plan::CsvTable { .. } => "TableRows/1",
         Plan::Route { .. } => "Stream<Selected>",
         Plan::Select { .. } => "Stream<Value>",
         Plan::Events { .. } => "Stream<Event>",
@@ -240,15 +237,10 @@ fn chain_of(body: &Expr) -> Vec<String> {
 /// Whether the plan produces table events, natively or as tagged values
 /// the host's adapter reads.
 fn tabular(stages: &[&Plan], output: Output) -> bool {
-    stages.iter().any(|s| {
-        matches!(
-            s,
-            Plan::TableFromJson { .. }
-                | Plan::CsvTable { .. }
-                | Plan::Csv { .. }
-                | Plan::Records { .. }
-        )
-    }) || output == Output::TableRows
+    stages
+        .iter()
+        .any(|s| matches!(s, Plan::CsvTable { .. } | Plan::Records { .. }))
+        || output == Output::TableRows
 }
 
 /// The duplicate-member line: what the plan does with a member name an
@@ -257,12 +249,9 @@ fn duplicates_of(stages: &[&Plan], policy: Duplicates, finite: bool) -> String {
     if finite {
         return "not examined; the input is only validated".to_string();
     }
-    let captured = stages.iter().any(|s| {
-        matches!(
-            s,
-            Plan::Route { .. } | Plan::Select { .. } | Plan::TableFromJson { .. }
-        )
-    });
+    let captured = stages
+        .iter()
+        .any(|s| matches!(s, Plan::Route { .. } | Plan::Select { .. }));
     if stages
         .iter()
         .any(|s| matches!(s, Plan::TreeContract { .. }))
@@ -361,18 +350,15 @@ pub fn summarize(program: &Program) -> EffectSummary {
         }
     }
     let renderer = match (stages.last(), output) {
-        // The fast path builds `Plan::Csv` only for options that map onto
-        // the renderer's dialect, and lowering builds the renderer with them.
-        (Some(Plan::Csv { options, .. }), _) => RendererProfile::Csv {
-            host: false,
-            options: crate::lower::csv_options(options).unwrap_or_default(),
-        },
         (Some(Plan::Json { .. }), _) => RendererProfile::Json { host: false },
         (_, Output::TableRows) => {
+            // The items become table events for the host's renderer.
+            if protocol.last().map(String::as_str) != Some("TableRows/1") {
+                protocol.push("TableRows/1".to_string());
+            }
             protocol.push("Text".to_string());
             // The host's renderer, as lowering builds it.
             RendererProfile::Csv {
-                host: true,
                 options: CsvOptions::default(),
             }
         }
@@ -391,52 +377,6 @@ pub fn summarize(program: &Program) -> EffectSummary {
     let mut output_order = "source order".to_string();
     for stage in &stages {
         match stage {
-            Plan::TableFromJson { binding, .. } => {
-                let selector = |key: &str| match binding.field(key) {
-                    Some(Val::Selector(s)) => Some((*s).clone()),
-                    _ => None,
-                };
-                let inferred = crate::lower::is_inferred(binding);
-                readiness = Readiness::Record;
-                output_order = "schema first; cells in schema order".to_string();
-                if inferred {
-                    selection = "shared prefix matcher, one capture route".to_string();
-                    // No selector: the report prints the reason, since
-                    // what is kept is the first row's keys, not a match.
-                    retention.push(Retention {
-                        scope: RetentionScope::Metadata,
-                        label: "Inferred columns:",
-                        reason: "the first row's keys, taken as the columns once it completes, at most max_columns of them"
-                            .to_string(),
-                        selector: None,
-                        limit: Some("max_metadata_bytes"),
-                    });
-                } else {
-                    selection = "shared prefix matcher, two capture routes".to_string();
-                    retention.push(Retention {
-                        scope: RetentionScope::Metadata,
-                        label: "Retained metadata:",
-                        reason: "the column descriptors, bound once they complete".to_string(),
-                        selector: selector("columns"),
-                        limit: Some("max_metadata_bytes"),
-                    });
-                }
-                retention.push(Retention {
-                    scope: RetentionScope::Record,
-                    label: "Row capture:",
-                    reason: "one row at a time, projected into schema order and released"
-                        .to_string(),
-                    selector: selector("rows"),
-                    limit: Some("max_record_bytes"),
-                });
-                if !inferred {
-                    order_constraints.push(OrderConstraint {
-                        before: "metadata completes".to_string(),
-                        after: "first row begins".to_string(),
-                        enforcement: "runtime",
-                    });
-                }
-            }
             Plan::Route { specs, .. } => {
                 selection = format!(
                     "shared prefix matcher, {} capture route{}",
@@ -496,6 +436,12 @@ pub fn summarize(program: &Program) -> EffectSummary {
                 selector: None,
                 limit: None,
             }),
+            // The library's `csv` validates its table (`csv-table`): one
+            // schema, then rows as wide as it, so the text is written
+            // schema first, each row's cells in schema order.
+            Plan::CsvTable { .. } => {
+                output_order = "schema first; cells in schema order".to_string();
+            }
             // Every rule pass becomes one item as it arrives: a
             // transducer's input, whose step decides what is kept.
             Plan::ParserEvents { .. } => {
@@ -527,7 +473,7 @@ pub fn summarize(program: &Program) -> EffectSummary {
             _ => {}
         }
     }
-    if tabular(&stages, output) && !matches!(stages.first(), Some(Plan::TableFromJson { .. })) {
+    if tabular(&stages, output) {
         // Table events reach a renderer: it validates the protocol.
         if !order_constraints.iter().any(|c| c.before == "schema") {
             order_constraints.push(OrderConstraint {
@@ -633,13 +579,9 @@ impl EffectSummary {
         lines.push(("Ordering contract:".into(), contract));
         lines.push(("Contract verification:".into(), verification));
         match &self.renderer {
-            RendererProfile::Csv { host, .. } => lines.push((
+            RendererProfile::Csv { .. } => lines.push((
                 "CSV quoting:".into(),
-                if *host {
-                    "always (the host's renderer)".to_string()
-                } else {
-                    "always".to_string()
-                },
+                "always (the host's renderer)".to_string(),
             )),
             RendererProfile::Json { host } => lines.push((
                 "JSON profile:".into(),
@@ -683,7 +625,7 @@ impl EffectSummary {
     /// The same facts as one JSON object.
     pub fn json(&self) -> Json {
         let renderer = match &self.renderer {
-            RendererProfile::Csv { host, options } => json!({
+            RendererProfile::Csv { options } => json!({
                 "name": "csv",
                 "quoting": "always",
                 "delimiter": options.delimiter.to_string(),
@@ -701,7 +643,7 @@ impl EffectSummary {
                     MissingText::Error => None,
                     MissingText::Text(t) => Some(&**t),
                 },
-                "host": host,
+                "host": true,
             }),
             RendererProfile::Json { host } => {
                 json!({"name": "json", "indent": null, "trailing_newline": true, "host": host})
@@ -761,50 +703,61 @@ mod tests {
             "export: api-table → csv\n\
              \n\
              Source reads:          1\n\
-             Protocol:              JsonEvents/1 → TableRows/1 → Text\n\
+             Protocol:              JsonEvents/1 → Stream<Selected> → Stream<Value> → TableRows/1 → Text\n\
              Selection:             shared prefix matcher, two capture routes\n\
              Duplicate members:     rejected in captured scopes (DUPLICATE_MEMBER)\n\
-             Retained metadata:     .response.metadata.fields, capped at max_metadata_bytes\n\
+             Capture:               .response.metadata.fields, capped at max_metadata_bytes\n\
              Row capture:           one .response.payload.deep.records[*], capped at max_record_bytes\n\
+             Retained state:        the table's columns once bound, at most max_columns of them, no deeper than max_depth, capped at max_metadata_bytes\n\
              Output order:          schema first; cells in schema order\n\
-             Ordering contract:     metadata completes before first row begins\n\
+             Ordering contract:     each item before its outputs\n\
              Contract verification: runtime\n\
-             CSV quoting:           always\n\
              External storage:      disabled\n\
              \n\
              Guarantee:\n\
              \x20 Memory is independent of the number of rows under the configured\n\
-             \x20 depth, metadata, record, scalar/key and output limits.\n\
+             \x20 depth, capture, metadata, scalar/key and output limits: the state the\n\
+             \x20 step returns is capped at max_metadata_bytes. What one step computes\n\
+             \x20 is the program's, bounded by the host's abort flag.\n\
              \n\
              Qualification:\n\
-             \x20 Valid JSON that violates the metadata-first contract is rejected.\n\
              \x20 A later error can occur after earlier output has been written.\n"
         );
         let j = explain_json(&program);
         assert_eq!(j["chain"], json!(["api-table", "csv"]));
         assert_eq!(
             j["protocol"],
-            json!(["JsonEvents/1", "TableRows/1", "Text"])
+            json!([
+                "JsonEvents/1",
+                "Stream<Selected>",
+                "Stream<Value>",
+                "TableRows/1",
+                "Text"
+            ])
         );
-        assert_eq!(j["retention"][0]["scope"], "metadata");
+        assert_eq!(j["retention"][0]["scope"], "subtree");
         assert_eq!(j["retention"][1]["limit"], "max_record_bytes");
-        assert_eq!(j["confidence"], "proven");
+        assert_eq!(j["retention"][2]["scope"], "state");
+        assert_eq!(j["confidence"], "conditional");
         assert_eq!(j["readiness"], "record");
-        assert_eq!(j["renderer"]["name"], "csv");
+        assert_eq!(j["renderer"]["name"], "text");
         assert_eq!(j["output"], "Text");
-        assert_eq!(j["order_constraints"][0]["enforcement"], "runtime");
+        assert_eq!(j["order_constraints"][0]["enforcement"], "static");
+        assert_eq!(j["order_constraints"][1]["enforcement"], "runtime");
     }
 
-    /// An inferred binding reads one capture route, retains the columns it
-    /// took from the first row under `max_columns`, and orders nothing
-    /// before the rows, since there is no metadata; the library's twin
-    /// routes one capture too.
+    /// An inferred binding routes one capture, the rows, keeps the columns
+    /// it took from the first row as its state under `max_columns`, and
+    /// orders nothing before the rows, since there is no metadata.
     #[test]
     fn an_inferred_binding_reports_one_route() {
         let src = "def b (record (entry :columns :infer) (entry :rows (path each-index)))\ndef export [input] (csv csv-options (table-from-json b input))";
         let program = compile(src, "inferred.alc").unwrap();
         let s = summarize(&program);
         assert_eq!(s.selection, "shared prefix matcher, one capture route");
+        // The one capture is the rows, one at a time; the state is the
+        // table's columns, taken from the first row and held to
+        // max_columns.
         assert_eq!(
             s.retention
                 .iter()
@@ -812,31 +765,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (
-                    RetentionScope::Metadata,
-                    "Inferred columns:",
-                    Some("max_metadata_bytes")
-                ),
-                (
                     RetentionScope::Record,
                     "Row capture:",
                     Some("max_record_bytes")
                 ),
+                (
+                    RetentionScope::State,
+                    "Retained state:",
+                    Some("max_metadata_bytes")
+                ),
             ]
         );
-        // The renderer's own order stays; none puts metadata before rows.
-        assert!(
-            s.order_constraints
-                .iter()
-                .all(|o| o.before != "metadata completes"),
-            "{:?}",
-            s.order_constraints
-        );
-        assert!(program.explain().contains("Inferred columns:"));
-        let twin = summarize(&program.with_native(false).unwrap());
-        assert_eq!(twin.selection, "shared prefix matcher, one capture route");
-        // The twin's state is the table's columns, and it reports their
-        // count's cap as the native table does.
-        let state = twin
+        let state = s
             .retention
             .iter()
             .find(|r| r.scope == RetentionScope::State)
@@ -846,7 +786,14 @@ mod tests {
             "{}",
             state.reason
         );
-        assert_eq!(state.limit, Some("max_metadata_bytes"));
+        // Nothing is ordered before the rows, since there is no metadata.
+        assert!(
+            s.order_constraints
+                .iter()
+                .all(|o| o.before != "metadata completes"),
+            "{:?}",
+            s.order_constraints
+        );
     }
 
     /// A program may run the library's `table-step` itself. Seeded with
@@ -904,7 +851,11 @@ mod tests {
         );
         assert_eq!(
             s.retention.iter().map(|r| r.scope).collect::<Vec<_>>(),
-            [RetentionScope::Metadata, RetentionScope::Record]
+            [
+                RetentionScope::Subtree,
+                RetentionScope::Record,
+                RetentionScope::State
+            ]
         );
         // Over the input itself there is nothing selected, and the report
         // says what the stage does instead.
@@ -920,11 +871,8 @@ mod tests {
     }
 
     #[test]
-    fn the_interpreted_library_reports_its_route_and_state() {
-        let program = compile(PROGRAM, "export.alc")
-            .unwrap()
-            .with_native(false)
-            .unwrap();
+    fn the_library_table_reports_its_route_and_state() {
+        let program = compile(PROGRAM, "export.alc").unwrap();
         let s = summarize(&program);
         // The library's `csv` validates the table events it renders
         // (`csv-table`), so the chain passes through TableRows/1 as the
@@ -950,8 +898,8 @@ mod tests {
             ]
         );
         let text = s.text();
-        // The library's captures name the limits the native table holds
-        // the same scopes to, and the state is capped.
+        // The library's captures name the limit each scope is held to, and
+        // the state is capped.
         assert!(
             text.contains(
                 "Capture:               .response.metadata.fields, capped at max_metadata_bytes\n"
@@ -965,7 +913,7 @@ mod tests {
             "{text}"
         );
         // Its state is the table's columns, whose count the `schema` it
-        // builds holds to max_columns, as the native table's is.
+        // builds holds to max_columns.
         assert!(text.contains("Retained state:        the table's columns once bound, at most max_columns of them, no deeper than max_depth, capped at max_metadata_bytes\n"), "{text}");
         assert!(text.contains("Contract verification: runtime\n"), "{text}");
         assert!(
@@ -1007,7 +955,7 @@ mod tests {
         let text = explain(&table);
         assert!(text.starts_with("export: api-table\n"), "{text}");
         assert!(
-            text.contains("Protocol:              JsonEvents/1 → TableRows/1 → Text\n"),
+            text.contains("Protocol:              JsonEvents/1 → Stream<Selected> → Stream<Value> → TableRows/1 → Text\n"),
             "{text}"
         );
         assert!(

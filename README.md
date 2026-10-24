@@ -57,10 +57,9 @@ The crate is the whole language: the reader (the grammar plugin, the
 syntax tree with spans, the canonical and layout printers, desugaring),
 the resolver and the checker (types, affine streams, protocols, strict
 mode), the planner (`explain`), the interpreter, which lowers a plan
-through the `Routers` and `Renderers` its host passes in and runs the
-standard compositions natively, and the embedded standard library. The
-differential test proves the native paths and the library's own text
-produce the same bytes. The `translate` module composes a translation
+through the `Routers` and `Renderers` its host passes in, and the
+embedded standard library, whose definitions run as written in every
+runtime. The `translate` module composes a translation
 from the parts each format's package exports (its manifest's `translate`
 object, its render, its lift and its embedding): the one-line main a host
 links with them, so that any format the tabnas parsers read can be
@@ -71,7 +70,7 @@ from the parser's rule passes instead of its parsed value
 `tree-contract` holds them to a tree's before the render. The `alchemy` command, which composes alchemy,
 transduce and render, is
 [tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli), and so are
-the tests that run programs, the differential test among them: alchemy
+the tests that run programs: alchemy
 depends on neither transduce nor render, and its CI runs alchemy-cli's
 gates against each change.
 

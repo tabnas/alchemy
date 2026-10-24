@@ -612,7 +612,8 @@ six were taken on 2026-10-15.
    3 puts an interpreted part at two to six times today's streaming
    time, and a native one at about today's. The snippet stays the
    specification, and alchemy-cli's differential test holds the native
-   `transduce-tree` to it on every fixture.
+   `transduce-tree` to it on every fixture. **Reversed 2026-10-24**
+   (section 12): a part has one implementation, its text.
 4. **Where the generator lives**: tabnas-bnf, notation-neutral, with
    abnf (and ebnf, gbnf) exposing it; or each front end. **Decided
    2026-10-15: tabnas-bnf.** One generator where the annotations are
@@ -1296,3 +1297,63 @@ Each step is a pull request opened ready for review, with its fixture
 rows and its measurements in the description; a step whose test fires
 downstream by design lands with the downstream change that accepts both
 states first, as the fleet's convention is.
+
+## 12. One implementation: the ruling of 2026-10-24
+
+On 2026-10-24 the maintainer reviewed the plan's outcome and ruled that
+correctness and architectural uniformity come first, and that the work
+above is not done against the ruling of section 1:
+
+- **A part had two implementations.** Decision 3 let a native stand in
+  for the library's `transduce-tree`, ruling 9 of the records wave did
+  the same for `transduce-records`, and the standard compositions
+  `table-from-json` and `csv` had run natively since the pilot. The
+  natives were Rust code, `TransduceRecords` in Rust alone, that
+  TypeScript and Go could not run, held to the text by differential
+  tests, so the text was a specification and the runtimes diverged.
+  Performance, which motivated every native, was never a requirement.
+- **Twelve formats declare `whole`** where several have a natural unit
+  to stream on: a stylesheet's rules, a feed's entries, a `.proto` file's
+  and a C translation unit's declarations, INI's and TOML's assignments
+  as records.
+- **TypeScript and Go still carry** the line sources and the inference
+  the ruling forbids.
+
+The ruling, recorded as admin's ADR-31: **a part has one implementation,
+its alchemy text, run by the interpreter in every runtime.** A native
+implements a language primitive, an operator with no alchemy text
+(`route`, `scan-emit`, `json`, `tree-contract`, the value operators),
+and never a library definition or a part; no lowering recognises a
+library definition to swap it for one; decision 3 and ruling 9 are
+reversed. A format declares `whole` only for a reason this plan records
+as inherent, reviewed per format. TypeScript and Go reach the same
+architecture as Rust.
+
+The first wave removes the natives, on the branch
+`claude/one-implementation` in each repository:
+
+- **alchemy**: the evaluator's fast path for `table-from-json` and `csv`,
+  the `native` flag on the runtime and the program (`with_native`), the
+  lowering's recognition of the library's scans, the `transduce_tree`,
+  `transduce_tree_reads_member_and_text`, `transduce_records` and
+  `table_from_json` hooks on `Routers`, and the shared `TreeSpec` and
+  `RecordsSpec`, in Rust, TypeScript and Go. The fixtures stay as the
+  contract, with one implementation under them. `explain` reports the
+  plan the text builds, a route and a scan, where it named the native
+  table; `check.tsv`'s two reports moved with it. Metadata selected
+  twice is `INPUT_INVALID`, the text's own `fail`, where the native
+  table said `INPUT_ORDER_VIOLATION`.
+- **transduce**: `TransduceTree` and `TransduceRecords`, their TypeScript
+  and Go twins, `test/spec/tree.tsv` and its runners, and the benches
+  and the retention test that ran JSON's part natively.
+- **render**: the bench that ran JSON's part natively.
+- **alchemy-cli**: `--no-native`, the differential tests of native
+  against text, and every `with_native`.
+
+What follows, in order: TypeScript's and Go's steps 12 and 13, so the
+line sources and the inference are gone from every runtime; then a part
+for each `whole` format that has a natural unit, CSS first, a rule at a
+time, then feed by entry, proto and C by declaration, INI and TOML as
+records; `json`'s render as alchemy text, as every other format's is;
+and the hosts' own routes for JSON and CSV through the composed program,
+so that no host knows a format by name.
