@@ -435,15 +435,14 @@ func TestTheFunctionAFiniteTextAppliesIsMeasured(t *testing.T) {
 	}
 }
 
-func TestTheFastPathsSwitch(t *testing.T) {
+// The standard compositions build the library's plan: `csv` over
+// `table-from-json` is the text's concat-map over its csv-table and its
+// scan, as the library is written, with nothing standing in for it.
+func TestTheStandardCompositionsBuildTheLibrarysPlan(t *testing.T) {
 	src := "def b\n  record\n    entry :columns (path \"m\")\n    entry :rows (path \"r\" each-index)\n    entry :column (fn [d] d)\ndef export [input] (csv csv-options (table-from-json b input))"
-	fast, f := runtimeOf(t, src).Export()
-	if text, ok := fast.(TextVal); f != nil || !ok || text.Plan.Kind != PlanCsv {
-		t.Errorf("%#v %v", fast, f)
-	}
-	slow, f := runtimeOf(t, src).WithNative(false).Export()
-	if text, ok := slow.(TextVal); f != nil || !ok || text.Plan.Kind != PlanConcatMap {
-		t.Errorf("%#v %v", slow, f)
+	result, f := runtimeOf(t, src).Export()
+	if text, ok := result.(TextVal); f != nil || !ok || text.Plan.Kind != PlanConcatMap {
+		t.Errorf("%#v %v", result, f)
 	}
 }
 

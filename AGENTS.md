@@ -64,10 +64,28 @@ other conveniences into the core forms (`def`, `fn`, `let`, `if`,
 is consumed at most once) and protocol composition, and computes an
 effect summary the **planner** reports (`explain`). The **interpreter**
 evaluates values eagerly and streams lazily, lowering `route`,
-`scan-emit`, `csv`, `json` and the text algebra to transduce and render
-sinks; the standard compositions run natively, and a differential test
-(alchemy-cli's, since it runs programs) proves the interpreted
-standard-library definitions in `stdlib/*.alc` produce the same bytes.
+`scan-emit`, `json` and the text algebra to transduce and render sinks;
+the standard library's definitions in `stdlib/*.alc` run as written, in
+every runtime, and nothing stands in for one (below).
+
+## A part has one implementation: its alchemy text
+
+**A library definition or a format's part is implemented by its alchemy
+text, run by the interpreter, in Rust, TypeScript and Go alike.** That is
+the maintainer's ruling of 2026-10-24 (admin ADR-31), which reversed the
+native fast paths this crate once carried: the evaluator no longer swaps
+`table-from-json` or `csv` for transduce's and render's stages, the
+lowering no longer recognises the library's `transduce-tree` and
+`transduce-records` scans to hand them to a native, and `Routers` offers
+no such hook. A native implements a language primitive, an operator with
+no alchemy text (`route`, `scan-emit`, `json`, `tree-contract`, the
+value operators), and nothing else. Do not add a native twin of a
+definition, a recognition of a definition's shape in the lowering, or a
+flag that chooses between two implementations: performance is not a
+reason, since correctness and architectural uniformity come first, and a
+second implementation that TypeScript and Go cannot run is what the
+ruling removed. The fixtures are the contract, and one implementation
+is held to them.
 
 ## The reader repeats by replacement, never by a push chain
 
@@ -139,10 +157,10 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/value.rs` | runtime values, every one `Send`; streams and texts as plans |
 | `rs/src/pvec.rs` | the persistent vector `Val::Vector` holds: leaves of 32 under a trie and a tail of up to 32, so `push` and `pop` cost a bounded amount at any length and share every leaf with the vector they began with; each node keeps the `Summary` of its items once asked, which `measure` reads as the `Size` of a full leaf |
 | `rs/src/rope.rs` | `Str`, a string value's text: in one piece, or, once `string-join` makes one of `ROPE_MIN` bytes or more, a rope of chunks with its length kept, so a join onto it copies at most `CHUNK_MAX` bytes; read in one piece once, and kept |
-| `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes, the native fast paths |
+| `rs/src/interp.rs` | the evaluator: definitions, closures, natives, partials, patterns, the two scopes |
 | `rs/src/fx.rs` | FxHash, for the evaluator's tables, whose keys are a program's names and never its input's data |
-| `rs/src/shared/` | the shared types, moved from transduce and render: `event`, `sink`, `table`, `error` (`Fail`, `Code`), `limits`, `selector`, `datum`, the captures (`route`, `scan`, `matcher`), the text boundary and the renderers' options (`text`, `csv`, `json`), the parser's rule passes (`parser_event`), the specs a native `transduce-tree` and `transduce-records` run (`tree`, `records`), how a number is written as text (`number`), and `inject`: the `Routers` and `Renderers` traits |
-| `rs/src/lower.rs` | plans to sinks through the injected `Routers` (routes, `scan-emit`, `table-from-json`, guards) and `Renderers` (CSV, JSON, records, the text algebra), and the two adapters from an interpreted stream, `TaggedToTable` to table events and `TaggedToJson` to JSON events |
+| `rs/src/shared/` | the shared types, moved from transduce and render: `event`, `sink`, `table`, `error` (`Fail`, `Code`), `limits`, `selector`, `datum`, the captures (`route`, `scan`, `matcher`), the text boundary and the renderers' options (`text`, `csv`, `json`), the parser's rule passes (`parser_event`), how a number is written as text (`number`), and `inject`: the `Routers` and `Renderers` traits |
+| `rs/src/lower.rs` | plans to sinks through the injected `Routers` (routes, `scan-emit`, guards) and `Renderers` (CSV, JSON, records, the text algebra), and the two adapters from an interpreted stream, `TaggedToTable` to table events and `TaggedToJson` to JSON events |
 | `rs/src/translate.rs` | the composition of a translation from the formats' parts: `Part` from a package's descriptor (its manifest's `translate` object: shapes, `root`, `schema`, `lift`, `embed`, render, loss, `whole`), `compose` and `compose_program` (the source's lift, the root adapter, the embedding, the inferred table, the render, as one main; a program's output in the source's place: a program writing to a schema-only target makes that schema's tree, and into a target with an embed its output is a plain tree, embedded like any source's), `Composition::compile` |
 | `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (each takes the host's `Routers` and `Renderers`; several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
@@ -213,8 +231,8 @@ runner, so a stale example fails the gate.
 neither transduce nor render (the maintainer's ruling of 2026-10-08), so
 their releases never leave its requirements a release behind; its own
 tests compile with inert stages. Running needs the real routers and
-renderers, so `run.tsv`, the lowering, events, linked sources, the
-translation parts and the standard library's differential test are in
+renderers, so `run.tsv`, the lowering, events, linked sources and the
+translation parts are in
 [tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), the
 composition root, in all three runtimes, reading this repository's
 `test/spec/` from the sibling checkout. `.github/workflows/downstream.yml`

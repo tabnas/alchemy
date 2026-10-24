@@ -129,19 +129,11 @@ export function csvDialect(options: Val): CsvDialect | undefined {
   return { delimiter: delimiter.value, newline: newline.value as '\r\n' | '\n', header: header.value, nullText: nullText.value, missing }
 }
 
-// Whether a table binding infers its columns from the first row
-// (rs/src/lower.rs `is_inferred`).
-export function isInferred(binding: Val): boolean {
-  const columns = field(binding, 'columns')
-  return undefined !== columns && 'keyword' === columns.v && 'infer' === columns.name
-}
-
 // The renderer that writes the text, when one does.
 export type RendererProfile =
-  // The CSV renderer, always quoted, in the dialect it is built with: the
-  // program's own options for its `csv`, the defaults when the host chose
-  // it for a table result (`host`).
-  | { kind: 'csv'; host: boolean; options: CsvDialect }
+  // The CSV renderer the host chose for a table result, always quoted, in
+  // its default dialect (CRLF, a header).
+  | { kind: 'csv'; options: CsvDialect }
   // The JSON renderer: compact, one document, a trailing newline.
   | { kind: 'json'; host: boolean }
   // The program's own text algebra.
@@ -193,11 +185,9 @@ function stages(plan: Plan): Plan[] {
       case 'scan-emit':
       case 'map':
       case 'filter':
-      case 'table-from-json':
       case 'records':
       case 'tree-contract':
       case 'csv-table':
-      case 'csv':
       case 'json':
         next = here.source
         break
@@ -230,7 +220,6 @@ function protocolOf(stage: Plan): string {
       return 'JsonEvents/1'
     case 'parser-input':
       return 'ParserEvents/1'
-    case 'table-from-json':
     case 'csv-table':
       return 'TableRows/1'
     case 'route':
@@ -267,11 +256,11 @@ function chainOf(body: Expr): string[] {
   return chain.reverse()
 }
 
-// Whether the plan produces table events, natively or as tagged values
-// the host's adapter reads.
+// Whether the plan produces table events, as tagged values a renderer's
+// adapter reads.
 function tabular(stages: Plan[], output: Output): boolean {
   return (
-    stages.some((s) => 'table-from-json' === s.p || 'csv-table' === s.p || 'csv' === s.p || 'records' === s.p) ||
+    stages.some((s) => 'csv-table' === s.p || 'records' === s.p) ||
     'TableRows/1' === output
   )
 }
@@ -283,7 +272,7 @@ function duplicatesOf(stages: Plan[], policy: Duplicates, finite: boolean): stri
   if (stages.some((s) => 'tree-contract' === s.p)) {
     return "rejected where a tree's contract holds the events (DUPLICATE_MEMBER)"
   }
-  const captured = stages.some((s) => 'route' === s.p || 'select' === s.p || 'table-from-json' === s.p)
+  const captured = stages.some((s) => 'route' === s.p || 'select' === s.p)
   if (!captured) return 'preserved; the events are copied as they arrive, not mapped by key'
   switch (policy) {
     case 'reject':
@@ -365,16 +354,14 @@ export function summarize(program: Explainable): EffectSummary {
   }
   const last = staged[staged.length - 1]
   let renderer: RendererProfile
-  if (undefined !== last && 'csv' === last.p) {
-    // The fast path builds a `csv` plan only for options that map onto the
-    // renderer's dialect, and lowering builds the renderer with them.
-    renderer = { kind: 'csv', host: false, options: csvDialect(last.options) ?? defaultCsvDialect() }
-  } else if (undefined !== last && 'json' === last.p) {
+  if (undefined !== last && 'json' === last.p) {
     renderer = { kind: 'json', host: false }
   } else if ('TableRows/1' === output) {
+    // The items become table events for the host's renderer.
+    if ('TableRows/1' !== protocol[protocol.length - 1]) protocol.push('TableRows/1')
     protocol.push('Text')
     // The host's renderer, as lowering builds it.
-    renderer = { kind: 'csv', host: true, options: defaultCsvDialect() }
+    renderer = { kind: 'csv', options: defaultCsvDialect() }
   } else if ('JsonEvents/1' === output) {
     protocol.push('Text')
     renderer = { kind: 'json', host: true }
@@ -390,44 +377,6 @@ export function summarize(program: Explainable): EffectSummary {
   let outputOrder = 'source order'
   for (const stage of staged) {
     switch (stage.p) {
-      case 'table-from-json': {
-        const selector = (key: string): string | undefined => {
-          const v = field(stage.binding, key)
-          return undefined !== v && 'selector' === v.v ? v.selector.toString() : undefined
-        }
-        const inferred = isInferred(stage.binding)
-        readiness = 'record'
-        outputOrder = 'schema first; cells in schema order'
-        if (inferred) {
-          selection = 'shared prefix matcher, one capture route'
-          retention.push({
-            scope: 'metadata',
-            label: 'Inferred columns:',
-            reason: "the first row's keys, taken as the columns once it completes, at most max_columns of them",
-            limit: 'max_metadata_bytes',
-          })
-        } else {
-          selection = 'shared prefix matcher, two capture routes'
-          retention.push({
-            scope: 'metadata',
-            label: 'Retained metadata:',
-            reason: 'the column descriptors, bound once they complete',
-            selector: selector('columns'),
-            limit: 'max_metadata_bytes',
-          })
-        }
-        retention.push({
-          scope: 'record',
-          label: 'Row capture:',
-          reason: 'one row at a time, projected into schema order and released',
-          selector: selector('rows'),
-          limit: 'max_record_bytes',
-        })
-        if (!inferred) {
-          orderConstraints.push({ before: 'metadata completes', after: 'first row begins', enforcement: 'runtime' })
-        }
-        break
-      }
       case 'route': {
         const specs = stage.specs
         selection = `shared prefix matcher, ${count(specs.length)} capture route${1 === specs.length ? '' : 's'}`
@@ -486,11 +435,17 @@ export function summarize(program: Explainable): EffectSummary {
         orderConstraints.push({ before: 'each item', after: 'its outputs', enforcement: 'static' })
         break
       }
+      case 'csv-table':
+        // The library's `csv` validates its table (`csv-table`): one schema,
+        // then rows as wide as it, so the text is written schema first, each
+        // row's cells in schema order.
+        outputOrder = 'schema first; cells in schema order'
+        break
       default:
         break
     }
   }
-  if (tabular(staged, output) && 'table-from-json' !== staged[0]?.p) {
+  if (tabular(staged, output)) {
     // Table events reach a renderer: it validates the protocol.
     if (!orderConstraints.some((c) => 'schema' === c.before)) {
       orderConstraints.push({ before: 'schema', after: 'rows, then one end', enforcement: 'runtime' })
@@ -566,7 +521,7 @@ export function summaryText(s: EffectSummary): string {
   lines.push(['Contract verification:', verification])
   const r = s.renderer
   if ('csv' === r.kind) {
-    lines.push(['CSV quoting:', r.host ? "always (the host's renderer)" : 'always'])
+    lines.push(['CSV quoting:', "always (the host's renderer)"])
   } else if ('json' === r.kind) {
     lines.push([
       'JSON profile:',
@@ -603,7 +558,7 @@ export function summaryJson(s: EffectSummary): Record<string, unknown> {
       null_text: r.options.nullText,
       missing: r.options.missing.kind,
       missing_text: 'text' === r.options.missing.kind ? r.options.missing.text : null,
-      host: r.host,
+      host: true,
     }
   } else if ('json' === r.kind) {
     renderer = { name: 'json', indent: null, trailing_newline: true, host: r.host }

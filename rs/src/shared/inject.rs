@@ -1,7 +1,7 @@
 //! The interfaces a compiled program is lowered through.
 //!
 //! alchemy's runtime turns a plan into a chain of stages: a router for its
-//! captures, the table transducer, a `scan-emit` operator, the source's
+//! captures, a `scan-emit` operator, the source's
 //! guard on the events a program makes, and the renderers, writers and
 //! text combinators its output goes through. It constructs none of them
 //! itself. The host passes a [`Routers`] and a [`Renderers`] in (to
@@ -22,14 +22,11 @@ use crate::shared::datum::Duplicates;
 use crate::shared::error::Fail;
 use crate::shared::json::JsonOptions;
 use crate::shared::limits::{AbortFlag, Limits, Metrics};
-use crate::shared::parser_event::ParserSink;
-use crate::shared::records::RecordsSpec;
 use crate::shared::route::{CaptureSpec, RouteSink};
 use crate::shared::scan::Transition;
 use crate::shared::sink::{Flow, Sink};
-use crate::shared::table::{TableBinding, TableSink};
+use crate::shared::table::TableSink;
 use crate::shared::text::{JoinOut, TextOut};
-use crate::shared::tree::TreeSpec;
 
 /// A `scan-emit` step: the state and one item in, the next state and the
 /// items to emit for it out.
@@ -72,17 +69,6 @@ pub trait Routers<V>: Send + Sync {
         downstream: Box<dyn RouteSink + Send>,
     ) -> Result<Box<dyn Sink + Send>, Fail>;
 
-    /// transduce's `TableFromJson::new`: the metadata-first table
-    /// transducer, `JsonEvents/1` in and `TableRows/1` out to `sink`.
-    fn table_from_json(
-        &self,
-        binding: TableBinding,
-        limits: &Limits,
-        duplicates: Duplicates,
-        metrics: Arc<Metrics>,
-        sink: Box<dyn TableSink + Send>,
-    ) -> Result<Box<dyn Sink + Send>, Fail>;
-
     /// transduce's `ScanEmit::new`: the operator that owns the state and
     /// the iteration, over `step` and `finish`, emitting to `out`.
     fn scan_emit(
@@ -103,60 +89,6 @@ pub trait Routers<V>: Send + Sync {
         abort: AbortFlag,
         metrics: Arc<Metrics>,
     ) -> Box<dyn Sink + Send>;
-
-    /// transduce's `TransduceTree::new`: the library's `transduce-tree`
-    /// run natively, the parser's rule passes in and a tree's JSON events
-    /// out to `downstream`, as [`TreeSpec`] says a native must make them.
-    /// The lowering asks for it where a program applies `transduce-tree`
-    /// to the host's parser events with a spec of the standard shape, the
-    /// runtime's native compositions on, and hands it the sink the
-    /// library's `as-events` would write to, the source's limits already
-    /// guarding it.
-    ///
-    /// Routers that have no native transduce-tree hand `downstream` back,
-    /// and the library's text runs instead; that is what this method does
-    /// unless an implementation says otherwise.
-    fn transduce_tree(
-        &self,
-        spec: TreeSpec,
-        downstream: Box<dyn Sink + Send>,
-    ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
-        let _ = spec;
-        Err(downstream)
-    }
-
-    /// Whether [`Routers::transduce_tree`]'s native reads a spec's
-    /// `:member` and `:text`, and holds a `:text` rule's text to
-    /// [`TreeSpec::max_text_bytes`] as it grows. Routers written before
-    /// those fields read neither and answer `false`, which is what this
-    /// method does unless an implementation says otherwise; the lowering
-    /// then runs the library's text for a spec that uses either, so the
-    /// native and the text never disagree.
-    fn transduce_tree_reads_member_and_text(&self) -> bool {
-        false
-    }
-
-    /// transduce's `TransduceRecords::new`: the library's
-    /// `transduce-records` run natively, the parser's rule passes in and a
-    /// document of records' JSON events out to `downstream`, as
-    /// [`RecordsSpec`] says a native must make them. The lowering asks for
-    /// it where a program applies `transduce-records` to the host's parser
-    /// events with a spec of the standard shape, the runtime's native
-    /// compositions on, and hands it the sink the library's `as-events`
-    /// would write to, the source's limits already guarding it, and the
-    /// spec's state held to the runtime's `max_metadata_bytes`.
-    ///
-    /// Routers that have no native transduce-records hand `downstream`
-    /// back, and the library's text runs instead; that is what this
-    /// method does unless an implementation says otherwise.
-    fn transduce_records(
-        &self,
-        spec: RecordsSpec,
-        downstream: Box<dyn Sink + Send>,
-    ) -> Result<Box<dyn ParserSink + Send>, Box<dyn Sink + Send>> {
-        let _ = spec;
-        Err(downstream)
-    }
 }
 
 /// The renderers, writers and text combinators a plan's output is written

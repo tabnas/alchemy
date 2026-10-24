@@ -13,10 +13,6 @@ type Routers interface {
 	// that may overlap are refused with CAPTURE_OVERLAP_UNSUPPORTED
 	// unless both observe.
 	Router(specs []CaptureSpec, limits Limits, duplicates Duplicates, metrics *Metrics, downstream RouteSink) (Sink, *Fail)
-	// TableFromJSON is the metadata-first table transducer over one
-	// document's events, its TableRows/1 going to sink (transduce's
-	// NewTableFromJSON).
-	TableFromJSON(binding TableBinding, limits Limits, duplicates Duplicates, metrics *Metrics, sink TableSink) (Sink, *Fail)
 	// ScanEmit is the scan-emit operator over an initial state and its
 	// functions (transduce's NewScanEmit), over values of any type, since
 	// a method takes no type parameters.

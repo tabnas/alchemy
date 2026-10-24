@@ -37,18 +37,15 @@ through the program's sink, with the default `Limits`. A run needs
 transduce's routers and render's renderers, which alchemy does not
 depend on, so `run.tsv` is run by
 [tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), the
-composition root, in every runtime (see "Who runs what"). Its Rust runner
-runs every row twice, with the standard compositions native and through
-the library's text (`with_native(false)`), and fails a row whose two
-paths differ in a byte, a code or a position. A port that runs only the
-library's text is held to the same bytes.
+composition root, in every runtime (see "Who runs what"). Every runtime
+runs the library's text, and is held to the same bytes, codes and
+positions.
 
 A `transduce.tsv` run is what `alchemy run --grammar` does: compile the
 program over the parser's rule passes (`compile_with` over
 `Input::ParserEvents`), read `doc` with the row's grammar through
 transduce's `ParserEventSource`, and push each pass through the program's
-parser sink (`Program::parser_sink`), with the default `Limits`; its rows
-run natively and interpreted, held to each other as `run.tsv`'s are. A
+parser sink (`Program::parser_sink`), with the default `Limits`. A
 row's program is a transducer, its events the document's, and the runner
 holds it to that: for every row whose program answers JSON events, whose
 document the grammar accepts and which repeats no member, it also
@@ -125,7 +122,7 @@ alchemy-cli.
 
 In [tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), against
 this repository's `test/spec/` in the sibling checkout: `run.tsv` and
-`transduce.tsv`, natively and interpreted, and the full catalogue test
+`transduce.tsv`, and the full catalogue test
 over all five files.
 
 - Rust: `rs/tests/spec_test.rs`.

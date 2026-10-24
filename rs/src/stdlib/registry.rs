@@ -9,10 +9,9 @@
 //! a stream answers a plan the runtime lowers once.
 //!
 //! Failures on data (a descriptor that is not an object, a path segment
-//! that is not a string) are `INPUT_INVALID`, the code the native table
-//! transducer raises for the same shapes, so the interpreted and the
-//! native standard library fail alike; a value of the wrong kind where
-//! the program, not the data, chose it is `DSL_TYPE_ERROR`.
+//! that is not a string) are `INPUT_INVALID`: the data is at fault; a
+//! value of the wrong kind where the program, not the data, chose it is
+//! `DSL_TYPE_ERROR`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -298,9 +297,7 @@ fn get(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 
 /// `get key data`: a record's field, `missing` for an absent one or from
 /// `missing`; `INPUT_INVALID` from other data, `type_mismatch` from what
-/// is not data. The native table binds a column record by the same rule,
-/// so a column function that answers something other than a record fails
-/// alike both ways.
+/// is not data.
 pub fn get_field(key: &str, data: &Val) -> Result<Val, Fail> {
     match data {
         Val::Record(_) => Ok(data.field(key).unwrap_or_else(Val::missing)),
@@ -1673,9 +1670,8 @@ fn constructor(name: &'static str) -> impl Fn(&Runtime, &[Val], &SourceSpan) -> 
 
 /// `schema columns`: the table's one schema. A table has at most
 /// `max_columns` columns, so a schema past it is refused where it is
-/// built, whatever consumes it: the native table binds no more, and the
-/// library's twin of it, whose events may reach no renderer that would
-/// check them, is held to the same count.
+/// built, whatever consumes it, since its events may reach no renderer
+/// that would check them.
 fn schema(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     if let Val::Vector(columns) = &a[0] {
         let max = rt.limits().max_columns;
@@ -1965,7 +1961,7 @@ static NATIVES: &[Native] = &[
     f("concat", AtLeast(0), concat, "concat item... -> Text", "in order, without assembling the result"),
     f("text", Exact(1), text, "text string -> Text", "a string as a text"),
     f("replace-text", Exact(3), replace_text, "replace-text from to text -> Text", "a fixed literal replaced across fragment boundaries, a finite text's as a live one's; retains at most the literal's length"),
-    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' :non-finite is :null, the null text, or :literal, the word Infinity, -Infinity or NaN), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the native renderer writes the same cell the same way"),
+    f("scalar-text", Exact(2), scalar_text, "scalar-text options cell -> String", "a cell's text under the options' null, missing and non-finite policies: a string as it is, a number by its lexeme (one that is not finite refused, unless the options' :non-finite is :null, the null text, or :literal, the word Infinity, -Infinity or NaN), a boolean by its name, a vector or a record as its compact JSON text (number lexemes kept, quotes as JSON writes them) under max_scalar_bytes; the host's CSV renderer writes the same cell the same way"),
     f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F, U+FFFE and U+FFFF as \\uXXXX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls and the two noncharacters its printable set excludes, which XML's characters exclude too); refused past max_scalar_bytes, before it is built"),
     f("string-join", Exact(2), string_join, "string-join separator strings -> String", "the strings of a vector joined into one string, the separator between them; refused past max_scalar_bytes, before it is built"),
     f("split", Exact(2), split, "split separator string -> Vector", "the strings between the separator's occurrences in the string, found from the front, none overlapping another: one more than it occurs, an empty one where two occurrences meet or at either end, and the string itself where it does not occur (split \".\" \"a..b\" is [\"a\" \"\" \"b\"], split \".\" \"\" is [\"\"]); the separator is a literal, not a pattern, and must not be empty. A part reads a dotted string's parts with it to check each one"),
@@ -2101,7 +2097,7 @@ mod tests {
     fn chars_within_takes_a_step_per_comparisons() {
         // A runtime of its own for each case, with ten steps of fuel.
         let fueled = || {
-            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            let rt = crate::lower::tests::runtime("def export [input] input");
             match std::sync::Arc::try_unwrap(rt) {
                 Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
                 Err(_) => unreachable!("the test holds the one runtime"),
@@ -2177,7 +2173,7 @@ mod tests {
     fn unquoted_takes_a_step_per_characters_read() {
         // A runtime of its own for each case, with ten steps of fuel.
         let fueled = || {
-            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            let rt = crate::lower::tests::runtime("def export [input] input");
             match std::sync::Arc::try_unwrap(rt) {
                 Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
                 Err(_) => unreachable!("the test holds the one runtime"),
@@ -2212,7 +2208,7 @@ mod tests {
     /// the same type error to both.
     #[test]
     fn is_number_answers_whether_number_reads_the_string() {
-        let rt = crate::lower::tests::runtime("", true);
+        let rt = crate::lower::tests::runtime("");
         let at = SourceSpan::new(&Arc::from("t"), 0, 0);
         let numbers = [
             "0",
@@ -2301,7 +2297,7 @@ mod tests {
     fn number_and_is_number_take_a_step_per_characters_read() {
         // A runtime of its own for each case, with ten steps of fuel.
         let fueled = || {
-            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            let rt = crate::lower::tests::runtime("def export [input] input");
             match std::sync::Arc::try_unwrap(rt) {
                 Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
                 Err(_) => unreachable!("the test holds the one runtime"),
@@ -2347,7 +2343,7 @@ mod tests {
     /// is a literal that must not be empty.
     #[test]
     fn split_answers_the_strings_between_the_separators() {
-        let rt = crate::lower::tests::runtime("", true);
+        let rt = crate::lower::tests::runtime("");
         let at = SourceSpan::new(&Arc::from("t"), 0, 0);
         let parts = |separator: &str, s: &str| -> Vec<String> {
             match split(&rt, &[Val::str(separator), Val::str(s)], &at).unwrap() {
@@ -2396,7 +2392,7 @@ mod tests {
     fn split_takes_a_step_per_characters_read_and_per_part() {
         // A runtime of its own for each case, with ten steps of fuel.
         let fueled = || {
-            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            let rt = crate::lower::tests::runtime("def export [input] input");
             match std::sync::Arc::try_unwrap(rt) {
                 Ok(rt) => std::sync::Arc::new(rt.with_fuel(Some(10))),
                 Err(_) => unreachable!("the test holds the one runtime"),
@@ -2418,7 +2414,7 @@ mod tests {
 
     /// A runtime of its own with ten steps of fuel, for a native's steps.
     fn fueled() -> Arc<Runtime> {
-        let rt = crate::lower::tests::runtime("def export [input] input", true);
+        let rt = crate::lower::tests::runtime("def export [input] input");
         match Arc::try_unwrap(rt) {
             Ok(rt) => Arc::new(rt.with_fuel(Some(10))),
             Err(_) => unreachable!("the test holds the one runtime"),
@@ -2447,7 +2443,7 @@ mod tests {
     /// argument.
     #[test]
     fn push_all_joins_two_vectors() {
-        let rt = crate::lower::tests::runtime("", true);
+        let rt = crate::lower::tests::runtime("");
         let at = SourceSpan::new(&Arc::from("t"), 0, 0);
         let join = |items: &[f64], vector: &[f64]| {
             numbers(push_all(&rt, &[nums(items), nums(vector)], &at).unwrap())
@@ -2503,7 +2499,7 @@ mod tests {
     /// as `repeat` refuses its count.
     #[test]
     fn inc_counts_one_more_exactly() {
-        let rt = crate::lower::tests::runtime("", true);
+        let rt = crate::lower::tests::runtime("");
         let at = SourceSpan::new(&Arc::from("t"), 0, 0);
         let next = |v: Val| match inc(&rt, &[v], &at).unwrap() {
             Val::Num { value, lexeme } => {
@@ -2563,7 +2559,7 @@ mod tests {
     /// a function equals nothing, and a stream or a text is refused.
     #[test]
     fn equal_compares_values_as_a_pattern_compares_a_constant() {
-        let rt = crate::lower::tests::runtime("", true);
+        let rt = crate::lower::tests::runtime("");
         let at = SourceSpan::new(&Arc::from("t"), 0, 0);
         let eq = |a: Val, b: Val| match equal(&rt, &[a, b], &at).unwrap() {
             Val::Bool(b) => b,
@@ -2658,7 +2654,7 @@ mod tests {
         assert!(matches!(run(&differ, &[7.0; 100]), Ok(Val::Bool(false))));
         // Two steps, the vectors and their first items, with fuel for two.
         let two = || {
-            let rt = crate::lower::tests::runtime("def export [input] input", true);
+            let rt = crate::lower::tests::runtime("def export [input] input");
             match Arc::try_unwrap(rt) {
                 Ok(rt) => Arc::new(rt.with_fuel(Some(2))),
                 Err(_) => unreachable!("the test holds the one runtime"),
@@ -2720,7 +2716,7 @@ mod tests {
     /// unordered.
     #[test]
     fn number_class_and_compare_see_the_non_finite_numbers() {
-        let rt = crate::lower::tests::runtime("", true);
+        let rt = crate::lower::tests::runtime("");
         let at = SourceSpan::new(&Arc::from("t"), 0, 0);
         let word = |v: Val| match v {
             Val::Keyword(k) => k.to_string(),
@@ -2747,7 +2743,7 @@ mod tests {
     fn length_counts_characters_in_steps_the_abort_flag_reads() {
         let at = SourceSpan::new(&Arc::from("t"), 0, 0);
         let long = Val::str(&"héllo 日本".repeat(LENGTH_CHUNK / 3));
-        let rt = crate::lower::tests::runtime("", true);
+        let rt = crate::lower::tests::runtime("");
         assert_eq!(
             length(&rt, std::slice::from_ref(&long), &at).unwrap(),
             Val::num((8 * (LENGTH_CHUNK / 3)) as f64)

@@ -27,23 +27,21 @@ import (
 //     (RecordsToJSON) over table events, or an adapter (taggedToJSON)
 //     reading the tagged events an interpreted stream yields, the reverse
 //     of `events`;
-//   - table (TableRows/1): the native table transducer (TableFromJSON)
-//     over events, or an adapter reading the tagged `schema`, `row` and
-//     `table-end` values an interpreted stream yields;
+//   - table (TableRows/1): an adapter reading the tagged `schema`, `row`
+//     and `table-end` values a stream yields;
 //   - items (a stream of values): a Router over events for `route` and
 //     `select`, eventsToItems for `events`, scanStage for `scan-emit`,
-//     per-item stages for `map` and `filter`, and an adapter turning
-//     native table events into the tagged values a program
-//     pattern-matches;
-//   - text: CSVRenderer and JSONRenderer over their protocols, `concat-map`
-//     and `join` over a stream of items, `replace-text` as ReplaceText,
-//     and `concat` around one live text as a frame that writes its prefix
-//     before the first fragment and its suffix at the flush.
+//     and per-item stages for `map` and `filter`;
+//   - text: JSONRenderer over events for `json`, the host's CSVRenderer or
+//     RecordsToJSON over a table result (SinkAs), `concat-map` and `join`
+//     over a stream of items, `replace-text` as ReplaceText, and `concat`
+//     around one live text as a frame that writes its prefix before the
+//     first fragment and its suffix at the flush.
 //
 // A text that does not reach the input is finite and is written whole
-// wherever it lands (writeFinite): a row of an interpreted CSV is rendered
+// wherever it lands (writeFinite): a row of the library's CSV is rendered
 // into a scratch string and written as one fragment, so a failure in the
-// middle of a row leaves no half row behind, as the native renderer
+// middle of a row leaves no half row behind, as the host's CSV renderer
 // promises. Errors are transduce failures with the transduce and render
 // codes unchanged; a stream given to a stage of another protocol is
 // DSL_TYPE_ERROR with the `protocol_mismatch` finer code, the same word the
@@ -100,175 +98,6 @@ func protocolMismatch(message string) *Fail {
 	return NewFail(CodeDSLTypeError, "protocol_mismatch: "+message)
 }
 
-// treeSpecOf is the spec of a `transduce-tree`, when it has the standard
-// shape shared.TreeSpec holds: a record of records, each entry's
-// :container :object or :array, its :key and its :member each a string or
-// a token's index (a non-negative integer, as `path` takes one), its
-// :scalar a token's index or :value, its :text a boolean, any of the five
-// left out. An entry's other fields are not read, as the library reads
-// none. Any other spec runs the library's own `transduce-tree`.
-func treeSpecOf(v Val) (shared.TreeSpec, bool) {
-	r, ok := v.(*RecordVal)
-	if !ok {
-		return shared.TreeSpec{}, false
-	}
-	spec := shared.TreeSpec{Rules: make(map[string]shared.TreeRule, r.Len())}
-	for _, name := range r.Keys() {
-		entryV, _ := r.Get(name)
-		entry, ok := entryV.(*RecordVal)
-		if !ok {
-			return shared.TreeSpec{}, false
-		}
-		var rule shared.TreeRule
-		if c, has := entry.Get("container"); has {
-			switch c {
-			case KeywordVal("object"):
-				rule.Container = shared.TreeObject
-			case KeywordVal("array"):
-				rule.Container = shared.TreeArray
-			default:
-				return shared.TreeSpec{}, false
-			}
-		}
-		named := func(field string) (shared.TreeKey, bool) {
-			k, has := entry.Get(field)
-			if !has {
-				return shared.TreeKey{}, true
-			}
-			if name, isStr := k.(StrVal); isStr {
-				return shared.TreeKey{Set: true, Name: string(name)}, true
-			}
-			if i, isIndex := asIndex(k); isIndex {
-				return shared.TreeKey{Set: true, IsToken: true, Token: i}, true
-			}
-			return shared.TreeKey{}, false
-		}
-		if rule.Key, ok = named("key"); !ok {
-			return shared.TreeSpec{}, false
-		}
-		if rule.Member, ok = named("member"); !ok {
-			return shared.TreeSpec{}, false
-		}
-		if t, has := entry.Get("text"); has {
-			b, isBool := t.(BoolVal)
-			if !isBool {
-				return shared.TreeSpec{}, false
-			}
-			rule.Text = bool(b)
-		}
-		if sc, has := entry.Get("scalar"); has {
-			if sc == KeywordVal("value") {
-				rule.Scalar = shared.TreeScalar{Set: true, Value: true}
-			} else if i, isIndex := asIndex(sc); isIndex {
-				rule.Scalar = shared.TreeScalar{Set: true, Token: i}
-			} else {
-				return shared.TreeSpec{}, false
-			}
-		}
-		spec.Rules[name] = rule
-	}
-	return spec, true
-}
-
-// isLibrary says whether f is the standard library's definition name, not
-// a program's own of that name.
-func isLibrary(f Fn, name string) bool {
-	c, ok := f.(*Closure)
-	return ok && c.Scope == ScopeStdlib && c.Name == name
-}
-
-// isTableBinding is whether a value has the shape of the standard table
-// binding: a record with :columns and :rows selectors and a :column
-// function, or with :columns the keyword :infer (the columns are the first
-// row's keys, and :column is not read) and a :rows selector.
-func isTableBinding(v Val) bool {
-	r, ok := v.(*RecordVal)
-	if !ok {
-		return false
-	}
-	rowsV, _ := r.Get("rows")
-	_, rows := rowsV.(*SelectorVal)
-	columns, _ := r.Get("columns")
-	switch c := columns.(type) {
-	case *SelectorVal:
-		column, _ := r.Get("column")
-		_, fn := column.(Fn)
-		return rows && fn
-	case KeywordVal:
-		return rows && c == "infer"
-	}
-	return false
-}
-
-// isInferred is whether a table binding takes its columns from the first
-// row: :columns is the keyword :infer.
-func isInferred(binding Val) bool {
-	v, _ := Field(binding, "columns")
-	k, ok := v.(KeywordVal)
-	return ok && k == "infer"
-}
-
-// csvOptions is the renderer's dialect for a `csv-options` record, when
-// every field has a value the renderer accepts: :delimiter one character,
-// :newline CRLF or LF, :header a boolean, :null-text a string, :missing
-// :error or a string, :non-finite, when the record has it, :reject, :null
-// or :literal, and :no-columns, when it has it, :refuse or :empty. Any
-// other record runs the library's own csv, which refuses a policy that is
-// none where it is read.
-func csvOptions(v Val) (shared.CSVOptions, bool) {
-	r, ok := v.(*RecordVal)
-	if !ok {
-		return shared.CSVOptions{}, false
-	}
-	options := shared.DefaultCSVOptions()
-	d, _ := r.Get("delimiter")
-	delimiter, ok := d.(StrVal)
-	if !ok || utf8.RuneCountInString(string(delimiter)) != 1 {
-		return shared.CSVOptions{}, false
-	}
-	options.Delimiter, _ = utf8.DecodeRuneInString(string(delimiter))
-	n, _ := r.Get("newline")
-	switch n {
-	case StrVal("\r\n"):
-		options.Newline = shared.NewlineCRLF
-	case StrVal("\n"):
-		options.Newline = shared.NewlineLF
-	default:
-		return shared.CSVOptions{}, false
-	}
-	h, _ := r.Get("header")
-	header, ok := h.(BoolVal)
-	if !ok {
-		return shared.CSVOptions{}, false
-	}
-	options.Header = bool(header)
-	t, _ := r.Get("null-text")
-	nullText, ok := t.(StrVal)
-	if !ok {
-		return shared.CSVOptions{}, false
-	}
-	options.NullText = string(nullText)
-	m, _ := r.Get("missing")
-	switch missing := m.(type) {
-	case KeywordVal:
-		if missing != "error" {
-			return shared.CSVOptions{}, false
-		}
-		options.Missing = nil
-	case StrVal:
-		options.Missing = shared.MissingAs(string(missing))
-	default:
-		return shared.CSVOptions{}, false
-	}
-	if _, f := NonFinitePolicy(v); f != nil {
-		return shared.CSVOptions{}, false
-	}
-	if _, f := NoColumnsEmpty(v); f != nil {
-		return shared.CSVOptions{}, false
-	}
-	return options, true
-}
-
 // nullNonFinite is the json renderer's adapter for :non-finite :null: a
 // number that is not finite goes on as null, everything else as it came.
 type nullNonFinite struct {
@@ -280,130 +109,6 @@ func (n *nullNonFinite) Event(ev shared.Event) (shared.Flow, *Fail) {
 		return n.next.Event(shared.EvNull())
 	}
 	return n.next.Event(ev)
-}
-
-// noColumns is the CSV renderer's adapter for :no-columns :empty: a table
-// of no columns is the empty document, so its schema, its rows (each of no
-// cells) and its end go no further, and the renderer, which refuses such a
-// schema, writes nothing; a table of columns passes as it came. The table
-// it keeps back is held to what the library's `csv-table` holds it to,
-// with the same codes and texts, so the native and the interpreted `csv`
-// fail alike: a row of any cell, a second schema, and anything after the
-// end are PROTOCOL_ORDER_ERROR.
-type noColumns struct {
-	kept kept
-	// rows is how many rows the kept-back table has had, each of no cells.
-	rows uint64
-	next shared.TableSink
-}
-
-// kept is where a noColumns is in its table.
-type kept uint8
-
-const (
-	// keptBefore: no schema has come.
-	keptBefore kept = iota
-	// keptPassed: a table of columns, which the renderer holds to the
-	// protocol.
-	keptPassed
-	// keptRows: a table of no columns, kept back.
-	keptRows
-	// keptEnded: the kept-back table has ended.
-	keptEnded
-)
-
-func (n *noColumns) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
-	switch n.kept {
-	case keptBefore:
-		if ev.Kind == shared.TableSchema {
-			if len(ev.Columns) == 0 {
-				n.kept = keptRows
-				return shared.Continue, nil
-			}
-			n.kept = keptPassed
-		}
-		return n.next.TableEvent(ev)
-	case keptPassed:
-		return n.next.TableEvent(ev)
-	case keptRows:
-		switch ev.Kind {
-		case shared.TableSchema:
-			return shared.Continue, shared.ProtocolFail("a second schema")
-		case shared.TableRow:
-			if len(ev.Cells) != 0 {
-				return shared.Continue, shared.ProtocolFail(fmt.Sprintf("row %d has %d cells; the schema has 0 columns",
-					n.rows+1, len(ev.Cells)))
-			}
-			n.rows++
-			return shared.Continue, nil
-		default:
-			n.kept = keptEnded
-			return shared.Continue, nil
-		}
-	default:
-		switch ev.Kind {
-		case shared.TableSchema:
-			return shared.Continue, shared.ProtocolFail("a schema after the end")
-		case shared.TableRow:
-			return shared.Continue, shared.ProtocolFail("a row after the end")
-		default:
-			return shared.Continue, shared.ProtocolFail("a second end")
-		}
-	}
-}
-
-// isNonFiniteCell is whether a cell is a number that is not finite.
-func isNonFiniteCell(c *shared.Cell) bool {
-	return c.Kind == shared.CellNumber && (math.IsNaN(c.Value) || math.IsInf(c.Value, 0))
-}
-
-// nonFiniteCells is the CSV renderer's adapter for :non-finite :null or
-// :literal: a number cell that is not finite goes on as a null cell, which
-// the renderer writes as the null text, or as the string Infinity,
-// -Infinity or NaN, as `scalar-text` writes it under the same options. A
-// row with such a cell is copied into cells, which the next row reuses.
-type nonFiniteCells struct {
-	policy NonFinite
-	next   shared.TableSink
-	cells  []shared.Cell
-}
-
-func (n *nonFiniteCells) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
-	if ev.Kind != shared.TableRow {
-		return n.next.TableEvent(ev)
-	}
-	found := false
-	for i := range ev.Cells {
-		if isNonFiniteCell(&ev.Cells[i]) {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return n.next.TableEvent(ev)
-	}
-	n.cells = append(n.cells[:0], ev.Cells...)
-	for i := range n.cells {
-		c := &n.cells[i]
-		if !isNonFiniteCell(c) {
-			continue
-		}
-		if n.policy == NonFiniteNull {
-			*c = shared.Cell{Kind: shared.CellNull}
-		} else {
-			*c = shared.Cell{Kind: shared.CellString, Text: NonFiniteWord(c.Value)}
-		}
-	}
-	return n.next.TableEvent(shared.TableEvent{Kind: shared.TableRow, Cells: n.cells})
-}
-
-// csvProfile is a CSV dialect as the report prints it.
-func csvProfile(o shared.CSVOptions) CsvProfile {
-	p := CsvProfile{Delimiter: o.Delimiter, Newline: o.Newline.String(), Header: o.Header, NullText: o.NullText, MissingIsError: o.Missing == nil}
-	if o.Missing != nil {
-		p.MissingText = *o.Missing
-	}
-	return p
 }
 
 // cell is a cell as the table protocol carries it, from the value a
@@ -435,28 +140,13 @@ func cell(rt *Runtime, v Val) (shared.Cell, *Fail) {
 	return shared.Cell{}, typeError("a cell must be a scalar, a vector or a record, not " + KindOf(v))
 }
 
-// cellVal is a cell as a program sees it.
-func cellVal(c *shared.Cell) Val {
-	switch c.Kind {
-	case shared.CellBool:
-		return BoolVal(c.Bool)
-	case shared.CellNumber:
-		return NumVal{Value: c.Value, Lexeme: c.Lexeme, HasLexeme: c.HasLexeme}
-	case shared.CellString:
-		return StrVal(c.Text)
-	case shared.CellMissing:
-		return Missing()
-	}
-	return NullVal{}
-}
-
 // labelText is the text of a column's label, one policy for every table:
 // a string as it is, a number by its lexeme, a boolean by its name (as
 // `scalar-text` would write the same header cell); `missing` is
-// MISSING_VALUE, and anything else INPUT_INVALID. The native table binds
-// its columns by it, the adapter reading a program's schema values by it,
-// and csv-table validates the library's schema by it, so a label is
-// accepted or refused alike whichever path renders it.
+// MISSING_VALUE, and anything else INPUT_INVALID. The adapter reading a
+// program's schema values takes it, and csv-table validates the library's
+// schema by it, so a label is accepted or refused alike whichever renders
+// it.
 func labelText(label Val) (string, *Fail) {
 	switch x := label.(type) {
 	case StrVal:
@@ -895,7 +585,7 @@ func (t *taggedToJSON) Item(v Val) (shared.Flow, *Fail) {
 func (t *taggedToJSON) End() (shared.Flow, *Fail) { return t.down.Event(shared.EvEnd()) }
 
 // stateBounds are what a scan-emit state may hold: what a stage keeps from
-// row to row, as the native table keeps its bound columns, so
+// row to row, as the library's table keeps its bound columns, so
 // max_metadata_bytes in the transduce measure; and no deeper than a
 // captured value may be, max_depth, since a state that wraps itself once
 // per item would otherwise nest without bound.
@@ -1062,79 +752,13 @@ func (s *filterStage) Item(v Val) (shared.Flow, *Fail) {
 
 func (s *filterStage) End() (shared.Flow, *Fail) { return s.down.End() }
 
-// tableToTagged turns native table events into the tagged values a
-// program matches on.
-type tableToTagged struct {
-	down ItemSink
-}
-
-func (t *tableToTagged) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
-	switch ev.Kind {
-	case shared.TableSchema:
-		columns := make([]Val, len(ev.Columns))
-		for i, c := range ev.Columns {
-			r := NewRecord()
-			r.Set("label", StrVal(c.Label))
-			columns[i] = r
-		}
-		return t.down.Item(NewTagged("schema", Vector(columns...)))
-	case shared.TableRow:
-		cells := make([]Val, len(ev.Cells))
-		for i := range ev.Cells {
-			cells[i] = cellVal(&ev.Cells[i])
-		}
-		return t.down.Item(NewTagged("row", Vector(cells...)))
-	}
-	flow, f := t.down.Item(NewTagged("table-end"))
-	if f != nil || flow == shared.Stop {
-		return flow, f
-	}
-	return t.down.End()
-}
-
-// cellBound holds the native table's string cells to max_scalar_bytes, as
-// the interpreted path holds a cell's text to it. A document's own strings
-// are within that bound already (the source refuses a longer one), so a
-// longer string cell here is the compact JSON text of a vector or a
-// record, which the library's `scalar-text` bounds the same way; so the
-// two paths fail alike, naming the same limit.
-//
-// The native table adds each row to metrics.Rows as it hands it on. When
-// the row is not the native table's to count (Lowering.items: its rows
-// become items, which a later table stage counts if they reach one),
-// uncount takes that back as the row arrives, before anything else sees
-// it, so the count is the interpreted path's: the library's table is a
-// scan-emit, which counts nothing.
-type cellBound struct {
-	max     int
-	down    shared.TableSink
-	metrics *shared.Metrics
-	uncount bool
-}
-
-func (c *cellBound) TableEvent(ev shared.TableEvent) (shared.Flow, *Fail) {
-	if ev.Kind == shared.TableRow {
-		if c.uncount {
-			c.metrics.Rows.Add(^uint64(0))
-		}
-		for i := range ev.Cells {
-			if ev.Cells[i].Kind == shared.CellString && len(ev.Cells[i].Text) > c.max {
-				return shared.Continue, shared.LimitFail("max_scalar_bytes", uint64(c.max),
-					fmt.Sprintf("a cell's JSON text holds more than %d bytes", c.max))
-			}
-		}
-	}
-	return c.down.TableEvent(ev)
-}
-
-// taggedToTable reads the tagged values an interpreted stream yields as
-// native table events. One schema first, rows, one table-end: the renderer
+// taggedToTable reads the tagged values a stream yields as table events.
+// One schema first, rows, one table-end: the renderer
 // beneath validates the sequence; what is validated here is that each item
 // is a table event at all, of the table protocol's shape (at most
 // max_columns columns, labels by labelText), and that the stream did end
 // with table-end. It is the last table stage before a renderer, so it
-// counts each row in metrics.Rows, as the native table counts the rows it
-// hands a renderer, unless countRows says a later stage does
+// counts each row in metrics.Rows, unless countRows says a later stage does
 // (Lowering.items).
 type taggedToTable struct {
 	rt        *Runtime
@@ -1192,14 +816,14 @@ const (
 )
 
 // csvTableStage is `csv-table options events`: the protocol validator of
-// spec section 13.2 in the library's own csv. It checks exactly what the
-// native path checks, in the same order and with the same codes (the
-// adapter above, then the CSV renderer: the shape of each event,
-// max_columns and the labels, then one schema first, at least one column,
-// rows as wide as the schema, one table-end), and passes each event on
-// unchanged for the text to render; the cells' own checks (a number's
-// lexeme, a missing value) are the text's `scalar-text`, as they are the
-// renderer's.
+// spec section 13.2 in the library's own csv. It checks what the host's
+// CSV renderer checks of a table result, in the same order and with the
+// same codes (the adapter above, then the renderer: the shape of each
+// event, max_columns and the labels, then one schema first, at least one
+// column, rows as wide as the schema, one table-end), and passes each
+// event on unchanged for the text to render; the cells' own checks (a
+// number's lexeme, a missing value) are the text's `scalar-text`, as they
+// are the renderer's.
 type csvTableStage struct {
 	rt      *Runtime
 	metrics *shared.Metrics
@@ -1472,47 +1096,6 @@ func (l *Lowering) keepParserHead(head shared.ParserSink) (shared.Sink, *Fail) {
 	return parserEventsOnly{}, nil
 }
 
-// nativeTree is the spec of the scan the library's `transduce-tree`
-// builds, when p is one and the runtime's native compositions are on: a
-// `scan-emit` from `[[[] false] []]` over the host's parser events, its
-// step the library's `transduce-pass` given a spec of the standard shape
-// (treeSpecOf), its finish the library's `transduce-done`. A program that
-// writes that scan itself means what `transduce-tree` means, and is run
-// the same way; so is one that writes the scan of `transduce-step` from
-// `[[] false]` with `transduce-finish`, with the spec as that step reads
-// it, without its members and texts.
-func (l *Lowering) nativeTree(p *Plan) (shared.TreeSpec, bool) {
-	if !l.rt.Native() || p.Kind != PlanScanEmit {
-		return shared.TreeSpec{}, false
-	}
-	source := p.Source
-	if source == nil || source.Kind != PlanParserEvents || source.Source == nil || source.Source.Kind != PlanParserInput {
-		return shared.TreeSpec{}, false
-	}
-	tree := Vector(Vector(), BoolVal(false))
-	var name string
-	switch {
-	case isLibrary(p.Finish, "transduce-done") && Equal(p.Init, Vector(tree, Vector())):
-		name = "transduce-pass"
-	case isLibrary(p.Finish, "transduce-finish") && Equal(p.Init, tree):
-		name = "transduce-step"
-	default:
-		return shared.TreeSpec{}, false
-	}
-	step, ok := p.Step.(*Partial)
-	if !ok || !isLibrary(step.F, name) || len(step.Args) != 1 {
-		return shared.TreeSpec{}, false
-	}
-	spec, ok := treeSpecOf(step.Args[0])
-	if !ok {
-		return shared.TreeSpec{}, false
-	}
-	if name == "transduce-step" {
-		spec = spec.WithoutMemberAndText()
-	}
-	return spec, true
-}
-
 // ParserHead is what the host pushes parser events into, once SinkAs has
 // answered events, the chain's JSON-events head: the head parser-events
 // was lowered to, or, when the program reads nothing of its input, the
@@ -1616,30 +1199,6 @@ func (l *Lowering) text(p *Plan, out shared.TextOut) (shared.Sink, *Fail) {
 		return &finiteTextSink{rt: l.rt, text: TextVal{Plan: p}, out: out}, nil
 	}
 	switch {
-	case p.Kind == PlanCsv:
-		options, ok := csvOptions(p.Options)
-		if !ok {
-			return nil, typeError("csv: the options record does not map to the renderer's dialect")
-		}
-		renderer, f := l.rt.Renderers().CSV(out, options)
-		if f != nil {
-			return nil, f
-		}
-		empty, f := NoColumnsEmpty(p.Options)
-		if f != nil {
-			return nil, f
-		}
-		if empty {
-			renderer = &noColumns{next: renderer}
-		}
-		policy, f := NonFinitePolicy(p.Options)
-		if f != nil {
-			return nil, f
-		}
-		if policy == NonFiniteReject {
-			return l.table(p.Source, renderer, false)
-		}
-		return l.table(p.Source, &nonFiniteCells{policy: policy, next: renderer}, false)
 	case p.Kind == PlanJSON:
 		json := l.rt.Renderers().JSON(out, jsonOptions())
 		if p.NonFinite == NonFiniteNull {
@@ -1700,25 +1259,6 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 		// own: the source's count the source's events, and these are the
 		// program's.
 		guarded := l.rt.Routers().Guarded(sink, l.limits, l.rt.Abort(), shared.NewMetrics())
-		// The library's `transduce-tree` over the host's parser events, run
-		// natively when the routers offer it: the native reads each pass as
-		// it comes and writes the events the library's step would, so the
-		// head is the native.
-		// A spec that names a member or a text goes only to routers that
-		// read them, and its texts are bounded as the library's
-		// `string-join` bounds them.
-		if spec, ok := l.nativeTree(p); ok {
-			reads := false
-			if texts, ok := l.rt.Routers().(shared.TreeTextRouters); ok {
-				reads = texts.TransduceTreeReadsMemberAndText()
-			}
-			if routers, offers := l.rt.Routers().(shared.TreeRouters); offers && (reads || !spec.UsesMemberOrText()) {
-				spec.MaxTextBytes = l.limits.MaxScalarBytes
-				if native := routers.TransduceTree(spec, guarded); native != nil {
-					return l.keepParserHead(native)
-				}
-			}
-		}
 		return l.items(p, &taggedToJSON{down: guarded}, false)
 	}
 	// A stream that never yields events: `select`'s values, `route`'s
@@ -1731,17 +1271,6 @@ func (l *Lowering) events(p *Plan, sink shared.Sink) (shared.Sink, *Fail) {
 // receives are counted after it rather than here.
 func (l *Lowering) table(p *Plan, table shared.TableSink, countedLater bool) (shared.Sink, *Fail) {
 	switch p.Kind {
-	case PlanTableFromJSON:
-		binding, f := l.tableBinding(p.Binding, p.At)
-		if f != nil {
-			return nil, f
-		}
-		bounded := &cellBound{max: l.limits.MaxScalarBytes, down: table, metrics: l.metrics, uncount: countedLater}
-		transducer, f := l.rt.Routers().TableFromJSON(binding, l.limits, l.rt.Duplicates(), l.metrics, bounded)
-		if f != nil {
-			return nil, f
-		}
-		return l.events(p.Source, transducer)
 	case PlanInput, PlanRecords, PlanAsEvents, PlanTreeContract:
 		return nil, protocolMismatch("table events were expected, not JSON events (table-from-json makes a table of them)")
 	}
@@ -1752,14 +1281,12 @@ func (l *Lowering) table(p *Plan, table shared.TableSink, countedLater bool) (sh
 //
 // countedLater says whether a table stage after down counts the rows these
 // items carry. Each row is counted in metrics.Rows once, by the last table
-// stage it passes, as the interpreted path counts it: the adapter to a
-// renderer, or a csv-table whose rows reach no later table stage, or the
-// native table when it hands its rows straight to a renderer or to
-// `records`. The flag passes through a map, a filter and a scan-emit
-// unchanged, so a row a filter drops is not counted and one a scan adds
-// is; a table stage sets it for its own source; a text over items, and
-// `records`, clear it. The native table's rows that become items are never
-// its own to count: the library's table, a scan-emit, counts none.
+// stage it passes: the adapter to a renderer, or a csv-table whose rows
+// reach no later table stage. The flag passes through a map, a filter and
+// a scan-emit unchanged, so a row a filter drops is not counted and one a
+// scan adds is; a table stage sets it for its own source; a text over
+// items, and `records`, clear it. The library's table, a scan-emit, counts
+// none.
 func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink, *Fail) {
 	switch p.Kind {
 	case PlanRoute:
@@ -1811,8 +1338,6 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 		return l.items(p.Source, &mapStage{rt: l.rt, f: p.F, at: p.At, down: down}, countedLater)
 	case PlanFilter:
 		return l.items(p.Source, &filterStage{rt: l.rt, f: p.F, at: p.At, down: down}, countedLater)
-	case PlanTableFromJSON:
-		return l.table(p, &tableToTagged{down: down}, true)
 	case PlanCsvTable:
 		if f := checkDelimiter(p.Options); f != nil {
 			return nil, f
@@ -1826,68 +1351,4 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 		return nil, protocolMismatch("JSON events cannot be read item by item; select or route what the stream should yield, or read its events")
 	}
 	return nil, typeError(PlanName(p) + " is a text, not a stream")
-}
-
-// tableBinding is the native transducer's binding from the standard
-// binding record. The column function is the program's, applied to each
-// descriptor as the metadata completes; its record must carry a string
-// :label and a :source selector naming one location. An inferred binding
-// is the transducer's InferSchema: the first row's keys.
-func (l *Lowering) tableBinding(binding Val, at SourceSpan) (shared.TableBinding, *Fail) {
-	get := func(key string) Val {
-		v, ok := Field(binding, key)
-		if !ok {
-			return Missing()
-		}
-		return v
-	}
-	if isInferred(binding) {
-		rows, ok := get("rows").(*SelectorVal)
-		if !ok {
-			return shared.TableBinding{}, l.rt.FailAt(typeError("table-from-json: an inferred binding must carry a :rows selector"), at)
-		}
-		return shared.TableBinding{Schema: shared.InferSchema(), Rows: rows.Selector}, nil
-	}
-	columns, ok1 := get("columns").(*SelectorVal)
-	rows, ok2 := get("rows").(*SelectorVal)
-	column, ok3 := get("column").(Fn)
-	if !ok1 || !ok2 || !ok3 {
-		return shared.TableBinding{}, l.rt.FailAt(typeError(
-			"table-from-json: the binding must carry :columns and :rows selectors and a :column function"), at)
-	}
-	rt := l.rt
-	mapper := func(descriptor *shared.Datum) (shared.BoundColumn, *Fail) {
-		v, f := rt.Apply(column, []Val{FromDatum(descriptor)}, at)
-		if f != nil {
-			return shared.BoundColumn{}, f
-		}
-		return boundColumn(v)
-	}
-	return shared.TableBinding{Schema: shared.MetadataSchema(columns.Selector, mapper), Rows: rows.Selector}, nil
-}
-
-// boundColumn is a column record (:label, :source) as the transducer binds
-// it. The label is read as the library's `public-column` reads it (`get
-// :label`, so a column function that answers something other than a
-// record fails as `get` does) and taken by labelText, the policy every
-// table shares.
-func boundColumn(column Val) (shared.BoundColumn, *Fail) {
-	l, f := getField("label", column)
-	if f != nil {
-		return shared.BoundColumn{}, f
-	}
-	text, f := labelText(l)
-	if f != nil {
-		return shared.BoundColumn{}, f
-	}
-	source, _ := Field(column, "source")
-	s, ok := source.(*SelectorVal)
-	if !ok {
-		return shared.BoundColumn{}, typeError("table-from-json: a column record must carry a :source selector")
-	}
-	segments, ok := selectorSegments(s.Selector)
-	if !ok {
-		return shared.BoundColumn{}, typeError("table-from-json: a column's :source must name one location, not " + s.Selector.String())
-	}
-	return shared.NewBoundColumn(text, segments), nil
 }
