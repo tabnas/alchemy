@@ -4,7 +4,7 @@ package tabnasalchemy
 
 // lower_test.go: plans to sinks (rs/src/lower.rs's tests): the parser's
 // rule passes pushed into the head. The tests that lower a program to a
-// sink and run it are alchemy-cli's (go/e2e/lower_test.go): they need
+// sink and run it are dmog's (go/e2e/lower_test.go): they need
 // transduce's routers and render's renderers.
 
 import (

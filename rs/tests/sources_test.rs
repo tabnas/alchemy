@@ -5,7 +5,7 @@
 // the field and in the failure's display, at every stage compiling
 // positions one: the reader, the desugarer, the resolver and the checker;
 // and the linking refuses what it cannot link. Linked programs run, and a
-// run's failure in a part, are in tabnas-alchemy-cli's sources_test.rs,
+// run's failure in a part, are in tabnas-dmog's sources_test.rs,
 // since running needs transduce's routers and render's renderers.
 
 mod common;

@@ -19,7 +19,7 @@
 // binary's, compared program for program: depth is counted as it counts
 // it. The tests here stop at compile time; the ones that run a program
 // (the bound per item, the deepest chains run, the bound with half the
-// stack used) are alchemy-cli's, in its ts/test/depth.test.ts.
+// stack used) are dmog's, in its ts/test/depth.test.ts.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'

@@ -10,7 +10,7 @@
 //
 // The comparisons run programs on transduce's routers and render's
 // renderers, which this package does not depend on, so they are
-// alchemy-cli's (its ts/test/differential.test.ts). What needs no run
+// dmog's (its ts/test/differential.test.ts). What needs no run
 // stays here: the library loads.
 
 import { describe, it } from 'node:test'

@@ -172,7 +172,7 @@ describe('explain', () => {
 // rs/src/effects.rs's tests, over compiled programs: the plan the
 // evaluator built. The one that
 // also runs its program (a custom csv dialect is reported as it runs, and
-// writes what it reports) is alchemy-cli's, in its ts/test/effects.test.ts.
+// writes what it reports) is dmog's, in its ts/test/effects.test.ts.
 describe('explain, compiled', () => {
   it('the worked example reports in the spec layout', () => {
     const program = compile(PROGRAM, 'export.alc')

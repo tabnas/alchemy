@@ -31,16 +31,16 @@
 // Renderers, so this package depends on neither. The translate package
 // (github.com/tabnas/alchemy/go/translate) composes a translation between
 // formats from the formats' parts on this API, as a host would. The
-// `alchemy` command is in the alchemy-cli repository
-// (github.com/tabnas/alchemy-cli/go).
+// `dmog` command is in the dmog repository
+// (github.com/tabnas/dmog/go).
 //
-// A program's sink takes any source's events. `alchemy run` reads its
+// A program's sink takes any source's events. `dmog run` reads its
 // document as the Rust command does, with the JSON grammar through
 // transduce's ParserSource incrementally, which this release of
 // transduce's Go port builds only with the tabnas_nodecell tag; without
 // it the incremental source refuses (STREAMABILITY_UNKNOWN) before
 // reading, and the command reports that rather than read the document
-// some other way (see alchemy-cli's cmd/alchemy).
+// some other way (see dmog's cmd/alchemy).
 package tabnasalchemy
 
 import (

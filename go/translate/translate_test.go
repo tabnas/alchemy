@@ -9,7 +9,7 @@ package translate
 // standard library's adapters, to a program whose output is a text. The
 // parts here are stand-ins (a render that is json, an embed that hands its
 // input on); running real parts needs transduce's routers and render's
-// renderers, and is alchemy-cli's. Compiling asks nothing of the stages,
+// renderers, and is dmog's. Compiling asks nothing of the stages,
 // so these tests pass none (alchemy.CompileSources takes nil for both).
 
 import (

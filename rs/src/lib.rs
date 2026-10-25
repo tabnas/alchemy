@@ -32,8 +32,8 @@
 //!   the embedded library.
 //! - [`program`]: [`compile`] and [`Program`], the API a host embeds. The
 //!   host passes the routers (tabnas-transduce's) and the renderers
-//!   (tabnas-render's) in; the `alchemy` command, which does, is
-//!   tabnas-alchemy-cli.
+//!   (tabnas-render's) in; the `dmog` command, which does, is
+//!   tabnas-dmog.
 //!
 //! ```
 //! use tabnas_alchemy::{canonical, desugar, parse};
@@ -111,7 +111,7 @@ pub use program::{
 };
 
 /// The stack the checker and the evaluator are given: [`compile`] runs on
-/// a thread of this size, and so does the `alchemy` command, so a program
+/// a thread of this size, and so does the `dmog` command, so a program
 /// at [`MAX_NESTING`] and an evaluation at [`MAX_EVAL_DEPTH`] fit in a
 /// debug build as in a release one. A host that pushes events into a
 /// [`Program::sink`] runs the program's per-item functions on its own

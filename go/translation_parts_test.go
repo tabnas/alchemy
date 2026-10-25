@@ -3,7 +3,7 @@
 // The structural translation interface: a program composed with a format's
 // render part, compiled from several sources. The fleet conformance that
 // reads every grammar package's declared parts and runs them round trip
-// is alchemy-cli's (go/e2e/translation_parts_test.go): it runs programs on
+// is dmog's (go/e2e/translation_parts_test.go): it runs programs on
 // transduce's routers and render's renderers, over documents the grammars
 // read.
 

@@ -3,7 +3,7 @@
 <!-- tabnas-clib-template: v6 — stamped by admin tasks/adopt-clib.sh;
      edit the template and re-stamp, not this file. -->
 
-The alchemy format parser as a C shared library, so languages with no
+The dmog format parser as a C shared library, so languages with no
 tabnas port can parse and validate alchemy input. This is one of the
 per-format tabnas clibs sharing the **uniform ABI** decided by ADR-12:
 every such library exports the same five symbols, and which library you
@@ -72,7 +72,7 @@ const c = @cImport(@cInclude("tabnas.h"));
 
 ## Format notes
 
-alchemy is a language, not a data format, and this library runs its READER only: `tabnas_parse` reads layout S-expressions into the tagged value tree every runtime's front end consumes (`{"$":"sym","name":…,"span":[start,end]}` and the like), through `ParseValue`. Nothing is desugared, resolved, type-checked or run, so `accept:true` means the text is well-formed alchemy, not that the program checks: an unknown name or a type error is `alchemy check`'s to report, and the five-symbol ABI has no slot for it. The reader's own refusals (`tab_indent`, `bad_indent`, `bad_dedent`, `unbalanced`, `too_deep`) arrive as the ordinary diagnostic under that code. `ParseValue` parses with the package's one shared engine, built on first use, and the engine's contract is one parse at a time per instance, so every handle in this process serializes on one shared lock and extra handles buy no concurrency.
+alchemy is a language, not a data format, and this library runs its READER only: `tabnas_parse` reads layout S-expressions into the tagged value tree every runtime's front end consumes (`{"$":"sym","name":…,"span":[start,end]}` and the like), through `ParseValue`. Nothing is desugared, resolved, type-checked or run, so `accept:true` means the text is well-formed alchemy, not that the program checks: an unknown name or a type error is `dmog check`'s to report, and the five-symbol ABI has no slot for it. The reader's own refusals (`tab_indent`, `bad_indent`, `bad_dedent`, `unbalanced`, `too_deep`) arrive as the ordinary diagnostic under that code. `ParseValue` parses with the package's one shared engine, built on first use, and the engine's contract is one parse at a time per instance, so every handle in this process serializes on one shared lock and extra handles buy no concurrency.
 
 ## Layout
 

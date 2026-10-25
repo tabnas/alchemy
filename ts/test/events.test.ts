@@ -12,7 +12,7 @@
 // one here; the renderer, the explicit keys, YAML's non-finite numbers,
 // the plan report (which runs its program too) and the events a program
 // builds run on transduce's routers and render's renderers, and are
-// alchemy-cli's, in its ts/test/events.test.ts.
+// dmog's, in its ts/test/events.test.ts.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
@@ -95,7 +95,7 @@ describe('events', () => {
     // `parserSinkInto`, which holds the program to JSON events: one
     // compiled over JSON events, or answering a text or a table, is
     // refused before any stage is built. Running one is
-    // tabnas-alchemy-cli's.
+    // tabnas-dmog's.
     const down = { event: () => 'continue' } as any
     refused(() => json.parserSinkInto(down))
     const text = compile(

@@ -110,7 +110,7 @@ func TestANativeReadsAsItsReferenceRow(t *testing.T) {
 }
 
 // The library loads, with the definitions the differential test runs
-// interpreted (alchemy-cli's go/e2e/differential_test.go, which runs it
+// interpreted (dmog's go/e2e/differential_test.go, which runs it
 // against the native compositions on transduce's and render's stages).
 func TestTheLibraryLoads(t *testing.T) {
 	lib := StdlibLoaded()

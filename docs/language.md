@@ -256,10 +256,10 @@ Each is a `DSL_PARSE_ERROR` whose message begins with the code (see
 
 The **canonical** form of a program is fully parenthesized, one
 top-level form per line: strings as JSON literals, numbers by lexeme,
-vectors in brackets, keywords with their colon. `alchemy canon FILE`
+vectors in brackets, keywords with their colon. `dmog canon FILE`
 prints it, and the `canonical` blocks on this page are it.
 
-The **layout** form is what `alchemy format FILE` prints: an atom or a
+The **layout** form is what `dmog format FILE` prints: an atom or a
 vector on one line; a list of fewer than two items, or one whose first
 item is a list, in explicit parens (`(newline)`, `((f x) y)`); any other
 list with its leading atoms and vectors on one line and every remaining
@@ -1159,7 +1159,7 @@ table of a document with no rows, or whose first row has no members):
 refused (`:refuse`, the default, `TARGET_VALUE_UNREPRESENTABLE`), or
 written as the empty document (`:empty`), with no header and no record,
 since a record of no fields is no line a reader could tell from none.
-alchemy-cli's `rs/tests/stdlib_test.rs` pins what the text does on every
+dmog's `rs/tests/stdlib_test.rs` pins what the text does on every
 fixture and generated document:
 
 - **the protocol**: a stream that has rows before its schema, a second
@@ -1906,7 +1906,7 @@ block form say, is a `scan-emit` over them whose state is the stack of
 open containers, one keyword marker each, kept with `push`, `pop`, `top`
 and `count`, its indentation `repeat`ed from the stack's height and its
 strings `quoted`; a step answers several items for one event, and
-`join ""` writes them (alchemy-cli's `rs/tests/events_test.rs` holds
+`join ""` writes them (dmog's `rs/tests/events_test.rs` holds
 one). The
 smallest such program, the keys of every object one per line, and its
 report: `events` retains nothing, and the state is the stage's own:
@@ -2009,7 +2009,7 @@ Qualification:
 
 ## explain
 
-`alchemy explain FILE` prints the plan report in the layout of spec
+`dmog explain FILE` prints the plan report in the layout of spec
 section 15.5, computed from the plan the program built rather than from
 its text: the chain of calls on `export`'s data-last spine; the source
 reads (one pass); the protocol chain; the selection (how many capture
@@ -2071,7 +2071,7 @@ its `renderer` is `text`.
 ## run
 
 ```text
-alchemy run [--grammar FORMAT] [--render csv|json] [--max-output-bytes N] PROGRAM INPUT
+dmog run [--grammar FORMAT] [--render csv|json] [--max-output-bytes N] PROGRAM INPUT
 ```
 
 Parses `INPUT`, a JSON document, with the tabnas JSON grammar through
@@ -2084,14 +2084,14 @@ is rendered (a program that renders its own text takes none:
 `max_output_bytes`, which also bounds what a finite text or one item's
 text may hold as it is built (the other limits are transduce's
 defaults). `--grammar FORMAT` parses `INPUT` with that format's grammar
-instead, one of the formats `alchemy formats` lists whose documents are
+instead, one of the formats `dmog formats` lists whose documents are
 parsed rather than read as a tree, through transduce's
 `ParserEventSource`, and compiles the program over the parser's rule
 passes (`compile_with` over `Input::ParserEvents`, [Parser
 events](#parser-events)): a transducer part is such a program, and this
-runs one against its own fixtures from the command line. Other input
-formats as documents are aless's business: it runs alchemy programs
-against every format its parsers read.
+runs one against its own fixtures from the command line. A document of
+another format is `translate --with`'s business: it runs the program
+over the document read as `--from` and writes its export in `--to`.
 
 A failure is one `Fail` JSON object on standard error, with `output:
 "partial"` when bytes had already reached standard output, and the exit
@@ -2147,7 +2147,7 @@ The TypeScript and Go ports take the same two implementations:
   position it names in `file`. Since building the plan runs the program's
   definitions, a failure that evaluation finds on that path comes back
   from `compile` with its own code: a `fail` is `INPUT_INVALID` (exit 1
-  from `alchemy check`, although no document was read), a record with a
+  from `dmog check`, although no document was read), a record with a
   key twice `duplicate_key`, a `match` no case takes `no_match`. The
   work is bounded: at most `MAX_PLAN_STEPS` (1,000,000) evaluation steps,
   `RESOURCE_LIMIT_EXCEEDED` naming `max_plan_steps` past them, and at
@@ -2233,8 +2233,8 @@ The TypeScript and Go ports take the same two implementations:
   (`ParserSource::abort`), which stops between events.
 - The per-item functions run on the thread that pushes the events, and
   that thread needs `STACK_BYTES` of stack for the evaluation bound to be
-  reached before the stack's end (the `alchemy` command runs on such a
-  thread; aless's parse thread is one).
+  reached before the stack's end (the `dmog` command runs on such a
+  thread).
 - What bounds a run is the host's `Limits`, each where the stage holding
   the data names it: the source's `max_depth`, `max_key_bytes` and
   `max_scalar_bytes`; the tables' `max_metadata_bytes`,
@@ -2303,19 +2303,19 @@ it, so a failure over a large document does not carry the document.
 
 ## The command
 
-The `alchemy` command is
-[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli), which
+The `dmog` command is
+[tabnas-dmog](https://github.com/tabnas/dmog), which
 composes this package with transduce's routers and render's renderers, in
-TypeScript (`npm install -g @tabnas/alchemy-cli`), Go and Rust.
+TypeScript (`npm install -g @tabnas/dmog`), Go and Rust.
 
 ```text
-alchemy canon FILE       print the program in canonical form
-alchemy format FILE      print the program in layout form
-alchemy check FILE       parse, desugar, resolve, check and build the plan; print nothing and exit 0
-alchemy explain FILE     print the plan report
-alchemy run [--grammar FORMAT] [--render csv|json] [--max-output-bytes N] PROGRAM INPUT
-                         run the program over the JSON document INPUT; with --grammar, over
-                         the rule passes of INPUT parsed as FORMAT (a transducer part's input)
+dmog canon FILE       print the program in canonical form
+dmog format FILE      print the program in layout form
+dmog check FILE       parse, desugar, resolve, check and build the plan; print nothing and exit 0
+dmog explain FILE     print the plan report
+dmog run [--grammar FORMAT] [--render csv|json] [--max-output-bytes N] PROGRAM INPUT
+                      run the program over the JSON document INPUT; with --grammar, over
+                      the rule passes of INPUT parsed as FORMAT (a transducer part's input)
 ```
 
 `FILE`, `PROGRAM` and `INPUT` may be `-` for standard input (one of them

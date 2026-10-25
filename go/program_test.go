@@ -3,7 +3,7 @@
 package tabnasalchemy
 
 // program_test.go: the API a host embeds (rs/src/program.rs's tests). The
-// sink a program writes through is alchemy-cli's to test
+// sink a program writes through is dmog's to test
 // (go/e2e/program_test.go): it runs on transduce's and render's stages.
 
 import (

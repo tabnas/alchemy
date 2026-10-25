@@ -17,8 +17,8 @@
 // `Routers` and `Renderers`, the stages the lowering builds: transduce and
 // render import it (`@tabnas/alchemy/shared`) and implement those two, and
 // a host passes their implementations to `compile` as `{ routers,
-// renderers }`. Alchemy imports neither package. The `alchemy` command is
-// `@tabnas/alchemy-cli`.
+// renderers }`. Alchemy imports neither package. The `dmog` command is
+// `@tabnas/dmog`.
 //
 // The checker and the evaluator recurse on an explicit stack
 // (`./trampoline`), so MAX_NESTING, MAX_APPLIED and MAX_EVAL_DEPTH are

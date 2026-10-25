@@ -10,7 +10,7 @@ package tabnasalchemy
 // and column, in the field and in the failure's display, at every stage
 // that positions one: the reader, the desugarer, the resolver and the
 // checker here; the linked program's run, and a failure the run meets in a
-// part, are alchemy-cli's (go/e2e/sources_test.go), since a run needs
+// part, are dmog's (go/e2e/sources_test.go), since a run needs
 // transduce's routers and render's renderers.
 
 import (

@@ -3,7 +3,7 @@
 // The lowering and the program around it: rs/src/lower.rs's and
 // rs/src/program.rs's tests. The ones that lower a plan into a sink and run
 // it need transduce's routers and render's renderers, so they are
-// alchemy-cli's, in its ts/test/lower.test.ts; what is left here builds
+// dmog's, in its ts/test/lower.test.ts; what is left here builds
 // plans and reads them without running one.
 
 import { describe, it } from 'node:test'
