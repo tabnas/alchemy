@@ -26,22 +26,22 @@ Blank lines are skipped, and so are comment lines — a line starting with
 | `expected` | A JSON string (the canonical text, the report, or the output bytes), or `ERROR:<code>` / `ERROR:<code>@<row>:<col>` for a program or run that must fail. Not escape-decoded: JSON's own escapes apply, so `"a\r\n"` ends in CRLF. |
 | `doc` | `run.tsv` and `transduce.tsv`. The document the program runs over, escape-decoded like `input`: in `run.tsv` a JSON document, and an empty cell is `null`; in `transduce.tsv` a document in the row's `grammar`, and an empty cell is the empty text. |
 | `render` | `run.tsv` and `transduce.tsv`. How a table or JSON-events result is rendered: empty (the host's default: CSV for a table, JSON for events), `csv` or `json`. A program that renders its own text takes none (`render_of_text`). |
-| `grammar` | `transduce.tsv` only. The grammar whose rule passes the program reads: the `languageId` of a format alchemy-cli carries (`json` first, then the others it depends on). The document is parsed with that package's parser, as `alchemy run --grammar` parses it. |
+| `grammar` | `transduce.tsv` only. The grammar whose rule passes the program reads: the `languageId` of a format dmog carries (`json` first, then the others it depends on). The document is parsed with that package's parser, as `dmog run --grammar` parses it. |
 | `duplicates` | `transduce.tsv` only. The policy for a member name an object repeats within a captured value (spec section 18.2), which the runner sets with `with_duplicates`: empty, the default, refuses the capture (`DUPLICATE_MEMBER`); `first` keeps the earlier value; `last` the later. |
-| `protocol` | `check.tsv` only. The input the host declares when it compiles the program: empty for JSON events (what `compile` declares), `parser` for the parser's rule passes (`compile_with` over `Input::ParserEvents`). Every runner of `check.tsv` reads it, alchemy-cli's catalogue test included. |
+| `protocol` | `check.tsv` only. The input the host declares when it compiles the program: empty for JSON events (what `compile` declares), `parser` for the parser's rule passes (`compile_with` over `Input::ParserEvents`). Every runner of `check.tsv` reads it, dmog's catalogue test included. |
 
-A run is what `alchemy run` does: compile the program (which builds the
+A run is what `dmog run` does: compile the program (which builds the
 plan), then read `doc` with the tabnas JSON grammar incrementally, pruned
 under the program's row selector when it has one, and push its events
 through the program's sink, with the default `Limits`. A run needs
 transduce's routers and render's renderers, which alchemy does not
 depend on, so `run.tsv` is run by
-[tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), the
+[tabnas/dmog](https://github.com/tabnas/dmog), the
 composition root, in every runtime (see "Who runs what"). Every runtime
 runs the library's text, and is held to the same bytes, codes and
 positions.
 
-A `transduce.tsv` run is what `alchemy run --grammar` does: compile the
+A `transduce.tsv` run is what `dmog run --grammar` does: compile the
 program over the parser's rule passes (`compile_with` over
 `Input::ParserEvents`), read `doc` with the row's grammar through
 transduce's `ParserEventSource`, and push each pass through the program's
@@ -91,7 +91,7 @@ entry, each finer code raised with one code (`bad_let` from the
 desugarer in `pipe.tsv` and from the resolver in `check.tsv` alike), and
 every line met by some row. This repository's copy runs the rows of
 `reader.tsv`, `pipe.tsv` and `check.tsv` and holds them to all but the
-last clause; alchemy-cli's runs every row of all four files and holds the
+last clause; dmog's runs every row of all four files and holds the
 last clause too. A row that meets a new failure,
 or a new sentence of a known one, comes with its line in the catalogue.
 
@@ -118,9 +118,9 @@ compile with inert stages.
 
 Each runtime's every-fixture-has-a-runner test fails when a file is added
 without a runner, and names `run.tsv` and `transduce.tsv` as run by
-alchemy-cli.
+dmog.
 
-In [tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), against
+In [tabnas/dmog](https://github.com/tabnas/dmog), against
 this repository's `test/spec/` in the sibling checkout: `run.tsv` and
 `transduce.tsv`, and the full catalogue test
 over all five files.
@@ -128,9 +128,9 @@ over all five files.
 - Rust: `rs/tests/spec_test.rs`.
 - TypeScript: `ts/test/spec.test.ts`.
 - Go: `go/e2e`'s `TestSpecRun` and `TestSpecTransduce`. Rows that read a
-  document need `-tags tabnas_nodecell`, which alchemy-cli's gate passes.
+  document need `-tags tabnas_nodecell`, which dmog's gate passes.
 
-This repository's `.github/workflows/downstream.yml` runs alchemy-cli's
+This repository's `.github/workflows/downstream.yml` runs dmog's
 gates against each change here.
 
 Finding `test/spec`, reading a file, decoding escapes, the `ERROR:`
@@ -156,6 +156,6 @@ it.
   `DIVERGENCE.md`.
 - A new row must pass in every runtime that exists: `cargo test
   --all-targets` from `rs/` (or `make test` from the root), and, for a
-  `run.tsv` or `transduce.tsv` row, alchemy-cli's gates
-  (`../alchemy-cli/ci/rust/run.sh` and `../alchemy-cli/ci/polyglot/run.sh`,
+  `run.tsv` or `transduce.tsv` row, dmog's gates
+  (`../dmog/ci/rust/run.sh` and `../dmog/ci/polyglot/run.sh`,
   which downstream.yml runs).

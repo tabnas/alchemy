@@ -1,5 +1,7 @@
 # Any format to any other, streamed: the plan
 
+> alchemy-cli, the host this plan names, was renamed dmog on 2026-10-25 (admin ADR-32). This plan is a dated record and keeps the name it was written with.
+
 A plan, written on 2026-10-12 from the maintainer's ruling of the same
 day, for making every conversion in the tabnas fleet stream through one
 general path, with no format-specific streaming code anywhere. alchemy

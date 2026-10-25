@@ -7,7 +7,7 @@
 //
 // The conformance of each grammar's parts imports the grammars and runs
 // their programs on transduce's routers and render's renderers, so it is
-// alchemy-cli's, in its ts/test/translation-parts.test.ts. What compiles
+// dmog's, in its ts/test/translation-parts.test.ts. What compiles
 // without running is here: a text-shaped render composes through the Text
 // protocol.
 

@@ -17,8 +17,8 @@ The language is the default `language` feature: the reader (`parse`,
 `types`), the evaluator (`interp`, `value`) and its lowering to sinks
 (`lower`), the effect summary (`effects`), the embedded standard library
 (`stdlib`), and the API a host embeds (`compile`, `Program`). The host
-passes the routers and the renderers in; the `alchemy` command, which
-does, is [tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli). See
+passes the routers and the renderers in; the `dmog` command, which
+does, is [tabnas-dmog](https://github.com/tabnas/dmog). See
 the repository [README](../README.md), [AGENTS.md](../AGENTS.md) and
 [`docs/language.md`](../docs/language.md).
 
@@ -58,7 +58,7 @@ The engine, the JSON grammar, the fixture runner and the debug plugin
 are sibling checkouts named by path in `Cargo.toml`. This crate depends
 on neither transduce nor render: its tests compile programs with inert
 stages, and the tests that run them on the real routers and renderers
-are [tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli)'s. From
+are [tabnas-dmog](https://github.com/tabnas/dmog)'s. From
 this directory:
 `cargo test --all-targets`, `cargo test --doc`,
 `cargo clippy --all-targets --all-features -- -D warnings`, and

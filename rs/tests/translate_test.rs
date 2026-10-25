@@ -3,7 +3,7 @@
 //! inferred table over a wrapped root, an embed, a lift, a program's
 //! events and its table, into a schema-only target as into any other. The
 //! parts here are stand-ins (a render that is `json`, an embed that hands
-//! its input on); running real parts is alchemy-cli's, which composes the
+//! its input on); running real parts is dmog's, which composes the
 //! routers and renderers.
 
 mod common;

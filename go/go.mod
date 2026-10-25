@@ -5,7 +5,7 @@ go 1.24.7
 // The engine, and the JSON grammar the grammar document is read with. The
 // package depends on no stage: a host hands Compile its Routers and
 // Renderers (transduce's and render's), and the tests that run programs on
-// them are alchemy-cli's (github.com/tabnas/alchemy-cli/go/e2e).
+// them are dmog's (github.com/tabnas/dmog/go/e2e).
 require (
 	github.com/tabnas/json/go v0.5.19
 	github.com/tabnas/parser/go v0.12.15

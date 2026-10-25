@@ -1622,10 +1622,10 @@ pub(crate) mod tests {
     /// the sinks, and asks nothing of them. The real ones are transduce's
     /// and render's, which this crate does not depend on (they are built
     /// on its shared types), so the tests that lower and run a program are
-    /// in tabnas-alchemy-cli's `rs/tests/`. Every method is unreachable.
+    /// in tabnas-dmog's `rs/tests/`. Every method is unreachable.
     pub(crate) struct Unlowered;
 
-    const UNLOWERED: &str = "a unit test lowered a program; run it from tabnas-alchemy-cli's tests";
+    const UNLOWERED: &str = "a unit test lowered a program; run it from tabnas-dmog's tests";
 
     impl Routers<Val> for Unlowered {
         fn router(

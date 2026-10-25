@@ -186,7 +186,7 @@ const POSITIONAL_MAX = 1e21
 // is, so that building a plan asks nothing of the renderers a host passes.
 // The digits are the shortest that round-trip, as `toExponential()` with no
 // argument gives them; only the layout is chosen here. The two must agree
-// byte for byte; alchemy-cli, which has both, holds them to it on every
+// byte for byte; dmog, which has both, holds them to it on every
 // number without a lexeme.
 //
 // The form that takes the renderers first is the one 0.2.3 published,

@@ -2,7 +2,7 @@
 # TypeScript and Go gate. It builds each TypeScript sibling before linking it
 # into alchemy, and uses a temporary Go workspace so the Go modules resolve to
 # the same sibling checkouts rather than to their published versions. The
-# tests that run programs on transduce and render are alchemy-cli's, which
+# tests that run programs on transduce and render are dmog's, which
 # .github/workflows/downstream.yml runs against this checkout.
 set -euo pipefail
 

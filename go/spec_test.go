@@ -10,7 +10,7 @@ package tabnasalchemy
 // desugared program (pipe.tsv), as a JSON string in the expected column;
 // or the plan report or the failure (check.tsv). The bytes a run writes
 // (run.tsv) need transduce's routers and render's renderers, which this
-// package does not depend on: alchemy-cli runs those rows (go/e2e).
+// package does not depend on: dmog runs those rows (go/e2e).
 
 import (
 	"errors"
@@ -110,7 +110,7 @@ func pipeRow(input string) (string, *Fail) {
 // one is this package's but run.tsv and transduce.tsv: their rows run a
 // program over a document, or over a grammar's rule passes, which needs
 // transduce's sources and routers and render's renderers, and this package
-// depends on neither, so alchemy-cli runs them, the composition root that
+// depends on neither, so dmog runs them, the composition root that
 // builds all three.
 var specRunners = map[string]string{
 	"reader.tsv":    "TestSpecReader",
@@ -123,12 +123,12 @@ var specRunners = map[string]string{
 // runByCLI and transduceByCLI are the runners of the fixtures this package
 // does not run.
 const (
-	runByCLI       = "alchemy-cli's go/e2e TestSpecRun"
-	transduceByCLI = "alchemy-cli's go/e2e TestSpecTransduce"
+	runByCLI       = "dmog's go/e2e TestSpecRun"
+	transduceByCLI = "dmog's go/e2e TestSpecTransduce"
 )
 
 // TestEveryFixtureHasARunner fails when a fixture is added without a
-// runner, here or in alchemy-cli, rather than passing silently; and
+// runner, here or in dmog, rather than passing silently; and
 // test/AGENTS.md, the fixtures' guide, describes each one.
 func TestEveryFixtureHasARunner(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join(specDir(t), "*.tsv"))
@@ -210,7 +210,7 @@ func TestSpecCheck(t *testing.T) {
 }
 
 // TestCheckFixtureHasItsColumns holds the columns a check row is read by
-// (alchemy-cli's catalogue test reads protocol too), so a renamed header
+// (dmog's catalogue test reads protocol too), so a renamed header
 // fails here.
 func TestCheckFixtureHasItsColumns(t *testing.T) {
 	spec, err := support.LoadSpec(filepath.Join(specDir(t), "check.tsv"), nil)
@@ -319,7 +319,7 @@ func instanceOf(line, text string) bool {
 //
 // The rows are reader.tsv's, pipe.tsv's and check.tsv's. run.tsv's run
 // programs over documents, on transduce's routers and render's renderers,
-// which this package does not depend on: alchemy-cli's copy of this test
+// which this package does not depend on: dmog's copy of this test
 // (go/e2e/spec_test.go) reads every error row of all four files, and holds
 // the document to the clause that needs them all: each line of each code
 // the document declares is the most specific line some row meets, so the

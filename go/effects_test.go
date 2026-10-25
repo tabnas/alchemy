@@ -5,7 +5,7 @@ package tabnasalchemy
 // effects_test.go: the plan report, text and JSON, over the plans the
 // programs build (rs/src/effects.rs's tests). The report that is held to
 // what the run writes (a custom CSV dialect) runs a program, and so is
-// alchemy-cli's (go/e2e/effects_test.go).
+// dmog's (go/e2e/effects_test.go).
 
 import (
 	"fmt"

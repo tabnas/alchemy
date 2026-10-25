@@ -8,7 +8,7 @@
 // report (check.tsv). The fourth fixture, run.tsv, holds the bytes a run
 // writes: running needs the routers and renderers a host passes in,
 // transduce's and render's, which this crate does not depend on, so
-// tabnas-alchemy-cli runs it against this checkout (see
+// tabnas-dmog runs it against this checkout (see
 // `every_fixture_has_a_runner`).
 
 mod common;
@@ -30,23 +30,23 @@ const RUN_HERE: [&str; 3] = ["check.tsv", "pipe.tsv", "reader.tsv"];
 /// program and runs it over a JSON document, and a transduce.tsv row runs
 /// one over a grammar's rule passes, which needs real routers and
 /// renderers: transduce's and render's, which depend on this crate's
-/// shared types, so this crate cannot depend on them. tabnas-alchemy-cli,
+/// shared types, so this crate cannot depend on them. tabnas-dmog,
 /// the composition root that depends on all three, runs every row (its
 /// rs/tests/spec_test.rs, against this checkout as a sibling).
 const RUN_ELSEWHERE: [(&str, &str); 2] = [
     (
         "run.tsv",
-        "run by tabnas-alchemy-cli: a run needs transduce's routers and render's renderers",
+        "run by tabnas-dmog: a run needs transduce's routers and render's renderers",
     ),
     (
         "transduce.tsv",
-        "run by tabnas-alchemy-cli: a run over a grammar's rule passes needs transduce's \
+        "run by tabnas-dmog: a run over a grammar's rule passes needs transduce's \
          parser-event source and routers, and render's renderers",
     ),
 ];
 
 /// Every fixture the directory holds has a runner: one below, or, for the
-/// files [`RUN_ELSEWHERE`] names, tabnas-alchemy-cli's, for the reason it
+/// files [`RUN_ELSEWHERE`] names, tabnas-dmog's, for the reason it
 /// gives. A new file added without one fails here rather than passing
 /// silently.
 #[test]
@@ -111,7 +111,7 @@ fn check() {
     .file(spec_dir().join("check.tsv"));
 }
 
-/// The columns a check row reads (tabnas-alchemy-cli's catalogue test
+/// The columns a check row reads (tabnas-dmog's catalogue test
 /// reads `protocol` too), so a renamed header fails here.
 #[test]
 fn check_fixture_has_its_columns() {
@@ -128,7 +128,7 @@ fn check_fixture_has_its_columns() {
     }
 }
 
-/// The columns a run row reads by name (tabnas-alchemy-cli's runner reads
+/// The columns a run row reads by name (tabnas-dmog's runner reads
 /// `doc` and `render`), so a renamed header fails here, where run.tsv is
 /// kept, rather than reading empty cells there.
 fn row_doc_columns_are_named(row: &Row) -> bool {
@@ -236,7 +236,7 @@ fn instance_of(line: &str, text: &str) -> bool {
 ///
 /// That each line of each code this grammar adds is met by some row, so
 /// the document holds no text nothing raises, needs run.tsv's rows as
-/// well: tabnas-alchemy-cli's copy of this test runs every error row of
+/// well: tabnas-dmog's copy of this test runs every error row of
 /// all four fixtures, these checks and that one.
 #[test]
 fn the_raised_messages_match_the_document() {
@@ -497,7 +497,7 @@ fn the_library_definitions_on_the_page_are_the_library_text() {
     assert_eq!(shown, tabnas_alchemy::stdlib::stdlib().names().count());
 }
 
-/// The columns a transduce row reads by name (tabnas-alchemy-cli's runner
+/// The columns a transduce row reads by name (tabnas-dmog's runner
 /// reads `grammar`, `doc`, `render` and `duplicates`), so a renamed header
 /// fails here, where transduce.tsv is kept, rather than reading empty cells
 /// there. A `duplicates` cell is empty (the default policy), `first` or

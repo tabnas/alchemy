@@ -11,7 +11,7 @@
 // rows are the bytes a run writes, and transduce.tsv's the bytes a run
 // over a grammar's rule passes writes, which needs transduce's sources and
 // routers and render's renderers, and this package depends on neither:
-// alchemy-cli runs them (its ts/test/spec.test.ts), each row twice, native
+// dmog runs them (its ts/test/spec.test.ts), each row twice, native
 // and through the library's text, with the catalogue's coverage over all
 // five files.
 
@@ -48,9 +48,9 @@ const RUN_HERE = ['check.tsv', 'pipe.tsv', 'reader.tsv']
 // stages this package does not depend on.
 const RUN_ELSEWHERE: Record<string, string> = {
   'run.tsv':
-    "alchemy-cli runs it (ts/test/spec.test.ts there): every row runs a program over a document, on transduce's routers and render's renderers, and alchemy depends on neither",
+    "dmog runs it (ts/test/spec.test.ts there): every row runs a program over a document, on transduce's routers and render's renderers, and alchemy depends on neither",
   'transduce.tsv':
-    "alchemy-cli runs it (ts/test/spec.test.ts there): every row runs a program over a grammar's rule passes, on transduce's parser-event source and routers and render's renderers, and alchemy depends on neither",
+    "dmog runs it (ts/test/spec.test.ts there): every row runs a program over a grammar's rule passes, on transduce's parser-event source and routers and render's renderers, and alchemy depends on neither",
 }
 
 describe('fixtures', () => {
@@ -70,7 +70,7 @@ describe('fixtures', () => {
     }
   })
 
-  // The columns a run row is read by, by name (alchemy-cli's runner reads
+  // The columns a run row is read by, by name (dmog's runner reads
   // them), so a renamed header fails here, beside the file, rather than
   // reading empty cells there.
   it('run.tsv has its columns', () => {
@@ -79,7 +79,7 @@ describe('fixtures', () => {
     assert.ok(spec.rows.every((row: SpecRow) => -1 !== row.index_of('doc') && -1 !== row.index_of('render')))
   })
 
-  // And a transduce row's, which alchemy-cli's runner reads by name too:
+  // And a transduce row's, which dmog's runner reads by name too:
   // the grammar whose rule passes the program reads, beside doc and render,
   // and the duplicates policy: empty (the default), first or last.
   it('transduce.tsv has its columns', () => {
@@ -98,7 +98,7 @@ describe('fixtures', () => {
     )
   })
 
-  // The columns a check row is read by (alchemy-cli's catalogue test reads
+  // The columns a check row is read by (dmog's catalogue test reads
   // `protocol` too), so a renamed header fails here.
   it('check.tsv has its columns', () => {
     const spec = loadSpec(join(SPEC_DIR, 'check.tsv'))
@@ -192,7 +192,7 @@ function fills(line: string, text: string): boolean {
 //
 // That each line of each code the document declares is the most specific
 // line some row meets, so the document holds no text nothing raises, needs
-// run.tsv's rows too: alchemy-cli's copy of this test (its
+// run.tsv's rows too: dmog's copy of this test (its
 // ts/test/spec.test.ts) runs the error rows of all four files and holds
 // that clause.
 describe('the catalogue', () => {

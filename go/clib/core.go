@@ -6,7 +6,7 @@
 // from tasks/clib-template/; edit the template and re-stamp, not this
 // file — admin's verify gate fails on a stale stamp).
 //
-// libtabnasalchemy is the alchemy format parser as a C shared library, one of
+// libtabnasalchemy is the dmog format parser as a C shared library, one of
 // the per-format clibs sharing the uniform ABI decided by ADR-12: the
 // same five symbols in every library, the format fixed at build time by
 // which library you load. The cgo layer in tabnas_c.go is a thin shim

@@ -262,7 +262,7 @@ const (
 // (FormatValue and appendValue), as the Rust crate's shortest_number
 // mirrors render's number::write_value: this package formats a number
 // itself, so that building a plan asks nothing of the renderers a host
-// hands in. The two must agree byte for byte; alchemy-cli (go/e2e), which
+// hands in. The two must agree byte for byte; dmog (go/e2e), which
 // has both, holds them to it on real documents.
 //
 // A non-finite value has no such text and gives "", as FormatValue does;

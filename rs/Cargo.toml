@@ -43,7 +43,7 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 # No routers and no renderers: tabnas-transduce and tabnas-render depend on
 # this crate's shared types, so this crate depends on neither. The tests
 # here compile with inert stages (tests/common); the tests that lower and
-# run a program are in tabnas-alchemy-cli, which composes all three.
+# run a program are in tabnas-dmog, which composes all three.
 #
 # The shared fixture loader and runner, so test/spec/*.tsv means the same
 # thing here as in every other grammar repo.

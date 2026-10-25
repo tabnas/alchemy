@@ -21,7 +21,7 @@ use tabnas_support::{find_spec_dir, Failure, Row, Value};
 /// plan and keeps the two for the sinks, and asks nothing of them. The
 /// real ones are tabnas-transduce's and tabnas-render's, which this crate
 /// does not depend on: the tests that lower and run a program are in
-/// tabnas-alchemy-cli, the composition root that depends on all three.
+/// tabnas-dmog, the composition root that depends on all three.
 /// Every method panics.
 pub struct NoStages;
 

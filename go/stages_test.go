@@ -7,7 +7,7 @@ package tabnasalchemy
 // and building a plan ask nothing of the routers and renderers a host
 // passes in, so every test here passes inert ones, whose every method
 // panics: a test that reached one would be running a program, and those
-// tests are alchemy-cli's (go/e2e), the composition root that builds this
+// tests are dmog's (go/e2e), the composition root that builds this
 // package's programs on transduce's Routers and render's Renderers. This
 // package depends on neither.
 

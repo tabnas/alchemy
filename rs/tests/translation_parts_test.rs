@@ -2,7 +2,7 @@
 // program and a render part linked into one namespace. The fleet
 // conformance over every grammar's own translation parts, which renders
 // each sample on transduce's routers and render's renderers, is in
-// tabnas-alchemy-cli's translation_parts_test.rs.
+// tabnas-dmog's translation_parts_test.rs.
 
 mod common;
 
@@ -17,7 +17,7 @@ struct StructuralPart {
 }
 
 struct StructuralParts {
-    // Read by tabnas-alchemy-cli's copy, which checks each grammar's
+    // Read by tabnas-dmog's copy, which checks each grammar's
     // descriptor; the composition here only names one.
     #[allow(dead_code)]
     manifest: &'static str,

@@ -10,7 +10,7 @@
 //
 // The tests that run a linked program (and the run's own failure, in a
 // part and in a source linked under another name) need transduce's routers
-// and render's renderers, so they are alchemy-cli's, in its
+// and render's renderers, so they are dmog's, in its
 // ts/test/sources.test.ts; the front end's half is here.
 
 import { describe, it } from 'node:test'

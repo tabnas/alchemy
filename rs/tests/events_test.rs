@@ -2,7 +2,7 @@
 // affine rule over `events`, which compiling decides, is here; the
 // renderer of arbitrary nesting written over the events, and the plan
 // report checked against a run, run on transduce's routers and render's
-// renderers and are in tabnas-alchemy-cli's events_test.rs.
+// renderers and are in tabnas-dmog's events_test.rs.
 
 mod common;
 
@@ -63,7 +63,7 @@ fn events_over_the_input_is_affine() {
 /// and nothing else reads. The stream is affine as `events`'s is, and a
 /// transducer's outputs are a rewritten tree, handed on as JSON events.
 /// Running one needs transduce's parser source and render's renderers,
-/// so it is in tabnas-alchemy-cli.
+/// so it is in tabnas-dmog.
 #[test]
 fn parser_events_over_a_declared_input() {
     let transducer = "def step [s pass]\n  match pass\n    case (close rule) (transition s [(scalar (get :name rule))])\n    case _ (transition s [])\n\ndef export [input]\n  as-events (scan-emit [] step (fn [s] []) (parser-events input))\n";
@@ -113,7 +113,7 @@ fn parser_events_over_a_declared_input() {
     // A host that takes a transducer's events into its own sink drives
     // `parser_sink_into`, which holds the program to JSON events: one
     // compiled over JSON events, or answering a text or a table, is
-    // refused before any stage is built. Running one is tabnas-alchemy-cli's.
+    // refused before any stage is built. Running one is tabnas-dmog's.
     let into = |program: &tabnas_alchemy::Program| {
         program
             .parser_sink_into(Box::new(Vec::new()), &limits, Metrics::new())

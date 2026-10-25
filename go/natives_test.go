@@ -832,7 +832,7 @@ func TestIndicesGivesThePositionsInStepsTheAbortFlagReads(t *testing.T) {
 // digits that read back, positional within [1e-6, 1e21), exponent form
 // outside it with no '+' and no leading zeros. The first six are the Rust
 // crate's cases (shortest_number, rs/src/stdlib/registry.rs); the rest
-// hold the layout at its edges. alchemy-cli (go/e2e), which has both,
+// hold the layout at its edges. dmog (go/e2e), which has both,
 // holds the copy to render's own on real documents.
 func TestNumbersPrintAsTheRenderersPrintThem(t *testing.T) {
 	for _, c := range []struct {

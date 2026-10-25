@@ -1149,7 +1149,7 @@ describe('natives', () => {
 
   // This package's own number text, as the Rust crate's `shortest_number`
   // is (rs/src/stdlib/registry.rs's test of the same name, case for case):
-  // laid out as render's `writeValue` lays it out, which alchemy-cli's
+  // laid out as render's `writeValue` lays it out, which dmog's
   // differential tests hold it to.
   it('numbers print as the renderers print them', () => {
     assert.equal(shortestNumber(1), '1')

@@ -7,7 +7,7 @@ package tabnasalchemy
 // programs over events (the YAML-like block renderer, the explicit key
 // form, YAML's non-finite numbers, the plan report held to its run, and
 // events a program builds fed back to a taker of JSON events) are
-// alchemy-cli's (go/e2e/events_test.go): they need transduce's routers and
+// dmog's (go/e2e/events_test.go): they need transduce's routers and
 // render's renderers.
 
 import (
@@ -102,7 +102,7 @@ func TestParserEventsOverADeclaredInput(t *testing.T) {
 	// A host that takes a transducer's events into its own sink drives
 	// ParserSinkInto, which holds the program to JSON events: one compiled
 	// over JSON events, or answering a text or a table, is refused before
-	// any stage is built. Running one is tabnas-alchemy-cli's.
+	// any stage is built. Running one is tabnas-dmog's.
 	_, f = json.ParserSinkInto(nil, shared.DefaultLimits(), nil)
 	refused(f)
 	text, f := CompileWith("def export [input] (join \"\" (map (fn [p] \"a\") (parser-events input)))", "text.alc", InputParserEvents, routers, renderers)

@@ -7,7 +7,7 @@
 // standard library's adapters, to a program whose output is a text. The
 // parts here are stand-ins (a render that is `json`, an embed that hands
 // its input on); running real parts needs transduce's routers and render's
-// renderers, and is alchemy-cli's.
+// renderers, and is dmog's.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert'

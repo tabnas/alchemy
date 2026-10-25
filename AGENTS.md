@@ -6,10 +6,10 @@ parsed by a **tabnas grammar plugin** like every other grammar in the
 fleet, and lowered onto the routers and renderers its host passes in,
 which [tabnas-transduce](https://github.com/tabnas/transduce) and
 [tabnas-render](https://github.com/tabnas/render) implement.
-[aless](https://github.com/rjrodger/aless) runs alchemy programs against
-any format its parsers read, and
-[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli) is the
-`alchemy` command. `CLAUDE.md` is a symlink to this file.
+[tabnas-dmog](https://github.com/tabnas/dmog) is the `dmog` command
+(data mogrify), which runs alchemy programs over JSON documents and
+translates documents between the formats the tabnas parsers read.
+`CLAUDE.md` is a symlink to this file.
 
 **alchemy owns the shared types** that transduce and render build on: the
 event protocol (`JsonEvent`, `Sink`, the table protocol, `Fail` and its
@@ -165,7 +165,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/program.rs` | the API a host embeds: `compile`, `compile_sources` (each takes the host's `Routers` and `Renderers`; several sources linked into one namespace; `Source::export_as` links a source's `export` under another name, so a program's output can feed a render), `Program::{output, row_selector, explain, explain_json, sink}` |
 | `rs/src/stdlib/registry.rs` | the natives: arity, kind, implementation, signature and effect |
 | `rs/src/stdlib/mod.rs`, `stdlib/*.alc` | the standard library's own definitions, embedded from the crate's copies in `rs/stdlib/`, resolved and checked on first use |
-| `rs/tests/spec_test.rs` | the shared fixtures `reader.tsv`, `pipe.tsv` and `check.tsv` through `tabnas_support::Runner`, the layout round trip, the reference's examples, and each failure those rows meet held to the grammar document's catalogue; `run.tsv` is alchemy-cli's to run (see below) |
+| `rs/tests/spec_test.rs` | the shared fixtures `reader.tsv`, `pipe.tsv` and `check.tsv` through `tabnas_support::Runner`, the layout round trip, the reference's examples, and each failure those rows meet held to the grammar document's catalogue; `run.tsv` is dmog's to run (see below) |
 | `rs/tests/debug_model_test.rs` | the grammar composed with `tabnas-debug`, as every grammar carries |
 | `rs/tests/repeat_test.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
 | `rs/tests/sources_test.rs` | `compile_sources`: every compile stage's failure naming the file it is in, and the linking's refusals |
@@ -179,7 +179,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `test/AGENTS.md` | the fixtures' columns, the error-code contract, who runs what |
 | `docs/language.md` | the language reference; every example in it is a fixture row |
 | `ci/rust/run.sh` | the gate `.github/workflows/rust.yml` runs |
-| `.github/workflows/downstream.yml` | alchemy-cli's gates against this checkout: the tests that run programs |
+| `.github/workflows/downstream.yml` | dmog's gates against this checkout: the tests that run programs |
 
 ## Shared sources
 
@@ -227,18 +227,18 @@ header lists. Every `dsl` example in the design document and in
 `docs/language.md` is a row in `test/spec/`, run by the shared fixture
 runner, so a stale example fails the gate.
 
-**The tests that run programs are alchemy-cli's.** This crate depends on
+**The tests that run programs are dmog's.** This crate depends on
 neither transduce nor render (the maintainer's ruling of 2026-10-08), so
 their releases never leave its requirements a release behind; its own
 tests compile with inert stages. Running needs the real routers and
 renderers, so `run.tsv`, the lowering, events, linked sources and the
 translation parts are in
-[tabnas/alchemy-cli](https://github.com/tabnas/alchemy-cli), the
+[tabnas/dmog](https://github.com/tabnas/dmog), the
 composition root, in all three runtimes, reading this repository's
 `test/spec/` from the sibling checkout. `.github/workflows/downstream.yml`
-runs alchemy-cli's two gates against every change here; locally, with
-alchemy-cli and its siblings cloned beside this checkout, run
-`../alchemy-cli/ci/polyglot/run.sh` and `../alchemy-cli/ci/rust/run.sh`.
+runs dmog's two gates against every change here; locally, with
+dmog and its siblings cloned beside this checkout, run
+`../dmog/ci/polyglot/run.sh` and `../dmog/ci/rust/run.sh`.
 A change to `run.tsv`, or to what a run does, is verified there.
 
 ## Error codes
@@ -287,11 +287,11 @@ definition that reaches itself; from the evaluator, nesting past
 and from a transducer part, `unstreamable` (`fail :unstreamable`, a
 document the part does not stream from the rule passes, which a host
 that reads the part reads whole). `test/spec/check.tsv` pins each code
-`alchemy check` can reach, with the position it names: `check` builds
+`dmog check` can reach, with the position it names: `check` builds
 the plan, so `duplicate_key`, `no_match` and the evaluator's
 `recursion` have rows where the plan's own evaluation meets them.
 `render_of_text` needs a renderer, which `check` never takes;
-alchemy-cli's `rs/tests/run_test.rs` and `rs/tests/lower_test.rs` pin it.
+dmog's `rs/tests/run_test.rs` and `rs/tests/lower_test.rs` pin it.
 `duplicate_file` needs several sources, which `check` never takes;
 `rs/tests/sources_test.rs` pins it. Runtime failures
 carry the transduce and render codes unchanged, and a `fail "message"`
@@ -310,7 +310,7 @@ that code's entry, each finer code raised with one code, and every line
 of every entry met by some row. It runs in two places: here
 (`rs/tests/spec_test.rs`, `ts/test/spec.test.ts`, `go/spec_test.go`) over
 the rows of `reader.tsv`, `pipe.tsv` and `check.tsv`, without the last
-clause, and in alchemy-cli over every row of all four files, the last
+clause, and in dmog over every row of all four files, the last
 clause included, since `run.tsv`'s rows need the stages. A raising site whose
 code or text drifts fails there; a new failure's text goes into the
 catalogue with a row that meets it. Where the checker and the runtime
@@ -376,7 +376,7 @@ building the plan takes at most `MAX_PLAN_STEPS` (1,000,000) evaluation
 steps (`RESOURCE_LIMIT_EXCEEDED` naming `max_plan_steps`; a program of
 forty nested doublings asks for 2^40). Those bounds are only reached
 before the stack's end on a thread of `STACK_BYTES` (64 MiB): `compile`
-makes one, the `alchemy` command (alchemy-cli) runs on one, and a host that pushes
+makes one, the `dmog` command (dmog) runs on one, and a host that pushes
 events into a sink must run it on one. The work of one item is bounded
 by the host's abort flag (`Program::with_abort`), read every few
 evaluation steps. At run time every transduce limit applies as the

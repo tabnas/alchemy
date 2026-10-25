@@ -18,7 +18,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 # and the debug plugin the debug-model test composes. A dependency's
 # dev-dependencies are not built, so nothing else is needed. transduce and
 # render are not here: the tests that run programs on them are
-# alchemy-cli's, which .github/workflows/downstream.yml runs against this
+# dmog's, which .github/workflows/downstream.yml runs against this
 # checkout.
 SIBLINGS="parser json support debug"
 

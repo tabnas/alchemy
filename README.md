@@ -30,12 +30,12 @@ def export [input]
     csv csv-options
 ```
 
-Run it over any format the tabnas parsers read with
-[aless](https://github.com/rjrodger/aless):
+Run it with the `dmog` command
+([tabnas/dmog](https://github.com/tabnas/dmog)):
 
 ```bash
-aless --alchemy export.alc response.json        # CSV on standard output
-aless --alchemy export.alc --explain response.json
+dmog run export.alc response.json        # CSV on standard output
+dmog explain export.alc                  # the plan report
 ```
 
 Rust only for now. See [`docs/language.md`](docs/language.md) for the
@@ -67,11 +67,11 @@ written as any other (ADR-27 in tabnas/admin). A format whose package
 also hands over a transducer part (`translate.transduce`) can be read
 from the parser's rule passes instead of its parsed value
 (`compose_parsed`): the transducer makes its events, streamed, and
-`tree-contract` holds them to a tree's before the render. The `alchemy` command, which composes alchemy,
+`tree-contract` holds them to a tree's before the render. The `dmog` command, which composes alchemy,
 transduce and render, is
-[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli), and so are
+[tabnas-dmog](https://github.com/tabnas/dmog), and so are
 the tests that run programs: alchemy
-depends on neither transduce nor render, and its CI runs alchemy-cli's
+depends on neither transduce nor render, and its CI runs dmog's
 gates against each change.
 
 ## Build and test
@@ -84,15 +84,15 @@ make build
 make test
 ```
 
-With the `alchemy` command from
-[tabnas-alchemy-cli](https://github.com/tabnas/alchemy-cli):
+With the `dmog` command from
+[tabnas-dmog](https://github.com/tabnas/dmog):
 
 ```bash
-alchemy canon export.alc            # fully parenthesized, one form per line
-alchemy format export.alc           # layout form
-alchemy check export.alc            # parses, desugars, resolves and checks; silent when it does
-alchemy explain export.alc          # the plan report
-alchemy run export.alc response.json   # the CSV, streamed to standard output
+dmog canon export.alc            # fully parenthesized, one form per line
+dmog format export.alc           # layout form
+dmog check export.alc            # parses, desugars, resolves and checks; silent when it does
+dmog explain export.alc          # the plan report
+dmog run export.alc response.json   # the CSV, streamed to standard output
 ```
 
 The program above names `column-from-meta` as the spec writes it

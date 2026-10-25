@@ -7,7 +7,7 @@
 // compile, check, explain and evaluate, and never run a program: `compile`
 // here takes inert stages (`OPTIONS`). The tests that run programs on
 // transduce's routers and render's renderers, and run.tsv's rows, are
-// alchemy-cli's (its ts/test), the composition root that depends on all
+// dmog's (its ts/test), the composition root that depends on all
 // three.
 
 import { join } from 'node:path'

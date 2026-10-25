@@ -59,7 +59,7 @@ const POSITIONAL_MAX: f64 = 1e21;
 /// The shortest text that reads back as `value`, laid out as the render
 /// crate lays it out (`number::write_value` there): positional within the
 /// JavaScript range, exponent form outside it. The two must agree byte for
-/// byte; alchemy-cli, which has both, holds them to it on every number
+/// byte; dmog, which has both, holds them to it on every number
 /// without a lexeme.
 pub fn shortest_number(value: f64) -> String {
     let magnitude = value.abs();
