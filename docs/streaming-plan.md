@@ -1359,3 +1359,59 @@ time, then feed by entry, proto and C by declaration, INI and TOML as
 records; `json`'s render as alchemy text, as every other format's is;
 and the hosts' own routes for JSON and CSV through the composed program,
 so that no host knows a format by name.
+
+### 12.1 The review of the `whole` formats, 2026-10-27
+
+Each of the twelve manifests that declared `whole` was held to the
+ruling's test: does the sentence say why the format's events cannot
+come from its rule passes, or only that no one had written the part?
+The passes of each grammar were read (`dmog run --grammar` over a
+program that writes every pass), with the actions that build its value.
+
+- **Inherent, six.** The grammar notations (abnf, ebnf, gbnf): the schema
+  is the compiled spec, whose first member, `options`, gathers tokens
+  from every rule, and compiling one rule depends on the others (`=/`,
+  left recursion, left factoring, lookahead order). expr: infix
+  operators make the root the last thing known. semver: one version,
+  which a trailing character unmakes. proto: the schema is protoc's
+  `FileDescriptorProto`, which groups declarations by kind, and a tree
+  writes each list whole where the source interleaves the kinds, so
+  "proto by declaration" in the list above cannot be met under that
+  schema; it needs a source-ordered schema or goes.
+- **Blocked, two.** c: the realized tree holds comments as trivia, which a
+  sub-lex hook attaches to the next token so the parser never sees them,
+  and byte offsets in `span`, where a pass token has only row and column
+  (decision 5's token items, not built); the `#if` to `#endif` fold is a
+  post-pass a part could run as a stack. markdown: the engine sees one
+  `#LB` token per line and the shared `BlockParser` makes every block
+  decision outside the rules, so the passes carry lines, not blocks, and
+  a link reference definition may follow its use.
+- **Not inherent, four, three of them now parts.** css's passes delineate
+  every node, so its part writes a statement at a time (tabnas/css#73).
+  The at-rule tokens carry the node's head as their value, since a part
+  sees a token's value and never its `use` bag, and a prelude's fields
+  take string work the language does not do. ini's and toml's sections
+  and tables stream in document order; a header that re-enters a closed
+  one, or a repeated key, writes its member again, which the tree
+  contract after the part refuses, so a host reads that document whole
+  (tabnas/ini#110, tabnas/toml#114): "INI and TOML as records" is not
+  needed. INI's lexer marks an array key, `k[]`, by carrying the name
+  before the brackets in a one-element array as the token's value, and
+  the part refuses a single-quoted JSON container value. dmog reads the
+  three through their parts in Rust (tabnas/alchemy-cli#63), and in
+  TypeScript and Go once the packages are released; `transduce.tsv`'s
+  rows for them wait for the same releases, since dmog's TypeScript and
+  Go runners read the registry packages.
+- **feed waits on the language.** Its conversion trims every text in
+  ECMAScript's whitespace set, parses an RSS person as `email (Name)`
+  by a pattern, reads a link's `length` as `parseInt` does and
+  serializes xhtml content back to markup, none of which the natives
+  reach (`split`, `string-join` and `length` are the string operations),
+  and its Atom-shaped tree puts `entries` second, so a part would hold
+  the feed's other members to the document's end. A part by entry over
+  xml's passes follows once alchemy has a trim and a first-split
+  primitive; the serialization is `string-join` and `split` work.
+
+The css and feed `whole` sentences described the reader, not the passes,
+and did not meet the test; css's is gone with its part, and feed's stays
+until its part, saying so.
