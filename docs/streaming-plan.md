@@ -1398,10 +1398,11 @@ program that writes every pass), with the actions that build its value.
   needed. INI's lexer marks an array key, `k[]`, by carrying the name
   before the brackets in a one-element array as the token's value, and
   the part refuses a single-quoted JSON container value. dmog reads the
-  three through their parts in Rust (tabnas/alchemy-cli#63), and in
-  TypeScript and Go once the packages are released; `transduce.tsv`'s
-  rows for them wait for the same releases, since dmog's TypeScript and
-  Go runners read the registry packages.
+  three through their parts in Rust and Go (tabnas/alchemy-cli#63), and
+  in TypeScript from the released packages, tabnas/css 0.5.17,
+  tabnas/ini 0.5.21 and tabnas/toml 0.5.19 (2026-11-02); `transduce.tsv`
+  holds rows for the three from that day, since dmog's TypeScript and Go
+  runners read the released packages.
 - **feed waits on the language.** Its conversion trims every text in
   ECMAScript's whitespace set, parses an RSS person as `email (Name)`
   by a pattern, reads a link's `length` as `parseInt` does and
