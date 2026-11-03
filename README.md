@@ -50,6 +50,7 @@ language and [`AGENTS.md`](AGENTS.md) for how the repository is worked on.
 | [`alchemy-grammar.jsonic`](alchemy-grammar.jsonic) | the grammar document, options and rules: the one source every runtime embeds (`make embed`) |
 | [`test/spec/`](test/spec/) | shared fixtures, run by the fleet's fixture runner: `reader.tsv` (layout to canonical), `pipe.tsv` (desugared), `check.tsv` (the checker's codes and the plan reports) and `run.tsv` (a program over a document: the bytes it writes, or the failure); [`test/AGENTS.md`](test/AGENTS.md) describes them |
 | [`docs/language.md`](docs/language.md) | the language reference; every example in it is a fixture row |
+| [`docs/handover.md`](docs/handover.md) | the dated working record of the session of 2026-10-25 to 2026-11-02 (dmog, the review of the `whole` formats, the css, ini and toml parts): the rulings, what landed, what is open, and the working method |
 | [`stdlib/`](stdlib/) | the standard library's own definitions in alchemy (`table.alc`, `csv.alc`, and `root.alc`, the root adapters `wrap-object` and `wrap-array`), embedded in the crate (as the copies in `rs/stdlib/`, written by `make embed`): the one implementation of each, run as written |
 | [`ci/rust/run.sh`](ci/rust/run.sh) | the gate CI runs |
 
