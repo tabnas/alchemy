@@ -178,6 +178,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `test/spec/run.tsv` | shared fixtures: program and JSON document → the exact bytes the run writes, or `ERROR:<code>` |
 | `test/AGENTS.md` | the fixtures' columns, the error-code contract, who runs what |
 | `docs/language.md` | the language reference; every example in it is a fixture row |
+| `docs/handover.md` | the session handover of 2026-10-25 to 2026-11-02 (dmog, the review of the `whole` formats, the css, ini and toml parts): the rulings, what landed, what is open, and the working method |
 | `ci/rust/run.sh` | the gate `.github/workflows/rust.yml` runs |
 | `.github/workflows/downstream.yml` | dmog's gates against this checkout: the tests that run programs |
 
