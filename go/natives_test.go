@@ -484,6 +484,369 @@ func TestIncCountsOneMoreExactly(t *testing.T) {
 	}
 }
 
+// add and sub answer the sum and the difference exactly, without a lexeme
+// and never -0, up to 2^53 - 1 either way; an operand that is not a whole
+// number in that range, or a result past it, is a type error naming it as
+// it is (rs/src/stdlib/registry.rs's test of the same name).
+func TestAddAndSubAreExactOverWholeNumbers(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	ops := map[string]nativeCall{"add": nAdd, "sub": nSub}
+	for _, c := range []struct {
+		op   string
+		x, y Val
+		want float64
+	}{
+		{"add", Num(2), Num(3), 5},
+		{"add", Num(-2), Num(3), 1},
+		{"sub", Num(2), Num(3), -1},
+		{"sub", Num(3), Num(2), 1},
+		{"add", Num(WholeMax - 1), Num(1), WholeMax},
+		{"sub", Num(-WholeMax + 1), Num(1), -WholeMax},
+		{"add", Num(WholeMax), Num(-WholeMax), 0},
+		{"add", NumLexeme(100, "1e2"), Num(1), 101},
+		// Zero is 0, whatever the zeros it came from.
+		{"add", Num(math.Copysign(0, -1)), Num(math.Copysign(0, -1)), 0},
+		{"sub", Num(math.Copysign(0, -1)), Num(0), 0},
+		{"sub", Num(5), Num(5), 0},
+	} {
+		v, f := ops[c.op](runtimeOf(t, ""), []Val{c.x, c.y}, at)
+		got, ok := v.(NumVal)
+		if f != nil || !ok || got.Value != c.want || got.HasLexeme || (got.Value == 0 && math.Signbit(got.Value)) {
+			t.Errorf("%s %s %s: %#v %v", c.op, DebugString(c.x), DebugString(c.y), v, f)
+		}
+	}
+	if got, ok := mustEval(t, "", "sub 3 5").(NumVal); !ok || got.Value != -2 {
+		t.Errorf("%#v", got)
+	}
+	r := "a whole number from -9007199254740991 to 9007199254740991"
+	for _, c := range []struct {
+		op      string
+		x, y    Val
+		message string
+	}{
+		{"add", Num(WholeMax), Num(1), "the sum must be " + r + ", not 9007199254740992"},
+		{"add", Num(WholeMax), Num(2), "the sum must be " + r + ", not 9007199254740993"},
+		{"add", Num(-WholeMax), Num(-WholeMax), "the sum must be " + r + ", not -18014398509481982"},
+		{"sub", Num(-WholeMax), Num(2), "the difference must be " + r + ", not -9007199254740993"},
+		{"sub", Num(WholeMax), Num(-1), "the difference must be " + r + ", not 9007199254740992"},
+		{"add", Num(WholeMax + 1), Num(0), "the first must be " + r + ", not 9007199254740992"},
+		{"sub", Num(0), Num(1.5), "the second must be " + r + ", not 1.5"},
+		{"add", NumLexeme(0.5, "5e-1"), Num(0), "the first must be " + r + ", not 5e-1"},
+		{"add", Num(math.Inf(1)), Num(0), "the first must be " + r + ", not inf"},
+		{"sub", Num(0), Num(math.NaN()), "the second must be " + r + ", not NaN"},
+		{"add", StrVal("1"), Num(0), "the first must be a number, not a string"},
+		{"sub", Num(0), NullVal{}, "the second must be a number, not null"},
+	} {
+		_, f := ops[c.op](runtimeOf(t, ""), []Val{c.x, c.y}, at)
+		if f == nil || f.Code != CodeDSLTypeError || f.Message != "type_mismatch: "+c.op+": "+c.message {
+			t.Errorf("%s: %v", c.message, f)
+		}
+	}
+}
+
+// get-or answers what get answers, or the default where get answers
+// missing; it fails where get fails, naming itself.
+func TestGetOrAnswersTheDefaultWhereGetAnswersMissing(t *testing.T) {
+	rec := "(record (entry :a 1) (entry :m missing) (entry :n null))"
+	for _, c := range []struct {
+		expr string
+		want Val
+	}{
+		{"get-or :a \"d\" " + rec, Num(1)},
+		{"get-or \"a\" \"d\" " + rec, Num(1)},
+		{"get-or :n \"d\" " + rec, NullVal{}},
+		{"get-or :b \"d\" " + rec, StrVal("d")},
+		{"get-or :m \"d\" " + rec, StrVal("d")},
+		{"get-or :a \"d\" missing", StrVal("d")},
+	} {
+		if v := mustEval(t, "", c.expr); !Equal(v, c.want) {
+			t.Errorf("%s: %s", c.expr, DebugString(v))
+		}
+	}
+	for _, c := range []struct {
+		expr    string
+		code    Code
+		message string
+	}{
+		{"get-or 1 \"d\" " + rec, CodeDSLTypeError, "type_mismatch: get-or: the key must be a keyword or a string, not a number"},
+		{"get-or :a \"d\" 1", CodeInputInvalid, "get-or: a number has no member \"a\"; an object was expected"},
+		{"get-or :a \"d\" each-index", CodeDSLTypeError, "type_mismatch: get-or: a record was expected, not a selector"},
+	} {
+		if f := mustFail(t, "", c.expr); f.Code != c.code || f.Message != c.message {
+			t.Errorf("%s: %v", c.expr, f)
+		}
+	}
+}
+
+// trim takes off both ends the white space ECMAScript's
+// String.prototype.trim takes, and nothing else: not U+0085, which
+// unicode.IsSpace takes, nor U+180E, which Unicode no longer counts.
+func TestTrimTakesTheWhiteSpaceECMAScriptTrims(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	trimmed := func(s string) string {
+		v, f := nTrim(runtimeOf(t, ""), []Val{StrVal(s)}, at)
+		if f != nil {
+			t.Fatal(f)
+		}
+		return string(v.(StrVal))
+	}
+	space := "\t\n\v\f\r \u00a0\u1680\u2000\u2005\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+	for _, c := range [][2]string{
+		{space + "a b" + space, "a b"},
+		{space, ""},
+		{"", ""},
+		{"a\u3000b", "a\u3000b"},
+		{"\u0085a\u0085", "\u0085a\u0085"},
+		{"\u180ea\u180e", "\u180ea\u180e"},
+		{"\u200ba\u200b", "\u200ba\u200b"},
+		{"\u2060a\u2060", "\u2060a\u2060"},
+		{"\x00a\x00", "\x00a\x00"},
+	} {
+		if got := trimmed(c[0]); got != c[1] {
+			t.Errorf("%q: %q, want %q", c[0], got, c[1])
+		}
+	}
+	if f := mustFail(t, "", "trim 1"); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: trim: the string must be a string, not a number" {
+		t.Errorf("%v", f)
+	}
+}
+
+// first-split cuts a string at the separator's first occurrence, or
+// answers it alone; its separator is held as split's is.
+func TestFirstSplitCutsAtTheFirstOccurrence(t *testing.T) {
+	at := SourceSpan{File: NewFile("t")}
+	for _, c := range []struct {
+		separator, s string
+		want         []string
+	}{
+		{"=", "a=b=c", []string{"a", "b=c"}},
+		{"=", "=a", []string{"", "a"}},
+		{"=", "a=", []string{"a", ""}},
+		{"=", "abc", []string{"abc"}},
+		{"=", "", []string{""}},
+		{"::", "a:b::c::d", []string{"a:b", "c::d"}},
+		{" (", "j@x.org (Jo Ann)", []string{"j@x.org", "Jo Ann)"}},
+		{"→", "α→β→γ", []string{"α", "β→γ"}},
+	} {
+		v, f := nFirstSplit(runtimeOf(t, ""), []Val{StrVal(c.separator), StrVal(c.s)}, at)
+		want := make([]Val, len(c.want))
+		for i, s := range c.want {
+			want[i] = StrVal(s)
+		}
+		if f != nil || !Equal(v, Vector(want...)) {
+			t.Errorf("first-split %q %q: %v %v", c.separator, c.s, DebugString(v), f)
+		}
+	}
+	for _, c := range []struct{ expr, message string }{
+		{`first-split "" "a"`, "the separator must be a non-empty string, not the empty string"},
+		{`first-split 1 "a"`, "the separator must be a string, not a number"},
+		{`first-split "." 1`, "the string must be a string, not a number"},
+	} {
+		if f := mustFail(t, "", c.expr); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: first-split: "+c.message {
+			t.Errorf("%s: %v", c.expr, f)
+		}
+	}
+}
+
+// starts-with, ends-with and contains compare exactly, code point by code
+// point; an empty part is in every string.
+func TestTheStringTestsCompareExactly(t *testing.T) {
+	at := SourceSpan{File: NewFile("t")}
+	ops := map[string]nativeCall{"starts-with": nStartsWith, "ends-with": nEndsWith, "contains": nContains}
+	for _, c := range []struct {
+		op, part, s string
+		want        bool
+	}{
+		{"starts-with", "ab", "abc", true},
+		{"starts-with", "bc", "abc", false},
+		{"starts-with", "", "abc", true},
+		{"starts-with", "", "", true},
+		{"starts-with", "abcd", "abc", false},
+		{"starts-with", "A", "abc", false},
+		{"starts-with", "é", "école", true},
+		{"starts-with", "e", "école", false},
+		{"ends-with", "bc", "abc", true},
+		{"ends-with", "ab", "abc", false},
+		{"ends-with", "", "abc", true},
+		{"ends-with", "😀", "a😀", true},
+		{"ends-with", "zabc", "abc", false},
+		{"contains", "b", "abc", true},
+		{"contains", "abc", "abc", true},
+		{"contains", "d", "abc", false},
+		{"contains", "", "", true},
+		{"contains", "β→", "α→β→γ", true},
+		{"contains", "ß", "SS", false},
+	} {
+		v, f := ops[c.op](runtimeOf(t, ""), []Val{StrVal(c.part), StrVal(c.s)}, at)
+		if f != nil || v != BoolVal(c.want) {
+			t.Errorf("%s %q %q: %v %v", c.op, c.part, c.s, v, f)
+		}
+	}
+	for _, c := range [][2]string{{"starts-with", "the prefix"}, {"ends-with", "the suffix"}, {"contains", "the part"}} {
+		if f := mustFail(t, "", c[0]+` 1 "a"`); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: "+c[0]+": "+c[1]+" must be a string, not a number" {
+			t.Errorf("%s: %v", c[0], f)
+		}
+		if f := mustFail(t, "", c[0]+` "a" null`); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: "+c[0]+": the string must be a string, not null" {
+			t.Errorf("%s: %v", c[0], f)
+		}
+	}
+}
+
+// The string natives take a step for each StringStep characters of the
+// string, or part of them: ten steps of fuel read ten times that many
+// characters and no more, however many bytes a character takes.
+func TestTheStringNativesTakeAStepPerCharactersRead(t *testing.T) {
+	at := SourceSpan{File: NewFile("t.alc")}
+	limit := func(f *Fail) bool { return f != nil && f.Limit != nil && f.Limit.Name == "max_plan_steps" }
+	for _, c := range []string{"a", "\U0001F680"} {
+		for _, op := range []struct {
+			name string
+			call nativeCall
+			part string
+		}{
+			{"trim", nTrim, ""},
+			{"first-split", nFirstSplit, "."},
+			{"starts-with", nStartsWith, "a"},
+			{"ends-with", nEndsWith, "a"},
+			{"contains", nContains, "."},
+		} {
+			run := func(n int) *Fail {
+				s := StrVal(strings.Repeat(c, n))
+				args := []Val{StrVal(op.part), s}
+				if op.name == "trim" {
+					args = []Val{s}
+				}
+				_, f := op.call(runtimeOf(t, "").WithFuel(10), args, at)
+				return f
+			}
+			if f := run(10 * StringStep); f != nil {
+				t.Errorf("%s %q: %v", op.name, c, f)
+			}
+			if f := run(10*StringStep + 1); !limit(f) {
+				t.Errorf("%s %q: %v", op.name, c, f)
+			}
+		}
+	}
+}
+
+// flatten takes one level out: each vector among the items gives its
+// items, and any other item stays; a vector inside one of those stays a
+// vector.
+func TestFlattenTakesOneLevelOut(t *testing.T) {
+	for _, c := range []struct {
+		expr string
+		want Val
+	}{
+		{"flatten [[1 2] 3 [] [4]]", Vector(Num(1), Num(2), Num(3), Num(4))},
+		{"flatten []", Vector()},
+		{"flatten [[] []]", Vector()},
+		{"flatten [[[1] \"a\"] null]", Vector(Vector(Num(1)), StrVal("a"), NullVal{})},
+	} {
+		if v := mustEval(t, "", c.expr); !Equal(v, c.want) {
+			t.Errorf("%s: %s", c.expr, DebugString(v))
+		}
+	}
+	if f := mustFail(t, "", `flatten "a"`); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: flatten: the data must be a vector, not a string" {
+		t.Errorf("%v", f)
+	}
+	// A step for each item and for each item a vector among them gives: ten
+	// steps of fuel take two vectors of four items, and not five.
+	at := SourceSpan{File: NewFile("t.alc")}
+	nums := func(k int) Val {
+		items := make([]Val, k)
+		for i := range items {
+			items[i] = Num(float64(i))
+		}
+		return Vector(items...)
+	}
+	if _, f := nFlatten(runtimeOf(t, "").WithFuel(10), []Val{Vector(nums(4), nums(4))}, at); f != nil {
+		t.Errorf("%v", f)
+	}
+	if _, f := nFlatten(runtimeOf(t, "").WithFuel(10), []Val{Vector(nums(4), nums(5))}, at); f == nil || f.Limit == nil || f.Limit.Name != "max_plan_steps" {
+		t.Errorf("%v", f)
+	}
+}
+
+// sort orders numbers by value and strings by code point, stably; a
+// vector of another kind, of both kinds, or holding NaN is refused at the
+// first item that is.
+func TestSortOrdersNumbersByValueAndStringsByCodePoint(t *testing.T) {
+	at := SourceSpan{File: NewFile("t")}
+	sorted := func(items ...Val) ([]Val, *Fail) {
+		v, f := nSort(runtimeOf(t, ""), []Val{Vector(items...)}, at)
+		if f != nil {
+			return nil, f
+		}
+		return v.(*VectorVal).Items, nil
+	}
+	got, f := sorted(Num(3), Num(-1.5), Num(math.Inf(1)), Num(0), Num(math.Inf(-1)), Num(2))
+	if f != nil {
+		t.Fatal(f)
+	}
+	for i, want := range []float64{math.Inf(-1), -1.5, 0, 2, 3, math.Inf(1)} {
+		if got[i].(NumVal).Value != want {
+			t.Errorf("%d: %s", i, DebugString(got[i]))
+		}
+	}
+	if got, f := sorted(); f != nil || len(got) != 0 {
+		t.Errorf("%v %v", got, f)
+	}
+	// Stable: 0 and -0 are equal and keep their order, and a number keeps
+	// its lexeme.
+	got, _ = sorted(NumLexeme(0, "0"), NumLexeme(1, "1e0"), NumLexeme(math.Copysign(0, -1), "-0"), NumLexeme(0.5, "5e-1"))
+	var lexemes []string
+	for _, v := range got {
+		lexemes = append(lexemes, v.(NumVal).Lexeme)
+	}
+	if strings.Join(lexemes, " ") != "0 -0 5e-1 1e0" {
+		t.Errorf("%v", lexemes)
+	}
+	// By code point: é (U+00E9) after z, U+FFFF before 😀 (U+1F600), which
+	// UTF-16 code units would put first.
+	got, _ = sorted(StrVal("z"), StrVal("é"), StrVal("\U0001F600"), StrVal("\uffff"), StrVal("Z"), StrVal(""), StrVal("a"), StrVal("ab"))
+	var texts []string
+	for _, v := range got {
+		texts = append(texts, string(v.(StrVal)))
+	}
+	if strings.Join(texts, ",") != ",Z,a,ab,z,é,\uffff,\U0001F600" {
+		t.Errorf("%q", texts)
+	}
+	for _, c := range []struct {
+		items   []Val
+		message string
+	}{
+		{[]Val{Num(1), StrVal("a")}, "every item must be a number, as the first is, not a string"},
+		{[]Val{StrVal("a"), Num(1)}, "every item must be a string, as the first is, not a number"},
+		{[]Val{StrVal("a"), Num(math.NaN())}, "every item must be a string, as the first is, not a number"},
+		{[]Val{Num(1), Num(math.NaN())}, "every number must be ordered, not NaN"},
+		{[]Val{BoolVal(true)}, "every item must be a number or a string, not a boolean"},
+		{[]Val{Num(1), Vector(Num(2))}, "every item must be a number or a string, not a vector"},
+		{[]Val{Num(1), Missing()}, "every item must be a number or a string, not missing"},
+	} {
+		if _, f := sorted(c.items...); f == nil || f.Code != CodeDSLTypeError || f.Message != "type_mismatch: sort: "+c.message {
+			t.Errorf("%s: %v", c.message, f)
+		}
+	}
+	if f := mustFail(t, "", `sort "a"`); f.Code != CodeDSLTypeError || f.Message != "type_mismatch: sort: the data must be a vector, not a string" {
+		t.Errorf("%v", f)
+	}
+	// A step for each item: ten steps of fuel sort ten items and not
+	// eleven.
+	nums := func(k int) Val {
+		items := make([]Val, k)
+		for i := range items {
+			items[i] = Num(float64(k - i))
+		}
+		return Vector(items...)
+	}
+	if _, f := nSort(runtimeOf(t, "").WithFuel(10), []Val{nums(10)}, at); f != nil {
+		t.Errorf("%v", f)
+	}
+	if _, f := nSort(runtimeOf(t, "").WithFuel(10), []Val{nums(11)}, at); f == nil || f.Limit == nil || f.Limit.Name != "max_plan_steps" {
+		t.Errorf("%v", f)
+	}
+}
+
 // equal compares as a match pattern compares a constant: data
 // structurally, numbers by value, a record's members in any order; a
 // function equals nothing, and a stream or a text is refused.

@@ -920,6 +920,19 @@ class Checker {
         }
         return Unknown
       }
+      case 'get-or': {
+        if (!among(t(0), 'Keyword', 'String', 'Unknown', 'Never')) {
+          throw this.mismatch('the key of get-or', Keyword, t(0), at(0))
+        }
+        // The default is answered as it is: a value, never a stream or a
+        // text, which is used once, where it is.
+        if (isAffine(t(1))) throw this.mismatch('the default of get-or', Value, t(1), at(1))
+        const d = t(2)
+        if (!among(d, 'Record', 'Value', 'Unknown', 'Never') && !('Tagged' === d.t && 'missing' === d.tag)) {
+          throw this.mismatch('the data of get-or', Record, d, at(2))
+        }
+        return Unknown
+      }
       case 'get-path':
         this.expect('the path of get-path', Selector, t(0), at(0))
         data(1, 'the data of get-path')
@@ -958,6 +971,18 @@ class Checker {
         const held = t(1)
         return vectorOf('Vector' === added.t && 'Vector' === held.t ? join(held.item, added.item) : Unknown)
       }
+      case 'flatten': {
+        this.expect('the vector of flatten', vectorOf(Unknown), t(0), at(0))
+        // An item that is a vector gives its items; any other is kept.
+        const v = t(0)
+        if ('Vector' !== v.t) return vectorOf(Unknown)
+        return vectorOf('Vector' === v.item.t ? v.item.item : v.item)
+      }
+      case 'sort':
+        // A finite vector, whose items the run holds to one kind: a stream
+        // is refused here, as count and pop refuse one.
+        this.expect('the vector of sort', vectorOf(Unknown), t(0), at(0))
+        return 'Vector' === t(0).t ? t(0) : vectorOf(Unknown)
       case 'pop':
         this.expect('the vector of pop', vectorOf(Unknown), t(0), at(0))
         return 'Vector' === t(0).t ? t(0) : vectorOf(Unknown)
@@ -992,6 +1017,11 @@ class Checker {
         return Keyword
       case 'inc':
         this.expect('the count of inc', Num, t(0), at(0))
+        return Num
+      case 'add':
+      case 'sub':
+        this.expect(`the first number of ${name}`, Num, t(0), at(0))
+        this.expect(`the second number of ${name}`, Num, t(1), at(1))
         return Num
       case 'number-class':
         this.expect('the number of number-class', Num, t(0), at(0))
@@ -1110,6 +1140,21 @@ class Checker {
         this.expect('the separator of split', Str, t(0), at(0))
         this.expect('the string of split', Str, t(1), at(1))
         return vectorOf(Str)
+      case 'trim':
+        this.expect('the string of trim', Str, t(0), at(0))
+        return Str
+      case 'first-split':
+        this.expect('the separator of first-split', Str, t(0), at(0))
+        this.expect('the string of first-split', Str, t(1), at(1))
+        return vectorOf(Str)
+      case 'starts-with':
+      case 'ends-with':
+      case 'contains': {
+        const part = 'starts-with' === name ? 'prefix' : 'ends-with' === name ? 'suffix' : 'part'
+        this.expect(`the ${part} of ${name}`, Str, t(0), at(0))
+        this.expect(`the string of ${name}`, Str, t(1), at(1))
+        return Bool
+      }
       case 'fail': {
         // `(fail message)` is INPUT_INVALID; `(fail :code message)` names
         // the code: a literal keyword is held to the four here, any other

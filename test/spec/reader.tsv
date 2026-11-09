@@ -128,3 +128,11 @@ repeat (count stack) "  "	"(repeat (count stack) \"  \")"
 quoted (top stack)	"(quoted (top stack))"
 # A step's outputs that end a record of the text join writes.
 transition s [(quoted name) "\\n" :record-end]	"(transition s [(quoted name) \"\\n\" :record-end])"
+# The string, vector and number operators' examples in docs/language.md.
+trim (get :val token)	"(trim (get :val token))"
+first-split "=" (trim line)	"(first-split \"=\" (trim line))"
+starts-with "#" line	"(starts-with \"#\" line)"
+ends-with "/" path	"(ends-with \"/\" path)"
+contains "@" address	"(contains \"@\" address)"
+transition state (flatten (map cell-events cells))	"(transition state (flatten (map cell-events cells)))"
+get-or :fill "" spec	"(get-or :fill \"\" spec)"

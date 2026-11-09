@@ -3,8 +3,10 @@
 package tabnasalchemy
 
 import (
+	"cmp"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -41,6 +43,7 @@ var nativeImpls map[string]nativeCall
 func init() {
 	nativeImpls = map[string]nativeCall{
 		"get":             nGet,
+		"get-or":          nGetOr,
 		"get-path":        nGetPath,
 		"as-path":         nAsPath,
 		"as-vector":       nAsVector,
@@ -49,6 +52,8 @@ func init() {
 		"vector":          nVector,
 		"push":            nPush,
 		"push-all":        nPushAll,
+		"flatten":         nFlatten,
+		"sort":            nSort,
 		"pop":             nPop,
 		"top":             nTop,
 		"count":           nCount,
@@ -60,6 +65,8 @@ func init() {
 		"is-number":       nIsNumber,
 		"compare":         nCompare,
 		"inc":             nInc,
+		"add":             nAdd,
+		"sub":             nSub,
 		"number-class":    nNumberClass,
 		"kind":            nKind,
 		"equal":           nEqual,
@@ -90,6 +97,11 @@ func init() {
 		"quoted":          nQuoted,
 		"string-join":     nStringJoin,
 		"split":           nSplit,
+		"trim":            nTrim,
+		"first-split":     nFirstSplit,
+		"starts-with":     nStartsWith,
+		"ends-with":       nEndsWith,
+		"contains":        nContains,
 		"repeat":          nRepeat,
 		"fail":            nFail,
 		"is-ready":        nIsReady,
@@ -371,22 +383,35 @@ func numberText(value float64, lexeme string, hasLexeme bool) (string, *Fail) {
 // ---------------------------------------------------------------------------
 
 func nGet(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
-	var key string
-	switch k := a[0].(type) {
-	case KeywordVal:
-		key = string(k)
-	case StrVal:
-		key = string(k)
-	default:
-		return nil, typeError("get: the key must be a keyword or a string, not " + KindOf(a[0]))
+	key, f := recordKey("get", a[0])
+	if f != nil {
+		return nil, f
 	}
 	return getField(key, a[1])
+}
+
+// recordKey is the key `get` and `get-or` read a record by: a keyword or a
+// string.
+func recordKey(op string, k Val) (string, *Fail) {
+	switch k := k.(type) {
+	case KeywordVal:
+		return string(k), nil
+	case StrVal:
+		return string(k), nil
+	}
+	return "", typeError(op + ": the key must be a keyword or a string, not " + KindOf(k))
 }
 
 // getField is `get key data`: a record's field, `missing` for an absent
 // one or from `missing`; INPUT_INVALID from other data, `type_mismatch`
 // from what is not data.
 func getField(key string, data Val) (Val, *Fail) {
+	return fieldOf("get", key, data)
+}
+
+// fieldOf is getField, its failures naming the operator that read the
+// field.
+func fieldOf(op, key string, data Val) (Val, *Fail) {
 	switch {
 	case isRecord(data):
 		v, _ := Field(data, key)
@@ -394,9 +419,29 @@ func getField(key string, data Val) (Val, *Fail) {
 	case IsMissing(data):
 		return Missing(), nil
 	case isData(data):
-		return nil, inputInvalid(fmt.Sprintf("get: %s has no member %s; an object was expected", KindOf(data), strconv.Quote(key)))
+		return nil, inputInvalid(fmt.Sprintf("%s: %s has no member %s; an object was expected", op, KindOf(data), strconv.Quote(key)))
 	}
-	return nil, typeError("get: a record was expected, not " + KindOf(data))
+	return nil, typeError(op + ": a record was expected, not " + KindOf(data))
+}
+
+// nGetOr is `get-or key default data`: what `get` answers, or the default
+// where it answers `missing`: the key absent from the record, a member
+// whose value is `missing`, or the data `missing` itself. The key is a
+// keyword or a string, as `get`'s is, and data that is not a record fails
+// as `get` fails, naming `get-or`.
+func nGetOr(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	key, f := recordKey("get-or", a[0])
+	if f != nil {
+		return nil, f
+	}
+	found, f := fieldOf("get-or", key, a[2])
+	if f != nil {
+		return nil, f
+	}
+	if IsMissing(found) {
+		return a[1], nil
+	}
+	return found, nil
 }
 
 func isRecord(v Val) bool {
@@ -536,6 +581,88 @@ func nPushAll(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	out := make([]Val, 0, len(held)+len(items.Items))
 	out = append(out, held...)
 	return Vector(append(out, items.Items...)...), nil
+}
+
+// nFlatten is `flatten vector`: the vector one level flatter: each item
+// that is a vector gives its items, in their order, and any other item
+// stays as it is; a vector inside one of those stays a vector. A step for
+// each item of the vector and for each item a vector among them gives, the
+// steps Rust takes, so the fuel and the host's abort flag bound a long
+// flatten.
+func nFlatten(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	items, f := asItems("flatten", a[0])
+	if f != nil {
+		return nil, f
+	}
+	out := make([]Val, 0, len(items))
+	for _, item := range items {
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+		inner, ok := item.(*VectorVal)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		for _, v := range inner.Items {
+			if f := rt.Tick(); f != nil {
+				return nil, f
+			}
+			out = append(out, v)
+		}
+	}
+	return Vector(out...), nil
+}
+
+// nSort is `sort vector`: the vector's items in ascending order, numbers
+// by value and strings by code point, which a Go string's byte order is
+// (UTF-8 keeps it), and stable: items that compare equal (0 and -0, two
+// equal strings) keep their order, so the three runtimes answer one
+// vector. The items are all numbers or all strings, the kind of the first;
+// an item of another kind, a vector of both, or NaN, which has no order,
+// is a type error at the first item that is one, as Rust checks them. A
+// step for each item, taken as the items are checked and before any is
+// moved.
+func nSort(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	items, f := asItems("sort", a[0])
+	if f != nil {
+		return nil, f
+	}
+	// first is the kind of the items, "a number" or "a string", once read.
+	first := ""
+	for _, item := range items {
+		if f := rt.Tick(); f != nil {
+			return nil, f
+		}
+		kind := KindOf(item)
+		switch item.(type) {
+		case NumVal, StrVal:
+		default:
+			return nil, typeError("sort: every item must be a number or a string, not " + kind)
+		}
+		switch {
+		case first == "":
+			first = kind
+		case first != kind:
+			return nil, typeError("sort: every item must be " + first + ", as the first is, not " + kind)
+		}
+		if n, ok := item.(NumVal); ok && math.IsNaN(n.Value) {
+			return nil, typeError("sort: every number must be ordered, not NaN")
+		}
+	}
+	out := append([]Val(nil), items...)
+	// Stable, and total here: no NaN is left, and the items are of one
+	// kind.
+	slices.SortStableFunc(out, func(x, y Val) int {
+		switch x := x.(type) {
+		case NumVal:
+			return cmp.Compare(x.Value, y.(NumVal).Value)
+		case StrVal:
+			return strings.Compare(string(x), string(y.(StrVal)))
+		}
+		return 0
+	})
+	return Vector(out...), nil
 }
 
 func nPop(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
@@ -1079,10 +1206,10 @@ func nCompare(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 // float holds every whole number, so the three runtimes count alike.
 const IncMax = 9007199254740991.0
 
-// nInc is `inc count`: the count one more. Alchemy has no arithmetic; a
-// part that counts (PGN's moves) counts with this. The count is a whole
-// number of at least 0, as `repeat`'s is, and below IncMax, so the answer
-// is exact; any other number is a type error, as `repeat`'s is.
+// nInc is `inc count`: the count one more, which a part that counts (PGN's
+// moves) counts with. The count is a whole number of at least 0, as
+// `repeat`'s is, and below IncMax, so the answer is exact; any other
+// number is a type error, as `repeat`'s is.
 func nInc(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 	n, ok := a[0].(NumVal)
 	if !ok {
@@ -1096,6 +1223,64 @@ func nInc(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		return nil, typeError("inc: the count must be a whole number from 0 to 9007199254740990, not " + spelled)
 	}
 	return Num(n.Value + 1), nil
+}
+
+// WholeMax is the largest magnitude `add` and `sub` take and answer,
+// 2^53 - 1, as IncMax is `inc`'s largest answer: up to it a 64-bit float
+// holds every whole number, so the three runtimes count alike.
+const WholeMax = IncMax
+
+// nAdd is `add a b`: the sum, exact. Alchemy's arithmetic is over whole
+// numbers, as `inc` counts: each operand a whole number of magnitude at
+// most WholeMax, and so the sum, or a type error naming it exactly; any
+// other number is a type error, as `inc`'s is.
+func nAdd(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	return arithmetic("add", "the sum", a, func(x, y int64) int64 { return x + y })
+}
+
+// nSub is `sub a b`: the difference a less b, exact, as `add` answers a
+// sum.
+func nSub(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	return arithmetic("sub", "the difference", a, func(x, y int64) int64 { return x - y })
+}
+
+// arithmetic is the result op makes of two whole operands, computed in 64
+// bits, where two magnitudes of at most WholeMax make one of at most twice
+// that, so a result past the range is named as it is rather than as a
+// float rounds it. A zero result is 0, never -0: a whole number has no
+// sign of its own at zero.
+func arithmetic(op, result string, a []Val, f func(x, y int64) int64) (Val, *Fail) {
+	x, fail := whole(op, "the first", a[0])
+	if fail != nil {
+		return nil, fail
+	}
+	y, fail := whole(op, "the second", a[1])
+	if fail != nil {
+		return nil, fail
+	}
+	r := f(x, y)
+	if r > int64(WholeMax) || r < -int64(WholeMax) {
+		return nil, typeError(fmt.Sprintf("%s: %s must be a whole number from -9007199254740991 to 9007199254740991, not %d", op, result, r))
+	}
+	return Num(float64(r)), nil
+}
+
+// whole is an operand of `add` or `sub`: a whole number of magnitude at
+// most WholeMax, or the type error naming it as it was spelled, as `inc`
+// names its count.
+func whole(op, which string, v Val) (int64, *Fail) {
+	n, ok := v.(NumVal)
+	if !ok {
+		return 0, typeError(fmt.Sprintf("%s: %s must be a number, not %s", op, which, KindOf(v)))
+	}
+	if !isWhole(n.Value) || !(math.Abs(n.Value) <= WholeMax) {
+		spelled := floatText(n.Value)
+		if n.HasLexeme {
+			spelled = n.Lexeme
+		}
+		return 0, typeError(fmt.Sprintf("%s: %s must be a whole number from -9007199254740991 to 9007199254740991, not %s", op, which, spelled))
+	}
+	return int64(n.Value), nil
 }
 
 // nNumberClass is `number-class number`: `:finite`, `:infinity`,
@@ -1856,6 +2041,133 @@ func nSplit(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 		}
 		rest = rest[at+len(separator):]
 	}
+}
+
+// StringStep is how many characters of the string `trim`, `first-split`,
+// `starts-with`, `ends-with` and `contains` read per evaluation step.
+const StringStep = 4096
+
+// stringSteps takes a step for each StringStep characters of the string,
+// or part of them, before it is read, the steps Rust takes, so the fuel
+// and the host's abort flag bound the read of a long string as `split`'s
+// steps bound its own. A character is a rune, however many bytes it takes.
+func stringSteps(rt *Runtime, s string) *Fail {
+	n := utf8.RuneCountInString(s)
+	for k := 0; k < (n+StringStep-1)/StringStep; k++ {
+		if f := rt.Tick(); f != nil {
+			return f
+		}
+	}
+	return nil
+}
+
+// isTrimSpace is whether a character is white space as ECMAScript's
+// String.prototype.trim reads it, its WhiteSpace and LineTerminator
+// productions: U+0009 to U+000D, U+0020, U+00A0, U+1680, U+2000 to U+200A,
+// U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF. Not unicode.IsSpace,
+// which takes U+0085 and not U+FEFF: the three runtimes trim one set.
+func isTrimSpace(r rune) bool {
+	switch {
+	case r >= 0x09 && r <= 0x0d, r == 0x20, r == 0xa0, r == 0x1680, r >= 0x2000 && r <= 0x200a,
+		r == 0x2028, r == 0x2029, r == 0x202f, r == 0x205f, r == 0x3000, r == 0xfeff:
+		return true
+	}
+	return false
+}
+
+// nTrim is `trim string`: the string without its leading and trailing
+// white space, the set ECMAScript's String.prototype.trim takes
+// (isTrimSpace). A string with none is answered as it is.
+func nTrim(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	s, f := asStr("trim", "the string", a[0])
+	if f != nil {
+		return nil, f
+	}
+	if f := stringSteps(rt, s); f != nil {
+		return nil, f
+	}
+	trimmed := strings.TrimFunc(s, isTrimSpace)
+	if len(trimmed) == len(s) {
+		return a[0], nil
+	}
+	return StrVal(trimmed), nil
+}
+
+// nFirstSplit is `first-split separator string`: the string cut at the
+// separator's first occurrence, the vector of what comes before it and
+// what comes after, or of the string alone where the separator does not
+// occur. The separator is a literal, not a pattern, and must not be empty,
+// as `split`'s must not.
+func nFirstSplit(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	separator, f := asStr("first-split", "the separator", a[0])
+	if f != nil {
+		return nil, f
+	}
+	if separator == "" {
+		return nil, typeError("first-split: the separator must be a non-empty string, not the empty string")
+	}
+	s, f := asStr("first-split", "the string", a[1])
+	if f != nil {
+		return nil, f
+	}
+	if f := stringSteps(rt, s); f != nil {
+		return nil, f
+	}
+	before, after, found := strings.Cut(s, separator)
+	if !found {
+		return Vector(a[1]), nil
+	}
+	return Vector(StrVal(before), StrVal(after)), nil
+}
+
+// stringTest is the part and the string of `starts-with`, `ends-with` and
+// `contains`, both strings, the string's steps taken. Each compares
+// exactly, code point by code point, which a Go string's bytes are (UTF-8
+// makes a match of bytes one of characters), and an empty part is in
+// every string.
+func stringTest(rt *Runtime, op, what string, a []Val) (string, string, *Fail) {
+	part, f := asStr(op, what, a[0])
+	if f != nil {
+		return "", "", f
+	}
+	s, f := asStr(op, "the string", a[1])
+	if f != nil {
+		return "", "", f
+	}
+	if f := stringSteps(rt, s); f != nil {
+		return "", "", f
+	}
+	return part, s, nil
+}
+
+// nStartsWith is `starts-with prefix string`: whether the string begins
+// with the prefix.
+func nStartsWith(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	prefix, s, f := stringTest(rt, "starts-with", "the prefix", a)
+	if f != nil {
+		return nil, f
+	}
+	return BoolVal(strings.HasPrefix(s, prefix)), nil
+}
+
+// nEndsWith is `ends-with suffix string`: whether the string ends with the
+// suffix.
+func nEndsWith(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	suffix, s, f := stringTest(rt, "ends-with", "the suffix", a)
+	if f != nil {
+		return nil, f
+	}
+	return BoolVal(strings.HasSuffix(s, suffix)), nil
+}
+
+// nContains is `contains part string`: whether the part occurs in the
+// string.
+func nContains(rt *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	part, s, f := stringTest(rt, "contains", "the part", a)
+	if f != nil {
+		return nil, f
+	}
+	return BoolVal(strings.Contains(s, part)), nil
 }
 
 // nRepeat is `repeat count string`: the string count times over. The

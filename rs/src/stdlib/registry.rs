@@ -282,35 +282,57 @@ pub use crate::shared::number::{number_text, shortest_number};
 // ---------------------------------------------------------------------------
 
 fn get(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
-    let key: &str = match &a[0] {
-        Val::Keyword(k) => k,
-        Val::Str(k) => k,
-        other => {
-            return Err(type_error(format!(
-                "get: the key must be a keyword or a string, not {}",
-                other.kind()
-            )))
-        }
-    };
-    get_field(key, &a[1])
+    get_field(record_key("get", &a[0])?, &a[1])
+}
+
+/// The key `get` and `get-or` read a record by: a keyword or a string.
+fn record_key<'a>(op: &str, key: &'a Val) -> Result<&'a str, Fail> {
+    match key {
+        Val::Keyword(k) => Ok(&**k),
+        Val::Str(k) => Ok(&**k),
+        other => Err(type_error(format!(
+            "{op}: the key must be a keyword or a string, not {}",
+            other.kind()
+        ))),
+    }
 }
 
 /// `get key data`: a record's field, `missing` for an absent one or from
 /// `missing`; `INPUT_INVALID` from other data, `type_mismatch` from what
 /// is not data.
 pub fn get_field(key: &str, data: &Val) -> Result<Val, Fail> {
+    field_of("get", key, data)
+}
+
+/// [`get_field`], its failures naming the operator that read the field.
+fn field_of(op: &str, key: &str, data: &Val) -> Result<Val, Fail> {
     match data {
         Val::Record(_) => Ok(data.field(key).unwrap_or_else(Val::missing)),
         v if v.is_missing() => Ok(Val::missing()),
         v if is_data(v) => Err(input_invalid(format!(
-            "get: {} has no member {key:?}; an object was expected",
+            "{op}: {} has no member {key:?}; an object was expected",
             v.kind()
         ))),
         other => Err(type_error(format!(
-            "get: a record was expected, not {}",
+            "{op}: a record was expected, not {}",
             other.kind()
         ))),
     }
+}
+
+/// `get-or key default data`: what `get` answers, or the default where it
+/// answers `missing`: the key absent from the record, a member whose value
+/// is `missing`, or the data `missing` itself. The key is a keyword or a
+/// string, as `get`'s is, and data that is not a record fails as `get`
+/// fails, naming `get-or`. A part reads an optional field with it rather
+/// than with a `match` whose case is `missing`.
+fn get_or(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let found = field_of("get-or", record_key("get-or", &a[0])?, &a[2])?;
+    Ok(if found.is_missing() {
+        a[1].clone()
+    } else {
+        found
+    })
 }
 
 fn get_path(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -450,6 +472,92 @@ fn push_all(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         out = out.push(item.clone());
     }
     Ok(Val::Vector(out))
+}
+
+/// `flatten vector`: the vector one level flatter: each item that is a
+/// vector gives its items, in their order, and any other item stays as it
+/// is, so a step that answers its outputs as a vector of vectors (one for
+/// each cell of a record, say) answers them as one, without a second scan.
+/// One level only: a vector inside a vector inside the vector stays a
+/// vector. A step for each item of the vector and for each item a vector
+/// among them gives, so the fuel and the host's abort flag bound a long
+/// flatten.
+fn flatten(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let items = as_items("flatten", &a[0])?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items.iter() {
+        rt.tick()?;
+        match item {
+            Val::Vector(inner) => {
+                for v in inner.iter() {
+                    rt.tick()?;
+                    out.push(v.clone());
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    Ok(Val::vector(out))
+}
+
+/// `sort vector`: the vector's items in ascending order, numbers by value
+/// and strings by code point, which a `str`'s byte order is (UTF-8 keeps
+/// it), and stable: items that compare equal (`0` and `-0`, two equal
+/// strings) keep their order, so the three runtimes answer one vector. The
+/// items are all numbers or all strings, the kind of the first; an item of
+/// another kind, a vector of both, or NaN, which has no order, is a type
+/// error at the first item that is one. A step for each item, taken as the
+/// items are checked and before any is moved (and, for a string kept as a
+/// rope, the steps its flattening takes, as `as_str`'s), so the fuel and
+/// the host's abort flag bound a long sort.
+fn sort(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let items = as_items("sort", &a[0])?;
+    // Whether the items are numbers, as the first is, or strings.
+    let mut numbers = None;
+    for item in items.iter() {
+        rt.tick()?;
+        let number = match item {
+            Val::Num { .. } => true,
+            Val::Str(_) => false,
+            other => {
+                return Err(type_error(format!(
+                    "sort: every item must be a number or a string, not {}",
+                    other.kind()
+                )))
+            }
+        };
+        match numbers {
+            None => numbers = Some(number),
+            Some(first) if first != number => {
+                return Err(type_error(format!(
+                    "sort: every item must be {}, as the first is, not {}",
+                    if first { "a number" } else { "a string" },
+                    item.kind()
+                )))
+            }
+            Some(_) => {}
+        }
+        match item {
+            Val::Num { value, .. } if value.is_nan() => {
+                return Err(type_error("sort: every number must be ordered, not NaN"))
+            }
+            Val::Str(s) => {
+                s.flat_with(|| rt.tick())?;
+            }
+            _ => {}
+        }
+    }
+    let mut out: Vec<Val> = items.iter().cloned().collect();
+    // Stable, and total here: no NaN is left, and the items are of one
+    // kind.
+    out.sort_by(|x, y| match (x, y) {
+        (Val::Num { value: p, .. }, Val::Num { value: q, .. }) => {
+            p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (Val::Str(p), Val::Str(q)) => (**p).cmp(&**q),
+        _ => std::cmp::Ordering::Equal,
+    });
+    Ok(Val::vector(out))
 }
 
 fn pop(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -860,10 +968,10 @@ fn compare(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// holds every whole number, so the three runtimes count alike.
 pub const INC_MAX: f64 = 9_007_199_254_740_991.0;
 
-/// `inc count`: the count one more. Alchemy has no arithmetic; a part that
-/// counts (PGN's moves) counts with this. The count is a whole number of
-/// at least 0, as `repeat`'s is, and below [`INC_MAX`], so the answer is
-/// exact; any other number is a type error, as `repeat`'s is.
+/// `inc count`: the count one more, which a part that counts (PGN's
+/// moves) counts with. The count is a whole number of at least 0, as
+/// `repeat`'s is, and below [`INC_MAX`], so the answer is exact; any other
+/// number is a type error, as `repeat`'s is.
 fn inc(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
     match &a[0] {
         Val::Num { value, .. } if *value >= 0.0 && value.fract() == 0.0 && *value < INC_MAX => {
@@ -879,6 +987,64 @@ fn inc(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
         }
         other => Err(type_error(format!(
             "inc: the count must be a number, not {}",
+            other.kind()
+        ))),
+    }
+}
+
+/// The largest magnitude `add` and `sub` take and answer, 2^53 - 1, as
+/// [`INC_MAX`] is `inc`'s largest answer: up to it a 64-bit float holds
+/// every whole number, so the three runtimes count alike.
+pub const WHOLE_MAX: f64 = INC_MAX;
+
+/// `add a b`: the sum, exact. Alchemy's arithmetic is over whole numbers,
+/// as `inc` counts: each operand a whole number of magnitude at most
+/// [`WHOLE_MAX`], and so the sum, or a type error naming it exactly; any
+/// other number is a type error, as `inc`'s is.
+fn add(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    arithmetic("add", "the sum", a, |x, y| x + y)
+}
+
+/// `sub a b`: the difference `a` less `b`, exact, as `add` answers a sum.
+fn sub(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    arithmetic("sub", "the difference", a, |x, y| x - y)
+}
+
+/// The result `op` makes of two whole operands, computed in 64 bits, where
+/// two magnitudes of at most [`WHOLE_MAX`] make one of at most twice that,
+/// so a result past the range is named as it is rather than as a float
+/// rounds it. A zero result is `0`, never `-0`: a whole number has no sign
+/// of its own at zero.
+fn arithmetic(op: &str, result: &str, a: &[Val], f: fn(i64, i64) -> i64) -> Result<Val, Fail> {
+    let x = whole(op, "the first", &a[0])?;
+    let y = whole(op, "the second", &a[1])?;
+    let r = f(x, y);
+    if r.unsigned_abs() > WHOLE_MAX as u64 {
+        return Err(type_error(format!(
+            "{op}: {result} must be a whole number from -9007199254740991 to 9007199254740991, not {r}"
+        )));
+    }
+    Ok(Val::num(r as f64))
+}
+
+/// An operand of `add` or `sub`: a whole number of magnitude at most
+/// [`WHOLE_MAX`], or the type error naming it as it was spelled, as `inc`
+/// names its count.
+fn whole(op: &str, which: &str, v: &Val) -> Result<i64, Fail> {
+    match v {
+        Val::Num { value, .. } if value.fract() == 0.0 && value.abs() <= WHOLE_MAX => {
+            Ok(*value as i64)
+        }
+        Val::Num { value, lexeme } => {
+            let spelled = lexeme
+                .as_deref()
+                .map_or_else(|| value.to_string(), str::to_string);
+            Err(type_error(format!(
+                "{op}: {which} must be a whole number from -9007199254740991 to 9007199254740991, not {spelled}"
+            )))
+        }
+        other => Err(type_error(format!(
+            "{op}: {which} must be a number, not {}",
             other.kind()
         ))),
     }
@@ -1536,6 +1702,115 @@ fn split(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 /// How many characters of its input `split` reads per evaluation step.
 pub const SPLIT_STEP: usize = 4096;
 
+/// How many characters of the string `trim`, `first-split`, `starts-with`,
+/// `ends-with` and `contains` read per evaluation step.
+pub const STRING_STEP: usize = 4096;
+
+/// A step for each [`STRING_STEP`] characters of the string, or part of
+/// them, taken before it is read, as `split` takes its steps for the
+/// characters it reads, so the fuel and the host's abort flag bound the
+/// read of a long string. A character is a character, however many bytes
+/// it takes, so the three runtimes take the same steps.
+fn string_steps(rt: &Runtime, s: &str) -> Result<(), Fail> {
+    for _ in 0..s.chars().count().div_ceil(STRING_STEP) {
+        rt.tick()?;
+    }
+    Ok(())
+}
+
+/// Whether a character is white space as ECMAScript's
+/// `String.prototype.trim` reads it, its WhiteSpace and LineTerminator
+/// productions: U+0009 to U+000D, U+0020, U+00A0, U+1680, U+2000 to
+/// U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF. Not Rust's
+/// `char::is_whitespace`, which takes U+0085 and not U+FEFF, nor Go's
+/// `unicode.IsSpace`: the three runtimes trim one set.
+fn is_trim_space(c: char) -> bool {
+    matches!(
+        c,
+        '\u{9}'..='\u{d}'
+            | ' '
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
+    )
+}
+
+/// `trim string`: the string without its leading and trailing white space,
+/// the set ECMAScript's `String.prototype.trim` takes ([`is_trim_space`]),
+/// so that a part converting a format whose texts are trimmed so (feed's)
+/// trims them as its reader does. A string with none is answered as it is.
+fn trim(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let s = as_str(rt, "trim", "the string", &a[0])?;
+    string_steps(rt, s)?;
+    let trimmed = s.trim_matches(is_trim_space);
+    Ok(if trimmed.len() == s.len() {
+        a[0].clone()
+    } else {
+        Val::str(trimmed)
+    })
+}
+
+/// `first-split separator string`: the string cut at the separator's first
+/// occurrence, the vector of what comes before it and what comes after,
+/// or of the string alone where the separator does not occur; a part reads
+/// a name and its value (`key=value`, `email (Name)`) with it, as `split`
+/// reads a dotted string's parts. The separator is a literal, not a
+/// pattern, and must not be empty, as `split`'s must not.
+fn first_split(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let separator = as_str(rt, "first-split", "the separator", &a[0])?;
+    if separator.is_empty() {
+        return Err(type_error(
+            "first-split: the separator must be a non-empty string, not the empty string",
+        ));
+    }
+    let s = as_str(rt, "first-split", "the string", &a[1])?;
+    string_steps(rt, s)?;
+    Ok(match s.split_once(&**separator) {
+        Some((before, after)) => Val::vector(vec![Val::str(before), Val::str(after)]),
+        None => Val::vector(vec![a[1].clone()]),
+    })
+}
+
+/// The part and the string of `starts-with`, `ends-with` and `contains`,
+/// both strings, the string's steps taken. Each compares exactly, code
+/// point by code point, which a `str`'s bytes are (UTF-8 makes a match of
+/// bytes one of characters), and an empty part is in every string.
+fn string_test<'a>(
+    rt: &Runtime,
+    op: &str,
+    what: &str,
+    a: &'a [Val],
+) -> Result<(&'a str, &'a str), Fail> {
+    let part = as_str(rt, op, what, &a[0])?;
+    let s = as_str(rt, op, "the string", &a[1])?;
+    string_steps(rt, s)?;
+    Ok((&**part, &**s))
+}
+
+/// `starts-with prefix string`: whether the string begins with the prefix.
+fn starts_with(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let (prefix, s) = string_test(rt, "starts-with", "the prefix", a)?;
+    Ok(Val::Bool(s.starts_with(prefix)))
+}
+
+/// `ends-with suffix string`: whether the string ends with the suffix.
+fn ends_with(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let (suffix, s) = string_test(rt, "ends-with", "the suffix", a)?;
+    Ok(Val::Bool(s.ends_with(suffix)))
+}
+
+/// `contains part string`: whether the part occurs in the string.
+fn contains(rt: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let (part, s) = string_test(rt, "contains", "the part", a)?;
+    Ok(Val::Bool(s.contains(part)))
+}
+
 /// `repeat count string`: the string `count` times over. The result is one
 /// scalar of the output (a line's indentation), so it is held to
 /// `max_scalar_bytes`, refused before it is built.
@@ -1913,6 +2188,7 @@ use Arity::{AtLeast, Between, Exact};
 static NATIVES: &[Native] = &[
     // Values and records.
     f("get", Exact(2), get, "get key data -> Value", "reads a retained record or object; missing for an absent member"),
+    f("get-or", Exact(3), get_or, "get-or key default data -> Value", "reads a retained record or object as get does, and answers the default where get answers missing: an absent member, or missing data"),
     f("get-path", Exact(2), get_path, "get-path path data -> Value", "walks a retained value by one concrete path; missing where the path leaves it"),
     f("as-path", Exact(1), as_path, "as-path data -> Selector", "validates a data-supplied array of segments; never reads data as source"),
     f("as-vector", Exact(1), as_vector, "as-vector data -> Vector", "a captured array as a vector; INPUT_INVALID otherwise"),
@@ -1921,6 +2197,8 @@ static NATIVES: &[Native] = &[
     f("vector", AtLeast(0), vector, "vector item... -> Vector", "a retained vector; it cannot hold a stream or a live text"),
     f("push", Exact(2), push, "push item vector -> Vector", "a new vector with the item appended; it cannot hold a stream or a live text"),
     f("push-all", Exact(2), push_all, "push-all items vector -> Vector", "a new vector with every item of items appended, in their order: two vectors joined, a step for each item appended"),
+    f("flatten", Exact(1), flatten, "flatten vector -> Vector", "the vector one level flatter: each item that is a vector gives its items, in their order, and any other item stays as it is; a step for each item, and for each item a vector among them gives"),
+    f("sort", Exact(1), sort, "sort vector -> Vector", "the items in ascending order, stable: all numbers, by value, or all strings, by code point, not by UTF-16 code unit; an item of another kind, a vector of both, or NaN is a type error; a step for each item"),
     f("pop", Exact(1), pop, "pop vector -> Vector", "the vector without its last item; an empty vector is a type error"),
     f("top", Exact(1), top, "top vector -> Value", "the last item; an empty vector is a type error"),
     f("count", Exact(1), count, "count vector -> Number", "how many items the vector holds"),
@@ -1932,6 +2210,8 @@ static NATIVES: &[Native] = &[
     f("is-number", Exact(1), is_number, "is-number string -> Bool", "whether number reads the string: a JSON number, or Infinity, -Infinity or NaN; false for any other text, where number fails. A program cannot catch a failure, so a part tests a string with it before it calls number"),
     f("compare", Exact(2), compare, "compare a b -> Keyword", "how two numbers are ordered: :less, :equal or :greater, and :unordered when either is NaN"),
     f("inc", Exact(1), inc, "inc count -> Number", "the count one more: a whole number from 0 to 9007199254740990, where every runtime counts exactly; any other number is a type error"),
+    f("add", Exact(2), add, "add a b -> Number", "the sum, exact: a, b and the sum whole numbers from -9007199254740991 to 9007199254740991, where every runtime counts exactly; any other number is a type error"),
+    f("sub", Exact(2), sub, "sub a b -> Number", "the difference a less b, exact: a, b and the difference whole numbers from -9007199254740991 to 9007199254740991, where every runtime counts exactly; any other number is a type error"),
     f("number-class", Exact(1), number_class, "number-class number -> Keyword", ":finite, :infinity, :negative-infinity or :nan"),
     f("kind", Exact(1), kind, "kind value -> Keyword", "the kind of a value as a keyword: :null, :boolean, :number, :string, :keyword, :vector, :record, :missing, :tagged, :function, :selector or :capture; a stream or a text cannot be asked"),
     f("equal", Exact(2), equal, "equal a b -> Bool", "whether two values are equal, as a match pattern compares a constant: structurally, numbers by value (NaN equals nothing), a record to one with the same members in any order, a function to nothing; a stream or a text cannot be asked; a step for each pair of values compared"),
@@ -1965,6 +2245,11 @@ static NATIVES: &[Native] = &[
     f("quoted", Exact(1), quoted, "quoted string -> String", "the double-quoted form: a leading and a trailing quote, the quote and the backslash escaped by a backslash, U+0000 to U+001F as \\n, \\t, \\r, \\b, \\f or \\u00XX, and U+007F to U+009F, U+FFFE and U+FFFF as \\uXXXX (the JSON string form, which YAML's double-quoted style reads too, plus the C1 controls and the two noncharacters its printable set excludes, which XML's characters exclude too); refused past max_scalar_bytes, before it is built"),
     f("string-join", Exact(2), string_join, "string-join separator strings -> String", "the strings of a vector joined into one string, the separator between them; refused past max_scalar_bytes, before it is built"),
     f("split", Exact(2), split, "split separator string -> Vector", "the strings between the separator's occurrences in the string, found from the front, none overlapping another: one more than it occurs, an empty one where two occurrences meet or at either end, and the string itself where it does not occur (split \".\" \"a..b\" is [\"a\" \"\" \"b\"], split \".\" \"\" is [\"\"]); the separator is a literal, not a pattern, and must not be empty. A part reads a dotted string's parts with it to check each one"),
+    f("trim", Exact(1), trim, "trim string -> String", "the string without its leading and trailing white space, the set ECMAScript's String.prototype.trim takes: U+0009 to U+000D, U+0020, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF"),
+    f("first-split", Exact(2), first_split, "first-split separator string -> Vector", "the string cut at the separator's first occurrence, [before after], or [string] where it does not occur (first-split \"=\" \"a=b=c\" is [\"a\" \"b=c\"]); the separator is a literal, not a pattern, and must not be empty, as split's"),
+    f("starts-with", Exact(2), starts_with, "starts-with prefix string -> Bool", "whether the string begins with the prefix, compared exactly, code point by code point; true for the empty prefix"),
+    f("ends-with", Exact(2), ends_with, "ends-with suffix string -> Bool", "whether the string ends with the suffix, compared exactly, code point by code point; true for the empty suffix"),
+    f("contains", Exact(2), contains, "contains part string -> Bool", "whether the part occurs in the string, compared exactly, code point by code point; true for the empty part"),
     f("repeat", Exact(2), repeat, "repeat count string -> String", "the string count times over; refused past max_scalar_bytes, before it is built"),
     f("fail", Between(1, 2), fail, "fail [code] message -> Never", "INPUT_INVALID with the message and the form's position; with a code first, :unrepresentable is TARGET_VALUE_UNREPRESENTABLE (a value the target cannot carry), :protocol-order is PROTOCOL_ORDER_ERROR (a stream that breaks its protocol), :unstreamable is STREAMABILITY_UNKNOWN, the finer code unstreamable leading the message (a document a transducer part does not stream from the rule passes, which a host that reads the part reads whole) and :invalid is INPUT_INVALID"),
     // The table protocol.
@@ -2050,7 +2335,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 56);
+        assert_eq!(compared, 66);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the
@@ -2552,6 +2837,503 @@ mod tests {
             assert_eq!(fail.code, Code::DslTypeError, "{fail}");
             assert_eq!(fail.message, format!("type_mismatch: inc: {message}"));
         }
+    }
+
+    /// `add` and `sub` answer the sum and the difference exactly, without a
+    /// lexeme and never `-0`, up to 2^53 - 1 either way; an operand that
+    /// is not a whole number in that range, or a result past it, is a type
+    /// error naming it as it is.
+    #[test]
+    fn add_and_sub_are_exact_over_whole_numbers() {
+        let rt = crate::lower::tests::runtime("");
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let of = |op: Call, x: Val, y: Val| match op(&rt, &[x, y], &at).unwrap() {
+            Val::Num { value, lexeme } => {
+                assert_eq!(lexeme, None);
+                value
+            }
+            other => panic!("{other:?}"),
+        };
+        let n = Val::num;
+        assert_eq!(of(add, n(2.0), n(3.0)), 5.0);
+        assert_eq!(of(add, n(-2.0), n(3.0)), 1.0);
+        assert_eq!(of(sub, n(2.0), n(3.0)), -1.0);
+        assert_eq!(of(sub, n(3.0), n(2.0)), 1.0);
+        assert_eq!(of(add, n(WHOLE_MAX - 1.0), n(1.0)), WHOLE_MAX);
+        assert_eq!(of(sub, n(-WHOLE_MAX + 1.0), n(1.0)), -WHOLE_MAX);
+        assert_eq!(of(add, n(WHOLE_MAX), n(-WHOLE_MAX)), 0.0);
+        let spelled = Val::Num {
+            value: 100.0,
+            lexeme: Some(Arc::from("1e2")),
+        };
+        assert_eq!(of(add, spelled, n(1.0)), 101.0);
+        // Zero is 0, whatever the zeros it came from.
+        for (op, x, y) in [
+            (add as Call, -0.0, -0.0),
+            (sub as Call, -0.0, 0.0),
+            (sub as Call, 5.0, 5.0),
+        ] {
+            let zero = of(op, n(x), n(y));
+            assert!(zero == 0.0 && zero.is_sign_positive(), "{x} {y}");
+        }
+        let range = "a whole number from -9007199254740991 to 9007199254740991";
+        for (op, name, x, y, message) in [
+            (
+                add as Call,
+                "add",
+                n(WHOLE_MAX),
+                n(1.0),
+                format!("the sum must be {range}, not 9007199254740992"),
+            ),
+            (
+                add as Call,
+                "add",
+                n(WHOLE_MAX),
+                n(2.0),
+                format!("the sum must be {range}, not 9007199254740993"),
+            ),
+            (
+                add as Call,
+                "add",
+                n(-WHOLE_MAX),
+                n(-WHOLE_MAX),
+                format!("the sum must be {range}, not -18014398509481982"),
+            ),
+            (
+                sub as Call,
+                "sub",
+                n(-WHOLE_MAX),
+                n(2.0),
+                format!("the difference must be {range}, not -9007199254740993"),
+            ),
+            (
+                sub as Call,
+                "sub",
+                n(WHOLE_MAX),
+                n(-1.0),
+                format!("the difference must be {range}, not 9007199254740992"),
+            ),
+            (
+                add as Call,
+                "add",
+                n(WHOLE_MAX + 1.0),
+                n(0.0),
+                format!("the first must be {range}, not 9007199254740992"),
+            ),
+            (
+                sub as Call,
+                "sub",
+                n(0.0),
+                n(1.5),
+                format!("the second must be {range}, not 1.5"),
+            ),
+            (
+                add as Call,
+                "add",
+                Val::Num {
+                    value: 0.5,
+                    lexeme: Some(Arc::from("5e-1")),
+                },
+                n(0.0),
+                format!("the first must be {range}, not 5e-1"),
+            ),
+            (
+                add as Call,
+                "add",
+                n(f64::INFINITY),
+                n(0.0),
+                format!("the first must be {range}, not inf"),
+            ),
+            (
+                sub as Call,
+                "sub",
+                n(0.0),
+                n(f64::NAN),
+                format!("the second must be {range}, not NaN"),
+            ),
+            (
+                add as Call,
+                "add",
+                Val::str("1"),
+                n(0.0),
+                "the first must be a number, not a string".to_string(),
+            ),
+            (
+                sub as Call,
+                "sub",
+                n(0.0),
+                Val::Null,
+                "the second must be a number, not null".to_string(),
+            ),
+        ] {
+            let fail = op(&rt, &[x, y], &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(fail.message, format!("type_mismatch: {name}: {message}"));
+        }
+    }
+
+    /// `get-or` answers what `get` answers, or the default where `get`
+    /// answers `missing`; it fails where `get` fails, naming itself.
+    #[test]
+    fn get_or_answers_the_default_where_get_answers_missing() {
+        let rt = crate::lower::tests::runtime("");
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let rec = Val::Record(Arc::new(
+            [
+                ("a", Val::num(1.0)),
+                ("m", Val::missing()),
+                ("n", Val::Null),
+            ]
+            .iter()
+            .map(|(k, v)| (Arc::from(*k), v.clone()))
+            .collect(),
+        ));
+        let or = |key: Val, data: Val| get_or(&rt, &[key, Val::str("d"), data], &at);
+        assert_eq!(or(Val::keyword("a"), rec.clone()).unwrap(), Val::num(1.0));
+        assert_eq!(or(Val::str("a"), rec.clone()).unwrap(), Val::num(1.0));
+        assert_eq!(or(Val::keyword("n"), rec.clone()).unwrap(), Val::Null);
+        for (key, data) in [
+            (Val::keyword("b"), rec.clone()),
+            (Val::keyword("m"), rec.clone()),
+            (Val::keyword("a"), Val::missing()),
+        ] {
+            assert_eq!(or(key, data).unwrap(), Val::str("d"));
+        }
+        let fail = or(Val::num(1.0), rec).unwrap_err();
+        assert_eq!(
+            fail.message,
+            "type_mismatch: get-or: the key must be a keyword or a string, not a number"
+        );
+        let fail = or(Val::keyword("a"), Val::num(1.0)).unwrap_err();
+        assert_eq!(fail.code, Code::InputInvalid, "{fail}");
+        assert_eq!(
+            fail.message,
+            "get-or: a number has no member \"a\"; an object was expected"
+        );
+        let selector = each_index(&rt, &[], &at).unwrap();
+        let fail = or(Val::keyword("a"), selector).unwrap_err();
+        assert_eq!(
+            fail.message,
+            "type_mismatch: get-or: a record was expected, not a selector"
+        );
+    }
+
+    fn strings(v: Val) -> Vec<String> {
+        match v {
+            Val::Vector(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::Str(s) => s.to_string(),
+                    other => panic!("{other:?}"),
+                })
+                .collect(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn strs(ss: &[&str]) -> Val {
+        Val::vector(ss.iter().map(|s| Val::str(s)).collect())
+    }
+
+    /// `trim` takes off both ends the white space ECMAScript's
+    /// `String.prototype.trim` takes, and nothing else: not U+0085, which
+    /// Rust's own trim takes, nor U+180E, which Unicode no longer counts.
+    #[test]
+    fn trim_takes_the_white_space_ecmascript_trims() {
+        let rt = crate::lower::tests::runtime("");
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let trimmed = |s: &str| match trim(&rt, &[Val::str(s)], &at).unwrap() {
+            Val::Str(s) => s.to_string(),
+            other => panic!("{other:?}"),
+        };
+        let space = "\t\n\u{b}\u{c}\r \u{a0}\u{1680}\u{2000}\u{2005}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}";
+        assert_eq!(trimmed(&format!("{space}a b{space}")), "a b");
+        assert_eq!(trimmed(space), "");
+        assert_eq!(trimmed(""), "");
+        assert_eq!(trimmed("a\u{3000}b"), "a\u{3000}b");
+        for kept in ["\u{85}", "\u{180e}", "\u{200b}", "\u{2060}", "\u{0}"] {
+            assert_eq!(trimmed(&format!("{kept}a{kept}")), format!("{kept}a{kept}"));
+        }
+        let fail = trim(&rt, &[Val::num(1.0)], &at).unwrap_err();
+        assert_eq!(
+            fail.message,
+            "type_mismatch: trim: the string must be a string, not a number"
+        );
+    }
+
+    /// `first-split` cuts a string at the separator's first occurrence, or
+    /// answers it alone; its separator is held as `split`'s is.
+    #[test]
+    fn first_split_cuts_at_the_first_occurrence() {
+        let rt = crate::lower::tests::runtime("");
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let cut = |separator: &str, s: &str| {
+            strings(first_split(&rt, &[Val::str(separator), Val::str(s)], &at).unwrap())
+        };
+        assert_eq!(cut("=", "a=b=c"), ["a", "b=c"]);
+        assert_eq!(cut("=", "=a"), ["", "a"]);
+        assert_eq!(cut("=", "a="), ["a", ""]);
+        assert_eq!(cut("=", "abc"), ["abc"]);
+        assert_eq!(cut("=", ""), [""]);
+        assert_eq!(cut("::", "a:b::c::d"), ["a:b", "c::d"]);
+        assert_eq!(cut(" (", "j@x.org (Jo Ann)"), ["j@x.org", "Jo Ann)"]);
+        assert_eq!(cut("→", "α→β→γ"), ["α", "β→γ"]);
+        for (args, message) in [
+            (
+                [Val::str(""), Val::str("a")],
+                "the separator must be a non-empty string, not the empty string",
+            ),
+            (
+                [Val::num(1.0), Val::str("a")],
+                "the separator must be a string, not a number",
+            ),
+            (
+                [Val::str("."), Val::num(1.0)],
+                "the string must be a string, not a number",
+            ),
+        ] {
+            let fail = first_split(&rt, &args, &at).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(
+                fail.message,
+                format!("type_mismatch: first-split: {message}")
+            );
+        }
+    }
+
+    /// `starts-with`, `ends-with` and `contains` compare exactly, code
+    /// point by code point; an empty part is in every string.
+    #[test]
+    fn the_string_tests_compare_exactly() {
+        let rt = crate::lower::tests::runtime("");
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let test = |op: Call, part: &str, s: &str| {
+            op(&rt, &[Val::str(part), Val::str(s)], &at).unwrap() == Val::Bool(true)
+        };
+        for (op, part, s, answer) in [
+            (starts_with as Call, "ab", "abc", true),
+            (starts_with as Call, "bc", "abc", false),
+            (starts_with as Call, "", "abc", true),
+            (starts_with as Call, "", "", true),
+            (starts_with as Call, "abcd", "abc", false),
+            (starts_with as Call, "A", "abc", false),
+            (starts_with as Call, "é", "école", true),
+            (starts_with as Call, "e", "école", false),
+            (ends_with as Call, "bc", "abc", true),
+            (ends_with as Call, "ab", "abc", false),
+            (ends_with as Call, "", "abc", true),
+            (ends_with as Call, "😀", "a😀", true),
+            (ends_with as Call, "zabc", "abc", false),
+            (contains as Call, "b", "abc", true),
+            (contains as Call, "abc", "abc", true),
+            (contains as Call, "d", "abc", false),
+            (contains as Call, "", "", true),
+            (contains as Call, "β→", "α→β→γ", true),
+            (contains as Call, "ß", "SS", false),
+        ] {
+            assert_eq!(test(op, part, s), answer, "{part:?} {s:?}");
+        }
+        for (op, name, what) in [
+            (starts_with as Call, "starts-with", "the prefix"),
+            (ends_with as Call, "ends-with", "the suffix"),
+            (contains as Call, "contains", "the part"),
+        ] {
+            let fail = op(&rt, &[Val::num(1.0), Val::str("a")], &at).unwrap_err();
+            assert_eq!(
+                fail.message,
+                format!("type_mismatch: {name}: {what} must be a string, not a number")
+            );
+            let fail = op(&rt, &[Val::str("a"), Val::Null], &at).unwrap_err();
+            assert_eq!(
+                fail.message,
+                format!("type_mismatch: {name}: the string must be a string, not null")
+            );
+        }
+    }
+
+    /// The string natives take a step for each [`STRING_STEP`] characters
+    /// of the string, or part of them: ten steps of fuel read ten times
+    /// that many characters and no more, however many bytes a character
+    /// takes.
+    #[test]
+    fn the_string_natives_take_a_step_per_characters_read() {
+        let span = SourceSpan::new(&Arc::from("t.alc"), 0, 0);
+        let limit = |fail: &Fail| fail.limit.as_ref().map(|l| l.name);
+        for c in ["a", "\u{1f680}"] {
+            for (op, part) in [
+                (trim as Call, None),
+                (first_split as Call, Some(".")),
+                (starts_with as Call, Some("a")),
+                (ends_with as Call, Some("a")),
+                (contains as Call, Some(".")),
+            ] {
+                let run = |n: usize| {
+                    let s = Val::str(&c.repeat(n));
+                    let args = match part {
+                        Some(p) => vec![Val::str(p), s],
+                        None => vec![s],
+                    };
+                    op(&fueled(), &args, &span)
+                };
+                assert!(run(10 * STRING_STEP).is_ok(), "{c}");
+                let fail = run(10 * STRING_STEP + 1).unwrap_err();
+                assert_eq!(limit(&fail), Some("max_plan_steps"), "{fail}");
+            }
+        }
+    }
+
+    /// `flatten` takes one level out: each vector among the items gives
+    /// its items, and any other item stays; a vector inside one of those
+    /// stays a vector.
+    #[test]
+    fn flatten_takes_one_level_out() {
+        let rt = crate::lower::tests::runtime("");
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let flat = |v: Val| match flatten(&rt, &[v], &at).unwrap() {
+            Val::Vector(items) => items.iter().cloned().collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        let v = Val::vector;
+        assert_eq!(
+            flat(v(vec![
+                nums(&[1.0, 2.0]),
+                Val::num(3.0),
+                nums(&[]),
+                nums(&[4.0])
+            ])),
+            [1.0, 2.0, 3.0, 4.0].map(Val::num)
+        );
+        assert!(flat(v(vec![])).is_empty());
+        assert!(flat(v(vec![nums(&[]), nums(&[])])).is_empty());
+        let nested = v(vec![v(vec![nums(&[1.0]), Val::str("a")]), Val::Null]);
+        assert_eq!(flat(nested), [nums(&[1.0]), Val::str("a"), Val::Null]);
+        let fail = flatten(&rt, &[Val::str("a")], &at).unwrap_err();
+        assert_eq!(
+            fail.message,
+            "type_mismatch: flatten: the data must be a vector, not a string"
+        );
+        // A step for each item and for each item a vector among them
+        // gives: ten steps of fuel take two vectors of four items, and not
+        // five.
+        let four = || nums(&[1.0, 2.0, 3.0, 4.0]);
+        assert!(flatten(&fueled(), &[v(vec![four(), four()])], &at).is_ok());
+        let fail = flatten(&fueled(), &[v(vec![four(), nums(&[1.0; 5])])], &at).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().map(|l| l.name),
+            Some("max_plan_steps"),
+            "{fail}"
+        );
+    }
+
+    /// `sort` orders numbers by value and strings by code point, stably;
+    /// a vector of another kind, of both kinds, or holding NaN is refused
+    /// at the first item that is.
+    #[test]
+    fn sort_orders_numbers_by_value_and_strings_by_code_point() {
+        let rt = crate::lower::tests::runtime("");
+        let at = SourceSpan::new(&Arc::from("t"), 0, 0);
+        let sorted = |v: Val| sort(&rt, &[v], &at);
+        assert_eq!(
+            numbers(
+                sorted(nums(&[
+                    3.0,
+                    -1.5,
+                    f64::INFINITY,
+                    0.0,
+                    f64::NEG_INFINITY,
+                    2.0
+                ]))
+                .unwrap()
+            ),
+            [f64::NEG_INFINITY, -1.5, 0.0, 2.0, 3.0, f64::INFINITY]
+        );
+        assert!(numbers(sorted(nums(&[])).unwrap()).is_empty());
+        // Stable: 0 and -0 are equal and keep their order, and a number
+        // keeps its lexeme.
+        let spelled = |value: f64, lexeme: &str| Val::Num {
+            value,
+            lexeme: Some(Arc::from(lexeme)),
+        };
+        let v = sorted(Val::vector(vec![
+            spelled(0.0, "0"),
+            spelled(1.0, "1e0"),
+            spelled(-0.0, "-0"),
+            spelled(0.5, "5e-1"),
+        ]))
+        .unwrap();
+        let Val::Vector(items) = v else { panic!() };
+        let lexemes: Vec<String> = items
+            .iter()
+            .map(|v| match v {
+                Val::Num { lexeme, .. } => lexeme.as_deref().unwrap_or("").to_string(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(lexemes, ["0", "-0", "5e-1", "1e0"]);
+        // By code point: é (U+00E9) after z, U+FFFF before 😀 (U+1F600),
+        // which UTF-16 code units would put first.
+        assert_eq!(
+            strings(
+                sorted(strs(&[
+                    "z",
+                    "é",
+                    "\u{1f600}",
+                    "\u{ffff}",
+                    "Z",
+                    "",
+                    "a",
+                    "ab"
+                ]))
+                .unwrap()
+            ),
+            ["", "Z", "a", "ab", "z", "é", "\u{ffff}", "\u{1f600}"]
+        );
+        for (items, message) in [
+            (
+                Val::vector(vec![Val::num(1.0), Val::str("a")]),
+                "every item must be a number, as the first is, not a string",
+            ),
+            (
+                Val::vector(vec![Val::str("a"), Val::num(1.0)]),
+                "every item must be a string, as the first is, not a number",
+            ),
+            (
+                Val::vector(vec![Val::str("a"), Val::num(f64::NAN)]),
+                "every item must be a string, as the first is, not a number",
+            ),
+            (
+                Val::vector(vec![Val::num(1.0), Val::num(f64::NAN)]),
+                "every number must be ordered, not NaN",
+            ),
+            (
+                Val::vector(vec![Val::Bool(true)]),
+                "every item must be a number or a string, not a boolean",
+            ),
+            (
+                Val::vector(vec![Val::num(1.0), nums(&[2.0])]),
+                "every item must be a number or a string, not a vector",
+            ),
+            (
+                Val::vector(vec![Val::num(1.0), Val::missing()]),
+                "every item must be a number or a string, not missing",
+            ),
+            (Val::str("a"), "the data must be a vector, not a string"),
+        ] {
+            let fail = sorted(items).unwrap_err();
+            assert_eq!(fail.code, Code::DslTypeError, "{fail}");
+            assert_eq!(fail.message, format!("type_mismatch: sort: {message}"));
+        }
+        // A step for each item: ten steps of fuel sort ten items and not
+        // eleven.
+        let ten: Vec<f64> = (0..10).rev().map(f64::from).collect();
+        assert!(sort(&fueled(), &[nums(&ten)], &at).is_ok());
+        let eleven: Vec<f64> = (0..11).map(f64::from).collect();
+        let fail = sort(&fueled(), &[nums(&eleven)], &at).unwrap_err();
+        assert_eq!(
+            fail.limit.as_ref().map(|l| l.name),
+            Some("max_plan_steps"),
+            "{fail}"
+        );
     }
 
     /// `equal` compares as a `match` pattern compares a constant: data

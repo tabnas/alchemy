@@ -150,7 +150,7 @@ The pipeline reads left to right: `lex`/`grammar` → `ast` → `desugar` →
 | `rs/src/lex.rs` | the layout lex matcher: `#IN`, `#DE`, `#NL`, `#KW`, words and the delimiter-depth scan |
 | `rs/src/grammar.rs` | the grammar plugin: the embedded document (`GRAMMAR_TEXT`, read once with the JSON grammar), the refs it names, `alchemy()`, `make()`, `parse_value()`, `parse()`, `parse_file()` |
 | `rs/src/ast.rs` | `Expr`, `SourceSpan`, `Sources` (the texts a program is compiled from, each span positioned in its own file's), `same_shape`, `canonical()` and layout `format()` |
-| `rs/src/desugar.rs` | `def` with parameters, `pipe`, the shapes of `let`, `if` and `match` |
+| `rs/src/desugar.rs` | `def` with parameters, `pipe`, a `let` of several names as nested lets, the shapes of `let`, `if` and `match` |
 | `rs/src/resolve.rs` | scopes and linking: top-level `def`s in any order, locals, the library's names; `unknown_name`; recursion refused |
 | `rs/src/types.rs`, `rs/src/check.rs` | the types and the checker: inference, affine streams (`STREAM_REUSED`), protocols, strict mode (`STREAMABILITY_UNKNOWN`), the `export` contract |
 | `rs/src/effects.rs` | the effect summary and the `explain` report, as text and as JSON |

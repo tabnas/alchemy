@@ -1213,6 +1213,24 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 			return Type{}, c.mismatch("the data of get", RecordT, t(1), at(1))
 		}
 		return Unknown, nil
+	case "get-or":
+		switch t(0).Kind {
+		case TKeyword, TString, TUnknown, TNever:
+		default:
+			return Type{}, c.mismatch("the key of get-or", KeywordT, t(0), at(0))
+		}
+		// The default is answered as it is: a value, never a stream or a
+		// text, which is used once, where it is.
+		if t(1).IsAffine() {
+			return Type{}, c.mismatch("the default of get-or", ValueT, t(1), at(1))
+		}
+		switch {
+		case t(2).Kind == TRecord, t(2).Kind == TValue, t(2).Kind == TUnknown, t(2).Kind == TNever:
+		case t(2).Kind == TTagged && t(2).Tag == "missing":
+		default:
+			return Type{}, c.mismatch("the data of get-or", RecordT, t(2), at(2))
+		}
+		return Unknown, nil
 	case "get-path":
 		return ret(ValueT, first(exp("the path of get-path", SelectorT, 0), func() *Fail { return data(1, "the data of get-path") }))
 	case "as-path":
@@ -1262,6 +1280,28 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 			return VectorOf(JoinTypes(*t(1).Item, *t(0).Item)), nil
 		}
 		return VectorOf(Unknown), nil
+	case "flatten":
+		if f := c.expect("the vector of flatten", VectorOf(Unknown), t(0), at(0)); f != nil {
+			return Type{}, f
+		}
+		// An item that is a vector gives its items; any other is kept.
+		if t(0).Kind != TVector {
+			return VectorOf(Unknown), nil
+		}
+		if item := *t(0).Item; item.Kind == TVector {
+			return VectorOf(*item.Item), nil
+		}
+		return VectorOf(*t(0).Item), nil
+	case "sort":
+		// A finite vector, whose items the run holds to one kind: a stream
+		// is refused here, as count and pop refuse one.
+		if f := c.expect("the vector of sort", VectorOf(Unknown), t(0), at(0)); f != nil {
+			return Type{}, f
+		}
+		if t(0).Kind == TVector {
+			return t(0), nil
+		}
+		return VectorOf(Unknown), nil
 	case "pop":
 		if f := c.expect("the vector of pop", VectorOf(Unknown), t(0), at(0)); f != nil {
 			return Type{}, f
@@ -1296,6 +1336,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(KeywordT, first(exp("the first number of compare", NumberT, 0), exp("the second number of compare", NumberT, 1)))
 	case "inc":
 		return ret(NumberT, exp("the count of inc", NumberT, 0)())
+	case "add", "sub":
+		return ret(NumberT, first(exp("the first number of "+name, NumberT, 0), exp("the second number of "+name, NumberT, 1)))
 	case "number-class":
 		return ret(KeywordT, exp("the number of number-class", NumberT, 0)())
 	case "kind":
@@ -1412,6 +1454,13 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(StringT, first(exp("the separator of string-join", StringT, 0), exp("the strings of string-join", VectorOf(Unknown), 1)))
 	case "split":
 		return ret(VectorOf(StringT), first(exp("the separator of split", StringT, 0), exp("the string of split", StringT, 1)))
+	case "trim":
+		return ret(StringT, exp("the string of trim", StringT, 0)())
+	case "first-split":
+		return ret(VectorOf(StringT), first(exp("the separator of first-split", StringT, 0), exp("the string of first-split", StringT, 1)))
+	case "starts-with", "ends-with", "contains":
+		part := map[string]string{"starts-with": "prefix", "ends-with": "suffix", "contains": "part"}[name]
+		return ret(BoolT, first(exp("the "+part+" of "+name, StringT, 0), exp("the string of "+name, StringT, 1)))
 	case "fail":
 		// `(fail message)` is INPUT_INVALID; `(fail :code message)` names
 		// the code: a literal keyword is held to the four here, any other

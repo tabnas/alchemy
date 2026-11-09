@@ -6,6 +6,7 @@ package tabnasalchemy
 // desugarer (rs/src/ast.rs's and rs/src/desugar.rs's tests).
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -271,6 +272,8 @@ func TestTheCoreFormShapesAreChecked(t *testing.T) {
 	}
 	for _, c := range [][2]string{
 		{"let [x] x", "bad_let"}, {"let [x 1 2] x", "bad_let"}, {"let [1 x] x", "bad_let"}, {"let [x 1]", "bad_let"},
+		{"let [] x", "bad_let"}, {"let [x 1 y] x", "bad_let"}, {"let [x 1 2 y] x", "bad_let"}, {"let [x 1 y 2]", "bad_let"},
+		{"let [x 1 y 2] x y", "bad_let"},
 		{"if a b", "bad_if"}, {"if a b c d", "bad_if"},
 		{"(match)", "bad_match"}, {"match v (case 1)", "bad_match"}, {"match v (when 1 2)", "bad_match"}, {"match v 1", "bad_match"},
 		{"(def)", "bad_def"}, {"def x", "bad_def"}, {"def 1 2", "bad_def"}, {"def x y z", "bad_def"}, {"def x [a] b c", "bad_def"},
@@ -278,6 +281,67 @@ func TestTheCoreFormShapesAreChecked(t *testing.T) {
 		f := desugarFailure(t, c[0])
 		if !strings.HasPrefix(f.Message, c[1]+": ") || f.Row != 1 || f.Column != 1 {
 			t.Errorf("%q: %v", c[0], f)
+		}
+	}
+}
+
+// A let of several names is a let of one name for each, nested in their
+// order, so each is in scope for the ones after it; a let of one name
+// stays as it is (rs/src/desugar.rs's test of the same name).
+func TestALetOfSeveralNamesNestsOneLetPerName(t *testing.T) {
+	for _, c := range [][2]string{
+		{"let [x 1] x", "(let [x 1] x)"},
+		{"let [a 1 b (inc a)] b", "(let [a 1] (let [b (inc a)] b))"},
+		{"let [a 1 b 2 a (pipe a f)]\n  record\n    entry :a a", "(let [a 1] (let [b 2] (let [a (f a)] (record (entry :a a)))))"},
+		// The bindings are desugared before they nest, a let inside one
+		// included.
+		{"let [a (let [x 1 y 2] y) b a] b", "(let [a (let [x 1] (let [y 2] y))] (let [b a] b))"},
+	} {
+		if got := core(t, c[0]); got != c[1] {
+			t.Errorf("%q: %s", c[0], got)
+		}
+	}
+	// Each generated let carries the form's span, its head the head's and
+	// its binding the binding vector's.
+	src := "let [a 1 b 2] b"
+	forms, f := ParseFile(src, "t.alc")
+	if f == nil {
+		forms, f = Desugar(forms, src)
+	}
+	if f != nil {
+		t.Fatal(f)
+	}
+	outer := forms[0]
+	at := func(e *Expr) [2]int { return [2]int{e.Span.Start, e.Span.End} }
+	if at(outer) != [2]int{0, 15} || at(outer.Items[0]) != [2]int{0, 3} || at(outer.Items[1]) != [2]int{4, 13} {
+		t.Errorf("%v %v %v", at(outer), at(outer.Items[0]), at(outer.Items[1]))
+	}
+	inner := outer.Items[2]
+	if at(inner) != at(outer) || at(inner.Items[0]) != at(outer.Items[0]) || at(inner.Items[1]) != at(outer.Items[1]) || at(inner.Items[2]) != [2]int{14, 15} {
+		t.Errorf("%v %v %v %v", at(inner), at(inner.Items[0]), at(inner.Items[1]), at(inner.Items[2]))
+	}
+}
+
+// A let nests a level per binding after its first, so a let of many names
+// meets the bound a pipe of many steps meets, and fails at the binding
+// that passes it, without building the rest.
+func TestALetOfManyNamesIsTooDeepPastTheBound(t *testing.T) {
+	names := func(n int) string {
+		parts := make([]string, n)
+		for i := range parts {
+			parts[i] = fmt.Sprintf("x%d %d", i, i)
+		}
+		return strings.Join(parts, " ")
+	}
+	// 255 bindings nest 255 lets, each over a binding of depth 1: the
+	// outermost is 256 deep, at the bound.
+	if got := core(t, "let ["+names(MaxNesting-1)+"] x0"); !strings.HasPrefix(got, "(let [x0 0] (let [x1 1] ") {
+		t.Errorf("%s", got[:40])
+	}
+	for _, n := range []int{MaxNesting, 100_000} {
+		f := desugarFailure(t, "let ["+names(n)+"] x0")
+		if !strings.HasPrefix(f.Message, "too_deep: ") || f.Row != 1 || f.Column != 1 {
+			t.Errorf("%d: %v", n, f)
 		}
 	}
 }

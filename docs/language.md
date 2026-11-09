@@ -65,7 +65,8 @@ for parentheses. The rules (design brief section 4.1, spec section 9.1):
    comments after one is blank.)
 8. A program nests at most 256 levels, counting a layout line, each
    indentation level and each open `(` or `[` as one. The bound holds
-   after desugaring too, where a `pipe` adds a level per step.
+   after desugaring too, where a `pipe` adds a level per step and a `let`
+   a level per binding after its first.
 
 ```alchemy
 a b c
@@ -345,12 +346,33 @@ pipe x
 ERROR:empty_step
 ```
 
-**`let`, `if`, `match`.** `(let [name value] body)` has one binding and
-one body (`bad_let` otherwise); `(if condition then else)` has exactly
-two branches (`bad_if`); `(match value (case pattern body) ...)` has
-`case` clauses of a pattern and a body (`bad_match`). The forms are left
-as they are; patterns stay expressions for the checker and the
-interpreter to read.
+**`let`, `if`, `match`.** `(let [name value ...] body)` binds one name or
+more and has one body, each binding in scope for the bindings after it
+and for the body. A `let` of several names becomes a `let` of one name
+for each, nested in their order, so `(let [a x b y] body)` is
+`(let [a x] (let [b y] body))` and the later stages read a `let` of one
+binding only; a `let` of no binding, of an odd count, of a name that is
+not a symbol, or without its one body, is `bad_let`.
+`(if condition then else)` has exactly two branches (`bad_if`);
+`(match value (case pattern body) ...)` has `case` clauses of a pattern
+and a body (`bad_match`). `if` and `match` are left as they are, and so
+is a `let` of one name; patterns stay expressions for the checker and
+the interpreter to read.
+
+```alchemy
+let [a 1 b (inc a)]
+  record (entry :a a) (entry :b b)
+```
+```core
+(let [a 1] (let [b (inc a)] (record (entry :a a) (entry :b b))))
+```
+
+```alchemy
+let [a 1 b] a
+```
+```core
+ERROR:bad_let
+```
 
 ```alchemy
 match v
@@ -682,6 +704,7 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | Operator | Signature | Effect |
 |---|---|---|
 | `get` | `get key data -> Value` | reads a retained record or object; `missing` for an absent member |
+| `get-or` | `get-or key default data -> Value` | reads a retained record or object as `get` does, and answers the default where `get` answers `missing`: an absent member, or `missing` data |
 | `get-path` | `get-path path data -> Value` | walks a retained value by one concrete path; `missing` where the path leaves it |
 | `as-path` | `as-path data -> Selector` | validates a data-supplied array of segments; never reads data as source |
 | `as-vector` | `as-vector data -> Vector` | a captured array as a vector; `INPUT_INVALID` otherwise |
@@ -689,6 +712,8 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `vector` | `vector item... -> Vector` | a retained vector; it cannot hold a stream or a live text |
 | `push` | `push item vector -> Vector` | a new vector with the item appended; it cannot hold a stream or a live text |
 | `push-all` | `push-all items vector -> Vector` | a new vector with every item of `items` appended, in their order: two vectors joined, a step for each item appended |
+| `flatten` | `flatten vector -> Vector` | the vector one level flatter: each item that is a vector gives its items, in their order, and any other item stays as it is; a step for each item, and for each item a vector among them gives |
+| `sort` | `sort vector -> Vector` | the items in ascending order, stable: all numbers, by value, or all strings, by code point, not by UTF-16 code unit; an item of another kind, a vector of both, or NaN is a type error; a step for each item |
 | `pop` | `pop vector -> Vector` | the vector without its last item; an empty vector is a type error |
 | `top` | `top vector -> Value` | the last item; an empty vector is a type error |
 | `count` | `count vector -> Number` | how many items the vector holds |
@@ -701,6 +726,8 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `is-number` | `is-number string -> Bool` | whether `number` reads the string: a JSON number, or `Infinity`, `-Infinity` or `NaN`; `false` for any other text, where `number` fails. A program cannot catch a failure, so a part tests a string with it before it calls `number` |
 | `compare` | `compare a b -> Keyword` | how two numbers are ordered: `:less`, `:equal` or `:greater`, and `:unordered` when either is NaN |
 | `inc` | `inc count -> Number` | the count one more: a whole number from 0 to 9007199254740990, where every runtime counts exactly; any other number is a type error |
+| `add` | `add a b -> Number` | the sum, exact: `a`, `b` and the sum whole numbers from -9007199254740991 to 9007199254740991, where every runtime counts exactly; any other number is a type error |
+| `sub` | `sub a b -> Number` | the difference `a` less `b`, exact: `a`, `b` and the difference whole numbers from -9007199254740991 to 9007199254740991, where every runtime counts exactly; any other number is a type error |
 | `number-class` | `number-class number -> Keyword` | `:finite`, `:infinity`, `:negative-infinity` or `:nan` |
 | `kind` | `kind value -> Keyword` | the kind of a value as a keyword: `:null`, `:boolean`, `:number`, `:string`, `:keyword`, `:vector`, `:record`, `:missing`, `:tagged`, `:function`, `:selector` or `:capture`; a stream or a text cannot be asked |
 | `equal` | `equal a b -> Bool` | whether two values are equal, as a `match` pattern compares a constant: structurally, numbers by value (NaN equals nothing), a record to one with the same members in any order, a function to nothing; a stream or a text cannot be asked; a step for each pair of values compared |
@@ -726,6 +753,11 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `repeat` | `repeat count string -> String` | the string `count` times over; refused past `max_scalar_bytes`, before it is built |
 | `string-join` | `string-join separator strings -> String` | the strings of a vector joined into one string, the separator between them; refused past `max_scalar_bytes`, before it is built |
 | `split` | `split separator string -> Vector` | the strings between the separator's occurrences in the string, found from the front, none overlapping another: one more than it occurs, an empty one where two occurrences meet or at either end, and the string itself where it does not occur (`split "." "a..b"` is `["a" "" "b"]`, `split "." ""` is `[""]`); the separator is a literal, not a pattern, and must not be empty. A part reads a dotted string's parts with it to check each one |
+| `trim` | `trim string -> String` | the string without its leading and trailing white space, the set ECMAScript's `String.prototype.trim` takes: U+0009 to U+000D, U+0020, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF |
+| `first-split` | `first-split separator string -> Vector` | the string cut at the separator's first occurrence, `[before after]`, or `[string]` where it does not occur (`first-split "=" "a=b=c"` is `["a" "b=c"]`); the separator is a literal, not a pattern, and must not be empty, as `split`'s |
+| `starts-with` | `starts-with prefix string -> Bool` | whether the string begins with the prefix, compared exactly, code point by code point; `true` for the empty prefix |
+| `ends-with` | `ends-with suffix string -> Bool` | whether the string ends with the suffix, compared exactly, code point by code point; `true` for the empty suffix |
+| `contains` | `contains part string -> Bool` | whether the part occurs in the string, compared exactly, code point by code point; `true` for the empty part |
 | `fail` | `fail [code] message -> Never` | `INPUT_INVALID` with the message and the form's position; with a code first, `:unrepresentable` is `TARGET_VALUE_UNREPRESENTABLE` (a value the target cannot carry), `:protocol-order` is `PROTOCOL_ORDER_ERROR` (a stream that breaks its protocol), `:unstreamable` is `STREAMABILITY_UNKNOWN`, the finer code `unstreamable` leading the message (a document a transducer part does not stream from the rule passes, which a host that reads the part reads whole) and `:invalid` is `INPUT_INVALID` |
 | `is-ready`, `require-columns` | `is-ready state -> Bool`, `require-columns state -> Vector<Column>` | whether the state holds columns; the columns, or `INPUT_ORDER_VIOLATION` |
 | `schema`, `row`, `table-end` | `schema columns`, `row cells`, `table-end -> TableEvent` | the table's one schema, of at most `max_columns` columns, refused where it is built past them; one row, as wide as the schema; the end, after the source validated |
@@ -870,6 +902,105 @@ fail "Required metadata was not found"
 (fail "Required metadata was not found")
 ```
 
+The operators of strings, vectors and whole numbers, which a part reads
+the values of its passes with and makes its outputs with. `trim` takes
+off both ends of a string the white space ECMAScript's
+`String.prototype.trim` takes, past ASCII too, so a part trims a text as
+its format's reader trims it: `trim "\u00a0 a b\u3000"` is `"a b"`.
+
+```alchemy
+trim (get :val token)
+```
+```canonical
+(trim (get :val token))
+```
+
+`first-split` cuts a string at the first occurrence of a separator, as
+`split` cuts it at every one: `first-split "=" "key=a=b"` is
+`["key" "a=b"]`, and `first-split "=" "key"` is `["key"]`, the string
+alone.
+
+```alchemy
+first-split "=" (trim line)
+```
+```canonical
+(first-split "=" (trim line))
+```
+
+`starts-with`, `ends-with` and `contains` test a string for a part,
+exactly, code point by code point, and an empty part is in every string:
+`starts-with "é" "école"` is `true` and `starts-with "e" "école"` is
+`false`.
+
+```alchemy
+starts-with "#" line
+```
+```canonical
+(starts-with "#" line)
+```
+
+```alchemy
+ends-with "/" path
+```
+```canonical
+(ends-with "/" path)
+```
+
+```alchemy
+contains "@" address
+```
+```canonical
+(contains "@" address)
+```
+
+`flatten` takes one level out of a vector: `flatten [[1 2] 3 [] [[4]]]`
+is `[1 2 3 [4]]`. So a step that makes its outputs a vector to each cell
+answers them as one vector, in one scan:
+
+```alchemy
+transition state (flatten (map cell-events cells))
+```
+```canonical
+(transition state (flatten (map cell-events cells)))
+```
+
+`get-or` reads an optional member, the default where `get` answers
+`missing`: the spec's `:fill`, or `""` where it has none.
+
+```alchemy
+get-or :fill "" spec
+```
+```canonical
+(get-or :fill "" spec)
+```
+
+`add` and `sub` are exact over whole numbers, up to 2^53 - 1 either way,
+as `inc` counts, and `sub a b` is `a` less `b`: `sub 3 5` is `-2`. An
+operand outside that range, or a result past it, is a type error, where
+the plan's evaluation reaches it as at run time:
+
+```alchemy
+def export [input] (let [x (add 9007199254740991 1)] (json input))
+```
+```check
+ERROR:type_mismatch@1:28
+```
+
+`sort` orders a finite vector of numbers by value, or of strings by code
+point, and keeps the order of items that compare equal:
+`sort ["z" "é" "a"]` is `["a" "z" "é"]`, U+00E9 after `z`, and a
+character past U+FFFF sorts after U+FFFF, where an order by UTF-16 code
+unit, JavaScript's default, puts it before. A vector of both kinds, or
+holding NaN, is a type error, and a stream is refused when the program
+is checked, as every operator of a finite vector refuses one:
+
+```alchemy
+def export [input] (join "," (sort (select (path each-index) input)))
+```
+```check
+ERROR:type_mismatch@1:36
+```
+
 ### The library's own definitions
 
 The rest of the library is written in alchemy, embedded from
@@ -885,7 +1016,7 @@ is written here, in every runtime, and nothing stands in for one.
 They are the spec's definitions (sections 12.2, 13.1 and 13.2) with
 four differences. The spec writes a `let` as a line `let columns` over
 two child lines, the value and the body; here `let` has one shape,
-`let [name value] body`, and the library is written in it. The two
+`let [name value ...] body`, and the library is written in it. The two
 captures of `table-from-json` name the limits a table's metadata and its
 rows are held to (`:max_metadata_bytes`, `:max_record_bytes`), where the
 spec's generic `capture` would take `max_capture_bytes`. And `csv`

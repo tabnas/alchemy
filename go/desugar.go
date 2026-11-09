@@ -10,7 +10,14 @@ package tabnasalchemy
 //   - `(pipe init step ...)` becomes nested data-last application: a bare
 //     symbol step `f` is `(f acc)`, a non-empty list step `(f a b)` is
 //     `(f a b acc)`, and anything else is `empty_step`.
-//   - `let`, `if` and `match` are checked for shape and left as they are.
+//   - `(let [name value] body)` stays; a `let` that binds several names,
+//     `(let [a x b y] body)`, becomes one `let` per name, nested in their
+//     order, `(let [a x] (let [b y] body))`, so each binding is in scope
+//     for the bindings after it and for the body, and the later stages
+//     read a `let` of one binding only.
+//   - `let`, `if` and `match` are checked for shape: one binding or more
+//     and one body, exactly two branches, and `(case pattern body)`
+//     clauses.
 //
 // Anything else passes through unchanged, `(pipe)` included. A generated
 // node carries the span of the form it came from. Failures are
@@ -18,16 +25,16 @@ package tabnasalchemy
 // declares, at the row and column of the offending form.
 //
 // A rewrite can nest deeper than what it read (`def` wraps a body in a
-// `fn`, `pipe` nests a level per step), so the depth of every result is
-// carried alongside it and checked against MaxNesting as each container is
-// built.
+// `fn`, `pipe` nests a level per step, and a `let` a level per binding
+// after its first), so the depth of every result is carried alongside it
+// and checked against MaxNesting as each container is built.
 
 // desugarMessages are the messages, by code, as the grammar document also
 // declares them; a test holds the two in step.
 var desugarMessages = [][2]string{
 	{"empty_step", "a pipe step must be a symbol or a non-empty list"},
 	{"bad_def", "def takes a name and a value, or a name, [params] and a body"},
-	{"bad_let", "let takes one binding [name value] and one body"},
+	{"bad_let", "let takes bindings [name value ...], one or more, and one body"},
 	{"bad_if", "if takes a condition and exactly two branches"},
 	{"bad_match", "match takes a value and (case pattern body) clauses"},
 	{"too_deep", tooDeep},
@@ -155,7 +162,7 @@ func rewrite(items []deepExpr, span SourceSpan, src string) (deepExpr, *Fail) {
 	case "pipe":
 		return desugarPipe(items, span, src)
 	case "let":
-		return shape(items, span, src, "bad_let", isLet)
+		return desugarLet(items, span, src)
 	case "if":
 		return shape(items, span, src, "bad_if", func(items []deepExpr) bool { return len(items) == 4 })
 	case "match":
@@ -230,13 +237,86 @@ func shape(items []deepExpr, span SourceSpan, src, code string, ok func([]deepEx
 	return deepExpr{}, desugarFail(code, span, src)
 }
 
-// isLet is `(let [name value] body)`.
+// isLet is `(let [name value ...] body)`: one binding or more, each a
+// name, a symbol, and its value.
 func isLet(items []deepExpr) bool {
 	if len(items) != 3 || items[1].expr.Kind != ExprVector {
 		return false
 	}
 	binding := items[1].expr.Items
-	return len(binding) == 2 && binding[0].Kind == ExprSymbol
+	if len(binding) == 0 || len(binding)%2 != 0 {
+		return false
+	}
+	for i := 0; i < len(binding); i += 2 {
+		if binding[i].Kind != ExprSymbol {
+			return false
+		}
+	}
+	return true
+}
+
+// desugarLet keeps `(let [name value] body)`; `(let [name value ...]
+// body)`, which binds several names, becomes a `let` of one name for each,
+// nested in their order: `(let [a x b y] body)` is `(let [a x] (let [b y]
+// body))`. The lets are built from the body outward, each one level deeper
+// than what it holds and held to MaxNesting as it is built, as a pipe's
+// steps are, so a let of a hundred thousand names fails at the binding
+// that passes the bound without building the rest. Each generated `let`
+// carries the span of the form, its head the span of the `let` written,
+// and its binding the span of the binding vector. Any other shape is
+// `bad_let`.
+func desugarLet(items []deepExpr, span SourceSpan, src string) (deepExpr, *Fail) {
+	if !isLet(items) {
+		return deepExpr{}, desugarFail("bad_let", span, src)
+	}
+	binding := items[1].expr
+	if len(binding.Items) == 2 {
+		return list(items, span, src)
+	}
+	head := items[0].expr.Span
+	acc := items[2]
+	// From the last binding to the first.
+	for i := len(binding.Items) - 2; i >= 0; i -= 2 {
+		value := binding.Items[i+1]
+		// The binding is one level deeper than its value; a name is an
+		// atom.
+		pair := 1 + depthOf(value)
+		depth := acc.depth
+		if pair > depth {
+			depth = pair
+		}
+		next := deepExpr{
+			depth: 1 + depth,
+			expr: ListOf([]*Expr{
+				Sym("let", head),
+				{Kind: ExprVector, Items: []*Expr{binding.Items[i], value}, Span: binding.Span},
+				acc.expr,
+			}, span),
+		}
+		var f *Fail
+		if acc, f = bounded(next, span, src); f != nil {
+			return deepExpr{}, f
+		}
+	}
+	return acc, nil
+}
+
+// depthOf is how deep a desugared form nests, as deepExpr counts it: 0 for
+// an atom, one more than its deepest item for a list or a vector. A `let`
+// of several names reads it of each value, which it takes out of the
+// vector that held them all; recursive per level, which the bound every
+// container the desugarer builds is held to keeps within MaxNesting.
+func depthOf(form *Expr) int {
+	if form.Kind != ExprList && form.Kind != ExprVector {
+		return 0
+	}
+	depth := 0
+	for _, item := range form.Items {
+		if d := depthOf(item); d > depth {
+			depth = d
+		}
+	}
+	return 1 + depth
 }
 
 // isMatch is `(match value (case pattern body) ...)`.

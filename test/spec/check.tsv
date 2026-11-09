@@ -158,3 +158,47 @@ def export [input] (join "," (map (fn [x] (if (equal x (text "a")) "y" "n")) (se
 def export [input] (join "," (map (fn [x] (if (equal x) "y" "n")) (select (path each-index) input)))	ERROR:arity@1:47	
 def export [input] (join "," (map (fn [x] (number (equal x "a"))) (select (path each-index) input)))	ERROR:type_mismatch@1:51	
 def export [input] (let [x (map (partial equal "x") [(text "x")])] (json input))	ERROR:type_mismatch@1:28	
+# trim takes a string and answers one; first-split a separator and a string, both strings, and answers a vector of strings; starts-with, ends-with and contains a part and a string, both strings, and answer a boolean.
+def export [input] (join "," (map (fn [x] (trim 1)) (select (path each-index) input)))	ERROR:type_mismatch@1:49	
+def export [input] (join "," (map (fn [x] (trim)) (select (path each-index) input)))	ERROR:arity@1:43	
+def export [input] (join "," (map (fn [x] (trim x x)) (select (path each-index) input)))	ERROR:arity@1:43	
+def export [input] (join "," (map (fn [x] (string-join "|" (trim x))) (select (path each-index) input)))	ERROR:type_mismatch@1:60	
+def export [input] (join "," (map (fn [x] (string-join "|" (first-split 1 x))) (select (path each-index) input)))	ERROR:type_mismatch@1:73	
+def export [input] (join "," (map (fn [x] (string-join "|" (first-split "." 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:77	
+def export [input] (join "," (map (fn [x] (string-join "|" (first-split "."))) (select (path each-index) input)))	ERROR:arity@1:60	
+def export [input] (join "," (map (fn [x] (number (first-split "." x))) (select (path each-index) input)))	ERROR:type_mismatch@1:51	
+def export [input] (join "," (map (fn [x] (if (starts-with 1 x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:60	
+def export [input] (join "," (map (fn [x] (if (ends-with "a" 1) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:62	
+def export [input] (join "," (map (fn [x] (if (contains "a") "y" "n")) (select (path each-index) input)))	ERROR:arity@1:47	
+def export [input] (join "," (map (fn [x] (if (contains "a" x x) "y" "n")) (select (path each-index) input)))	ERROR:arity@1:47	
+def export [input] (join "," (map (fn [x] (string-join "|" (starts-with "a" x))) (select (path each-index) input)))	ERROR:type_mismatch@1:60	
+# flatten and sort take a finite vector, a stream refused as count refuses one, and answer one; sort holds its items to one kind, numbers or strings, and refuses NaN, which has no order, where the plan's evaluation reaches them.
+def export [input] (join "," (map (fn [x] (string-join "|" (flatten 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:69	
+def export [input] (join "," (map (fn [x] (string-join "|" (flatten [] []))) (select (path each-index) input)))	ERROR:arity@1:60	
+def export [input] (join "," (map (fn [x] (number (flatten [[x]]))) (select (path each-index) input)))	ERROR:type_mismatch@1:51	
+def export [input] (join "," (map (fn [x] (string-join "|" (sort 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:66	
+def export [input] (join "," (map (fn [x] (string-join "|" (sort))) (select (path each-index) input)))	ERROR:arity@1:60	
+def export [input] (join "," (flatten (select (path each-index) input)))	ERROR:type_mismatch@1:39	
+def export [input] (join "," (sort (select (path each-index) input)))	ERROR:type_mismatch@1:36	
+def export [input] (let [x (sort [1 "a"])] (json input))	ERROR:type_mismatch@1:28	
+def export [input] (let [x (sort ["a" 1])] (json input))	ERROR:type_mismatch@1:28	
+def export [input] (let [x (sort [1 (number "NaN")])] (json input))	ERROR:type_mismatch@1:28	
+def export [input] (let [x (sort [true])] (json input))	ERROR:type_mismatch@1:28	
+# get-or takes a key, a keyword or a string, a default that is not a stream or a text, and the data, as get reads it, and answers what get answers.
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (get-or 1 "" x))) (select (path each-index) input)))	ERROR:type_mismatch@1:76	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (get-or :a "" 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:82	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (get-or :a x))) (select (path each-index) input)))	ERROR:arity@1:68	
+def export [input] (json (get-or :a input (record)))	ERROR:type_mismatch@1:37	
+def export [input] (concat (get-or :a (text "x") (record)) (json input))	ERROR:type_mismatch@1:39	
+# add and sub take two numbers and answer one, exact over whole numbers up to 2^53 - 1 either way: an operand past that, or fractional, and a result past it, are type errors where the plan's evaluation reaches them.
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (add "1" 2))) (select (path each-index) input)))	ERROR:type_mismatch@1:73	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (sub 1 "2"))) (select (path each-index) input)))	ERROR:type_mismatch@1:75	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (add 1))) (select (path each-index) input)))	ERROR:arity@1:68	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (sub 1 2 3))) (select (path each-index) input)))	ERROR:arity@1:68	
+def export [input] (join "," (map (fn [x] (string-join "|" (add 1 2))) (select (path each-index) input)))	ERROR:type_mismatch@1:60	
+def export [input] (let [x (add 9007199254740991 1)] (json input))	ERROR:type_mismatch@1:28	
+def export [input] (let [x (sub -9007199254740991 1)] (json input))	ERROR:type_mismatch@1:28	
+def export [input] (let [x (add 1.5 1)] (json input))	ERROR:type_mismatch@1:28	
+def export [input] (let [x (sub 0 9007199254740992)] (json input))	ERROR:type_mismatch@1:28	
+# A let of several names is nested lets, so a stream bound among them is affine in the bindings after it and in the body.
+def export [input]\n  let [s (select (path each-index) input) t s]\n    concat (join "," s) (join "," t)	ERROR:reused@3:22	
