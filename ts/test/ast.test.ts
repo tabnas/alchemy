@@ -201,6 +201,11 @@ describe('desugar', () => {
       ['let [x 1 2] x', 'bad_let'],
       ['let [1 x] x', 'bad_let'],
       ['let [x 1]', 'bad_let'],
+      ['let [] x', 'bad_let'],
+      ['let [x 1 y] x', 'bad_let'],
+      ['let [x 1 2 y] x', 'bad_let'],
+      ['let [x 1 y 2]', 'bad_let'],
+      ['let [x 1 y 2] x y', 'bad_let'],
       ['if a b', 'bad_if'],
       ['if a b c d', 'bad_if'],
       ['(match)', 'bad_match'],
@@ -216,6 +221,48 @@ describe('desugar', () => {
       const fail = failure(src)
       assert.equal(finer(fail), c, src)
       assert.deepStrictEqual([fail.row, fail.col], [1, 1], src)
+    }
+  })
+
+  // A `let` of several names is a `let` of one name for each, nested in
+  // their order, so each is in scope for the ones after it; a `let` of one
+  // name stays as it is (rs/src/desugar.rs's test of the same name).
+  it('a let of several names nests one let per name', () => {
+    assert.equal(core('let [x 1] x'), '(let [x 1] x)')
+    assert.equal(core('let [a 1 b (inc a)] b'), '(let [a 1] (let [b (inc a)] b))')
+    assert.equal(
+      core('let [a 1 b 2 a (pipe a f)]\n  record\n    entry :a a'),
+      '(let [a 1] (let [b 2] (let [a (f a)] (record (entry :a a)))))',
+    )
+    // The bindings are desugared before they nest, a let inside one
+    // included.
+    assert.equal(core('let [a (let [x 1 y 2] y) b a] b'), '(let [a (let [x 1] (let [y 2] y))] (let [b a] b))')
+    // Each generated let carries the form's span, its head the head's and
+    // its binding the binding vector's.
+    const src = 'let [a 1 b 2] b'
+    const [outer] = desugarProgram(parse(src), src) as any[]
+    assert.deepStrictEqual([outer.span.start, outer.span.end], [0, 15])
+    assert.deepStrictEqual([outer.items[0].span.start, outer.items[0].span.end], [0, 3])
+    assert.deepStrictEqual([outer.items[1].span.start, outer.items[1].span.end], [4, 13])
+    const inner = outer.items[2]
+    assert.deepStrictEqual(inner.span, outer.span)
+    assert.deepStrictEqual(inner.items[0].span, outer.items[0].span)
+    assert.deepStrictEqual(inner.items[1].span, outer.items[1].span)
+    assert.deepStrictEqual([inner.items[2].span.start, inner.items[2].span.end], [14, 15])
+  })
+
+  // A `let` nests a level per binding after its first, so a `let` of many
+  // names meets the bound a `pipe` of many steps meets, and fails at the
+  // binding that passes it, without building the rest.
+  it('a let of many names is too deep past the bound', () => {
+    const names = (n: number) => Array.from({ length: n }, (_, i) => `x${i} ${i}`).join(' ')
+    // 255 bindings nest 255 lets, each over a binding of depth 1: the
+    // outermost is 256 deep, at the bound.
+    assert.ok(core(`let [${names(MAX_NESTING - 1)}] x0`).startsWith('(let [x0 0] (let [x1 1] '))
+    for (const n of [MAX_NESTING, 100_000]) {
+      const fail = failure(`let [${names(n)}] x0`)
+      assert.equal(finer(fail), 'too_deep')
+      assert.deepStrictEqual([fail.row, fail.col], [1, 1])
     }
   })
 

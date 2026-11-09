@@ -9,7 +9,13 @@
 //   symbol step `f` is `(f acc)`, a non-empty list step `(f a b)` is
 //   `(f a b acc)`, and an empty list, a literal, a keyword or a vector is
 //   an error, because there is nothing to apply.
-// - `let`, `if` and `match` are checked for shape and left as they are.
+// - `(let [name value] body)` stays; a `let` that binds several names,
+//   `(let [a x b y] body)`, becomes one `let` per name, nested in their
+//   order, `(let [a x] (let [b y] body))`, so each binding is in scope for
+//   the bindings after it and for the body, and the later stages read a
+//   `let` of one binding only.
+// - `let`, `if` and `match` are checked for shape: one binding or more and
+//   one body, exactly two branches, and `(case pattern body)` clauses.
 //
 // Anything else passes through unchanged, `(pipe)` included.
 //
@@ -20,10 +26,11 @@
 // offending form; the source is passed in for that.
 //
 // A rewrite can nest deeper than what it read (`def` wraps a body in a
-// `fn`, `pipe` nests the threaded value one level per step), so the depth
-// of every result is carried alongside it and checked against MAX_NESTING
-// as each container is built. The walk recurses per level of what the
-// reader built, which MAX_NESTING bounds; a long pipe is a loop.
+// `fn`, `pipe` nests the threaded value one level per step, and a `let` a
+// level per binding after its first), so the depth of every result is
+// carried alongside it and checked against MAX_NESTING as each container
+// is built. The walk recurses per level of what the reader built, which
+// MAX_NESTING bounds; a long pipe, and a long let, is a loop.
 
 import { Fail } from './shared'
 
@@ -34,7 +41,7 @@ import { Expr, SourceSpan, MAX_NESTING, TOO_DEEP, position, symbolOf } from './a
 export const MESSAGES: ReadonlyArray<readonly [string, string]> = [
   ['empty_step', 'a pipe step must be a symbol or a non-empty list'],
   ['bad_def', 'def takes a name and a value, or a name, [params] and a body'],
-  ['bad_let', 'let takes one binding [name value] and one body'],
+  ['bad_let', 'let takes bindings [name value ...], one or more, and one body'],
   ['bad_if', 'if takes a condition and exactly two branches'],
   ['bad_match', 'match takes a value and (case pattern body) clauses'],
   ['too_deep', TOO_DEEP],
@@ -122,7 +129,7 @@ function rewrite(items: Deep[], sp: SourceSpan, src: string): Deep {
     case 'pipe':
       return pipe(items, sp, src)
     case 'let':
-      return shape(items, sp, src, 'bad_let', isLet)
+      return letForm(items, sp, src)
     case 'if':
       return shape(items, sp, src, 'bad_if', (items) => 4 === items.length)
     case 'match':
@@ -183,11 +190,68 @@ function shape(items: Deep[], sp: SourceSpan, src: string, code: string, ok: (it
   throw fail(code, sp, src)
 }
 
-// `(let [name value] body)`.
+// `(let [name value ...] body)`: one binding or more, each a name, a
+// symbol, and its value.
 function isLet(items: Deep[]): boolean {
   if (3 !== items.length) return false
   const binding = items[1].expr
-  return 'vector' === binding.kind && 2 === binding.items.length && undefined !== symbolOf(binding.items[0])
+  if ('vector' !== binding.kind || 0 === binding.items.length || 0 !== binding.items.length % 2) return false
+  for (let i = 0; i < binding.items.length; i += 2) {
+    if (undefined === symbolOf(binding.items[i])) return false
+  }
+  return true
+}
+
+// `(let [name value] body)` stays; `(let [name value ...] body)`, which
+// binds several names, becomes a `let` of one name for each, nested in
+// their order: `(let [a x b y] body)` is `(let [a x] (let [b y] body))`. The
+// lets are built from the body outward, each one level deeper than what it
+// holds and held to MAX_NESTING as it is built, as a pipe's steps are, so a
+// let of a hundred thousand names fails at the binding that passes the
+// bound without building the rest. Each generated `let` carries the span of
+// the form, its head the span of the `let` written, and its binding the
+// span of the binding vector. Any other shape is `bad_let`.
+function letForm(items: Deep[], sp: SourceSpan, src: string): Deep {
+  if (!isLet(items)) throw fail('bad_let', sp, src)
+  const binding = items[1].expr
+  if ('vector' !== binding.kind || 2 === binding.items.length) return list(items, sp, src)
+  const head = items[0].expr
+  let acc = items[2]
+  // From the last binding to the first.
+  for (let i = binding.items.length - 2; 0 <= i; i -= 2) {
+    const value = binding.items[i + 1]
+    // The binding is one level deeper than its value; a name is an atom.
+    const pair = 1 + depthOf(value)
+    acc = bounded(
+      {
+        depth: 1 + Math.max(pair, acc.depth),
+        expr: {
+          kind: 'list',
+          items: [
+            { kind: 'symbol', name: 'let', span: head.span },
+            { kind: 'vector', items: [binding.items[i], value], span: binding.span },
+            acc.expr,
+          ],
+          span: sp,
+        },
+      },
+      sp,
+      src,
+    )
+  }
+  return acc
+}
+
+// How deep a desugared form nests, as `Deep` counts it: 0 for an atom, one
+// more than its deepest item for a list or a vector. A `let` of several
+// names reads it of each value, which it takes out of the vector that held
+// them all; recursive per level, which the bound every container the
+// desugarer builds is held to keeps within MAX_NESTING.
+function depthOf(form: Expr): number {
+  if ('list' !== form.kind && 'vector' !== form.kind) return 0
+  let depth = 0
+  for (const item of form.items) depth = Math.max(depth, depthOf(item))
+  return 1 + depth
 }
 
 // `(match value (case pattern body) ...)`.

@@ -7,9 +7,14 @@
 //!   symbol step `f` is `(f acc)`, a non-empty list step `(f a b)` is
 //!   `(f a b acc)`, and an empty list, a literal, a keyword or a vector is
 //!   an error, because there is nothing to apply.
-//! - `let`, `if` and `match` are checked for shape and left as they are:
-//!   one binding and one body, exactly two branches, and `(case pattern
-//!   body)` clauses. Patterns stay expressions; the checker reads them.
+//! - `(let [name value] body)` stays; a `let` that binds several names,
+//!   `(let [a x b y] body)`, becomes one `let` per name, nested in their
+//!   order, `(let [a x] (let [b y] body))`, so each binding is in scope
+//!   for the bindings after it and for the body, and the later stages read
+//!   a `let` of one binding only.
+//! - `let`, `if` and `match` are checked for shape: one binding or more
+//!   and one body, exactly two branches, and `(case pattern body)`
+//!   clauses. Patterns stay expressions; the checker reads them.
 //!
 //! Anything else passes through unchanged, `(pipe)` included: with no
 //! initial value there is nothing to thread, and the checker reports the
@@ -25,12 +30,14 @@
 //! offsets, and [`crate::shared::Fail`] names positions.
 //!
 //! A rewrite can nest deeper than what it read: `def` wraps a body in a
-//! `fn`, and `pipe` nests the threaded value one level per step, so a flat
-//! line of a hundred thousand steps would become a tree that deep. The
+//! `fn`, `pipe` nests the threaded value one level per step, and a `let`
+//! nests a level per binding after its first, so a flat line of a hundred
+//! thousand steps or bindings would become a tree that deep. The
 //! depth of every result is therefore carried alongside it and checked
 //! against [`MAX_NESTING`] as each container is built, so the bound the
 //! reader holds still holds after desugaring, and a `pipe` fails at the
-//! step that passes it rather than after building the whole chain.
+//! step that passes it, and a `let` at the binding, rather than after
+//! building the whole chain.
 
 use crate::ast::{Expr, SourceSpan, MAX_NESTING, TOO_DEEP};
 use crate::shared::{Code, Fail};
@@ -46,7 +53,10 @@ pub(crate) const MESSAGES: [(&str, &str); 6] = [
         "bad_def",
         "def takes a name and a value, or a name, [params] and a body",
     ),
-    ("bad_let", "let takes one binding [name value] and one body"),
+    (
+        "bad_let",
+        "let takes bindings [name value ...], one or more, and one body",
+    ),
     ("bad_if", "if takes a condition and exactly two branches"),
     (
         "bad_match",
@@ -151,7 +161,7 @@ fn rewrite(items: Vec<Deep>, span: SourceSpan, src: &str) -> Result<Deep, Fail> 
     match items.first().and_then(|head| head.expr.symbol()) {
         Some("def") => def(items, span, src),
         Some("pipe") => pipe(items, span, src),
-        Some("let") => shape(items, span, src, "bad_let", is_let),
+        Some("let") => let_form(items, span, src),
         Some("if") => shape(items, span, src, "bad_if", |items| items.len() == 4),
         Some("match") => shape(items, span, src, "bad_match", is_match),
         _ => list(items, span, src),
@@ -248,14 +258,88 @@ fn shape(
     }
 }
 
-/// `(let [name value] body)`.
+/// `(let [name value ...] body)`: one binding or more, each a name, a
+/// symbol, and its value.
 fn is_let(items: &[Deep]) -> bool {
     items.len() == 3
         && matches!(
             &items[1].expr,
             Expr::Vector { items: binding, .. }
-                if binding.len() == 2 && binding[0].symbol().is_some()
+                if !binding.is_empty()
+                    && binding.len() % 2 == 0
+                    && binding.iter().step_by(2).all(|name| name.symbol().is_some())
         )
+}
+
+/// `(let [name value] body)` stays; `(let [name value ...] body)`, which
+/// binds several names, becomes a `let` of one name for each, nested in
+/// their order: `(let [a x b y] body)` is `(let [a x] (let [b y] body))`,
+/// so each binding is in scope for the bindings after it and for the body,
+/// as the later stages read a `let`. The lets are built from the body
+/// outward, each one level deeper than what it holds and held to
+/// [`MAX_NESTING`] as it is built, as a `pipe`'s steps are, so a `let` of a
+/// hundred thousand names fails at the binding that passes the bound
+/// without building the rest. Each generated `let` carries the span of the
+/// form, its head the span of the `let` written, and its binding the span
+/// of the binding vector. Any other shape is `bad_let`.
+fn let_form(mut items: Vec<Deep>, span: SourceSpan, src: &str) -> Result<Deep, Fail> {
+    if !is_let(&items) {
+        return Err(fail("bad_let", &span, src));
+    }
+    if matches!(&items[1].expr, Expr::Vector { items: binding, .. } if binding.len() == 2) {
+        return list(items, span, src);
+    }
+    let mut acc = items.pop().expect("a let has three items");
+    let Some(Deep {
+        expr: Expr::Vector {
+            items: mut binding,
+            span: at,
+        },
+        ..
+    }) = items.pop()
+    else {
+        unreachable!("a let's bindings are a vector");
+    };
+    let head = items.pop().expect("a let has three items").expr;
+    // From the last binding to the first: a value, then its name.
+    while let (Some(value), Some(name)) = (binding.pop(), binding.pop()) {
+        // The binding is one level deeper than its value; a name is an
+        // atom.
+        let pair = 1 + depth(&value);
+        acc = bounded(
+            Deep {
+                depth: 1 + pair.max(acc.depth),
+                expr: Expr::List {
+                    items: vec![
+                        head.clone(),
+                        Expr::Vector {
+                            items: vec![name, value],
+                            span: at.clone(),
+                        },
+                        acc.expr,
+                    ],
+                    span: span.clone(),
+                },
+            },
+            &span,
+            src,
+        )?;
+    }
+    Ok(acc)
+}
+
+/// How deep a desugared form nests, as [`Deep`] counts it: 0 for an atom,
+/// one more than its deepest item for a list or a vector. A `let` of
+/// several names reads it of each value, which it moves out of the vector
+/// that held them all; recursive per level, which the bound every
+/// container the desugarer builds is held to keeps within [`MAX_NESTING`].
+fn depth(form: &Expr) -> usize {
+    match form {
+        Expr::List { items, .. } | Expr::Vector { items, .. } => {
+            1 + items.iter().map(depth).max().unwrap_or(0)
+        }
+        _ => 0,
+    }
 }
 
 /// `(match value (case pattern body) ...)`.
@@ -374,6 +458,11 @@ mod tests {
             ("let [x 1 2] x", "bad_let"),
             ("let [1 x] x", "bad_let"),
             ("let [x 1]", "bad_let"),
+            ("let [] x", "bad_let"),
+            ("let [x 1 y] x", "bad_let"),
+            ("let [x 1 2 y] x", "bad_let"),
+            ("let [x 1 y 2]", "bad_let"),
+            ("let [x 1 y 2] x y", "bad_let"),
             ("if a b", "bad_if"),
             ("if a b c d", "bad_if"),
             ("(match)", "bad_match"),
@@ -393,6 +482,74 @@ mod tests {
                 fail.message
             );
             assert_eq!((fail.row, fail.column), (Some(1), Some(1)), "{src:?}");
+        }
+    }
+
+    /// A `let` of several names is a `let` of one name for each, nested in
+    /// their order, so each is in scope for the ones after it; a `let` of
+    /// one name stays as it is.
+    #[test]
+    fn a_let_of_several_names_nests_one_let_per_name() {
+        assert_eq!(core("let [x 1] x"), "(let [x 1] x)");
+        assert_eq!(
+            core("let [a 1 b (inc a)] b"),
+            "(let [a 1] (let [b (inc a)] b))"
+        );
+        assert_eq!(
+            core("let [a 1 b 2 a (pipe a f)]\n  record\n    entry :a a"),
+            "(let [a 1] (let [b 2] (let [a (f a)] (record (entry :a a)))))"
+        );
+        // The bindings are desugared before they nest, a let inside one
+        // included.
+        assert_eq!(
+            core("let [a (let [x 1 y 2] y) b a] b"),
+            "(let [a (let [x 1] (let [y 2] y))] (let [b a] b))"
+        );
+        // Each generated let carries the form's span, its head the head's
+        // and its binding the binding vector's.
+        let src = "let [a 1 b 2] b";
+        let forms = program(parse(src).unwrap(), src).unwrap();
+        let Expr::List { items, span } = &forms[0] else {
+            panic!("a let list");
+        };
+        assert_eq!((span.start, span.end), (0, 15));
+        assert_eq!((items[0].span().start, items[0].span().end), (0, 3));
+        assert_eq!((items[1].span().start, items[1].span().end), (4, 13));
+        let Expr::List {
+            items: inner,
+            span: inner_span,
+        } = &items[2]
+        else {
+            panic!("a nested let");
+        };
+        assert_eq!(inner_span, span);
+        assert_eq!(inner[0].span(), items[0].span());
+        assert_eq!(inner[1].span(), items[1].span());
+        assert_eq!((inner[2].span().start, inner[2].span().end), (14, 15));
+    }
+
+    /// A `let` nests a level per binding after its first, so a `let` of many
+    /// names meets the bound a `pipe` of many steps meets, and fails at the
+    /// binding that passes it, without building the rest.
+    #[test]
+    fn a_let_of_many_names_is_too_deep_past_the_bound() {
+        let names = |n: usize| {
+            (0..n)
+                .map(|i| format!("x{i} {i}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        // 255 bindings nest 255 lets, each over a binding of depth 1: the
+        // outermost is 256 deep, at the bound.
+        let at_limit = core(&format!("let [{}] x0", names(MAX_NESTING - 1)));
+        assert!(
+            at_limit.starts_with("(let [x0 0] (let [x1 1] "),
+            "{at_limit}"
+        );
+        for n in [MAX_NESTING, 100_000] {
+            let fail = failure(&format!("let [{}] x0", names(n)));
+            assert!(fail.message.starts_with("too_deep: "), "{}", fail.message);
+            assert_eq!((fail.row, fail.column), (Some(1), Some(1)));
         }
     }
 

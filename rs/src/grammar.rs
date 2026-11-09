@@ -234,7 +234,7 @@ pub const GRAMMAR_TEXT: &str = r##"
       "too_deep": "nesting deeper than 256 levels",
       "empty_step": "a pipe step must be a symbol or a non-empty list",
       "bad_def": "def takes a name and a value, or a name, [params] and a body",
-      "bad_let": "let takes one binding [name value] and one body",
+      "bad_let": "let takes bindings [name value ...], one or more, and one body",
       "bad_if": "if takes a condition and exactly two branches",
       "bad_match": "match takes a value and (case pattern body) clauses",
       # The resolver's.
@@ -277,7 +277,7 @@ pub const GRAMMAR_TEXT: &str = r##"
       "too_deep": "A program nests at most 256 levels, counting a layout line, each\nindentation level and each open ( or [ as one; a pipe adds a level per\nstep. Split the form into definitions.",
       "empty_step": "In pipe VALUE STEP..., each step is a symbol (called with the value)\nor a list (the value is appended as its last argument).",
       "bad_def": "Write def NAME VALUE, or def NAME [PARAMS] BODY.",
-      "bad_let": "Write let [NAME VALUE] BODY.",
+      "bad_let": "Write let [NAME VALUE ...] BODY: a name and its value for each\nbinding, each in scope for the bindings after it and for the body.",
       "bad_if": "Write if CONDITION THEN ELSE.",
       "bad_match": "Write match VALUE (case PATTERN BODY)...",
       "unknown_name": "A name is a definition of the program, a parameter or a binding in\nscope, or one of the library's. Define it, or correct its spelling.",

@@ -19,7 +19,10 @@ import {
   LENGTH_CHUNK,
   NUMBER_STEP,
   SPLIT_STEP,
+  STRING_STEP,
   UNQUOTED_STEP,
+  WHOLE_MAX,
+  codePointOrder,
   native,
   numberText,
   outer,
@@ -984,6 +987,291 @@ describe('natives', () => {
     }
     const f = evalFail('', 'inc "1"')
     assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', 'type_mismatch: inc: the count must be a number, not a string'])
+  })
+
+  // `add` and `sub` answer the sum and the difference exactly, without a
+  // lexeme and never -0, up to 2^53 - 1 either way; an operand that is not
+  // a whole number in that range, or a result past it, is a type error
+  // naming it as it is (rs/src/stdlib/registry.rs's test of the same name).
+  it('add and sub are exact over whole numbers', () => {
+    assert.equal(WHOLE_MAX, 9007199254740991)
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const fn = (name: string): value.Func => ({ fn: 'native', native: native(name)! })
+    const of = (name: string, x: Val, y: Val): number => {
+      const v = runtime('').applyNow(fn(name), [x, y], at) as any
+      assert.equal(v.v, 'num')
+      assert.equal(v.lexeme, undefined)
+      return v.value
+    }
+    assert.equal(of('add', n(2), n(3)), 5)
+    assert.equal(of('add', n(-2), n(3)), 1)
+    assert.equal(of('sub', n(2), n(3)), -1)
+    assert.equal(of('sub', n(3), n(2)), 1)
+    assert.equal(of('add', n(WHOLE_MAX - 1), n(1)), WHOLE_MAX)
+    assert.equal(of('sub', n(-WHOLE_MAX + 1), n(1)), -WHOLE_MAX)
+    assert.equal(of('add', n(WHOLE_MAX), n(-WHOLE_MAX)), 0)
+    assert.equal(of('add', V.num(100, '1e2'), n(1)), 101)
+    // Zero is 0, whatever the zeros it came from.
+    for (const [name, x, y] of [
+      ['add', -0, -0],
+      ['sub', -0, 0],
+      ['sub', 5, 5],
+    ] as Array<[string, number, number]>) {
+      assert.ok(Object.is(of(name, n(x), n(y)), 0), `${name} ${x} ${y}`)
+    }
+    same(evalIn('', 'sub 3 5'), n(-2))
+    const range = 'a whole number from -9007199254740991 to 9007199254740991'
+    for (const [name, x, y, message] of [
+      ['add', n(WHOLE_MAX), n(1), `the sum must be ${range}, not 9007199254740992`],
+      ['add', n(WHOLE_MAX), n(2), `the sum must be ${range}, not 9007199254740993`],
+      ['add', n(-WHOLE_MAX), n(-WHOLE_MAX), `the sum must be ${range}, not -18014398509481982`],
+      ['sub', n(-WHOLE_MAX), n(2), `the difference must be ${range}, not -9007199254740993`],
+      ['sub', n(WHOLE_MAX), n(-1), `the difference must be ${range}, not 9007199254740992`],
+      ['add', n(WHOLE_MAX + 1), n(0), `the first must be ${range}, not 9007199254740992`],
+      ['sub', n(0), n(1.5), `the second must be ${range}, not 1.5`],
+      ['add', V.num(0.5, '5e-1'), n(0), `the first must be ${range}, not 5e-1`],
+      ['add', n(Infinity), n(0), `the first must be ${range}, not inf`],
+      ['sub', n(0), n(NaN), `the second must be ${range}, not NaN`],
+      ['add', V.str('1'), n(0), 'the first must be a number, not a string'],
+      ['sub', n(0), V.NULL, 'the second must be a number, not null'],
+    ] as Array<[string, Val, Val, string]>) {
+      const f = thrown(() => runtime('').applyNow(fn(name), [x, y], at))
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: ${name}: ${message}`], message)
+    }
+  })
+
+  // `get-or` answers what `get` answers, or the default where `get` answers
+  // `missing`; it fails where `get` fails, naming itself.
+  it('get-or answers the default where get answers missing', () => {
+    const rec = '(record (entry :a 1) (entry :m missing) (entry :n null))'
+    same(evalIn('', `get-or :a "d" ${rec}`), n(1))
+    same(evalIn('', `get-or "a" "d" ${rec}`), n(1))
+    same(evalIn('', `get-or :n "d" ${rec}`), V.NULL)
+    for (const expr of [`get-or :b "d" ${rec}`, `get-or :m "d" ${rec}`, 'get-or :a "d" missing']) {
+      same(evalIn('', expr), V.str('d'), expr)
+    }
+    let f = evalFail('', `get-or 1 "d" ${rec}`)
+    assert.deepStrictEqual(
+      [f.code, f.message],
+      ['DSL_TYPE_ERROR', 'type_mismatch: get-or: the key must be a keyword or a string, not a number'],
+    )
+    f = evalFail('', 'get-or :a "d" 1')
+    assert.deepStrictEqual([f.code, f.message], ['INPUT_INVALID', 'get-or: a number has no member "a"; an object was expected'])
+    f = evalFail('', 'get-or :a "d" each-index')
+    assert.deepStrictEqual(
+      [f.code, f.message],
+      ['DSL_TYPE_ERROR', 'type_mismatch: get-or: a record was expected, not a selector'],
+    )
+  })
+
+  // `trim` takes off both ends the white space ECMAScript's
+  // `String.prototype.trim` takes, and nothing else: not U+0085, nor
+  // U+180E, which Unicode no longer counts.
+  it('trim takes the white space ECMAScript trims', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const trim: value.Func = { fn: 'native', native: native('trim')! }
+    const trimmed = (s: string): string => (runtime('').applyNow(trim, [V.str(s)], at) as any).value
+    const space =
+      '\t\n\u000b\f\r \u00a0\u1680\u2000\u2005\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
+    assert.equal(trimmed(`${space}a b${space}`), 'a b')
+    assert.equal(trimmed(space), '')
+    assert.equal(trimmed(''), '')
+    assert.equal(trimmed('a\u3000b'), 'a\u3000b')
+    for (const kept of ['\u0085', '\u180e', '\u200b', '\u2060', '\u0000']) {
+      assert.equal(trimmed(`${kept}a${kept}`), `${kept}a${kept}`, JSON.stringify(kept))
+    }
+    // The engine's own trim agrees on the set, for the record.
+    assert.equal(`${space}a${space}`.trim(), 'a')
+    const f = evalFail('', 'trim 1')
+    assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', 'type_mismatch: trim: the string must be a string, not a number'])
+  })
+
+  // `first-split` cuts a string at the separator's first occurrence, or
+  // answers it alone; its separator is held as `split`'s is.
+  it('first-split cuts at the first occurrence', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const firstSplit: value.Func = { fn: 'native', native: native('first-split')! }
+    const cut = (separator: string, s: string): string[] =>
+      (runtime('').applyNow(firstSplit, [V.str(separator), V.str(s)], at) as any).items.map((v: any) => v.value)
+    assert.deepStrictEqual(cut('=', 'a=b=c'), ['a', 'b=c'])
+    assert.deepStrictEqual(cut('=', '=a'), ['', 'a'])
+    assert.deepStrictEqual(cut('=', 'a='), ['a', ''])
+    assert.deepStrictEqual(cut('=', 'abc'), ['abc'])
+    assert.deepStrictEqual(cut('=', ''), [''])
+    assert.deepStrictEqual(cut('::', 'a:b::c::d'), ['a:b', 'c::d'])
+    assert.deepStrictEqual(cut(' (', 'j@x.org (Jo Ann)'), ['j@x.org', 'Jo Ann)'])
+    assert.deepStrictEqual(cut('→', 'α→β→γ'), ['α', 'β→γ'])
+    // A match of code units that cuts a surrogate pair is no match: only a
+    // surrogate on its own, which only a JavaScript string can hold, makes
+    // one.
+    assert.deepStrictEqual(cut('\udc00', '\ud800\udc00x\udc00y'), ['\ud800\udc00x', 'y'])
+    for (const [expr, message] of [
+      ['first-split "" "a"', 'the separator must be a non-empty string, not the empty string'],
+      ['first-split 1 "a"', 'the separator must be a string, not a number'],
+      ['first-split "." 1', 'the string must be a string, not a number'],
+    ]) {
+      const f = evalFail('', expr)
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: first-split: ${message}`], expr)
+    }
+  })
+
+  // `starts-with`, `ends-with` and `contains` compare exactly, code point
+  // by code point; an empty part is in every string.
+  it('the string tests compare exactly', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const test = (name: string, part: string, s: string): boolean =>
+      (runtime('').applyNow({ fn: 'native', native: native(name)! }, [V.str(part), V.str(s)], at) as any).value
+    for (const [name, part, s, answer] of [
+      ['starts-with', 'ab', 'abc', true],
+      ['starts-with', 'bc', 'abc', false],
+      ['starts-with', '', 'abc', true],
+      ['starts-with', '', '', true],
+      ['starts-with', 'abcd', 'abc', false],
+      ['starts-with', 'A', 'abc', false],
+      ['starts-with', 'é', 'école', true],
+      ['starts-with', 'e', 'école', false],
+      ['ends-with', 'bc', 'abc', true],
+      ['ends-with', 'ab', 'abc', false],
+      ['ends-with', '', 'abc', true],
+      ['ends-with', '😀', 'a😀', true],
+      ['ends-with', 'zabc', 'abc', false],
+      ['contains', 'b', 'abc', true],
+      ['contains', 'abc', 'abc', true],
+      ['contains', 'd', 'abc', false],
+      ['contains', '', '', true],
+      ['contains', 'β→', 'α→β→γ', true],
+      ['contains', 'ß', 'SS', false],
+      // Halves of a surrogate pair are no part of the character they make.
+      ['starts-with', '\ud83d', '😀', false],
+      ['ends-with', '\ude00', '😀', false],
+      ['contains', '\ude00', 'a😀b', false],
+      ['contains', '\ud83d', '\ud83d', true],
+    ] as Array<[string, string, string, boolean]>) {
+      assert.equal(test(name, part, s), answer, `${name} ${JSON.stringify(part)} ${JSON.stringify(s)}`)
+    }
+    for (const [name, what] of [
+      ['starts-with', 'the prefix'],
+      ['ends-with', 'the suffix'],
+      ['contains', 'the part'],
+    ]) {
+      let f = evalFail('', `${name} 1 "a"`)
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: ${name}: ${what} must be a string, not a number`])
+      f = evalFail('', `${name} "a" null`)
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: ${name}: the string must be a string, not null`])
+    }
+  })
+
+  // The string natives take a step for each STRING_STEP characters of the
+  // string, or part of them: ten steps of fuel read ten times that many
+  // characters and no more, however many code units a character takes.
+  it('the string natives take a step per characters read', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    for (const c of ['a', '\u{1f680}']) {
+      for (const [name, part] of [
+        ['trim', undefined],
+        ['first-split', '.'],
+        ['starts-with', 'a'],
+        ['ends-with', 'a'],
+        ['contains', '.'],
+      ] as Array<[string, string | undefined]>) {
+        const run = (k: number) => {
+          const s = V.str(c.repeat(k))
+          const args = undefined === part ? [s] : [V.str(part), s]
+          return runtime('').withFuel(10).applyNow({ fn: 'native', native: native(name)! }, args, at)
+        }
+        run(10 * STRING_STEP)
+        const f = thrown(() => run(10 * STRING_STEP + 1))
+        assert.equal(f.limit?.name, 'max_plan_steps', `${name} ${c}: ${f}`)
+      }
+    }
+  })
+
+  // `flatten` takes one level out: each vector among the items gives its
+  // items, and any other item stays; a vector inside one of those stays a
+  // vector.
+  it('flatten takes one level out', () => {
+    same(evalIn('', 'flatten [[1 2] 3 [] [4]]'), V.vectorVal([n(1), n(2), n(3), n(4)]))
+    same(evalIn('', 'flatten []'), V.vectorVal([]))
+    same(evalIn('', 'flatten [[] []]'), V.vectorVal([]))
+    same(evalIn('', 'flatten [[[1] "a"] null]'), V.vectorVal([V.vectorVal([n(1)]), V.str('a'), V.NULL]))
+    const f = evalFail('', 'flatten "a"')
+    assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', 'type_mismatch: flatten: the data must be a vector, not a string'])
+    // A step for each item and for each item a vector among them gives: ten
+    // steps of fuel take two vectors of four items, and not five.
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const flatten: value.Func = { fn: 'native', native: native('flatten')! }
+    const nums = (k: number) => V.vectorVal(Array.from({ length: k }, (_, i) => n(i)))
+    runtime('').withFuel(10).applyNow(flatten, [V.vectorVal([nums(4), nums(4)])], at)
+    const g = thrown(() => runtime('').withFuel(10).applyNow(flatten, [V.vectorVal([nums(4), nums(5)])], at))
+    assert.equal(g.limit?.name, 'max_plan_steps', String(g))
+  })
+
+  // `sort` orders numbers by value and strings by code point, stably; a
+  // vector of another kind, of both kinds, or holding NaN is refused at the
+  // first item that is.
+  it('sort orders numbers by value and strings by code point', () => {
+    const at = span(sourceFile('t.alc'), 0, 0)
+    const sort: value.Func = { fn: 'native', native: native('sort')! }
+    const sorted = (items: Val[]): any[] => (runtime('').applyNow(sort, [V.vectorVal(items)], at) as any).items
+    assert.deepStrictEqual(
+      sorted([3, -1.5, Infinity, 0, -Infinity, 2].map(n)).map((v) => v.value),
+      [-Infinity, -1.5, 0, 2, 3, Infinity],
+    )
+    assert.deepStrictEqual(sorted([]), [])
+    // Stable: 0 and -0 are equal and keep their order, and a number keeps
+    // its lexeme.
+    assert.deepStrictEqual(
+      sorted([V.num(0, '0'), V.num(1, '1e0'), V.num(-0, '-0'), V.num(0.5, '5e-1')]).map((v) => v.lexeme),
+      ['0', '-0', '5e-1', '1e0'],
+    )
+    // By code point: é (U+00E9) after z, U+FFFF before 😀 (U+1F600), which
+    // UTF-16 code units, JavaScript's own order, would put first.
+    assert.deepStrictEqual(
+      sorted(['z', 'é', '\u{1f600}', '\uffff', 'Z', '', 'a', 'ab'].map(V.str)).map((v) => v.value),
+      ['', 'Z', 'a', 'ab', 'z', 'é', '\uffff', '\u{1f600}'],
+    )
+    assert.ok('\u{1f600}' < '\uffff', 'JavaScript orders by code unit')
+    for (const [items, message] of [
+      [[n(1), V.str('a')], 'every item must be a number, as the first is, not a string'],
+      [[V.str('a'), n(1)], 'every item must be a string, as the first is, not a number'],
+      [[V.str('a'), n(NaN)], 'every item must be a string, as the first is, not a number'],
+      [[n(1), n(NaN)], 'every number must be ordered, not NaN'],
+      [[V.TRUE], 'every item must be a number or a string, not a boolean'],
+      [[n(1), V.vectorVal([n(2)])], 'every item must be a number or a string, not a vector'],
+      [[n(1), V.missing()], 'every item must be a number or a string, not missing'],
+    ] as Array<[Val[], string]>) {
+      const f = thrown(() => runtime('').applyNow(sort, [V.vectorVal(items)], at))
+      assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', `type_mismatch: sort: ${message}`], message)
+    }
+    const f = evalFail('', 'sort "a"')
+    assert.deepStrictEqual([f.code, f.message], ['DSL_TYPE_ERROR', 'type_mismatch: sort: the data must be a vector, not a string'])
+    // A step for each item: ten steps of fuel sort ten items and not
+    // eleven.
+    const nums = (k: number) => V.vectorVal(Array.from({ length: k }, (_, i) => n(k - i)))
+    runtime('').withFuel(10).applyNow(sort, [nums(10)], at)
+    const g = thrown(() => runtime('').withFuel(10).applyNow(sort, [nums(11)], at))
+    assert.equal(g.limit?.name, 'max_plan_steps', String(g))
+  })
+
+  // The code point order of two strings, a surrogate on its own among them,
+  // which only a JavaScript string can hold, read as the code point it
+  // names.
+  it('strings are ordered by code point', () => {
+    const order = (x: string, y: string) => Math.sign(codePointOrder(x, y))
+    assert.equal(order('', ''), 0)
+    assert.equal(order('a', 'a'), 0)
+    assert.equal(order('a', 'b'), -1)
+    assert.equal(order('ab', 'a'), 1)
+    assert.equal(order('\uffff', '\u{1f600}'), -1)
+    assert.equal(order('\ue000', '\u{10000}'), -1)
+    assert.equal(order('\u{10001}', '\u{10002}'), -1)
+    assert.equal(order('\u{1f600}', '\u{1f600}x'), -1)
+    // A lone high surrogate is U+D800, before U+E000 and every character
+    // past U+FFFF, and a pair after it.
+    assert.equal(order('\ud800', '\ue000'), -1)
+    assert.equal(order('\ud800\udc00', '\ud800\ud801\udc00'), 1)
+    assert.equal(order('\ud800a', '\ud800b'), -1)
+    assert.equal(order('\ud800', '\ud800\udc00'), -1)
   })
 
   // `equal` compares as a `match` pattern compares a constant: data

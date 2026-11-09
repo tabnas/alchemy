@@ -1096,6 +1096,27 @@ impl Checker<'_> {
                 }
                 Unknown
             }
+            "get-or" => {
+                match t(0) {
+                    Keyword | String | Unknown | Never => {}
+                    other => {
+                        return Err(self.mismatch("the key of get-or", &Keyword, other, at(0)))
+                    }
+                }
+                // The default is answered as it is: a value, never a
+                // stream or a text, which is used once, where it is.
+                if t(1).is_affine() {
+                    return Err(self.mismatch("the default of get-or", &Value, t(1), at(1)));
+                }
+                match t(2) {
+                    Record | Value | Unknown | Never => {}
+                    Tagged(tag) if &**tag == "missing" => {}
+                    other => {
+                        return Err(self.mismatch("the data of get-or", &Record, other, at(2)))
+                    }
+                }
+                Unknown
+            }
             "get-path" => {
                 self.expect("the path of get-path", &Selector, t(0), at(0))?;
                 data(self, 1, "the data of get-path")?;
@@ -1153,6 +1174,27 @@ impl Checker<'_> {
                     _ => Unknown,
                 })
             }
+            "flatten" => {
+                self.expect("the vector of flatten", &Type::vector(Unknown), t(0), at(0))?;
+                // An item that is a vector gives its items; any other is
+                // kept.
+                Type::vector(match t(0) {
+                    Vector(item) => match &**item {
+                        Vector(inner) => (**inner).clone(),
+                        other => other.clone(),
+                    },
+                    _ => Unknown,
+                })
+            }
+            "sort" => {
+                // A finite vector, whose items the run holds to one kind:
+                // a stream is refused here, as count and pop refuse one.
+                self.expect("the vector of sort", &Type::vector(Unknown), t(0), at(0))?;
+                match t(0) {
+                    Vector(_) => t(0).clone(),
+                    _ => Type::vector(Unknown),
+                }
+            }
             "pop" => {
                 self.expect("the vector of pop", &Type::vector(Unknown), t(0), at(0))?;
                 match t(0) {
@@ -1205,6 +1247,16 @@ impl Checker<'_> {
             }
             "inc" => {
                 self.expect("the count of inc", &Number, t(0), at(0))?;
+                Number
+            }
+            "add" | "sub" => {
+                self.expect(&format!("the first number of {name}"), &Number, t(0), at(0))?;
+                self.expect(
+                    &format!("the second number of {name}"),
+                    &Number,
+                    t(1),
+                    at(1),
+                )?;
                 Number
             }
             "number-class" => {
@@ -1400,6 +1452,25 @@ impl Checker<'_> {
                 self.expect("the separator of split", &String, t(0), at(0))?;
                 self.expect("the string of split", &String, t(1), at(1))?;
                 Type::vector(String)
+            }
+            "trim" => {
+                self.expect("the string of trim", &String, t(0), at(0))?;
+                String
+            }
+            "first-split" => {
+                self.expect("the separator of first-split", &String, t(0), at(0))?;
+                self.expect("the string of first-split", &String, t(1), at(1))?;
+                Type::vector(String)
+            }
+            "starts-with" | "ends-with" | "contains" => {
+                let part = match name {
+                    "starts-with" => "prefix",
+                    "ends-with" => "suffix",
+                    _ => "part",
+                };
+                self.expect(&format!("the {part} of {name}"), &String, t(0), at(0))?;
+                self.expect(&format!("the string of {name}"), &String, t(1), at(1))?;
+                Bool
             }
             "fail" => {
                 // `(fail message)` is INPUT_INVALID; `(fail :code message)`

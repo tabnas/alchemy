@@ -258,21 +258,38 @@ export function numberText(
 // `missing`; `INPUT_INVALID` from other data, `type_mismatch` from what is
 // not data.
 export function getField(key: string, data: Val): Val {
+  return fieldOf('get', key, data)
+}
+
+// `getField`, its failures naming the operator that read the field.
+function fieldOf(op: string, key: string, data: Val): Val {
   if ('record' === data.v) return field(data, key) as Val
   if (isMissing(data)) return missingVal()
   if (isData(data)) {
-    throw Fail.input(`get: ${kindText(data)} has no member ${quotedText(key)}; an object was expected`)
+    throw Fail.input(`${op}: ${kindText(data)} has no member ${quotedText(key)}; an object was expected`)
   }
-  throw typeError(`get: a record was expected, not ${kindText(data)}`)
+  throw typeError(`${op}: a record was expected, not ${kindText(data)}`)
+}
+
+// The key `get` and `get-or` read a record by: a keyword or a string.
+function recordKey(op: string, k: Val): string {
+  if ('keyword' === k.v) return k.name
+  if ('str' === k.v) return k.value
+  throw typeError(`${op}: the key must be a keyword or a string, not ${kindText(k)}`)
 }
 
 function get(_rt: Runtime, a: ReadonlyArray<Val>): Val {
-  const k = a[0]
-  let key: string
-  if ('keyword' === k.v) key = k.name
-  else if ('str' === k.v) key = k.value
-  else throw typeError(`get: the key must be a keyword or a string, not ${kindText(k)}`)
-  return getField(key, a[1])
+  return getField(recordKey('get', a[0]), a[1])
+}
+
+// `get-or key default data`: what `get` answers, or the default where it
+// answers `missing`: the key absent from the record, a member whose value
+// is `missing`, or the data `missing` itself. The key is a keyword or a
+// string, as `get`'s is, and data that is not a record fails as `get`
+// fails, naming `get-or`.
+function getOr(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const found = fieldOf('get-or', recordKey('get-or', a[0]), a[2])
+  return isMissing(found) ? a[1] : found
 }
 
 function getPath(_rt: Runtime, a: ReadonlyArray<Val>): Val {
@@ -370,6 +387,91 @@ function pushAll(rt: Runtime, a: ReadonlyArray<Val>): Val {
   if (0 === items.items.length) return a[1]
   if (0 === held.length) return items
   return vectorVal([...held, ...items.items])
+}
+
+// `flatten vector`: the vector one level flatter: each item that is a
+// vector gives its items, in their order, and any other item stays as it
+// is; a vector inside one of those stays a vector. A step for each item of
+// the vector and for each item a vector among them gives, the steps Rust
+// takes, so the fuel and the host's abort flag bound a long flatten.
+function flatten(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const items = asItems('flatten', a[0])
+  const out: Val[] = []
+  for (const item of items) {
+    rt.tick()
+    if ('vector' === item.v) {
+      for (const v of item.items) {
+        rt.tick()
+        out.push(v)
+      }
+    } else {
+      out.push(item)
+    }
+  }
+  return vectorVal(out)
+}
+
+// `sort vector`: the vector's items in ascending order, numbers by value
+// and strings by code point (`codePointOrder`, not JavaScript's `<`, which
+// compares UTF-16 code units), and stable: items that compare equal (`0`
+// and `-0`, two equal strings) keep their order, so the three runtimes
+// answer one vector. The items are all numbers or all strings, the kind of
+// the first; an item of another kind, a vector of both, or NaN, which has
+// no order, is a type error at the first item that is one, as Rust checks
+// them. A step for each item, taken as the items are checked and before
+// any is moved.
+function sort(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const items = asItems('sort', a[0])
+  let first: 'num' | 'str' | undefined
+  for (const item of items) {
+    rt.tick()
+    if ('num' !== item.v && 'str' !== item.v) {
+      throw typeError(`sort: every item must be a number or a string, not ${kindText(item)}`)
+    }
+    if (undefined === first) first = item.v
+    else if (first !== item.v) {
+      throw typeError(
+        `sort: every item must be ${'num' === first ? 'a number' : 'a string'}, as the first is, not ${kindText(item)}`,
+      )
+    }
+    if ('num' === item.v && Number.isNaN(item.value)) throw typeError('sort: every number must be ordered, not NaN')
+  }
+  // Array.prototype.sort is stable; the items are of one kind, and no NaN
+  // is left.
+  const out = items.slice()
+  out.sort((x, y) => {
+    if ('num' === x.v && 'num' === y.v) return x.value < y.value ? -1 : x.value > y.value ? 1 : 0
+    if ('str' === x.v && 'str' === y.v) return codePointOrder(x.value, y.value)
+    return 0
+  })
+  return vectorVal(out)
+}
+
+// Whether a code unit is a high surrogate, the first of a pair, or a low
+// one, the second.
+function isHigh(c: number): boolean {
+  return 0xd800 <= c && c <= 0xdbff
+}
+
+function isLow(c: number): boolean {
+  return 0xdc00 <= c && c <= 0xdfff
+}
+
+// How two strings are ordered by their code points, as Rust and Go order
+// them by their UTF-8 bytes: negative, zero or positive. JavaScript's `<`
+// compares UTF-16 code units, which put a character past U+FFFF, a
+// surrogate pair, before U+E000 to U+FFFF. The strings are compared from
+// the first code unit where they differ, read as the code point it is in:
+// one unit back where the two share a high surrogate that either's next
+// unit completes; a surrogate on its own, which only a JavaScript string
+// can hold, is the code point it names.
+export function codePointOrder(x: string, y: string): number {
+  const n = Math.min(x.length, y.length)
+  let i = 0
+  while (i < n && x.charCodeAt(i) === y.charCodeAt(i)) i++
+  if (i === n) return x.length - y.length
+  if (0 < i && isHigh(x.charCodeAt(i - 1)) && (isLow(x.charCodeAt(i)) || isLow(y.charCodeAt(i)))) i--
+  return (x.codePointAt(i) as number) < (y.codePointAt(i) as number) ? -1 : 1
 }
 
 function pop(_rt: Runtime, a: ReadonlyArray<Val>): Val {
@@ -755,10 +857,10 @@ function compare(_rt: Runtime, a: ReadonlyArray<Val>): Val {
 // every whole number, so the three runtimes count alike.
 export const INC_MAX = Number.MAX_SAFE_INTEGER
 
-// `inc count`: the count one more. Alchemy has no arithmetic; a part that
-// counts (PGN's moves) counts with this. The count is a whole number of at
-// least 0, as `repeat`'s is, and below `INC_MAX`, so the answer is exact;
-// any other number is a type error, as `repeat`'s is.
+// `inc count`: the count one more, which a part that counts (PGN's moves)
+// counts with. The count is a whole number of at least 0, as `repeat`'s
+// is, and below `INC_MAX`, so the answer is exact; any other number is a
+// type error, as `repeat`'s is.
 function inc(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   const c = a[0]
   if ('num' !== c.v) throw typeError(`inc: the count must be a number, not ${kindText(c)}`)
@@ -768,6 +870,53 @@ function inc(_rt: Runtime, a: ReadonlyArray<Val>): Val {
     throw typeError(`inc: the count must be a whole number from 0 to 9007199254740990, not ${spelled}`)
   }
   return num(count + 1)
+}
+
+// The largest magnitude `add` and `sub` take and answer, 2^53 - 1, as
+// `INC_MAX` is `inc`'s largest answer: up to it a 64-bit float holds every
+// whole number, so the three runtimes count alike.
+export const WHOLE_MAX = Number.MAX_SAFE_INTEGER
+
+// `add a b`: the sum, exact. Alchemy's arithmetic is over whole numbers,
+// as `inc` counts: each operand a whole number of magnitude at most
+// `WHOLE_MAX`, and so the sum, or a type error naming it exactly; any other
+// number is a type error, as `inc`'s is.
+function add(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  return arithmetic('add', 'the sum', a, 1)
+}
+
+// `sub a b`: the difference `a` less `b`, exact, as `add` answers a sum.
+function sub(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  return arithmetic('sub', 'the difference', a, -1)
+}
+
+// The sum of the first operand and the second times `sign`. Within the
+// range the float is exact; past it, where the float may round, the result
+// is named as it is, in a BigInt, as Rust and Go name it from 64 bits. A
+// zero result is `0`, never `-0`: a whole number has no sign of its own at
+// zero.
+function arithmetic(op: string, result: string, a: ReadonlyArray<Val>, sign: 1 | -1): Val {
+  const x = whole(op, 'the first', a[0])
+  const y = whole(op, 'the second', a[1])
+  const r = 1 === sign ? x + y : x - y
+  if (Math.abs(r) > WHOLE_MAX) {
+    const exact = 1 === sign ? BigInt(x) + BigInt(y) : BigInt(x) - BigInt(y)
+    throw typeError(`${op}: ${result} must be a whole number from -9007199254740991 to 9007199254740991, not ${exact}`)
+  }
+  return num(0 === r ? 0 : r)
+}
+
+// An operand of `add` or `sub`: a whole number of magnitude at most
+// `WHOLE_MAX`, or the type error naming it as it was spelled, as `inc`
+// names its count.
+function whole(op: string, which: string, v: Val): number {
+  if ('num' !== v.v) throw typeError(`${op}: ${which} must be a number, not ${kindText(v)}`)
+  const value = v.value
+  if (!(0 === value % 1 && Math.abs(value) <= WHOLE_MAX)) {
+    const spelled = undefined !== v.lexeme ? v.lexeme : displayNumber(value)
+    throw typeError(`${op}: ${which} must be a whole number from -9007199254740991 to 9007199254740991, not ${spelled}`)
+  }
+  return value
 }
 
 // `number-class number`: `:finite`, `:infinity`, `:negative-infinity` or
@@ -1291,6 +1440,117 @@ function split(rt: Runtime, a: ReadonlyArray<Val>): Val {
   }
 }
 
+// How many characters of the string `trim`, `first-split`, `starts-with`,
+// `ends-with` and `contains` read per evaluation step.
+export const STRING_STEP = 4096
+
+// A step for each `STRING_STEP` characters of the string (a surrogate pair
+// is one), or part of them, taken before it is read, the steps Rust and Go
+// take, so the fuel and the host's abort flag bound the read of a long
+// string as `split`'s steps bound its own.
+function stringSteps(rt: Runtime, s: string): void {
+  const steps = Math.ceil(charsIn(s, 0, s.length) / STRING_STEP)
+  for (let k = 0; k < steps; k++) rt.tick()
+}
+
+// Whether a code unit is white space as ECMAScript's
+// `String.prototype.trim` reads it, its WhiteSpace and LineTerminator
+// productions: U+0009 to U+000D, U+0020, U+00A0, U+1680, U+2000 to U+200A,
+// U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF, each a character of
+// its own, none a surrogate. The set is spelled out rather than taken from
+// the engine's own `trim`, so it is the set Rust and Go trim whatever
+// Unicode version an engine reads.
+function isTrimSpace(c: number): boolean {
+  return (
+    (0x09 <= c && c <= 0x0d) ||
+    0x20 === c ||
+    0xa0 === c ||
+    0x1680 === c ||
+    (0x2000 <= c && c <= 0x200a) ||
+    0x2028 === c ||
+    0x2029 === c ||
+    0x202f === c ||
+    0x205f === c ||
+    0x3000 === c ||
+    0xfeff === c
+  )
+}
+
+// `trim string`: the string without its leading and trailing white space,
+// the set ECMAScript's `String.prototype.trim` takes (`isTrimSpace`). A
+// string with none is answered as it is.
+function trim(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const s = asStr('trim', 'the string', a[0])
+  stringSteps(rt, s)
+  let start = 0
+  let end = s.length
+  while (start < end && isTrimSpace(s.charCodeAt(start))) start++
+  while (end > start && isTrimSpace(s.charCodeAt(end - 1))) end--
+  return 0 === start && s.length === end ? a[0] : str(s.substring(start, end))
+}
+
+// Whether position `i` of `s` falls between two characters rather than
+// inside a surrogate pair, so a match of code units there is a match of
+// code points: a match that cuts a pair in two is none, which only a string
+// holding a surrogate on its own can make, since a well-formed part begins
+// and ends on whole characters.
+function onBoundary(s: string, i: number): boolean {
+  return 0 === i || s.length === i || !(isHigh(s.charCodeAt(i - 1)) && isLow(s.charCodeAt(i)))
+}
+
+// The first position where `part` occurs in `s`, as code points compare
+// them, or -1. The empty part occurs at 0.
+function indexOfChars(s: string, part: string): number {
+  for (let at = s.indexOf(part); -1 !== at; at = s.indexOf(part, at + 1)) {
+    if (onBoundary(s, at) && onBoundary(s, at + part.length)) return at
+  }
+  return -1
+}
+
+// `first-split separator string`: the string cut at the separator's first
+// occurrence, the vector of what comes before it and what comes after, or
+// of the string alone where the separator does not occur. The separator is
+// a literal, not a pattern, and must not be empty, as `split`'s must not.
+function firstSplit(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const separator = asStr('first-split', 'the separator', a[0])
+  if ('' === separator) {
+    throw typeError('first-split: the separator must be a non-empty string, not the empty string')
+  }
+  const s = asStr('first-split', 'the string', a[1])
+  stringSteps(rt, s)
+  const at = indexOfChars(s, separator)
+  if (-1 === at) return vectorVal([a[1]])
+  return vectorVal([str(s.substring(0, at)), str(s.substring(at + separator.length))])
+}
+
+// The part and the string of `starts-with`, `ends-with` and `contains`,
+// both strings, the string's steps taken. Each compares exactly, code point
+// by code point, and an empty part is in every string.
+function stringTest(rt: Runtime, op: string, what: string, a: ReadonlyArray<Val>): [string, string] {
+  const part = asStr(op, what, a[0])
+  const s = asStr(op, 'the string', a[1])
+  stringSteps(rt, s)
+  return [part, s]
+}
+
+// `starts-with prefix string`: whether the string begins with the prefix.
+function startsWith(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const [prefix, s] = stringTest(rt, 'starts-with', 'the prefix', a)
+  return bool(s.startsWith(prefix) && onBoundary(s, prefix.length))
+}
+
+// `ends-with suffix string`: whether the string ends with the suffix.
+function endsWith(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const [suffix, s] = stringTest(rt, 'ends-with', 'the suffix', a)
+  return bool(s.endsWith(suffix) && onBoundary(s, s.length - suffix.length))
+}
+
+// `contains part string`: whether the part occurs in the string.
+function contains(rt: Runtime, a: ReadonlyArray<Val>): Val {
+  const [part, s] = stringTest(rt, 'contains', 'the part', a)
+  return bool(-1 !== indexOfChars(s, part))
+}
+
 // How many characters `s` holds from `from` to `to`, a surrogate pair one.
 function charsIn(s: string, from: number, to: number): number {
   let n = 0
@@ -1495,6 +1755,7 @@ function records(_rt: Runtime, a: ReadonlyArray<Val>): Val {
 // Every native's implementation, by its name in the table.
 const IMPLS: Record<string, NativeImpl> = {
   get,
+  'get-or': getOr,
   'get-path': getPath,
   'as-path': asPath,
   'as-vector': asVector,
@@ -1503,6 +1764,8 @@ const IMPLS: Record<string, NativeImpl> = {
   vector,
   push,
   'push-all': pushAll,
+  flatten,
+  sort,
   pop,
   top,
   count,
@@ -1514,6 +1777,8 @@ const IMPLS: Record<string, NativeImpl> = {
   'is-number': isNumber,
   compare,
   inc,
+  add,
+  sub,
   'number-class': numberClass,
   kind,
   equal,
@@ -1544,6 +1809,11 @@ const IMPLS: Record<string, NativeImpl> = {
   quoted,
   'string-join': stringJoin,
   split,
+  trim,
+  'first-split': firstSplit,
+  'starts-with': startsWith,
+  'ends-with': endsWith,
+  contains,
   repeat,
   fail,
   'is-ready': isReady,

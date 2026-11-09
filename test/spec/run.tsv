@@ -131,3 +131,56 @@ def export [input] (join "," (map (fn [x] (scalar-text csv-options (inc x))) (se
 # equal: whether two values are equal, numbers by value and an object's members in any order, a value of another kind unequal.
 def export [input] (join "," (map (fn [x] (if (equal x "FEN") "y" "n")) (select (path each-index) input)))	"y,n,n,n,n"	["FEN","Fen",1,null,["FEN"]]	
 def export [input] (join "," (map (fn [x] (if (equal x (record (entry :a 1) (entry :b [2 "c"]))) "y" "n")) (select (path each-index) input)))	"y,y,n,n,n"	[{"a":1,"b":[2,"c"]},{"b":[2.0,"c"],"a":1e0},{"a":1},{"a":1,"b":[2,"c"],"d":null},[1,[2,"c"]]]	
+# trim: both ends' white space, the set ECMAScript's String.prototype.trim takes, past ASCII too, and nothing between other characters; not U+0085, U+180E, U+200B or U+2060, which no runtime's own trim agrees on; a value that is not a string is a type error where it is met.
+def export [input] (join "|" (map (fn [x] (quoted (trim x))) (select (path each-index) input)))	"\"a b\"|\"a\"|\"\"|\"\"|\"\\u0085a\\u0085\"|\"\u180eb\u200b\"|\"\u2060c\u2060\"|\"a\u3000b\"|\"a b\""	["  a b  ","\\t\\n\\u000b\\f\\r a\\u00a0\\u1680\\u2000\\u2005\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff","","   ","\\u0085a\\u0085","\\u180eb\\u200b","\\u2060c\\u2060","a\\u3000b","\\u00a0 a b\\u3000"]	
+def export [input] (join "|" (map (fn [x] (quoted (trim x))) (select (path each-index) input)))	ERROR:type_mismatch@1:51	[1]	
+def export [input] (trim "\\u00a0 a b\\u3000")	"a b"		
+# first-split: the string cut at the separator's first occurrence, before and after, or the string alone where it does not occur; a separator of several characters, at either end, around characters past ASCII; an empty separator, and a value that is not a string, are type errors.
+def export [input] (join "|" (map (fn [x] (string-join "," (map quoted (first-split "=" x)))) (select (path each-index) input)))	"\"key\",\"a=b\"|\"key\"|\"\",\"a\"|\"a\",\"\"|\"\"|\"\",\"=\"|\"é\",\"😀=x\""	["key=a=b","key","=a","a=","","==","é=😀=x"]	
+def export [input] (join "|" (map (fn [x] (string-join "," (map quoted (first-split " (" x)))) (select (path each-index) input)))	"\"j@x.org\",\"Jo Ann)\"|\"j@x.org\"|\"\",\"\"|\"a\",\"b (c\""	["j@x.org (Jo Ann)","j@x.org"," (","a (b (c"]	
+def export [input] (string-join "|" (push-all (first-split "=" "key") (first-split "=" "key=a=b")))	"key|a=b|key"		
+def export [input] (join "|" (map (fn [x] (string-join "," (first-split "" x))) (select (path each-index) input)))	ERROR:type_mismatch@1:60	["a"]	
+def export [input] (join "|" (map (fn [x] (string-join "," (first-split "=" x))) (select (path each-index) input)))	ERROR:type_mismatch@1:60	[1]	
+# starts-with, ends-with and contains: exact, code point by code point, so é is not e and a letter is not its other case; an empty part is in every string, the empty string too; a value that is not a string is a type error where it is met.
+def export [input] (join "," (map (fn [x] (if (starts-with "é" x) "y" "n")) (select (path each-index) input)))	"y,n,y,n,n,n"	["école","ecole","é","","Éc","😀école"]	
+def export [input] (string-join "," [(if (starts-with "é" "école") "true" "false") (if (starts-with "e" "école") "true" "false")])	"true,false"		
+def export [input] (join "," (map (fn [x] (if (ends-with "/" x) "y" "n")) (select (path each-index) input)))	"y,n,y,n,y,n"	["a/","a","/","","a//","/a"]	
+def export [input] (join "," (map (fn [x] (if (contains "@" x) "y" "n")) (select (path each-index) input)))	"y,n,y,n,y,n,n"	["a@b","ab","@","","😀@😀","ß","SS"]	
+def export [input] (join "," (map (fn [x] (if (contains "ß" x) "y" "n")) (select (path each-index) input)))	"y,n,n"	["Straße","STRASSE","strasse"]	
+def export [input] (join "," (map (fn [x] (string-join "" [(if (starts-with "" x) "s" "-") (if (ends-with "" x) "e" "-") (if (contains "" x) "c" "-")])) (select (path each-index) input)))	"sec,sec,sec"	["","a","😀"]	
+def export [input] (join "," (map (fn [x] (string-join "" [(if (starts-with "😀" x) "s" "-") (if (ends-with "😀" x) "e" "-") (if (contains "😀" x) "c" "-")])) (select (path each-index) input)))	"--c,sec,---,---"	["a😀b","😀","a","b"]	
+def export [input] (join "," (map (fn [x] (if (starts-with "a" x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:47	[1]	
+def export [input] (join "," (map (fn [x] (if (ends-with "a" x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:47	[1]	
+def export [input] (join "," (map (fn [x] (if (contains "a" x) "y" "n")) (select (path each-index) input)))	ERROR:type_mismatch@1:47	[1]	
+# flatten: one level out, each item that is a vector giving its items in their order and any other item kept, a vector inside one of those kept a vector; a value that is not a vector is a type error where it is met.
+def export [input] (join "|" (map (fn [x] (scalar-text csv-options (flatten x))) (select (path each-index) input)))	"[1,2,3,[4]]|[]|[]|[\"a\",{\"b\":1},null,2.50]"	[[[1,2],3,[],[[4]]],[],[[]],[["a"],{"b":1},null,[2.50]]]	
+def export [input] (scalar-text csv-options (flatten [[1 2] 3 [] [[4]]]))	"[1,2,3,[4]]"		
+def export [input] (join "|" (map (fn [x] (scalar-text csv-options (flatten x))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	["ab"]	
+# get-or: the value under the key, a null among them, or the default where get answers missing, the key absent or the data missing; a key that is a string reads as a keyword does; data that is not an object is INPUT_INVALID, as get finds it.
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (get-or :fill "-" x))) (select (path each-index) input)))	"x,-,,1.50,-"	[{"fill":"x"},{},{"fill":null},{"fill":1.50},{"Fill":"y"}]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (get-or "fill" (get-or :b "-" x) (get :a x)))) (select (path each-index) input)))	"1,-,2,-"	[{"a":{"fill":1}},{"a":{}},{"b":2},{"c":3}]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (get-or :fill "-" x))) (select (path each-index) input)))	ERROR:INPUT_INVALID@1:68	[1]	
+# add and sub: exact over whole numbers, without the lexeme they were spelled with, up to 2^53 - 1 either way, and zero is 0, never -0; sub a b is a less b; an operand that is fractional or past that range, or not a number, and a result past it, are type errors where they are met.
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (add x 1))) (select (path each-index) input)))	"1,0,42,101,9007199254740991,-9007199254740990,1"	[0,-1,41,1e2,9007199254740990,-9007199254740991,-0]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (sub x 1))) (select (path each-index) input)))	"-1,0,9007199254740990,-9007199254740991,99"	[0,1,9007199254740991,-9007199254740990,1e2]	
+def export [input] (join "," (map (fn [x] (string-join "/" [(scalar-text csv-options (add x x)) (scalar-text csv-options (sub x x)) (scalar-text csv-options (sub 0 x))])) (select (path each-index) input)))	"0/0/0,10/0/-5"	[-0,5]	
+def export [input] (scalar-text csv-options (sub 3 5))	"-2"		
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (add x 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	[9007199254740991]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (add x 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	[9007199254740992]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (add x 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	[1.5]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (add x 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	["1"]	
+def export [input] (join "," (map (fn [x] (scalar-text csv-options (sub x 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:68	[-9007199254740991]	
+# sort: a finite vector of numbers, by value, or of strings, by code point, stable, so 0 and -0 keep their order and a number its lexeme; é after z, and a character past U+FFFF after U+FFFF, where UTF-16 code units put it before; a vector of both kinds, of another kind, or holding NaN is a type error where it is met.
+def export [input] (join "|" (map (fn [x] (string-join "," (map (partial scalar-text csv-options) (sort x)))) (select (path each-index) input)))	"-1.5,0,-0,0.0,2.50,3,1e2||7"	[[3,-1.5,0,2.50,-0,1e2,0.0],[],[7]]	
+def export [input] (join "|" (map (fn [x] (string-join "," (map quoted (sort x)))) (select (path each-index) input)))	"\"\",\"Z\",\"a\",\"a\",\"ab\",\"z\",\"é\"|\"a\",\"é\",\"\ue000\",\"\\uffff\",\"😀\"|"	[["z","é","a","Z","","ab","a"],["\\uffff","😀","\\ue000","a","é"],[]]	
+def export [input] (string-join "," (map quoted (sort ["z" "é" "a"])))	"\"a\",\"z\",\"é\""		
+def export [input] (join "|" (map (fn [x] (string-join "," (map quoted (sort x)))) (select (path each-index) input)))	ERROR:type_mismatch@1:72	[["a",1]]	
+def export [input] (join "|" (map (fn [x] (string-join "," (map quoted (sort x)))) (select (path each-index) input)))	ERROR:type_mismatch@1:72	[[1,"a"]]	
+def export [input] (join "|" (map (fn [x] (string-join "," (map quoted (sort x)))) (select (path each-index) input)))	ERROR:type_mismatch@1:72	[[true]]	
+def export [input] (join "|" (map (fn [x] (string-join "," (map quoted (sort x)))) (select (path each-index) input)))	ERROR:type_mismatch@1:72	[[1,[2]]]	
+def export [input] (join "|" (map (fn [x] (string-join "," (map quoted (sort x)))) (select (path each-index) input)))	ERROR:type_mismatch@1:72	[[null]]	
+def export [input] (join "|" (map (fn [x] (string-join "," (map (partial scalar-text csv-options) (sort [1 (number x)])))) (select (path each-index) input)))	ERROR:type_mismatch@1:99	["NaN"]	
+# A let of several names binds each in turn, each in scope for the bindings after it and for the body, and a later binding of a name shadows the earlier; a stream may be bound among them, and is read once.
+def export [input]\n  let [a 1 b (inc a) c (add a b)]\n    scalar-text csv-options c	"3"		
+def export [input]\n  let [a 1 a (add a 10) b a]\n    scalar-text csv-options b	"11"		
+def export [input]\n  let [sep "," items (select (path each-index) input)]\n    join sep (map (partial scalar-text csv-options) items)	"1,2"	[1,2]	
