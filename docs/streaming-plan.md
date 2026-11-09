@@ -1416,3 +1416,68 @@ program that writes every pass), with the actions that build its value.
 The css and feed `whole` sentences described the reader, not the passes,
 and did not meet the test; css's is gone with its part, and feed's stays
 until its part, saying so.
+
+## 13. Actual streaming: the rulings of 2026-11-08
+
+On 2026-11-07 a review of dmog found that no conversion streamed end to
+end. Thirteen of its 22 formats were read through a part, but
+`translate` held its whole output until the run succeeded, in all three
+runtimes, so that a document a part gave up on could be read again whole
+without being written twice; ADR-27's plan had said output is not
+transactional. Rust read a file a window at a time for four grammars
+only (JSON, JSONC, JSON Lines and CSV), read standard input whole, and
+kept css's and toml's trees whole; TypeScript and Go read every input
+whole. feed's render held its entries to the feed's end.
+
+The maintainer ruled on 2026-11-08 that the goal is actual streaming,
+and took ten rulings, recorded as admin's ADR-33:
+
+1. `translate` streams its output from the first byte; a document a part
+   cannot stream fails with its code (`STREAMABILITY_UNKNOWN`,
+   `DUPLICATE_MEMBER`) and `output: "partial"`, and `--whole` reads it
+   whole as its grammar's value. Standard input streams as a file does.
+2. The TypeScript and Go engines both read from a synchronous pull reader
+   through a lexer window, now; transduce's TypeScript and Go sources
+   follow, and their line sources and inference retire (steps 12 and 13
+   in those runtimes).
+3. alchemy adds the primitives `trim`, `first-split`, `starts-with`,
+   `ends-with`, `contains`, `flatten`, `get-or`, a `let` of several
+   names, exact `add` and `sub`, and `sort` over a finite vector, each
+   with fixtures in three runtimes.
+4. proto's tree becomes its declarations in source order, and ABNF, EBNF
+   and GBNF are read as their uncompiled rules in source order, each with
+   a part; this supersedes section 12.1 for those four. expr and semver
+   stay whole.
+5. A stream of several YAML documents fails unless `--whole`.
+6. Markdown's block decisions move into its grammar's rules, and its
+   tree keeps references unresolved, as mdast does, with each
+   definition its own node; then markdown ships a part.
+7. `ParserEvents/1` gains lexer token items for comments and whitespace
+   and a byte offset on every token (extending decision 5 of section
+   10), and C ships a part.
+8. feed's tree puts `entries` last in every reader, so its render writes
+   each entry as it comes; feed's part follows ruling 3.
+9. toml's message for a key defined twice stops quoting the value, so
+   toml and, once verified, css join transduce's `PRUNABLE`.
+10. The session merges its green pull requests and releases in the
+    fleet's order; dmog's first release under its new names stays the
+    maintainer's.
+
+A format streams, for the gate, when in every runtime a document of it
+read from a file and from standard input has written its first byte
+before its input ends, and the run's peak memory stays flat over ten
+times the document.
+
+| Step | Repository | Change | Depends on |
+|---|---|---|---|
+| 14 | dmog | `translate` streams its output in all three runtimes; `--whole`; standard input through the part in Rust; the matrix runs a refused document through `--whole` and pins its refusal without | nothing released |
+| 15 | alchemy | the primitives of ruling 3, with `check.tsv` and `run.tsv` rows and `docs/language.md` entries; release | none |
+| 16 | toml, transduce | toml's message; toml and css in the prune suite and on `PRUNABLE`; releases | none |
+| 17 | feed | `entries` last in the TypeScript and Rust readers; the render writes each entry as it comes; release; then the part | 15, for the part |
+| 18 | parser | the TypeScript and Go engines read from a synchronous pull reader through a lexer window; release | none |
+| 19 | transduce | TypeScript and Go `ParserEventSource` from a reader; steps 12 and 13 in both; release | 18 |
+| 20 | json5, jsonic, ini, xml, zon, chess, css, toml, yaml | `lex.window` in every runtime, yaml last; yaml's part replays an anchored collection at its alias and holds a merge key's members until its mapping closes, under `max_metadata_bytes` | 18, in TypeScript and Go |
+| 21 | parser, transduce, alchemy, c | the token items and byte offsets of ruling 7; C's part | none |
+| 22 | markdown | block decisions in the rules; references and definitions as nodes; the part | none |
+| 23 | proto; bnf, abnf, ebnf, gbnf | the source-ordered schemas, their renders and their parts | none |
+| 24 | dmog | each release taken; readers in TypeScript and Go; pruning on every part route; `--path` as a sub-stream; the streaming gate in every runtime | 14 to 23 |
