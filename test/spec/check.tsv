@@ -172,7 +172,7 @@ def export [input] (join "," (map (fn [x] (if (ends-with "a" 1) "y" "n")) (selec
 def export [input] (join "," (map (fn [x] (if (contains "a") "y" "n")) (select (path each-index) input)))	ERROR:arity@1:47	
 def export [input] (join "," (map (fn [x] (if (contains "a" x x) "y" "n")) (select (path each-index) input)))	ERROR:arity@1:47	
 def export [input] (join "," (map (fn [x] (string-join "|" (starts-with "a" x))) (select (path each-index) input)))	ERROR:type_mismatch@1:60	
-# flatten and sort take a finite vector, a stream refused as count refuses one, and answer one; sort holds its items to one kind, numbers or strings, and NaN to no order, where the plan's evaluation reaches them.
+# flatten and sort take a finite vector, a stream refused as count refuses one, and answer one; sort holds its items to one kind, numbers or strings, and refuses NaN, which has no order, where the plan's evaluation reaches them.
 def export [input] (join "," (map (fn [x] (string-join "|" (flatten 1))) (select (path each-index) input)))	ERROR:type_mismatch@1:69	
 def export [input] (join "," (map (fn [x] (string-join "|" (flatten [] []))) (select (path each-index) input)))	ERROR:arity@1:60	
 def export [input] (join "," (map (fn [x] (number (flatten [[x]]))) (select (path each-index) input)))	ERROR:type_mismatch@1:51	
