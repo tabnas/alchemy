@@ -1481,3 +1481,167 @@ times the document.
 | 22 | markdown | block decisions in the rules; references and definitions as nodes; the part | none |
 | 23 | proto; bnf, abnf, ebnf, gbnf | the source-ordered schemas, their renders and their parts | none |
 | 24 | dmog | each release taken; readers in TypeScript and Go; pruning on every part route; `--path` as a sub-stream; the streaming gate in every runtime | 14 to 23 |
+
+### 13.1 Step 23: the source-ordered schemas
+
+Ruling 4 reads proto and the three grammar notations as their sources,
+in order, each through a transducer part, where section 12.1 read each
+whole as what its package builds after the parse: protoc's descriptor,
+which groups declarations by kind, and the compiled grammar spec, whose
+`options` gather tokens from every rule. A part writes an object's
+members as the rule passes reach them, so each schema below puts its
+members in the order the source spells them, and a member that only a
+later token decides comes last. Nothing in either tree waits for a later
+rule to settle an earlier member, so a part holds no more than a marker
+for each open node and the members a node has still to write.
+
+**proto: `proto-ast`.** The tree is the file's declarations in source
+order, `{"type": "file", "body": [...]}`. Every node is an object whose
+first member, `type`, names it, and whose other members follow in the
+order the statement spells them; a member in brackets below is there only
+where the source writes it.
+
+| `type` | Members | Source |
+|---|---|---|
+| `syntax`, `edition` | `value` | `syntax = "proto3";` |
+| `import` | [`modifier`], `path` | `import public "x.proto";`, `weak`, `option` |
+| `package` | `name` | `package a.b;` |
+| `option` | `name`, `value` | `option java_package = "x";` |
+| `message`, `enum` | [`visibility`], `name`, `body` | `export message M { ... }` |
+| `service` | `name`, `body` | `service S { ... }` |
+| `extend` | `extendee`, `body` | `extend M { ... }` |
+| `field` | [`label`], `fieldType`, `name`, `number`, [`options`] | `repeated int32 x = 1 [packed = true];` |
+| `map` | `keyType`, `valueType`, `name`, `number`, [`options`] | `map<string, M> m = 2;` |
+| `group` | [`label`], `name`, `number`, `body` | `optional group G = 3 { ... }` |
+| `oneof` | `name`, `body` | `oneof o { ... }` |
+| `extensions` | `ranges`, [`options`] | `extensions 100 to max;` |
+| `reserved` | `ranges` or `names` | `reserved 2, 9 to 11;`, `reserved "a";` |
+| `enumValue` | `name`, `number`, [`options`] | an enum's `A = -1;` |
+| `rpc` | `name`, [`inputStream`], `inputType`, [`outputStream`], `outputType`, [`body`] | `rpc R (stream M) returns (M) { ... }` |
+
+A body holds its statements in source order: a message's fields, maps,
+groups, oneofs, nested messages and enums, extends, extension ranges,
+reserved statements and options; an enum's values, options and reserved
+statements; a service's rpcs and options; an rpc block's options; an
+extend's fields; a oneof's fields, groups and options. An empty statement
+declares nothing and is left out, and so are comments and layout, which
+the descriptor does not keep either.
+
+A scalar is the text the source spells, its tokens run together as the
+grammar's own tree keeps a node's source: `a.b.C`, `.a.B`, `(foo).bar`,
+`-1`, `0x1F`, `max`, `inf`, and a string literal with its quotes and its
+escapes as written, `"x.proto"`. The kind of a constant (an identifier, a
+number, a string) is then what its text says, the render writes every
+scalar back as it was, and a number keeps the spelling protoc reads, which
+a JSON number could not (`0x1F`, `017`). `inputStream` and `outputStream`
+are `true` where the rpc writes `stream`. A range is `{"from": ...}`, with
+`"to"` where the range writes one. A field's, a map's, an enum value's or
+an extension range's options are `[{"name": ..., "value": ...}]`. An
+option's value is its text, or, for an aggregate in braces, its fields,
+`[{"name": ..., "value": ...}]`, each value text or an aggregate again.
+protoc records an aggregate as the text between its braces, white space
+and all, and the descriptor keeps that text; a rule pass carries tokens,
+not the white space and comments between them, so no part can rebuild it,
+and the tree keeps the aggregate's fields instead (ruling 7's token items
+would let a later step keep its layout).
+
+The descriptor API stays for its callers (`parse`, `parse_value`,
+`ParseValue`). The tree is `parseTree` in TypeScript, `ParseTree` in Go and
+`parse_tree` in Rust, a walk of the tree the grammar's parse builds (the
+`{rule, src, kids}` nodes), and the part, `alchemy/transduce.alc`
+(`proto-transduce`), makes the same events from the same parse's rule
+passes; a host reading a document whole calls the tree, since the
+grammar's own value is the node tree the walk reads. The render,
+`alchemy/render.alc` (`proto-render`), writes the tree as proto text, a
+declaration to a line and a block's statements two spaces deeper, and
+its contract is the round trip: the text reads back as the tree. The
+schema is `proto-ast`; proto has no embed, so it stays schema-only and
+refuses another format's tree, as it does now. The manifest's `whole`
+sentence goes. The part reads the compiled grammar's rules by name: a
+statement is known by the alternative its dispatch rule pushes
+(`topLevelDef$alt4` is a message, `messageElement$alt12` a field), which
+the grammar's alternative order fixes, and a test in each runtime holds
+those names to the keyword each alternative opens with.
+
+**The grammar notations: `grammar-rules`.** One schema, shared by ABNF,
+EBNF and GBNF and defined in tabnas/bnf, which all three build on. A
+grammar is `{"type": "grammar", "rules": [...]}`, its rules in source
+order, each `{"type": "rule", "name": ..., "alternatives": [...]}`, with
+`"incremental": true` after the name for ABNF's `=/`: a definition is an
+entry of its own where the source writes it, so `a =/ "c"` is a rule entry
+after the `a = ...` it extends, and a compiler merges the two as it does
+now. An alternative is a concatenation, a list of elements, and the empty
+list is the empty alternative (GBNF's `ws ::= | " "`). An element is an
+object whose first member, `type`, names it:
+
+| `type` | Members | ABNF | GBNF | EBNF |
+|---|---|---|---|---|
+| `reference` | `name` | `name` | `name` | `name` |
+| `literal` | `text`, `caseSensitive` | `"ab"` (false), `%i"ab"` (false), `%s"ab"` and `%x61.62` (true) | `"ab"` (true) | `"ab"`, `'ab'` (true) |
+| `char` | `value` | `%x61` | | `#x61` |
+| `range` | `from`, `to` | `%x61-7A` | | |
+| `class` | `negated`, `members` | | `[a-z_]`, `[^"]` | `[a-z]`, `[^<&]`, `[#x20-#x7E]` |
+| `any` | | | `.` | |
+| `token` | `negated`, `text` | | `<think>`, `!<[1000]>` | |
+| `prose` | `text` | `<a number>` | | |
+| `group` | `alternatives` | `( ... )`, `[ ... ]` | `( ... )` | `( ... )` |
+
+A code point is a number (`value`, `from`, `to`, and a class's members,
+`[{"from": 97, "to": 122}]`, a lone character a member whose bounds are
+one), so a character means the same whatever notation spelled it; a
+literal's `text` is the characters it matches, its escapes read. Any
+element may end with `repeat`, the repetitions applied to it, innermost
+first, each `{"min": m, "max": n}` with `max` left out where unbounded.
+GBNF's and EBNF's operators (`?`, `*`, `+`, `{m,n}`) follow their
+element, so a repetition is its element's last member, and ABNF's prefix
+(`*`, `m*n`, `n`) is written there too, from the state the part keeps
+while the element passes. An optional is the repetition from 0 to 1 in
+every notation: ABNF's `[ a / b ]` is a group with that repetition, as
+`*1( a / b )` is, and GBNF's and EBNF's `x?` is `x` with it.
+
+Each notation reads its documents as this schema and writes it. Its
+meta-grammar, which reads the notation today, builds the tree as its
+value, so the tree is the grammar's value walked and its part
+(`abnf-transduce`, `ebnf-transduce`, `gbnf-transduce`) makes the same
+events from the same rule passes. A token whose text needs reading (a
+numeric value, an escaped literal, a class, a run of operators) carries
+what it reads as its value, as css's at-rule tokens carry their heads,
+since a part sees a token's value and never the work an action does with
+it. Go's EBNF front end, a scanner today, gains the rule table the
+TypeScript and Rust ones have, so that every runtime has passes to read.
+Its render writes the tree in its notation and refuses, naming the rule
+and what it met, what the notation cannot say: GBNF and EBNF have no
+prose and no `=/`, ABNF and EBNF no token terminal, and a name a notation
+cannot spell is refused there. What one notation spells another way is
+written that way, as the renders do now: a case-insensitive literal as
+the classes that match it, a range or a character as a class, a class as
+the ranges and characters it holds. Comments are left out, and so is
+ABNF's value annotation, which a comment carries and no pass holds
+(ruling 7's token items would carry it). The tree is the rules the
+document writes: the core rules ABNF adds, the start rule and the
+compile's options are the compiler's. tabnas/bnf ships the schema: its
+definition, the nodes each runtime builds a tree with (so that Go's keep
+their members in order), and a check that a value is such a tree, held
+by shared fixtures in every runtime. Each notation's `test/spec/tree.tsv`
+holds its reader to the trees its documents read as, in every runtime,
+and the round trip through its render shows the tree carries the
+grammar: a tree written in its own notation reads back as itself, and the
+text compiles to a spec that recognises what the source's spec does.
+
+One schema rather than one per notation, because the three describe the
+same thing, a context-free grammar over characters, and share one
+compiler: a schema per notation would end the cross translation dmog
+holds today (an ABNF grammar written as GBNF), where one schema keeps it
+and moves what each notation cannot say into its render's refusals.
+
+The compiled grammar spec stays the packages' API for a host that
+installs a grammar (`abnfCompile`, `ebnfConvert`, `gbnfConvert` and
+tabnas/bnf's serializers). The `grammar-spec` route stays beside the new
+one while dmog reads it: each notation keeps its render of a compiled
+spec as `alchemy/render-spec.alc`, named by the manifest's
+`translate.spec` (its schema, render and loss list), and the parts API
+hands it over with the others. dmog's checks on the notations move to
+`grammar-rules`: a grammar read in one notation and written in another
+reads back as the rules its render writes again as the same text, and
+the spec the target's compiler makes of the written text recognises the
+samples as the spec the source's compiler makes of the source does.
