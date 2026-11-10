@@ -27,7 +27,7 @@
 
 // VERSION is this package's version. It MUST equal package.json "version",
 // which is the crate's (rs/Cargo.toml): the runtimes ship as one version.
-export const VERSION = '0.3.1'
+export const VERSION = '0.4.0'
 
 export {
   MAX_NESTING,
