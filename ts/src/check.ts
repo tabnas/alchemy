@@ -576,6 +576,7 @@ class Checker {
             break
           case 'open':
           case 'close':
+          case 'token':
             fields = [Record]
             break
           default:
@@ -1068,6 +1069,7 @@ class Checker {
         return events()
       case 'parser-events':
         this.expect('the input of parser-events', ParserEvents, t(0), at(0))
+        if (args.length > 1) this.expect('the option of parser-events', Keyword, t(1), at(1))
         return parserEvents()
       case 'as-events':
         this.expect('the items of as-events', streamOf(Unknown), t(0), at(0))
@@ -1197,6 +1199,9 @@ class Checker {
       case 'close':
         this.expect(`the rule of ${n.name}`, Record, t(0), at(0))
         return tagged(n.name)
+      case 'token':
+        this.expect('the token of token', Record, t(0), at(0))
+        return tagged('token')
       case 'scalar':
         if (!among(t(0), 'Null', 'Bool', 'Number', 'String', 'Value', 'Unknown', 'Never')) {
           throw this.typeError(

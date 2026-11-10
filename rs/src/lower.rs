@@ -51,9 +51,9 @@ use crate::program::Output;
 use crate::shared::limits::NODE_BYTES;
 use crate::shared::{
     CaptureSpec, Cell, Code, CsvOptions, Datum, Fail, Flow, JoinOut, JsonEvent, JsonOptions,
-    Limits, Metrics, Number, ParserEvent, ParserSink, PublicColumn, Renderers, RouteSink, Routers,
-    RulePass, ScanEmitter, ScanFinish, ScanOut, ScanStep, Selected, Sink, TableEvent, TableSink,
-    TextOut, Transition, TreeContract,
+    Limits, Metrics, Number, ParserEvent, ParserSink, PassToken, PublicColumn, Renderers,
+    RouteSink, Routers, RulePass, ScanEmitter, ScanFinish, ScanOut, ScanStep, Selected, Sink,
+    TableEvent, TableSink, TextOut, Transition, TreeContract,
 };
 use crate::stdlib::registry::{capture_budget, number_text, truth};
 use crate::value::{type_error, Func, NonFinite, Plan, Protocol, Seq, Val};
@@ -448,11 +448,17 @@ impl Sink for EventsToItems {
 
 /// The parser's rule passes as the items `parser-events` yields: `(open
 /// rule)` and `(close rule)`, the rule a record of the pass's fields, a
-/// field the pass lacks left out (`get` answers `missing` for it). The
-/// parse's `End` is the stream's end. The head of a program's chain when
-/// the host declares parser events: the host pushes each pass into it.
+/// field the pass lacks left out (`get` answers `missing` for it), and,
+/// when the program asked for them (`parser-events input :tokens`), each
+/// token the parser did not take as `(token t)`. The parse's `End` is the
+/// stream's end. The head of a program's chain when the host declares
+/// parser events: the host pushes each pass into it.
 pub struct ParserEventsToItems {
     down: Items,
+    /// Whether the program reads token items: the sink asks the source for
+    /// them, and takes them; without it a token item a source sends anyway
+    /// reaches no step.
+    tokens: bool,
 }
 
 impl ParserSink for ParserEventsToItems {
@@ -467,9 +473,18 @@ impl ParserSink for ParserEventsToItems {
                 tag: shapes.close.clone(),
                 fields: Arc::from([rule_record(pass)]),
             },
+            ParserEvent::Token(token) if self.tokens => Val::Tagged {
+                tag: shapes.token_tag.clone(),
+                fields: Arc::from([token_record(token)]),
+            },
+            ParserEvent::Token(_) => return Ok(Flow::Continue),
             ParserEvent::End => return self.down.end(),
         };
         self.down.item(item)
+    }
+
+    fn wants_tokens(&self) -> bool {
+        self.tokens
     }
 }
 
@@ -479,6 +494,7 @@ impl ParserSink for ParserEventsToItems {
 struct PassShapes {
     open: Arc<str>,
     close: Arc<str>,
+    token_tag: Arc<str>,
     /// `name d i alt tokens forced n value`, by whether the pass has an
     /// alternate (bit 0) and a value (bit 1): the fields it lacks are left
     /// out, as `get` answers `missing` for them.
@@ -496,6 +512,7 @@ fn pass_shapes() -> &'static PassShapes {
         PassShapes {
             open: Arc::from("open"),
             close: Arc::from("close"),
+            token_tag: Arc::from("token"),
             rule: [
                 shape(&["name", "d", "i", "tokens", "forced", "n"]),
                 shape(&["name", "d", "i", "alt", "tokens", "forced", "n"]),
@@ -503,7 +520,7 @@ fn pass_shapes() -> &'static PassShapes {
                 shape(&["name", "d", "i", "alt", "tokens", "forced", "n", "value"]),
             ],
             alt: shape(&["p", "r", "b", "g"]),
-            token: shape(&["name", "val", "src", "row", "col"]),
+            token: shape(&["name", "val", "src", "row", "col", "offset"]),
         }
     })
 }
@@ -517,27 +534,28 @@ fn shaped(shape: &IndexMap<Arc<str>, Val>, values: impl IntoIterator<Item = Val>
     Val::Record(Arc::new(record))
 }
 
+/// A token as a pass's `:tokens` and a `(token t)` carry it: `:name`,
+/// `:val`, `:src`, `:row`, `:col` and `:offset`.
+fn token_record(t: &PassToken) -> Val {
+    let count = |n: u64| Val::num(n as f64);
+    shaped(
+        &pass_shapes().token,
+        [
+            Val::str(&t.name),
+            Val::from_datum(&t.val),
+            Val::str(&t.src),
+            count(t.row),
+            count(t.col),
+            count(t.offset),
+        ],
+    )
+}
+
 /// A rule pass as the record `(open rule)` and `(close rule)` carry.
 fn rule_record(pass: &RulePass) -> Val {
     let shapes = pass_shapes();
     let count = |n: u64| Val::num(n as f64);
-    let tokens = Val::Vector(
-        pass.tokens
-            .iter()
-            .map(|t| {
-                shaped(
-                    &shapes.token,
-                    [
-                        Val::str(&t.name),
-                        Val::from_datum(&t.val),
-                        Val::str(&t.src),
-                        count(t.row),
-                        count(t.col),
-                    ],
-                )
-            })
-            .collect(),
-    );
+    let tokens = Val::Vector(pass.tokens.iter().map(token_record).collect());
     let n = Val::Record(Arc::new(
         pass.n
             .iter()
@@ -582,6 +600,10 @@ impl ParserSink for ParserHead {
             (None, ParserEvent::End) => self.events.event(JsonEvent::End),
             (None, _) => Ok(Flow::Continue),
         }
+    }
+
+    fn wants_tokens(&self) -> bool {
+        self.head.as_ref().is_some_and(|head| head.wants_tokens())
     }
 }
 
@@ -1507,13 +1529,16 @@ impl<'a> Lowering<'a> {
             // reads (its native refuses any other): the head is kept for
             // the host, which pushes the rule passes into it, and the JSON
             // events side of the chain is never driven.
-            Plan::ParserEvents { source } => {
+            Plan::ParserEvents { source, tokens } => {
                 if !matches!(**source, Plan::ParserInput) {
                     return Err(protocol_mismatch(
                         "parser-events reads the host's parser events alone",
                     ));
                 }
-                self.keep_parser_head(Box::new(ParserEventsToItems { down }))
+                self.keep_parser_head(Box::new(ParserEventsToItems {
+                    down,
+                    tokens: *tokens,
+                }))
             }
             Plan::ScanEmit {
                 init,
@@ -1742,10 +1767,24 @@ pub(crate) mod tests {
             Val::vector(vec![]),
         ]);
         let mut out = Vec::new();
+        // A token item before every pass: transduce-records-step yields
+        // nothing for it and keeps its state.
+        let passes = passes.into_iter().flat_map(|ev| {
+            let blank = ParserEvent::Token(PassToken {
+                name: "#LN".into(),
+                val: Datum::String("\n".into()),
+                src: "\n".into(),
+                row: 1,
+                col: 1,
+                offset: 0,
+            });
+            [blank, ev]
+        });
         for ev in passes {
             let item = match &ev {
                 ParserEvent::Open(pass) => Val::tagged("open", vec![rule_record(pass)]),
                 ParserEvent::Close(pass) => Val::tagged("close", vec![rule_record(pass)]),
+                ParserEvent::Token(t) => Val::tagged("token", vec![token_record(t)]),
                 ParserEvent::End => {
                     let Val::Vector(tail) = rt.apply(&finish, vec![state.clone()], &at)? else {
                         panic!("finish answers a vector");
@@ -1915,8 +1954,9 @@ pub(crate) mod tests {
             |text: &str| ParserEvent::from_json(&serde_json::from_str(text).unwrap()).unwrap();
         let passes = [
             event(
-                r##"["open",{"name":"val","d":1,"i":1,"alt":{"p":"","r":"","b":0,"g":["json"]},"tokens":[["#NR",2.5,"2.50",1,1]],"forced":false,"n":{"dmap":1}}]"##,
+                r##"["open",{"name":"val","d":1,"i":1,"alt":{"p":"","r":"","b":0,"g":["json"]},"tokens":[["#NR",2.5,"2.50",1,2,1]],"forced":false,"n":{"dmap":1}}]"##,
             ),
+            event(r##"["token",{"name":"#SP","val":" ","src":" ","row":1,"col":6,"offset":5}]"##),
             event(
                 r#"["close",{"name":"val","d":1,"i":1,"tokens":[],"forced":false,"n":{},"value":2.5}]"#,
             ),
@@ -1934,7 +1974,10 @@ pub(crate) mod tests {
         };
         let plan = Arc::new(Plan::ParserEvents {
             source: Arc::new(Plan::ParserInput),
+            tokens: false,
         });
+        let open = r##"(open (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :alt (record (entry :p "") (entry :r "") (entry :b 0) (entry :g ["json"]))) (entry :tokens [(record (entry :name "#NR") (entry :val 2.5) (entry :src "2.50") (entry :row 1) (entry :col 2) (entry :offset 1))]) (entry :forced false) (entry :n (record (entry :dmap 1)))))"##;
+        let close = r#"(close (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :tokens []) (entry :forced false) (entry :n (record)) (entry :value 2.5)))"#;
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let here = lowering(runtime("def export [input] (parser-events input)"));
@@ -1945,14 +1988,36 @@ pub(crate) mod tests {
         let again = here.items(&plan, Box::new(Seen(seen.clone())), false);
         assert_eq!(again.err().map(|f| f.code), Some(Code::StreamReused));
         let mut head = here.parser_head(events);
+        // A program that did not ask for token items asks the source for
+        // none, and one a source sends anyway reaches no step.
+        assert!(!head.wants_tokens());
+        for pass in &passes {
+            head.event(pass).unwrap();
+        }
+        assert_eq!(*seen.lock().unwrap(), [open, close, "end"]);
+
+        // With `:tokens` the head asks for them, and each is a `(token t)`
+        // in its place among the passes.
+        let with_tokens = Arc::new(Plan::ParserEvents {
+            source: Arc::new(Plan::ParserInput),
+            tokens: true,
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let here = lowering(runtime("def export [input] (parser-events input :tokens)"));
+        let events = here
+            .items(&with_tokens, Box::new(Seen(seen.clone())), false)
+            .unwrap();
+        let mut head = here.parser_head(events);
+        assert!(head.wants_tokens());
         for pass in &passes {
             head.event(pass).unwrap();
         }
         assert_eq!(
             *seen.lock().unwrap(),
             [
-                r##"(open (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :alt (record (entry :p "") (entry :r "") (entry :b 0) (entry :g ["json"]))) (entry :tokens [(record (entry :name "#NR") (entry :val 2.5) (entry :src "2.50") (entry :row 1) (entry :col 1))]) (entry :forced false) (entry :n (record (entry :dmap 1)))))"##,
-                r#"(close (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :tokens []) (entry :forced false) (entry :n (record)) (entry :value 2.5)))"#,
+                open,
+                r##"(token (record (entry :name "#SP") (entry :val " ") (entry :src " ") (entry :row 1) (entry :col 6) (entry :offset 5)))"##,
+                close,
                 "end",
             ]
         );
@@ -1975,7 +2040,7 @@ pub(crate) mod tests {
     /// source text as the lexeme, a close pass's scalar node as its
     /// value, then one end.
     fn json_passes(src: &str) -> Vec<ParserEvent> {
-        use crate::shared::{PassAlt, PassToken};
+        use crate::shared::PassAlt;
         use tabnas::{RuleState, Value};
         let passes = Arc::new(Mutex::new(Vec::new()));
         let mut parser = tabnas_json::make();
@@ -2000,6 +2065,7 @@ pub(crate) mod tests {
                         src: t.src.as_str().into(),
                         row: t.site.ri as u64,
                         col: t.site.ci as u64,
+                        offset: t.site.si as u64,
                     })
                     .collect();
                 let node = r.node.borrow();
@@ -2064,10 +2130,29 @@ pub(crate) mod tests {
         let at = SourceSpan::new(&Arc::from("t"), 0, 0);
         let mut state = init;
         let mut out = Vec::new();
-        for ev in json_passes(src) {
+        // A token item after every pass, as a part that reads them hands
+        // its steps one: the library's steps yield nothing for it and keep
+        // their state, so the outputs are the passes' alone.
+        let blank = ParserEvent::Token(PassToken {
+            name: "#SP".into(),
+            val: Datum::String(" ".into()),
+            src: " ".into(),
+            row: 1,
+            col: 1,
+            offset: 0,
+        });
+        let events = json_passes(src)
+            .into_iter()
+            .flat_map(|ev| match ev {
+                ParserEvent::End => vec![ev],
+                ev => vec![ev, blank.clone()],
+            })
+            .collect::<Vec<_>>();
+        for ev in events {
             let item = match &ev {
                 ParserEvent::Open(pass) => Val::tagged("open", vec![rule_record(pass)]),
                 ParserEvent::Close(pass) => Val::tagged("close", vec![rule_record(pass)]),
+                ParserEvent::Token(t) => Val::tagged("token", vec![token_record(t)]),
                 ParserEvent::End => {
                     let Val::Vector(tail) = rt.apply(&finish, vec![state.clone()], &at).unwrap()
                     else {

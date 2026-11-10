@@ -36,8 +36,9 @@ export type Type =
   | { readonly t: 'TableEvent' }
   // One event of the source as `events` delivers it.
   | { readonly t: 'Event' }
-  // One rule pass as `parser-events` delivers it: `(open rule)` or
-  // `(close rule)`, the rule a record.
+  // One item as `parser-events` delivers it: `(open rule)` or `(close
+  // rule)`, the rule a record, or, with `:tokens`, `(token t)`, a token the
+  // parser did not take.
   | { readonly t: 'ParserEvent' }
   // A function: its parameters and its result.
   | { readonly t: 'Fn'; readonly params: Type[]; readonly result: Type }
@@ -183,7 +184,7 @@ export function isTextlike(ty: Type): boolean {
 
 const TABLE_EVENT_TAGS = ['schema', 'row', 'table-end']
 const EVENT_TAGS = ['object-start', 'object-end', 'array-start', 'array-end', 'key', 'scalar']
-const PARSER_EVENT_TAGS = ['open', 'close']
+const PARSER_EVENT_TAGS = ['open', 'close', 'token']
 
 // Whether a value of type `actual` may be given where `expected` is
 // expected. `Value` is any data, so it may be the particular data wanted

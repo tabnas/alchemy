@@ -11,7 +11,8 @@ import (
 )
 
 // parser_event.go: ParserEvents/1, the parser's rule passes, as a
-// transducer part reads them (rs/src/shared/parser_event.rs).
+// transducer part reads them, and the tokens the parser did not take
+// (rs/src/shared/parser_event.rs).
 //
 // A source over a tabnas parse (transduce's parser-event source) relays
 // each rule pass the engine reports to its rule-done subscribers as one
@@ -21,6 +22,16 @@ import (
 // validated. A pass made inside a probe (the engine's RuleDone.Probe) is
 // speculative, and the source drops it.
 //
+// A sink that asks for them (TokenSink) also gets a ParserToken for each
+// token the lexer gave and the parser did not take, one of the grammar's
+// ignored tokens (white space, a line break, a comment), in source order
+// among the passes: before the first pass that consumed a token after it,
+// and those still held when the parse returns before the End. A sink that
+// does not ask gets none, and the source subscribes to no lexer event for
+// it. Every token, a pass's and a token item alike, carries its byte
+// offset: where it starts, in UTF-8 bytes from the document's start, the
+// same in every runtime.
+//
 // Containers never travel in parser events: a rule's node is handed on
 // only as a scalar (RulePass.Value), so a transducer that wants a
 // container emits its start and end from the passes that open and close
@@ -29,11 +40,13 @@ import (
 // The fixture encoding (ParserEvent.JSON) follows the JSON events'
 // encoding: an array whose first element names the event, `["open",
 // {"name": "map", "d": 1, "i": 3, "alt": {"p": "pair", "r": "", "b": 0,
-// "g": ["map", "json"]}, "tokens": [["#OB", "{", "{", 1, 1]], "forced":
-// false, "n": {"pk": 0}}]`, and `["end"]`. A field that is absent (Alt when
-// the state declared no alternates, Value when the node is not a scalar or
-// the pass is an open) is left out, so `"value": null` is always a null
-// scalar.
+// "g": ["map", "json"]}, "tokens": [["#OB", "{", "{", 1, 1, 0]], "forced":
+// false, "n": {"pk": 0}}]`, a pass's token being `[name, val, src, row,
+// col, offset]`; `["token", {"name": "#SP", "val": null, "src": " ", "row":
+// 1, "col": 2, "offset": 1}]`; and `["end"]`. A field that is absent (Alt
+// when the state declared no alternates, Value when the node is not a
+// scalar or the pass is an open) is left out, so `"value": null` is always
+// a null scalar.
 
 // ParserEventKind is which item of ParserEvents/1 an event is.
 type ParserEventKind uint8
@@ -47,6 +60,10 @@ const (
 	// ParserEnd: the parse returned its value. Exactly one, after the last
 	// pass.
 	ParserEnd
+	// ParserToken: a token the lexer gave and the parser did not take, one
+	// of the grammar's ignored tokens (white space, a line break, a
+	// comment). Only a sink that asks for them gets them (TokenSink).
+	ParserToken
 )
 
 // String is the event's name in the encoding: open, close or end, and
@@ -59,15 +76,18 @@ func (k ParserEventKind) String() string {
 		return "close"
 	case ParserEnd:
 		return "end"
+	case ParserToken:
+		return "token"
 	}
 	return "unknown"
 }
 
 // ParserEvent is one item of ParserEvents/1; Pass is an Open's or a
-// Close's.
+// Close's, Token a ParserToken's.
 type ParserEvent struct {
-	Kind ParserEventKind
-	Pass *RulePass
+	Kind  ParserEventKind
+	Pass  *RulePass
+	Token *PassToken
 }
 
 // RulePass is what one rule pass reports.
@@ -102,7 +122,7 @@ type PassAlt struct {
 	G    []string
 }
 
-// PassToken is a token a pass consumed.
+// PassToken is a token a pass consumed, or one a ParserToken carries.
 type PassToken struct {
 	// Name is the token's name (#OB, #ST, #NR); Val its value (a string's
 	// contents, a number's value); Src the source text it was lexed from.
@@ -110,6 +130,9 @@ type PassToken struct {
 	Val      Datum
 	Src      string
 	Row, Col uint64
+	// Offset is where the token starts: its offset in UTF-8 bytes from the
+	// document's start, the same in every runtime.
+	Offset uint64
 }
 
 // PassCounter is one of a rule's named counters.
@@ -126,6 +149,22 @@ type ParserSink interface {
 	ParserEvent(ev ParserEvent) (Flow, *Fail)
 }
 
+// TokenSink is a ParserSink that may ask for ParserToken items. A source
+// asks once, before the parse, and sends them only to a sink whose
+// WantsTokens answers true: a sink that does not ask, or that is no
+// TokenSink, gets the rule passes alone, and the source does none of the
+// work token items take.
+type TokenSink interface {
+	ParserSink
+	WantsTokens() bool
+}
+
+// WantsTokens is whether sink asks for token items.
+func WantsTokens(sink ParserSink) bool {
+	t, ok := sink.(TokenSink)
+	return ok && t.WantsTokens()
+}
+
 // JSON is the fixture encoding: `["open", {...}]`, `["close", {...}]` or
 // `["end"]`.
 func (e ParserEvent) JSON() string {
@@ -133,6 +172,18 @@ func (e ParserEvent) JSON() string {
 	b.WriteString(`["`)
 	b.WriteString(e.Kind.String())
 	b.WriteByte('"')
+	if e.Kind == ParserToken && e.Token != nil {
+		t := e.Token
+		b.WriteString(`,{"name":`)
+		WriteJSONString(t.Name, &b)
+		b.WriteString(`,"val":`)
+		WriteJSON(&t.Val, &b)
+		b.WriteString(`,"src":`)
+		WriteJSONString(t.Src, &b)
+		b.WriteString(`,"row":` + strconv.FormatUint(t.Row, 10) + `,"col":` + strconv.FormatUint(t.Col, 10) +
+			`,"offset":` + strconv.FormatUint(t.Offset, 10) + "}]")
+		return b.String()
+	}
 	if e.Kind == ParserEnd || e.Pass == nil {
 		b.WriteByte(']')
 		return b.String()
@@ -168,7 +219,8 @@ func (e ParserEvent) JSON() string {
 		WriteJSON(&t.Val, &b)
 		b.WriteByte(',')
 		WriteJSONString(t.Src, &b)
-		b.WriteString("," + strconv.FormatUint(t.Row, 10) + "," + strconv.FormatUint(t.Col, 10) + "]")
+		b.WriteString("," + strconv.FormatUint(t.Row, 10) + "," + strconv.FormatUint(t.Col, 10) +
+			"," + strconv.FormatUint(t.Offset, 10) + "]")
 	}
 	b.WriteString(`],"forced":` + strconv.FormatBool(p.Forced) + `,"n":{`)
 	for i, c := range p.N {
@@ -209,6 +261,8 @@ func ParserEventFromJSON(text string) (ParserEvent, error) {
 		kind = ParserOpen
 	case name == "close" && len(items) == 2:
 		kind = ParserClose
+	case name == "token" && len(items) == 2:
+		return tokenFromJSON(items[1], text)
 	default:
 		return wrong("not a parser event")
 	}
@@ -267,15 +321,16 @@ func ParserEventFromJSON(text string) (ParserEvent, error) {
 	}
 	for _, raw := range tokens {
 		var parts []json.RawMessage
-		if json.Unmarshal(raw, &parts) != nil || len(parts) != 5 {
-			return wrong("a token is [name, val, src, row, col]")
+		if json.Unmarshal(raw, &parts) != nil || len(parts) != 6 {
+			return wrong("a token is [name, val, src, row, col, offset]")
 		}
 		var t PassToken
 		val, verr := DatumFromJSON(string(parts[1]))
 		if json.Unmarshal(parts[0], &t.Name) != nil || verr != nil ||
 			json.Unmarshal(parts[2], &t.Src) != nil ||
-			json.Unmarshal(parts[3], &t.Row) != nil || json.Unmarshal(parts[4], &t.Col) != nil {
-			return wrong("a token is [name, val, src, row, col]")
+			json.Unmarshal(parts[3], &t.Row) != nil || json.Unmarshal(parts[4], &t.Col) != nil ||
+			json.Unmarshal(parts[5], &t.Offset) != nil {
+			return wrong("a token is [name, val, src, row, col, offset]")
 		}
 		t.Val = val
 		pass.Tokens = append(pass.Tokens, t)
@@ -305,4 +360,40 @@ func ParserEventFromJSON(text string) (ParserEvent, error) {
 		pass.Value = &v
 	}
 	return ParserEvent{Kind: kind, Pass: pass}, nil
+}
+
+// tokenFromJSON reads a token item's record, `{"name", "val", "src", "row",
+// "col", "offset"}`, or says what is wrong with it.
+func tokenFromJSON(raw json.RawMessage, text string) (ParserEvent, error) {
+	var record map[string]json.RawMessage
+	if json.Unmarshal(raw, &record) != nil || record == nil {
+		return ParserEvent{}, fmt.Errorf("a token item is an object: %s", text)
+	}
+	t := &PassToken{}
+	for _, f := range []struct {
+		key string
+		to  *string
+	}{{"name", &t.Name}, {"src", &t.Src}} {
+		if record[f.key] == nil || json.Unmarshal(record[f.key], f.to) != nil {
+			return ParserEvent{}, fmt.Errorf("a token item's :%s is a string: %s", f.key, text)
+		}
+	}
+	for _, f := range []struct {
+		key string
+		to  *uint64
+	}{{"row", &t.Row}, {"col", &t.Col}, {"offset", &t.Offset}} {
+		if record[f.key] == nil || json.Unmarshal(record[f.key], f.to) != nil {
+			return ParserEvent{}, fmt.Errorf("a token item's :%s is a count: %s", f.key, text)
+		}
+	}
+	val := "null"
+	if record["val"] != nil {
+		val = string(record["val"])
+	}
+	v, err := DatumFromJSON(val)
+	if err != nil {
+		return ParserEvent{}, fmt.Errorf("a token item's :val is a value: %s", text)
+	}
+	t.Val = v
+	return ParserEvent{Kind: ParserToken, Token: t}, nil
 }

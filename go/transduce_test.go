@@ -59,7 +59,7 @@ func jsonPasses(t *testing.T, src string) []shared.ParserEvent {
 			if f, ok := tok.ResolveVal(r, ctx).(float64); ok && tok.Name == "#NR" {
 				val = shared.NumberDatumLexeme(f, tok.Src)
 			}
-			pass.Tokens = append(pass.Tokens, shared.PassToken{Name: tok.Name, Val: val, Src: tok.Src, Row: uint64(tok.RI), Col: uint64(tok.CI)})
+			pass.Tokens = append(pass.Tokens, shared.PassToken{Name: tok.Name, Val: val, Src: tok.Src, Row: uint64(tok.RI), Col: uint64(tok.CI), Offset: uint64(tok.SI)})
 		}
 		if done.Alt != nil {
 			pass.Alt = &shared.PassAlt{P: done.Alt.P, R: done.Alt.R, B: uint64(done.Alt.B), G: done.Alt.G}
@@ -107,8 +107,19 @@ func treeScan(t *testing.T, rt *Runtime, specName, stepName, finishName string, 
 	state := init
 	var out []string
 	var item Val
-	items := &parserEventsToItems{down: itemFunc(func(v Val) { item = v })}
+	items := &parserEventsToItems{down: itemFunc(func(v Val) { item = v }), tokens: true}
+	// A token item after every pass, as a part that reads them hands its
+	// steps one: the library's steps yield nothing for it and keep their
+	// state, so the outputs are the passes' alone.
+	blank := shared.ParserEvent{Kind: shared.ParserToken, Token: &shared.PassToken{Name: "#SP", Val: shared.StringDatum(" "), Src: " ", Row: 1, Col: 1}}
+	var events []shared.ParserEvent
 	for _, ev := range jsonPasses(t, src) {
+		events = append(events, ev)
+		if ev.Kind != shared.ParserEnd {
+			events = append(events, blank)
+		}
+	}
+	for _, ev := range events {
 		if ev.Kind == shared.ParserEnd {
 			tail, f := rt.Apply(finish, []Val{state}, at)
 			if f != nil {

@@ -24,7 +24,7 @@ import {
 import { make as makeJson } from '@tabnas/json'
 
 import { Lowering, ParserEventsOnly, ParserEventsToItems } from '../dist/lower'
-import { Datum, Limits, Metrics, fromJSON, parserEventFromJSON } from '../dist/shared'
+import { Datum, Limits, Metrics, fromJSON, parserEventFromJSON, wantsTokens } from '../dist/shared'
 import type { ParserEvent, TableEvent, TableSink } from '../dist/shared'
 
 import { OPTIONS, PROGRAM, compile, thrown } from './common'
@@ -85,12 +85,17 @@ describe('program', () => {
     const passes = [
       parserEventFromJSON([
         'open',
-        { name: 'val', d: 1, i: 1, alt: { p: '', r: '', b: 0, g: ['json'] }, tokens: [['#NR', 2.5, '2.50', 1, 1]], forced: false, n: { dmap: 1 } },
+        { name: 'val', d: 1, i: 1, alt: { p: '', r: '', b: 0, g: ['json'] }, tokens: [['#NR', 2.5, '2.50', 1, 2, 1]], forced: false, n: { dmap: 1 } },
       ]),
+      parserEventFromJSON(['token', { name: '#SP', val: ' ', src: ' ', row: 1, col: 6, offset: 5 }]),
       parserEventFromJSON(['close', { name: 'val', d: 1, i: 1, tokens: [], forced: false, n: {}, value: 2.5 }]),
       parserEventFromJSON(['end']),
     ]
-    const plan = { p: 'parser-events', source: { p: 'parser-input' } }
+    const open =
+      '(open (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :alt (record (entry :p "") (entry :r "") (entry :b 0) (entry :g ["json"]))) (entry :tokens [(record (entry :name "#NR") (entry :val 2.5) (entry :src "2.50") (entry :row 1) (entry :col 2) (entry :offset 1))]) (entry :forced false) (entry :n (record (entry :dmap 1)))))'
+    const close =
+      '(close (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :tokens []) (entry :forced false) (entry :n (record)) (entry :value 2.5)))'
+    const plan = { p: 'parser-events', source: { p: 'parser-input' }, tokens: false }
     const seen: string[] = []
     const down = {
       item(v: any) {
@@ -107,10 +112,24 @@ describe('program', () => {
     // The parser events are read once.
     assert.equal(thrown(() => here.items(plan, down, false)).code, 'STREAM_REUSED')
     const head = here.parserHead(events)
+    // A program that did not ask for token items asks the source for none,
+    // and one a source sends anyway reaches no step.
+    assert.equal(wantsTokens(head), false)
     for (const pass of passes) head.event(pass)
+    assert.deepStrictEqual(seen, [open, close, 'end'])
+
+    // With `:tokens` the head asks for them, and each is a `(token t)` in
+    // its place among the passes.
+    seen.length = 0
+    const withTokens = { p: 'parser-events', source: { p: 'parser-input' }, tokens: true }
+    const there: any = new Lowering(runtime('def export [input] (parser-events input :tokens)'), Limits.default(), new Metrics())
+    const asks = there.parserHead(there.items(withTokens, down, false))
+    assert.equal(wantsTokens(asks), true)
+    for (const pass of passes) asks.event(pass)
     assert.deepStrictEqual(seen, [
-      '(open (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :alt (record (entry :p "") (entry :r "") (entry :b 0) (entry :g ["json"]))) (entry :tokens [(record (entry :name "#NR") (entry :val 2.5) (entry :src "2.50") (entry :row 1) (entry :col 1))]) (entry :forced false) (entry :n (record (entry :dmap 1)))))',
-      '(close (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :tokens []) (entry :forced false) (entry :n (record)) (entry :value 2.5)))',
+      open,
+      '(token (record (entry :name "#SP") (entry :val " ") (entry :src " ") (entry :row 1) (entry :col 6) (entry :offset 5)))',
+      close,
       'end',
     ])
     // The JSON-events side of a parser program is never driven.
@@ -153,6 +172,8 @@ describe('program', () => {
           src: t.src,
           row: t.rI,
           col: t.cI,
+          // The documents here are ASCII, so a UTF-16 index is a byte offset.
+          offset: t.sI,
         }))
         const node = r.node
         const scalar = !open && undefined !== node && (null === node || 'object' !== typeof node)
@@ -191,16 +212,23 @@ describe('program', () => {
     let state = init
     const out: string[] = []
     let pending: any
-    const items = new ParserEventsToItems({
-      item(v: any) {
-        pending = v
-        return 'continue'
+    const items = new ParserEventsToItems(
+      {
+        item(v: any) {
+          pending = v
+          return 'continue'
+        },
+        end() {
+          return 'continue'
+        },
       },
-      end() {
-        return 'continue'
-      },
-    })
-    for (const ev of passes(src)) {
+      true,
+    )
+    // A token item after every pass, as a part that reads them hands its
+    // steps one: the library's steps yield nothing for it and keep their
+    // state, so the outputs are the passes' alone.
+    const blank: ParserEvent = { type: 'token', token: { name: '#SP', val: Datum.string(' '), src: ' ', row: 1, col: 1, offset: 0 } }
+    for (const ev of passes(src).flatMap((ev): ParserEvent[] => ('end' === ev.type ? [ev] : [ev, blank]))) {
       if ('end' === ev.type) {
         const tail: any = run(rt.apply(finish.f, [state], at))
         out.push(...tail.items.map((v: any) => V.debugText(v)))

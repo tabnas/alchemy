@@ -1645,3 +1645,94 @@ hands it over with the others. dmog's checks on the notations move to
 reads back as the rules its render writes again as the same text, and
 the spec the target's compiler makes of the written text recognises the
 samples as the spec the source's compiler makes of the source does.
+
+### 13.2 Step 21: token items, byte offsets, and C
+
+Ruling 7's protocol is in alchemy's shared types and transduce's
+`ParserEventSource`, in all three runtimes (2026-11-10). Every token a
+pass carries has its byte offset, `:offset`: where it starts, in UTF-8
+bytes from the document's start, the same in every runtime (Rust's engine
+gives it as `site.si`, Go's counts bytes, and the TypeScript source
+converts the engine's UTF-16 positions as the stream goes, from a reader
+too, holding the text from its slower cursor on and never the document).
+A part that asks for them also gets a `(token t)` item for each token the
+lexer gave and the parser did not take, the grammar's `IGNORE` set (white
+space, line breaks, comments), with the same six fields as a pass's
+token.
+
+**Token items reach only a part that asks for them, and the part asks in
+its own text**: `parser-events input :tokens`. The program's parser sink
+carries the request to the source (`ParserSink::wants_tokens`), which
+subscribes to the engine's lexer only for a sink that asks. The other
+course, the library ignoring the items for every part that does not use
+them, was refused: every run would subscribe to the lexer and make an item
+of every space and line break between the tokens a part reads (more items
+than passes for an ordinary JSON document), and every hand-written part's
+step (yaml's, xml's, csv's, css's, ini's, toml's, feed's, jsonic's,
+zon's) would need a case for an item it never reads, or fail `no_match`
+at the first space. A field of the manifest's `translate` object, the
+first way the brief for this step offered, was refused for the program's
+own request: the program is the one thing that reads the items; a program
+run outside a translation (`dmog run --grammar`, the rows of
+`transduce.tsv`) has no manifest to carry the field; and every host that
+runs a part through `Program::parser_sink` gets what the part asks for
+with no field to pass on, dmog unchanged among them. A part that does not
+ask sees the passes it saw before, each token record with `:offset` added,
+which no shipped part reads (dmog's gates, every part on every fixture,
+are unchanged). The library's steps (`transduce-step`,
+`transduce-records-step` and `transduce-tree`'s own) yield nothing for a
+token item, so a part that asks can still hand its passes to them.
+
+**Where a token item goes.** The source holds each ignored token from the
+moment the lexer cuts it until the first pass that consumed a token after
+it, and sends it just before that pass; those held when the parse returns
+go before the end. So a comment arrives just before the pass that takes
+the token it precedes, where a part that keeps trivia as the next token's
+(C's tree) places it, and the source holds no more than the ignored tokens
+between two passes.
+
+**A probe's tokens are the document's.** The step's brief had a token
+lexed inside a probe dropped, as the probe's passes are. In all three
+engines a probe's rewind replays the tokens the parser consumed from the
+engine's history, and the lexer never cuts that text again, so an ignored
+token lexed inside a probe is never lexed a second time: dropping it would
+lose it. The source keeps it (transduce's `parser-events.tsv`, the row
+`a b@cd` over tabnas-abnf's `top = [ X "@" ] Y`). A relex, which re-cuts
+the text after a token it renegotiates, can cut an ignored token again,
+and the source drops a token that starts before the furthest one it took.
+
+**A token item's value is the engine's**, and the engine's own `#SP`,
+`#LN` and `#CM` have none in TypeScript and Go and their text in Rust,
+as a fixed token's value did until the engine repaired it in TypeScript's
+direction; transduce's `DIVERGENCE.md` 6 records it, and a part reads a
+token item's text from `:src`.
+
+**C's part does not follow from token items.** Section 12.1 named two
+blocks, the trivia and the byte offsets, which token items lift: C's
+comments arrive as items (`TRIVIA_BLOCK_COMMENT`, `TRIVIA_LINE_COMMENT`)
+with their offsets (dmog's TypeScript and Go `run --grammar c`; its Rust
+reads C whole). The review of the passes for this
+step found a third, which no protocol lifts. Half of C's external
+declarations are not built by its rules: the grammar's `extdecl-tok`
+alternate absorbs a declaration's tokens one pass each, and
+`@finalize-extdecl` builds the declaration's tree after its last token,
+by a recursive-descent structurer over the token run
+(`structureExternalDeclaration`, `ts/src/structure.ts`, 1,998 lines, with
+the hand-written expression parser in `ts/src/expr.ts`; their Rust and Go
+ports are 3,095 and 3,369 lines). Of the 14,519 external declarations of
+the 100-program Csmith corpus, read as its test reads them, 7,237 take
+that path, and 50 of the 182 in the shared fixtures. Their passes carry
+the tokens and no node above them, so a part would have to run the
+structurer itself, in a language that refuses recursion. The tree is
+also not a tree in places: the members `operand`, `target`, `value`,
+`typeName`, `cond` and the like repeat subtrees `children` holds (for
+half the Csmith programs the realized tree's events exceed 400 times the
+source), `int a = b ? c : d;` builds a node that holds itself (c's
+`DIVERGENCE.md` 1), and a prefix operator in a brace initializer is
+`@tabnas/expr`'s raw operator in TypeScript, with the engine's own
+fields, a `Val` wrapper in Go and nothing in Rust. A part writes one
+tree, so it could equal at most one runtime's. So C stays `whole` for
+now. A part would follow a change like ruling 6's for markdown: the
+legacy structuring moved into the grammar's rules, so that a rule pass
+opens and closes every node, and the aliases left to the API that wants
+them. That is the maintainer's to rule.

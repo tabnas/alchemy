@@ -421,10 +421,13 @@ export function summarize(program: Explainable): EffectSummary {
           reason: 'the keys of each open object, each dropped as its object closes',
         })
         break
-      // Every rule pass becomes one item as it arrives: a transducer's
-      // input, whose step decides what is kept.
+      // Every rule pass becomes one item as it arrives, and with `:tokens`
+      // every token the parser did not take: a transducer's input, whose
+      // step decides what is kept.
       case 'parser-events':
-        selection = 'none; every rule pass is delivered as an item'
+        selection = stage.tokens
+          ? 'none; every rule pass, and every token the parser did not take, is delivered as an item'
+          : 'none; every rule pass is delivered as an item'
         break
       case 'scan-emit': {
         confidence = 'conditional'

@@ -2027,13 +2027,28 @@ fn events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
 }
 
 /// `parser-events input`: the host's parser events, every rule pass an
-/// item. Only the host's input is parser events: a JSON-events input, or
-/// any stream a program made, is refused as the plan is built.
+/// item; `parser-events input :tokens`, every token the parser did not
+/// take too, as a `(token t)`. Only the host's input is parser events: a
+/// JSON-events input, or any stream a program made, is refused as the plan
+/// is built.
 fn parser_events(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    let tokens = match a.get(1) {
+        None => false,
+        Some(option) => {
+            let option = as_keyword("parser-events", "the option", option)?;
+            if &**option != "tokens" {
+                return Err(type_error(format!(
+                    "parser-events: the option must be :tokens, not :{option}"
+                )));
+            }
+            true
+        }
+    };
     match &a[0] {
         Val::Stream(source) if matches!(**source, Plan::ParserInput) => {
             Ok(Val::Stream(Arc::new(Plan::ParserEvents {
                 source: source.clone(),
+                tokens,
             })))
         }
         Val::Stream(other) => Err(protocol_mismatch(format!(
@@ -2067,6 +2082,17 @@ fn open(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
 
 fn close(rt: &Runtime, a: &[Val], at: &SourceSpan) -> Result<Val, Fail> {
     rule_pass("close")(rt, a, at)
+}
+
+/// `(token t)`: a token the parser did not take, the token a record.
+fn token(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
+    match &a[0] {
+        Val::Record(_) => Ok(Val::tagged("token", a.to_vec())),
+        other => Err(type_error(format!(
+            "token: the token must be a record, not {}",
+            other.kind()
+        ))),
+    }
 }
 
 fn csv_table(_: &Runtime, a: &[Val], _: &SourceSpan) -> Result<Val, Fail> {
@@ -2270,9 +2296,10 @@ static NATIVES: &[Native] = &[
     k("key", Exact(1), key, "key name -> Event", "the name of the member whose value follows, inside an object"),
     k("scalar", Exact(1), scalar, "scalar value -> Event", "one scalar of the source: null, a boolean, a number with its lexeme, or a string"),
     // The parser's rule passes, as `parser-events` delivers them.
-    f("parser-events", Exact(1), parser_events, "parser-events input -> Stream<ParserEvent>", "every rule pass of the parser as one item, as it arrives, when the host declares a parser-events input: (open rule) once a rule's open pass has run, (close rule) once its close pass has; the rule a record of :name, :d, :i, :alt, :tokens, :forced, :n and :value; the end of the parse ends the stream and is no item; nothing is retained between passes"),
+    f("parser-events", Between(1, 2), parser_events, "parser-events input [:tokens] -> Stream<ParserEvent>", "every rule pass of the parser as one item, as it arrives, when the host declares a parser-events input: (open rule) once a rule's open pass has run, (close rule) once its close pass has; the rule a record of :name, :d, :i, :alt, :tokens, :forced, :n and :value, each token a record of :name, :val, :src, :row, :col and :offset; with :tokens, also (token t) for each token the lexer gave and the parser did not take, in source order among the passes; the end of the parse ends the stream and is no item; nothing is retained between items"),
     k("open", Exact(1), open, "open rule -> ParserEvent", "a rule's open pass completed: the rule a record"),
     k("close", Exact(1), close, "close rule -> ParserEvent", "a rule's close pass completed: the rule a record, its :value the node's when that is a scalar"),
+    k("token", Exact(1), token, "token t -> ParserEvent", "a token the lexer gave and the parser did not take (white space, a line break, a comment), read with parser-events input :tokens: t a record of :name, :val, :src, :row, :col and :offset"),
     // Renderers and protocol adapters.
     f("json", Between(1, 2), json, "json [options] events -> Text", "JsonEvents, or a Stream<Event> a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (TARGET_VALUE_UNREPRESENTABLE), unless an options record first says (entry :non-finite :null): then it is written as null. The record holds :non-finite and nothing else, :reject (the default) or :null"),
     f("records", Exact(1), records, "records table-events -> JsonEvents", "one object per row keyed by label; retains the labels"),
@@ -2335,7 +2362,7 @@ mod tests {
         }
         // The natives the reference lists one to a row, so a table the
         // reader stops recognizing fails rather than comparing nothing.
-        assert_eq!(compared, 66);
+        assert_eq!(compared, 67);
     }
 
     /// The JSON string form, with the C1 controls escaped as well, in the

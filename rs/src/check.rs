@@ -591,7 +591,7 @@ impl Checker<'_> {
                     "entry" => vec![Type::Keyword, Type::Unknown],
                     "key" => vec![Type::String],
                     "scalar" => vec![Type::Value],
-                    "open" | "close" => vec![Type::Record],
+                    "open" | "close" | "token" => vec![Type::Record],
                     _ => vec![Type::Unknown; items.len().saturating_sub(1)],
                 };
                 if let Some(n) = native(head) {
@@ -1338,6 +1338,9 @@ impl Checker<'_> {
                     t(0),
                     at(0),
                 )?;
+                if args.len() > 1 {
+                    self.expect("the option of parser-events", &Keyword, t(1), at(1))?;
+                }
                 Type::parser_events()
             }
             "as-events" => {
@@ -1526,6 +1529,10 @@ impl Checker<'_> {
             "close" => {
                 self.expect("the rule of close", &Record, t(0), at(0))?;
                 Type::tagged("close")
+            }
+            "token" => {
+                self.expect("the token of token", &Record, t(0), at(0))?;
+                Type::tagged("token")
             }
             "scalar" => {
                 match t(0) {

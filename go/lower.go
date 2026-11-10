@@ -398,17 +398,33 @@ func (r *routeToItems) End() (shared.Flow, *Fail) { return r.down.End() }
 // parserEventsToItems is the parser's rule passes as the items
 // parser-events yields: (open rule) and (close rule), the rule a record of
 // the pass's fields, a field the pass lacks left out (get answers missing
-// for it). The parse's End is the stream's end. The head of a program's
-// chain when the host declares parser events: the host pushes each pass
-// into it.
+// for it), and, when the program asked for them (`parser-events input
+// :tokens`), each token the parser did not take as (token t). The parse's
+// End is the stream's end. The head of a program's chain when the host
+// declares parser events: the host pushes each pass into it.
 type parserEventsToItems struct {
 	down ItemSink
+	// tokens is whether the program reads token items: the sink asks the
+	// source for them, and takes them; without it a token item a source
+	// sends anyway reaches no step.
+	tokens bool
 }
+
+// WantsTokens is whether the program reads token items.
+func (e *parserEventsToItems) WantsTokens() bool { return e.tokens }
 
 func (e *parserEventsToItems) ParserEvent(ev shared.ParserEvent) (shared.Flow, *Fail) {
 	switch ev.Kind {
 	case shared.ParserEnd:
 		return e.down.End()
+	case shared.ParserToken:
+		if !e.tokens {
+			return shared.Continue, nil
+		}
+		if ev.Token == nil {
+			return shared.Continue, shared.ProtocolFail("a parser event's token carries no token")
+		}
+		return e.down.Item(NewTagged("token", tokenRecord(ev.Token)))
 	case shared.ParserOpen, shared.ParserClose:
 		// A host builds the event, and an open or a close without its
 		// pass (the struct's zero value is one) is refused, not read.
@@ -441,14 +457,7 @@ func ruleRecord(pass *shared.RulePass) Val {
 	}
 	tokens := make([]Val, len(pass.Tokens))
 	for i := range pass.Tokens {
-		t := &pass.Tokens[i]
-		token := NewRecord()
-		token.Set("name", StrVal(t.Name))
-		token.Set("val", FromDatum(&t.Val))
-		token.Set("src", StrVal(t.Src))
-		token.Set("row", NumVal{Value: float64(t.Row)})
-		token.Set("col", NumVal{Value: float64(t.Col)})
-		tokens[i] = token
+		tokens[i] = tokenRecord(&pass.Tokens[i])
 	}
 	rec.Set("tokens", &VectorVal{Items: tokens})
 	rec.Set("forced", BoolVal(pass.Forced))
@@ -463,6 +472,19 @@ func ruleRecord(pass *shared.RulePass) Val {
 	return rec
 }
 
+// tokenRecord is a token as a pass's :tokens and a (token t) carry it:
+// :name, :val, :src, :row, :col and :offset.
+func tokenRecord(t *shared.PassToken) Val {
+	token := NewRecord()
+	token.Set("name", StrVal(t.Name))
+	token.Set("val", FromDatum(&t.Val))
+	token.Set("src", StrVal(t.Src))
+	token.Set("row", NumVal{Value: float64(t.Row)})
+	token.Set("col", NumVal{Value: float64(t.Col)})
+	token.Set("offset", NumVal{Value: float64(t.Offset)})
+	return token
+}
+
 // parserHead is what the host pushes parser events into: the chain's head
 // (parserEventsToItems) when the program reads them, and otherwise (a text
 // of the program's own, which reads nothing of its input) the parse's end
@@ -471,6 +493,11 @@ func ruleRecord(pass *shared.RulePass) Val {
 type parserHead struct {
 	head   shared.ParserSink
 	events shared.Sink
+}
+
+// WantsTokens is whether the program the head feeds reads token items.
+func (h *parserHead) WantsTokens() bool {
+	return h.head != nil && shared.WantsTokens(h.head)
 }
 
 func (h *parserHead) ParserEvent(ev shared.ParserEvent) (shared.Flow, *Fail) {
@@ -1325,7 +1352,7 @@ func (l *Lowering) items(p *Plan, down ItemSink, countedLater bool) (shared.Sink
 		if p.Source.Kind != PlanParserInput {
 			return nil, protocolMismatch("parser-events reads the host's parser events alone")
 		}
-		return l.keepParserHead(&parserEventsToItems{down: down})
+		return l.keepParserHead(&parserEventsToItems{down: down, tokens: p.Tokens})
 	case PlanParserInput:
 		return nil, protocolMismatch("the parser's rule passes are read item by item through parser-events")
 	case PlanScanEmit:

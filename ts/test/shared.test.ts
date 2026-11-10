@@ -96,8 +96,9 @@ describe('shared', () => {
   // field out, and a malformed one says what is wrong with it.
   it('the parser event encoding round-trips and leaves absent fields out', () => {
     const texts = [
-      '["open",{"name":"map","d":1,"i":3,"alt":{"p":"pair","r":"","b":0,"g":["map","json"]},"tokens":[["#OB","{","{",1,1]],"forced":false,"n":{"pk":0}}]',
+      '["open",{"name":"map","d":1,"i":3,"alt":{"p":"pair","r":"","b":0,"g":["map","json"]},"tokens":[["#OB","{","{",1,1,0]],"forced":false,"n":{"pk":0}}]',
       '["close",{"name":"val","d":2,"i":4,"tokens":[],"forced":true,"n":{},"value":null}]',
+      '["token",{"name":"#CM","val":"/* é */","src":"/* é */","row":2,"col":3,"offset":7}]',
       '["end"]',
     ]
     for (const text of texts) {
@@ -105,12 +106,22 @@ describe('shared', () => {
     }
     const open = shared.parserEventFromJSON(JSON.parse(texts[0]))
     assert.ok('open' === open.type && undefined === open.pass.value, 'an open pass has no value')
+    assert.ok('open' === open.type && 0 === open.pass.tokens[0].offset)
+    const token = shared.parserEventFromJSON(JSON.parse(texts[2]))
+    assert.ok('token' === token.type && '#CM' === token.token.name && 7 === token.token.offset)
+    // A sink takes no token items unless it asks.
+    assert.equal(shared.wantsTokens({ event: () => 'continue' }), false)
+    assert.equal(shared.wantsTokens({ event: () => 'continue', wantsTokens: () => true }), true)
     for (const text of [
       '{"open":1}',
       '["start"]',
       '["open"]',
       '["close",{"name":"x","d":-1,"i":0,"tokens":[],"forced":false,"n":{}}]',
       '["close",{"name":"x","d":1,"i":0,"tokens":[["#ST"]],"forced":false,"n":{}}]',
+      '["close",{"name":"x","d":1,"i":0,"tokens":[["#ST","a","a",1,1]],"forced":false,"n":{}}]',
+      '["token"]',
+      '["token",{"name":"#SP","val":" ","src":" ","row":1,"col":1}]',
+      '["token",{"name":"#SP","val":" ","src":" ","row":1,"col":1,"offset":-1}]',
     ]) {
       assert.throws(() => shared.parserEventFromJSON(JSON.parse(text)), Error, text)
     }

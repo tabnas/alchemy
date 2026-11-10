@@ -138,7 +138,7 @@ describe('natives', () => {
       assert.ok(n.signature.startsWith(n.name), `${n.name}: ${n.signature}`)
     }
     assert.equal(native('nope'), undefined)
-    assert.equal(natives().length, 84)
+    assert.equal(natives().length, 85)
   })
 
   // `signature` and `effect` are what the reference prints: every native
@@ -168,7 +168,7 @@ describe('natives', () => {
       assert.equal(n.effect, row[1], `the effect of ${n.name}`)
       compared++
     }
-    assert.equal(compared, 66)
+    assert.equal(compared, 67)
   })
 
   it('constants take no arguments and constructors take their fields', () => {

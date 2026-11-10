@@ -677,7 +677,7 @@ func (c *checker) pattern(p *Expr, matched Type, e *env) *Fail {
 			fields = []Type{StringT}
 		case "scalar":
 			fields = []Type{ValueT}
-		case "open", "close":
+		case "open", "close", "token":
 			fields = []Type{RecordT}
 		default:
 			n := len(p.Items) - 1
@@ -1384,7 +1384,15 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 	case "events":
 		return ret(Events(), exp("the input of events", JsonEvents, 0)())
 	case "parser-events":
-		return ret(ParserEvents(), exp("the input of parser-events", ParserEventsT, 0)())
+		if f := exp("the input of parser-events", ParserEventsT, 0)(); f != nil {
+			return Type{}, f
+		}
+		if len(args) == 2 {
+			if f := exp("the option of parser-events", KeywordT, 1)(); f != nil {
+				return Type{}, f
+			}
+		}
+		return ParserEvents(), nil
 	case "as-events":
 		return ret(JsonEvents, exp("the items of as-events", StreamOf(Unknown), 0)())
 	case "indices":
@@ -1496,6 +1504,8 @@ func (c *checker) nativeCall(n *Native, args []*Expr, span SourceSpan, e *env) (
 		return ret(Tagged("key"), exp("the name of key", StringT, 0)())
 	case "open", "close":
 		return ret(Tagged(name), exp("the rule of "+name, RecordT, 0)())
+	case "token":
+		return ret(Tagged("token"), exp("the token of token", RecordT, 0)())
 	case "scalar":
 		switch t(0).Kind {
 		case TNull, TBool, TNumber, TString, TValue, TUnknown, TNever:

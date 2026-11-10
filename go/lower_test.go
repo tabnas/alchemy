@@ -43,7 +43,8 @@ func (l *eventLog) Event(ev shared.Event) (shared.Flow, *Fail) {
 func TestParserEventsAreItemsPushedIntoTheHead(t *testing.T) {
 	var passes []shared.ParserEvent
 	for _, text := range []string{
-		`["open",{"name":"val","d":1,"i":1,"alt":{"p":"","r":"","b":0,"g":["json"]},"tokens":[["#NR",2.5,"2.50",1,1]],"forced":false,"n":{"dmap":1}}]`,
+		`["open",{"name":"val","d":1,"i":1,"alt":{"p":"","r":"","b":0,"g":["json"]},"tokens":[["#NR",2.5,"2.50",1,2,1]],"forced":false,"n":{"dmap":1}}]`,
+		`["token",{"name":"#SP","val":" ","src":" ","row":1,"col":6,"offset":5}]`,
 		`["close",{"name":"val","d":1,"i":1,"tokens":[],"forced":false,"n":{},"value":2.5}]`,
 		`["end"]`,
 	} {
@@ -65,18 +66,44 @@ func TestParserEventsAreItemsPushedIntoTheHead(t *testing.T) {
 		t.Errorf("%v", f)
 	}
 	head := here.ParserHead(events)
+	// A program that did not ask for token items asks the source for none,
+	// and one a source sends anyway reaches no step.
+	if shared.WantsTokens(head) {
+		t.Errorf("a head that did not ask wants tokens")
+	}
 	for _, pass := range passes {
 		if _, f := head.ParserEvent(pass); f != nil {
 			t.Fatal(f)
 		}
 	}
-	want := []string{
-		`(open (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :alt (record (entry :p "") (entry :r "") (entry :b 0) (entry :g ["json"]))) (entry :tokens [(record (entry :name "#NR") (entry :val 2.5) (entry :src "2.50") (entry :row 1) (entry :col 1))]) (entry :forced false) (entry :n (record (entry :dmap 1)))))`,
-		`(close (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :tokens []) (entry :forced false) (entry :n (record)) (entry :value 2.5)))`,
-		"end",
-	}
+	open := `(open (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :alt (record (entry :p "") (entry :r "") (entry :b 0) (entry :g ["json"]))) (entry :tokens [(record (entry :name "#NR") (entry :val 2.5) (entry :src "2.50") (entry :row 1) (entry :col 2) (entry :offset 1))]) (entry :forced false) (entry :n (record (entry :dmap 1)))))`
+	closed := `(close (record (entry :name "val") (entry :d 1) (entry :i 1) (entry :tokens []) (entry :forced false) (entry :n (record)) (entry :value 2.5)))`
+	want := []string{open, closed, "end"}
 	if strings.Join(log.seen, "\n") != strings.Join(want, "\n") {
 		t.Errorf("got\n%s\nwant\n%s", strings.Join(log.seen, "\n"), strings.Join(want, "\n"))
+	}
+
+	// With :tokens the head asks for them, and each is a (token t) in its
+	// place among the passes.
+	asked := &itemLog{}
+	there := NewLowering(runtimeOf(t, "def export [input] (parser-events input :tokens)"), shared.DefaultLimits(), nil)
+	withTokens := &Plan{Kind: PlanParserEvents, Source: &Plan{Kind: PlanParserInput}, Tokens: true}
+	tokenEvents, f := there.items(withTokens, asked, false)
+	if f != nil {
+		t.Fatal(f)
+	}
+	asks := there.ParserHead(tokenEvents)
+	if !shared.WantsTokens(asks) {
+		t.Errorf("a head that asked wants no tokens")
+	}
+	for _, pass := range passes {
+		if _, f := asks.ParserEvent(pass); f != nil {
+			t.Fatal(f)
+		}
+	}
+	want = []string{open, `(token (record (entry :name "#SP") (entry :val " ") (entry :src " ") (entry :row 1) (entry :col 6) (entry :offset 5)))`, closed, "end"}
+	if strings.Join(asked.seen, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got\n%s\nwant\n%s", strings.Join(asked.seen, "\n"), strings.Join(want, "\n"))
 	}
 	// The JSON-events side of a parser program is never driven.
 	if _, f := (parserEventsOnly{}).Event(shared.Event{Kind: shared.Null}); f == nil || !strings.HasPrefix(f.Message, "protocol_mismatch: ") {
