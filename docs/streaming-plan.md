@@ -1720,8 +1720,11 @@ by a recursive-descent structurer over the token run
 (`structureExternalDeclaration`, `ts/src/structure.ts`, 1,998 lines, with
 the hand-written expression parser in `ts/src/expr.ts`; their Rust and Go
 ports are 3,095 and 3,369 lines). Of the 14,519 external declarations of
-the 100-program Csmith corpus, read as its test reads them, 7,237 take
-that path, and 50 of the 182 in the shared fixtures. Their passes carry
+the 100-program Csmith corpus, read as its test reads them (TypeScript's
+reader, tabnas/c 0.5.15), 7,237 take
+that path, all 904 of its function definitions among them, and none of
+the 100 programs is free of them; 50 of the 182 in the shared fixtures
+take it too. Their passes carry
 the tokens and no node above them, so a part would have to run the
 structurer itself, in a language that refuses recursion. The tree is
 also not a tree in places: the members `operand`, `target`, `value`,
