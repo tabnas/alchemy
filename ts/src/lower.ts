@@ -55,6 +55,7 @@ import {
   NODE_BYTES,
   ParserEvent,
   ParserSink,
+  PassToken,
   PublicColumn,
   Renderers,
   RouteSink,
@@ -68,6 +69,7 @@ import {
   Transition,
   TreeContract,
   utf8Bytes,
+  wantsTokens,
 } from './shared'
 
 import { SourceSpan } from './ast'
@@ -455,20 +457,50 @@ class EventsToItems implements Sink {
 
 // The parser's rule passes as the items `parser-events` yields: `(open
 // rule)` and `(close rule)`, the rule a record of the pass's fields, a
-// field the pass lacks left out (`get` answers `missing` for it). The
-// parse's `end` is the stream's end. The head of a program's chain when
-// the host declares parser events: the host pushes each pass into it.
+// field the pass lacks left out (`get` answers `missing` for it), and,
+// when the program asked for them (`parser-events input :tokens`), each
+// token the parser did not take as `(token t)`. The parse's `end` is the
+// stream's end. The head of a program's chain when the host declares
+// parser events: the host pushes each pass into it.
 export class ParserEventsToItems implements ParserSink {
-  constructor(private readonly down: ItemSink) {}
+  constructor(
+    private readonly down: ItemSink,
+    // Whether the program reads token items: the sink asks the source for
+    // them, and takes them; without it a token item a source sends anyway
+    // reaches no step.
+    private readonly tokens: boolean = false,
+  ) {}
 
   event(ev: ParserEvent): Flow {
     if ('end' === ev.type) return this.down.end()
+    if ('token' === ev.type) {
+      if (!this.tokens) return 'continue'
+      if (null == ev.token) throw Fail.protocol("a parser event's token carries no token")
+      return this.down.item(taggedVal('token', [tokenRecord(ev.token)]))
+    }
     // A host builds the event, and one the types do not describe (from
     // JavaScript, say) is refused, not read.
     if ('open' !== ev.type && 'close' !== ev.type) throw Fail.protocol('an unknown parser event kind')
     if (null == ev.pass) throw Fail.protocol(`a parser event's ${ev.type} carries no rule pass`)
     return this.down.item(taggedVal(ev.type, [ruleRecord(ev.pass)]))
   }
+
+  wantsTokens(): boolean {
+    return this.tokens
+  }
+}
+
+// A token as a pass's `:tokens` and a `(token t)` carry it: `:name`,
+// `:val`, `:src`, `:row`, `:col` and `:offset`.
+function tokenRecord(t: PassToken): Val {
+  return record([
+    ['name', str(t.name)],
+    ['val', fromDatum(t.val)],
+    ['src', str(t.src)],
+    ['row', num(t.row)],
+    ['col', num(t.col)],
+    ['offset', num(t.offset)],
+  ])
 }
 
 // A rule pass as the record `(open rule)` and `(close rule)` carry.
@@ -489,20 +521,7 @@ function ruleRecord(pass: RulePass): Val {
       ]),
     ])
   }
-  fields.push([
-    'tokens',
-    vectorVal(
-      pass.tokens.map((t) =>
-        record([
-          ['name', str(t.name)],
-          ['val', fromDatum(t.val)],
-          ['src', str(t.src)],
-          ['row', num(t.row)],
-          ['col', num(t.col)],
-        ]),
-      ),
-    ),
-  ])
+  fields.push(['tokens', vectorVal(pass.tokens.map(tokenRecord))])
   fields.push(['forced', bool(pass.forced)])
   fields.push(['n', record(pass.n.map(([k, v]): [string, Val] => [k, num(v)]))])
   if (undefined !== pass.value) fields.push(['value', fromDatum(pass.value)])
@@ -523,6 +542,10 @@ class ParserHead implements ParserSink {
   event(ev: ParserEvent): Flow {
     if (undefined !== this.head) return this.head.event(ev)
     return 'end' === ev.type ? this.events.event(Ev.end) : 'continue'
+  }
+
+  wantsTokens(): boolean {
+    return undefined !== this.head && wantsTokens(this.head)
   }
 }
 
@@ -1227,7 +1250,7 @@ export class Lowering {
         if ('parser-input' !== plan.source.p) {
           throw protocolMismatch("parser-events reads the host's parser events alone")
         }
-        return this.keepParserHead(new ParserEventsToItems(down))
+        return this.keepParserHead(new ParserEventsToItems(down, plan.tokens))
       case 'parser-input':
         throw protocolMismatch("the parser's rule passes are read item by item through parser-events")
       case 'scan-emit':

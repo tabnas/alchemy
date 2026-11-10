@@ -166,9 +166,11 @@ export type Plan =
   // field; `end` is the stream's end, not an item.
   | { readonly p: 'events'; readonly source: Plan }
   // `parser-events input`: every rule pass of `ParserEvents/1` as one
-  // tagged item, `(open rule)` or `(close rule)`; the parse's end is the
-  // stream's end, not an item. Its source is always the `parser-input`.
-  | { readonly p: 'parser-events'; readonly source: Plan }
+  // tagged item, `(open rule)` or `(close rule)`, and with `:tokens`
+  // (`tokens`) every token the parser did not take as a `(token t)`; the
+  // parse's end is the stream's end, not an item. Its source is always the
+  // `parser-input`.
+  | { readonly p: 'parser-events'; readonly source: Plan; readonly tokens: boolean }
   // `as-events items`: a stream of items the program built, each an
   // event, as `JsonEvents/1`: the reverse of `events`, which any taker of
   // JSON events already applies to such a stream; here the program says

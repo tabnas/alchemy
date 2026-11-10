@@ -400,10 +400,13 @@ def transduce-close [spec state rule]
         case :array (transduce-end spec state rule array-end)
         case _ (transition state (transduce-value (get :scalar entry) rule []))
 
+; A token item, which a part that reads them (parser-events input :tokens)
+; hands its steps as it hands them a pass, yields nothing here.
 def transduce-step [spec state pass]
   match pass
     case (open rule) (transduce-open spec state rule)
     case (close rule) (transduce-close spec state rule)
+    case (token _) (transition state [])
 
 def transduce-finish [state]
   match state
@@ -483,6 +486,7 @@ def transduce-pass [spec state pass]
             case [rest first]
               match (transduce-close spec tree rule)
                 case (transition next outputs) (transition [next rest] (transduce-then first outputs))
+        case (token _) (transition state [])
 
 def transduce-done [state]
   match state
@@ -651,6 +655,7 @@ def transduce-records-step [spec state pass]
   match pass
     case (open rule) (transduce-records-open spec state rule)
     case (close rule) (transduce-records-close spec state rule)
+    case (token _) (transition state [])
 
 ; A document that makes no pass is the empty array.
 def transduce-records-finish [state]

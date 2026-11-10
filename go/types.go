@@ -251,7 +251,7 @@ func (t Type) Accepts(actual Type) bool {
 		}
 		return false
 	case t.Kind == TParserEvent && actual.Kind == TTagged:
-		return actual.Tag == "open" || actual.Tag == "close"
+		return actual.Tag == "open" || actual.Tag == "close" || actual.Tag == "token"
 	case t.Kind == TFn && actual.Kind == TFn:
 		return len(t.Params) == len(actual.Params) && t.Result.Accepts(*actual.Result)
 	case t.Kind == TJsonEvents && actual.Kind == TStream:

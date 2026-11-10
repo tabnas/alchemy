@@ -50,8 +50,9 @@ pub enum Type {
     /// `object-end`, `array-start`, `array-end`, `(key name)` or
     /// `(scalar value)`.
     Event,
-    /// One rule pass as `parser-events` delivers it: `(open rule)` or
-    /// `(close rule)`, the rule a record.
+    /// One item as `parser-events` delivers it: `(open rule)` or `(close
+    /// rule)`, the rule a record, or, with `:tokens`, `(token t)`, a token
+    /// the parser did not take.
     ParserEvent,
     /// A function: its parameters and its result.
     Fn(Vec<Type>, Box<Type>),
@@ -211,7 +212,9 @@ impl Type {
                 &**tag,
                 "object-start" | "object-end" | "array-start" | "array-end" | "key" | "scalar"
             ),
-            (Type::ParserEvent, Type::Tagged(tag)) => matches!(&**tag, "open" | "close"),
+            (Type::ParserEvent, Type::Tagged(tag)) => {
+                matches!(&**tag, "open" | "close" | "token")
+            }
             (Type::Fn(ps, r), Type::Fn(qs, s)) => ps.len() == qs.len() && r.accepts(s),
             // A stream of events reaches any taker of JSON events: the
             // lowering turns each item back into an event as the stream

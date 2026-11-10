@@ -231,10 +231,11 @@ pub enum Plan {
     /// their one field; `End` is the stream's end, not an item.
     Events { source: Arc<Plan> },
     /// `parser-events input`: every rule pass of `ParserEvents/1` as one
-    /// tagged item, `(open rule)` or `(close rule)`; the parse's end is
-    /// the stream's end, not an item. Its source is always
-    /// [`Plan::ParserInput`].
-    ParserEvents { source: Arc<Plan> },
+    /// tagged item, `(open rule)` or `(close rule)`, and with `:tokens`
+    /// (`tokens`) every token the parser did not take as a `(token t)`;
+    /// the parse's end is the stream's end, not an item. Its source is
+    /// always [`Plan::ParserInput`].
+    ParserEvents { source: Arc<Plan>, tokens: bool },
     /// `as-events items`: a stream of items the program built, each an
     /// event, as `JsonEvents/1`: the reverse of `events`, which any taker
     /// of JSON events already applies to such a stream; here the program
@@ -347,7 +348,7 @@ impl Plan {
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
-            | Plan::ParserEvents { source }
+            | Plan::ParserEvents { source, .. }
             | Plan::AsEvents { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
@@ -788,6 +789,7 @@ mod tests {
         assert_eq!(Plan::Input.protocol(), Protocol::JsonEvents);
         let passes = Plan::ParserEvents {
             source: Arc::new(Plan::ParserInput),
+            tokens: false,
         };
         assert!(passes.is_live() && !passes.is_text());
         assert_eq!(passes.protocol(), Protocol::Items);

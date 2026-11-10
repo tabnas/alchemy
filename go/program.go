@@ -357,6 +357,8 @@ func stageOf(p *Plan) Stage {
 		s.Selector = p.Selector
 	case PlanScanEmit:
 		s.LibraryTable = isLibraryTable(p.Init, p.Step)
+	case PlanParserEvents:
+		s.Tokens = p.Tokens
 	}
 	return s
 }

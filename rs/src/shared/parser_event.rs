@@ -1,5 +1,5 @@
 //! `ParserEvents/1`: the parser's rule passes, as a transducer part reads
-//! them.
+//! them, and the tokens the parser did not take.
 //!
 //! A source over a tabnas parse (transduce's `ParserEventSource`) relays
 //! each rule pass the engine reports to its `rule_done` subscribers as
@@ -10,6 +10,17 @@
 //! when it validated. A pass made inside a probe (the engine's
 //! `RuleDone::probe`) is speculative, and the source drops it.
 //!
+//! A sink that asks for them ([`ParserSink::wants_tokens`]) also gets a
+//! [`Token`](ParserEvent::Token) for each token the lexer gave and the
+//! parser did not take, one of the grammar's ignored tokens (white space,
+//! a line break, a comment), in source order among the passes: before
+//! the first pass that consumed a token after it, and those still held
+//! when the parse returns before the `End`. A sink that does not ask gets
+//! none, and the source subscribes to no lexer event for it. Every token,
+//! a pass's and a token item alike, carries its byte offset: where it
+//! starts, in UTF-8 bytes from the document's start, the same in every
+//! runtime.
+//!
 //! Containers never travel in parser events: a rule's node is handed on
 //! only as a scalar ([`RulePass::value`]), so a transducer that wants a
 //! container emits its start and end from the passes that open and close
@@ -18,8 +29,10 @@
 //! The fixture encoding ([`ParserEvent::to_json`]) follows the JSON
 //! events' encoding: an array whose first element names the event,
 //! `["open", {"name": "map", "d": 1, "i": 3, "alt": {"p": "pair", "r": "",
-//! "b": 0, "g": ["map", "json"]}, "tokens": [["#OB", "{", "{", 1, 1]],
-//! "forced": false, "n": {"pk": 0}}]`, and `["end"]`. A field that is
+//! "b": 0, "g": ["map", "json"]}, "tokens": [["#OB", "{", "{", 1, 1, 0]],
+//! "forced": false, "n": {"pk": 0}}]`, a pass's token being `[name, val,
+//! src, row, col, offset]`; `["token", {"name": "#SP", "val": null, "src":
+//! " ", "row": 1, "col": 2, "offset": 1}]`; and `["end"]`. A field that is
 //! absent (`alt` when the state declared no alternates, `value` when the
 //! node is not a scalar or the pass is an open) is left out, so `"value":
 //! null` is always a null scalar.
@@ -35,6 +48,11 @@ pub enum ParserEvent {
     Open(RulePass),
     /// A rule's close pass completed.
     Close(RulePass),
+    /// A token the lexer gave and the parser did not take: one of the
+    /// grammar's ignored tokens (white space, a line break, a comment).
+    /// Only a sink that asks for them gets them
+    /// ([`ParserSink::wants_tokens`]).
+    Token(PassToken),
     /// The parse returned its value. Exactly one, after the last pass.
     End,
 }
@@ -74,7 +92,7 @@ pub struct PassAlt {
     pub g: Vec<Box<str>>,
 }
 
-/// A token a pass consumed.
+/// A token a pass consumed, or one a [`ParserEvent::Token`] carries.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PassToken {
     /// The token's name (`#OB`, `#ST`, `#NR`).
@@ -85,6 +103,9 @@ pub struct PassToken {
     pub src: Box<str>,
     pub row: u64,
     pub col: u64,
+    /// Where the token starts: its offset in UTF-8 bytes from the
+    /// document's start, the same in every runtime.
+    pub offset: u64,
 }
 
 /// A consumer of `ParserEvents/1`: what a transducer part's head is, and
@@ -93,6 +114,14 @@ pub struct PassToken {
 /// and [`Flow::Stop`] asks the source to stop the parse.
 pub trait ParserSink {
     fn event(&mut self, ev: &ParserEvent) -> Result<Flow, Fail>;
+
+    /// Whether this sink takes [`ParserEvent::Token`] items. A source asks
+    /// once, before the parse, and sends them only to a sink that answers
+    /// `true`: a sink that does not ask gets the rule passes alone, and the
+    /// source does none of the work token items take.
+    fn wants_tokens(&self) -> bool {
+        false
+    }
 }
 
 impl ParserSink for Vec<ParserEvent> {
@@ -106,20 +135,29 @@ impl<S: ParserSink + ?Sized> ParserSink for &mut S {
     fn event(&mut self, ev: &ParserEvent) -> Result<Flow, Fail> {
         (**self).event(ev)
     }
+
+    fn wants_tokens(&self) -> bool {
+        (**self).wants_tokens()
+    }
 }
 
 impl<S: ParserSink + ?Sized> ParserSink for Box<S> {
     fn event(&mut self, ev: &ParserEvent) -> Result<Flow, Fail> {
         (**self).event(ev)
     }
+
+    fn wants_tokens(&self) -> bool {
+        (**self).wants_tokens()
+    }
 }
 
 impl ParserEvent {
-    /// The event's name in the encoding: `open`, `close` or `end`.
+    /// The event's name in the encoding: `open`, `close`, `token` or `end`.
     pub fn name(&self) -> &'static str {
         match self {
             ParserEvent::Open(_) => "open",
             ParserEvent::Close(_) => "close",
+            ParserEvent::Token(_) => "token",
             ParserEvent::End => "end",
         }
     }
@@ -128,14 +166,27 @@ impl ParserEvent {
     pub fn pass(&self) -> Option<&RulePass> {
         match self {
             ParserEvent::Open(pass) | ParserEvent::Close(pass) => Some(pass),
-            ParserEvent::End => None,
+            ParserEvent::Token(_) | ParserEvent::End => None,
         }
     }
 
-    /// The fixture encoding: `["open", {...}]`, `["close", {...}]` or
-    /// `["end"]`.
+    /// The fixture encoding: `["open", {...}]`, `["close", {...}]`,
+    /// `["token", {...}]` or `["end"]`.
     pub fn to_json(&self) -> serde_json::Value {
         use serde_json::{json, Map, Value};
+        if let ParserEvent::Token(t) = self {
+            return json!([
+                self.name(),
+                {
+                    "name": &*t.name,
+                    "val": t.val.to_json(),
+                    "src": &*t.src,
+                    "row": t.row,
+                    "col": t.col,
+                    "offset": t.offset,
+                }
+            ]);
+        }
         let Some(pass) = self.pass() else {
             return json!([self.name()]);
         };
@@ -159,7 +210,7 @@ impl ParserEvent {
             Value::Array(
                 pass.tokens
                     .iter()
-                    .map(|t| json!([&*t.name, t.val.to_json(), &*t.src, t.row, t.col]))
+                    .map(|t| json!([&*t.name, t.val.to_json(), &*t.src, t.row, t.col, t.offset]))
                     .collect(),
             ),
         );
@@ -192,6 +243,7 @@ impl ParserEvent {
         match (name, items.len()) {
             ("end", 1) => return Ok(ParserEvent::End),
             ("open" | "close", 2) => {}
+            ("token", 2) => return token_from_json(&items[1], value).map(ParserEvent::Token),
             _ => return Err(format!("not a parser event: {value}")),
         }
         let rule = items[1]
@@ -238,17 +290,18 @@ impl ParserEvent {
             .ok_or_else(|| format!("a rule pass's :tokens is a vector: {value}"))?
             .iter()
             .map(|t| match t.as_array().map(Vec::as_slice) {
-                Some([name, val, src, row, col]) => Some(PassToken {
+                Some([name, val, src, row, col, offset]) => Some(PassToken {
                     name: name.as_str()?.into(),
                     val: Datum::from_json(val),
                     src: src.as_str()?.into(),
                     row: row.as_u64()?,
                     col: col.as_u64()?,
+                    offset: offset.as_u64()?,
                 }),
                 _ => None,
             })
             .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| format!("a token is [name, val, src, row, col]: {value}"))?;
+            .ok_or_else(|| format!("a token is [name, val, src, row, col, offset]: {value}"))?;
         let n = rule
             .get("n")
             .and_then(Value::as_object)
@@ -277,16 +330,50 @@ impl ParserEvent {
     }
 }
 
+/// A token item's record, `{"name", "val", "src", "row", "col", "offset"}`,
+/// or what is wrong with it.
+fn token_from_json(
+    token: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<PassToken, String> {
+    use serde_json::Value;
+    let record = token
+        .as_object()
+        .ok_or_else(|| format!("a token item is an object: {value}"))?;
+    let text = |key: &str| -> Result<Box<str>, String> {
+        record
+            .get(key)
+            .and_then(Value::as_str)
+            .map(Box::from)
+            .ok_or_else(|| format!("a token item's :{key} is a string: {value}"))
+    };
+    let count = |key: &str| -> Result<u64, String> {
+        record
+            .get(key)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("a token item's :{key} is a count: {value}"))
+    };
+    Ok(PassToken {
+        name: text("name")?,
+        val: Datum::from_json(record.get("val").unwrap_or(&Value::Null)),
+        src: text("src")?,
+        row: count("row")?,
+        col: count("col")?,
+        offset: count("offset")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_encoding_round_trips_and_leaves_absent_fields_out() {
-        let open = r##"["open",{"name":"map","d":1,"i":3,"alt":{"p":"pair","r":"","b":0,"g":["map","json"]},"tokens":[["#OB","{","{",1,1]],"forced":false,"n":{"pk":0}}]"##;
+        let open = r##"["open",{"name":"map","d":1,"i":3,"alt":{"p":"pair","r":"","b":0,"g":["map","json"]},"tokens":[["#OB","{","{",1,1,0]],"forced":false,"n":{"pk":0}}]"##;
         let close =
             r#"["close",{"name":"val","d":2,"i":4,"tokens":[],"forced":true,"n":{},"value":null}]"#;
-        for text in [open, close, r#"["end"]"#] {
+        let token = r##"["token",{"name":"#CM","val":"/* é */","src":"/* é */","row":2,"col":3,"offset":7}]"##;
+        for text in [open, close, token, r#"["end"]"#] {
             let json: serde_json::Value = serde_json::from_str(text).unwrap();
             let event = ParserEvent::from_json(&json).unwrap();
             assert_eq!(event.to_json().to_string(), text);
@@ -298,6 +385,39 @@ mod tests {
         };
         assert_eq!(pass.value, None, "an open pass has no value");
         assert_eq!(pass.alt.unwrap().p.as_ref(), "pair");
+        assert_eq!(pass.tokens[0].offset, 0);
+        let ParserEvent::Token(t) =
+            ParserEvent::from_json(&serde_json::from_str(token).unwrap()).unwrap()
+        else {
+            panic!("a token item");
+        };
+        assert_eq!((t.name.as_ref(), t.offset), ("#CM", 7));
+        assert_eq!(
+            ParserEvent::Token(t).pass(),
+            None,
+            "a token item is no pass"
+        );
+    }
+
+    #[test]
+    fn a_sink_takes_no_token_items_unless_it_asks() {
+        struct Asks;
+        impl ParserSink for Asks {
+            fn event(&mut self, _: &ParserEvent) -> Result<Flow, Fail> {
+                Ok(Flow::Continue)
+            }
+            fn wants_tokens(&self) -> bool {
+                true
+            }
+        }
+        fn asks_for(sink: impl ParserSink) -> bool {
+            sink.wants_tokens()
+        }
+        assert!(!Vec::<ParserEvent>::new().wants_tokens());
+        let mut asks = Asks;
+        assert!(asks_for(&mut asks), "a reference forwards the question");
+        let boxed: Box<dyn ParserSink> = Box::new(Asks);
+        assert!(boxed.wants_tokens(), "a box forwards the question");
     }
 
     #[test]
@@ -308,6 +428,10 @@ mod tests {
             r#"["open"]"#,
             r#"["close",{"name":"x","d":-1,"i":0,"tokens":[],"forced":false,"n":{}}]"#,
             r##"["close",{"name":"x","d":1,"i":0,"tokens":[["#ST"]],"forced":false,"n":{}}]"##,
+            r##"["close",{"name":"x","d":1,"i":0,"tokens":[["#ST","a","a",1,1]],"forced":false,"n":{}}]"##,
+            r#"["token"]"#,
+            r##"["token",{"name":"#SP","val":" ","src":" ","row":1,"col":1}]"##,
+            r##"["token",{"name":"#SP","val":" ","src":" ","row":1,"col":1,"offset":-1}]"##,
         ] {
             let json: serde_json::Value = serde_json::from_str(text).unwrap();
             assert!(ParserEvent::from_json(&json).is_err(), "{text}");

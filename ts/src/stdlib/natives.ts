@@ -1680,17 +1680,30 @@ function events(_rt: Runtime, a: ReadonlyArray<Val>): Val {
   return streamVal({ p: 'events', source: asStream('events', a[0]) })
 }
 
-// `parser-events input`: the host's parser events, every rule pass an item.
-// Only the host's input is parser events: a JSON-events input, or any
-// stream a program made, is refused as the plan is built.
+// `parser-events input`: the host's parser events, every rule pass an item;
+// `parser-events input :tokens`, every token the parser did not take too,
+// as a `(token t)`. Only the host's input is parser events: a JSON-events
+// input, or any stream a program made, is refused as the plan is built.
 function parserEvents(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  let tokens = false
+  if (undefined !== a[1]) {
+    const option = asKeyword('parser-events', 'the option', a[1])
+    if ('tokens' !== option) throw typeError(`parser-events: the option must be :tokens, not :${option}`)
+    tokens = true
+  }
   const v = a[0]
   if ('stream' !== v.v) throw typeError(`parser-events: the data must be a stream, not ${kindText(v)}`)
-  if ('parser-input' === v.plan.p) return streamVal({ p: 'parser-events', source: v.plan })
+  if ('parser-input' === v.plan.p) return streamVal({ p: 'parser-events', source: v.plan, tokens })
   const what = 'input' === v.plan.p ? 'JSON events' : planName(v.plan)
   throw protocolMismatch(
     `parser-events reads the parser's rule passes, the input a host declares as parser events, not ${what}`,
   )
+}
+
+// `(token t)`: a token the parser did not take, the token a record.
+function tokenItem(_rt: Runtime, a: ReadonlyArray<Val>): Val {
+  if ('record' === a[0].v) return taggedVal('token', a.slice())
+  throw typeError(`token: the token must be a record, not ${kindText(a[0])}`)
 }
 
 // `(open rule)` and `(close rule)`: a rule pass, the rule a record.
@@ -1834,6 +1847,7 @@ const IMPLS: Record<string, NativeImpl> = {
   'parser-events': parserEvents,
   open: rulePass('open'),
   close: rulePass('close'),
+  token: tokenItem,
   json,
   records,
   'tree-contract': treeContract,

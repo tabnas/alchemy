@@ -412,9 +412,10 @@ const (
 	// held to a tree's contract (shared.TreeContract) where they pass.
 	PlanTreeContract
 	// PlanParserEvents is `parser-events input`: every rule pass of
-	// ParserEvents/1 as one tagged item, (open rule) or (close rule); the
-	// parse's end is the stream's end, not an item. Its source is always
-	// the PlanParserInput.
+	// ParserEvents/1 as one tagged item, (open rule) or (close rule), and
+	// with `:tokens` (Tokens) every token the parser did not take as a
+	// (token t); the parse's end is the stream's end, not an item. Its
+	// source is always the PlanParserInput.
 	PlanParserEvents
 )
 
@@ -482,7 +483,9 @@ func NonFiniteWord(value float64) string {
 //     many;
 //   - Sep and Seq: a join's; Seq: a concat-map's items;
 //   - From, To and Text: a replace-text's literal, its replacement and
-//     the string or text it reads.
+//     the string or text it reads;
+//   - Tokens: whether a parser-events reads token items (`parser-events
+//     input :tokens`).
 type Plan struct {
 	Kind      PlanKind
 	Source    *Plan
@@ -503,6 +506,7 @@ type Plan struct {
 	From      string
 	To        string
 	Text      Val
+	Tokens    bool
 }
 
 // inputPlan is the host's input: JSON events, or the parser's rule passes

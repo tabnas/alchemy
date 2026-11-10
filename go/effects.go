@@ -94,6 +94,8 @@ type Stage struct {
 	// StageScanEmit: whether the scan is the standard library's table (its
 	// table-step, bare or partially applied, from no-schema).
 	LibraryTable bool
+	// StageParserEvents: whether it reads token items too (`:tokens`).
+	Tokens bool
 }
 
 // Duplicates is the policy for a member name an object of the source
@@ -492,9 +494,13 @@ func Summarize(resolved *Resolved, view PlanView) *EffectSummary {
 				Reason: "the keys of each open object, each dropped as its object closes",
 			})
 		case StageParserEvents:
-			// Every rule pass becomes one item as it arrives: a
-			// transducer's input, whose step decides what is kept.
+			// Every rule pass becomes one item as it arrives, and with
+			// :tokens every token the parser did not take: a transducer's
+			// input, whose step decides what is kept.
 			selection = "none; every rule pass is delivered as an item"
+			if stage.Tokens {
+				selection = "none; every rule pass, and every token the parser did not take, is delivered as an item"
+			}
 		case StageScanEmit:
 			confidence = Conditional
 			reason := "what the step returns, no deeper than max_depth"

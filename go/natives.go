@@ -122,6 +122,7 @@ func init() {
 		"parser-events":   nParserEvents,
 		"open":            nRulePass("open"),
 		"close":           nRulePass("close"),
+		"token":           nToken,
 		"json":            nJSON,
 		"records":         nRecords,
 		"tree-contract":   nTreeContract,
@@ -2312,21 +2313,43 @@ func nEvents(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
 }
 
 // nParserEvents is `parser-events input`: the host's parser events, every
-// rule pass an item. Only the host's input is parser events: a JSON-events
-// input, or any stream a program made, is refused as the plan is built.
+// rule pass an item; `parser-events input :tokens`, every token the parser
+// did not take too, as a (token t). Only the host's input is parser events:
+// a JSON-events input, or any stream a program made, is refused as the
+// plan is built.
 func nParserEvents(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	tokens := false
+	if len(a) > 1 {
+		option, f := asKeyword("parser-events", "the option", a[1])
+		if f != nil {
+			return nil, f
+		}
+		if option != "tokens" {
+			return nil, typeError("parser-events: the option must be :tokens, not :" + option)
+		}
+		tokens = true
+	}
 	s, ok := a[0].(StreamVal)
 	if !ok {
 		return nil, typeError("parser-events: the data must be a stream, not " + KindOf(a[0]))
 	}
 	if s.Plan.Kind == PlanParserInput {
-		return StreamVal{Plan: &Plan{Kind: PlanParserEvents, Source: s.Plan}}, nil
+		return StreamVal{Plan: &Plan{Kind: PlanParserEvents, Source: s.Plan, Tokens: tokens}}, nil
 	}
 	what := PlanName(s.Plan)
 	if s.Plan.Kind == PlanInput {
 		what = "JSON events"
 	}
 	return nil, protocolMismatch("parser-events reads the parser's rule passes, the input a host declares as parser events, not " + what)
+}
+
+// nToken is `(token t)`: a token the parser did not take, the token a
+// record.
+func nToken(_ *Runtime, a []Val, _ SourceSpan) (Val, *Fail) {
+	if _, ok := a[0].(*RecordVal); ok {
+		return NewTagged("token", a[0]), nil
+	}
+	return nil, typeError("token: the token must be a record, not " + KindOf(a[0]))
 }
 
 // nRulePass is `(open rule)` or `(close rule)`: a rule pass, the rule a

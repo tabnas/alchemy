@@ -495,7 +495,7 @@ wanted) is reported. The types (spec section 10.2):
 | `Stream<T>` | an ordered single-use sequence of items | yes |
 | `TableEvents` | `Stream<TableEvent>`: `schema`, `row`s, `table-end`, the `TableRows/1` protocol as tagged values | yes |
 | `Stream<Event>` | the source's own events as items, what `events` yields: `object-start`, `object-end`, `array-start`, `array-end`, `(key name)`, `(scalar value)`; a program hands such a stream to any taker of `JsonEvents` (`json`, `table-from-json`, `select`, `route`, `events`), each item turned back into an event as the stream runs, one that is not an event refused there (`PROTOCOL_ORDER_ERROR`), and the source's limits (`max_depth`, `max_key_bytes`, `max_scalar_bytes`) holding on them as on the source's own | yes |
-| `Stream<ParserEvent>` | the parser's rule passes as items, what `parser-events` yields: `(open rule)` and `(close rule)` (Parser events, below); no taker of `JsonEvents` reads it, which only a transducer's outputs reach | yes |
+| `Stream<ParserEvent>` | the parser's rule passes as items, what `parser-events` yields: `(open rule)` and `(close rule)`, and with `:tokens` `(token t)` (Parser events, below); no taker of `JsonEvents` reads it, which only a transducer's outputs reach | yes |
 | `JsonEvents` | the single-use source, `JsonEvents/1` | yes |
 | `ParserEvents` | the single-use source when the host declares a parser-events input, `ParserEvents/1`: the parser's rule passes, which `parser-events` alone reads | yes |
 | `Text` | single-use incremental text | yes |
@@ -626,12 +626,15 @@ once its close pass has. The rule is a record:
 | `:name` | the rule's name (`map`, `pair`, `val`) |
 | `:d`, `:i` | the rule's depth on the stack and its instance in the parse |
 | `:alt` | the alternate that matched: `:p` (the rule it pushed), `:r` (the rule it replaced the current one with), `:b` (the tokens it gave back), `:g` (its groups); absent when the state declared none |
-| `:tokens` | the tokens the pass consumed, each a record of `:name`, `:val`, `:src`, `:row` and `:col` |
+| `:tokens` | the tokens the pass consumed, each a record of `:name`, `:val`, `:src`, `:row`, `:col` and `:offset` |
 | `:forced` | a close the parser's recovery made |
 | `:n` | the rule's named counters |
 | `:value` | the node's value when it is a scalar at a close pass; absent otherwise |
 
-An absent field reads as `missing` (`get`). A pass the grammar made
+A token's `:row` and `:col` are where it starts, each counted from 1,
+and its `:offset` is the same place in UTF-8 bytes from the document's
+start, the same in every runtime. An absent field reads as `missing`
+(`get`). A pass the grammar made
 inside a probe, speculative work it rewinds, is never delivered. The end
 of the parse is the stream's end, after the last pass, once the parser
 has returned the document's value: a document is complete only when it
@@ -681,6 +684,69 @@ Guarantee:
 
 Qualification:
   A later error can occur after earlier output has been written.
+```
+
+The lexer gives the parser more than its rules consume: a grammar's
+ignored tokens, white space, a line break or a comment, are cut and
+passed over. `parser-events input :tokens` yields each of them too, as
+`(token t)`, `t` a record of the token's `:name`, `:val`, `:src`,
+`:row`, `:col` and `:offset`, in source order among the passes: a token
+item comes before the first pass that consumed a token after it, and
+those after the last such pass before the stream's end. The host's
+source sends token items only to a program that asks for them so: a
+program that reads `parser-events input` sees the passes alone, as it
+always has, and the source does none of the work token items take for
+it. A step over the items with `:tokens` has a case for them; the
+library's steps (`transduce-step`, `transduce-records-step` and
+`transduce-tree`'s own) yield nothing for a token item, so a part that
+reads tokens can still hand the passes to them. This one writes each
+comment's text and its byte offset, a line each, and nothing for a pass
+or for any other token:
+
+```alchemy
+def comment [item]
+  match item
+    case (token t)
+      match (get :name t)
+        case "#CM" (string-join "" [(get :src t) " at " (scalar-text (record) (get :offset t)) "\n"])
+        case _ ""
+    case _ ""
+
+def export [input] (join "" (map comment (parser-events input :tokens)))
+```
+```check
+export: parser-events → map → join
+
+Source reads:          1
+Protocol:              ParserEvents/1 → Stream<ParserEvent> → Stream<Value> → Text
+Selection:             none; every rule pass, and every token the parser did not take, is delivered as an item
+Duplicate members:     preserved; the events are copied as they arrive, not mapped by key
+Output order:          source order
+Ordering contract:     none
+Contract verification: static
+External storage:      disabled
+
+Guarantee:
+  Memory is independent of the document's size under the configured
+  depth, scalar/key and output limits: nothing is retained beyond the
+  renderer's nesting stack.
+
+Qualification:
+  A later error can occur after earlier output has been written.
+```
+
+Over the JSONC document `// é` and `{"a": /* ü */ 1}` on the next line
+it writes `// é at 0` and `/* ü */ at 12`, the second offset counting
+`é` as the two bytes it is in UTF-8.
+
+`:tokens` is the one option, and anything else is `type_mismatch` as
+the plan is built:
+
+```alchemy
+def export [input] (join "" (map (fn [p] "") (parser-events input :all)))
+```
+```check
+ERROR:type_mismatch@1:46
 ```
 
 Each input is read by its own operator: over parser events, `events`,
@@ -769,9 +835,10 @@ Every operator takes its data last. The **natives** (`rs/src/stdlib/registry.rs`
 | `array-end` | `array-end -> Event` | an array ends |
 | `key` | `key name -> Event` | the name of the member whose value follows, inside an object |
 | `scalar` | `scalar value -> Event` | one scalar of the source: `null`, a boolean, a number with its lexeme, or a string |
-| `parser-events` | `parser-events input -> Stream<ParserEvent>` | every rule pass of the parser as one item, as it arrives, when the host declares a parser-events input: `(open rule)` once a rule's open pass has run, `(close rule)` once its close pass has; the rule a record of `:name`, `:d`, `:i`, `:alt`, `:tokens`, `:forced`, `:n` and `:value`; the end of the parse ends the stream and is no item; nothing is retained between passes |
+| `parser-events` | `parser-events input [:tokens] -> Stream<ParserEvent>` | every rule pass of the parser as one item, as it arrives, when the host declares a parser-events input: `(open rule)` once a rule's open pass has run, `(close rule)` once its close pass has; the rule a record of `:name`, `:d`, `:i`, `:alt`, `:tokens`, `:forced`, `:n` and `:value`, each token a record of `:name`, `:val`, `:src`, `:row`, `:col` and `:offset`; with `:tokens`, also `(token t)` for each token the lexer gave and the parser did not take, in source order among the passes; the end of the parse ends the stream and is no item; nothing is retained between items |
 | `open` | `open rule -> ParserEvent` | a rule's open pass completed: the rule a record |
 | `close` | `close rule -> ParserEvent` | a rule's close pass completed: the rule a record, its `:value` the node's when that is a scalar |
+| `token` | `token t -> ParserEvent` | a token the lexer gave and the parser did not take (white space, a line break, a comment), read with `parser-events input :tokens`: `t` a record of `:name`, `:val`, `:src`, `:row`, `:col` and `:offset` |
 | `json` | `json [options] events -> Text` | `JsonEvents`, or a `Stream<Event>` a program built, as compact JSON text, event by event, with a final newline. A number that is not finite has no JSON form and is refused (`TARGET_VALUE_UNREPRESENTABLE`), unless an options record first says `(entry :non-finite :null)`: then it is written as `null`. The record holds `:non-finite` and nothing else, `:reject` (the default) or `:null` |
 | `records` | `records table-events -> JsonEvents` | one object per row keyed by label; retains the labels |
 | `tree-contract` | `tree-contract events -> JsonEvents` | the events unchanged, held to a tree's contract as they pass: one root value, and in each object a key and then its value, each key once; a repeated key is `DUPLICATE_MEMBER`, and events no tree has (a value where a key is due, a key outside an object, an end with nothing open, a second root, the end inside a container) are `STREAMABILITY_UNKNOWN` (`not_a_tree`), each at the path concerned; retains the keys of each open object, dropped as it closes. A translation holds a transducer's events to it before a render that writes from a tree |
@@ -1598,9 +1665,10 @@ def transduce-step [spec state pass]
   match pass
     case (open rule) (transduce-open spec state rule)
     case (close rule) (transduce-close spec state rule)
+    case (token _) (transition state [])
 ```
 ```core
-(def transduce-step (fn [spec state pass] (match pass (case (open rule) (transduce-open spec state rule)) (case (close rule) (transduce-close spec state rule)))))
+(def transduce-step (fn [spec state pass] (match pass (case (open rule) (transduce-open spec state rule)) (case (close rule) (transduce-close spec state rule)) (case (token _) (transition state [])))))
 ```
 
 ```alchemy
@@ -1704,9 +1772,10 @@ def transduce-pass [spec state pass]
             case [rest first]
               match (transduce-close spec tree rule)
                 case (transition next outputs) (transition [next rest] (transduce-then first outputs))
+        case (token _) (transition state [])
 ```
 ```core
-(def transduce-pass (fn [spec state pass] (match state (case [tree texts] (match pass (case (open rule) (match (transduce-open spec tree rule) (case (transition next outputs) (transition [next (transduce-text-open spec texts rule)] (transduce-member spec rule outputs))))) (case (close rule) (match (transduce-text-close spec texts rule) (case [rest first] (match (transduce-close spec tree rule) (case (transition next outputs) (transition [next rest] (transduce-then first outputs))))))))))))
+(def transduce-pass (fn [spec state pass] (match state (case [tree texts] (match pass (case (open rule) (match (transduce-open spec tree rule) (case (transition next outputs) (transition [next (transduce-text-open spec texts rule)] (transduce-member spec rule outputs))))) (case (close rule) (match (transduce-text-close spec texts rule) (case [rest first] (match (transduce-close spec tree rule) (case (transition next outputs) (transition [next rest] (transduce-then first outputs))))))) (case (token _) (transition state [])))))))
 ```
 
 ```alchemy
@@ -1928,9 +1997,10 @@ def transduce-records-step [spec state pass]
   match pass
     case (open rule) (transduce-records-open spec state rule)
     case (close rule) (transduce-records-close spec state rule)
+    case (token _) (transition state [])
 ```
 ```core
-(def transduce-records-step (fn [spec state pass] (match pass (case (open rule) (transduce-records-open spec state rule)) (case (close rule) (transduce-records-close spec state rule)))))
+(def transduce-records-step (fn [spec state pass] (match pass (case (open rule) (transduce-records-open spec state rule)) (case (close rule) (transduce-records-close spec state rule)) (case (token _) (transition state [])))))
 ```
 
 ```alchemy
@@ -2337,7 +2407,13 @@ The TypeScript and Go ports take the same two implementations:
   compiled over parser events: the host pushes each rule pass into the
   `ParserSink + Send` it returns, a `ParserEvent::Open` or
   `ParserEvent::Close`, then one `ParserEvent::End` once the parse has
-  returned its value. `parser_sink_out` takes any `TextOut`. Each sink
+  returned its value. The sink's `wants_tokens` (`wantsTokens` in
+  TypeScript, `shared.WantsTokens` over it in Go) says whether the
+  program reads token items (`parser-events input :tokens`): a source
+  asks it before the parse and pushes a `ParserEvent::Token` for each
+  token the parser did not take only when it answers `true`, and a token
+  item pushed into a sink that did not ask reaches no step.
+  `parser_sink_out` takes any `TextOut`. Each sink
   refuses a program compiled over the other input (`protocol_mismatch`)
   before anything runs.
 - `parser_sink_into(down, limits, metrics)` (`parserSinkInto` in

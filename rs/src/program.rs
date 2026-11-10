@@ -670,7 +670,7 @@ fn root_stage(plan: &Plan) -> &Plan {
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
-            | Plan::ParserEvents { source }
+            | Plan::ParserEvents { source, .. }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
             | Plan::Filter { source, .. }

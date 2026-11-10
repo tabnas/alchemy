@@ -165,7 +165,7 @@ fn stages(plan: &Plan) -> Vec<&Plan> {
             Plan::Route { source, .. }
             | Plan::Select { source, .. }
             | Plan::Events { source }
-            | Plan::ParserEvents { source }
+            | Plan::ParserEvents { source, .. }
             | Plan::AsEvents { source }
             | Plan::ScanEmit { source, .. }
             | Plan::Map { source, .. }
@@ -442,10 +442,16 @@ pub fn summarize(program: &Program) -> EffectSummary {
             Plan::CsvTable { .. } => {
                 output_order = "schema first; cells in schema order".to_string();
             }
-            // Every rule pass becomes one item as it arrives: a
+            // Every rule pass becomes one item as it arrives, and with
+            // `:tokens` every token the parser did not take: a
             // transducer's input, whose step decides what is kept.
-            Plan::ParserEvents { .. } => {
-                selection = "none; every rule pass is delivered as an item".to_string();
+            Plan::ParserEvents { tokens, .. } => {
+                selection = if *tokens {
+                    "none; every rule pass, and every token the parser did not take, is delivered as an item"
+                } else {
+                    "none; every rule pass is delivered as an item"
+                }
+                .to_string();
             }
             Plan::ScanEmit { init, step, .. } => {
                 confidence = Confidence::Conditional;
