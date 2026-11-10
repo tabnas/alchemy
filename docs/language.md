@@ -700,43 +700,44 @@ it. A step over the items with `:tokens` has a case for them; the
 library's steps (`transduce-step`, `transduce-records-step` and
 `transduce-tree`'s own) yield nothing for a token item, so a part that
 reads tokens can still hand the passes to them. This one writes each
-comment's text and its offset:
+comment's text and its byte offset, a line each, and nothing for a pass
+or for any other token:
 
 ```alchemy
-def step [s item]
+def comment [item]
   match item
     case (token t)
       match (get :name t)
-        case "#CM" (transition s [(scalar (get :src t)) (scalar (get :offset t))])
-        case _ (transition s [])
-    case _ (transition s [])
+        case "#CM" (string-join "" [(get :src t) " at " (scalar-text (record) (get :offset t)) "\n"])
+        case _ ""
+    case _ ""
 
-def export [input]
-  as-events (scan-emit [] step (fn [s] []) (parser-events input :tokens))
+def export [input] (join "" (map comment (parser-events input :tokens)))
 ```
 ```check
-export: parser-events → scan-emit → as-events
+export: parser-events → map → join
 
 Source reads:          1
-Protocol:              ParserEvents/1 → Stream<ParserEvent> → Stream<Value> → JsonEvents/1 → Text
+Protocol:              ParserEvents/1 → Stream<ParserEvent> → Stream<Value> → Text
 Selection:             none; every rule pass, and every token the parser did not take, is delivered as an item
 Duplicate members:     preserved; the events are copied as they arrive, not mapped by key
-Retained state:        what the step returns, no deeper than max_depth, capped at max_metadata_bytes
 Output order:          source order
-Ordering contract:     each item before its outputs
+Ordering contract:     none
 Contract verification: static
-JSON profile:          compact, one document, trailing newline (the host's renderer)
 External storage:      disabled
 
 Guarantee:
-  Memory is independent of the number of rows under the configured
-  depth, capture, metadata, scalar/key and output limits: the state the
-  step returns is capped at max_metadata_bytes. What one step computes
-  is the program's, bounded by the host's abort flag.
+  Memory is independent of the document's size under the configured
+  depth, scalar/key and output limits: nothing is retained beyond the
+  renderer's nesting stack.
 
 Qualification:
   A later error can occur after earlier output has been written.
 ```
+
+Over the JSONC document `// é` and `{"a": /* ü */ 1}` on the next line
+it writes `// é at 0` and `/* ü */ at 12`, the second offset counting
+`é` as the two bytes it is in UTF-8.
 
 `:tokens` is the one option, and anything else is `type_mismatch` as
 the plan is built:
