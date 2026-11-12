@@ -1480,7 +1480,10 @@ times the document.
 | 21 | parser, transduce, alchemy, c | the token items and byte offsets of ruling 7; C's part | none |
 | 22 | markdown | block decisions in the rules; references and definitions as nodes; the part | none |
 | 23 | proto; bnf, abnf, ebnf, gbnf | the source-ordered schemas, their renders and their parts | none |
-| 24 | dmog | each release taken; readers in TypeScript and Go; pruning on every part route; `--path` as a sub-stream; the streaming gate in every runtime | 14 to 23 |
+| 24 | dmog | each release taken; readers in TypeScript and Go; pruning on every part route; `--path` as a sub-stream; the streaming gate in every runtime | 14 to 23, and 25 to 27 |
+| 25 | expr, c, openapi; jsonic | each grammar built on jsonic's base declares its own window setting; then jsonic's constructors declare the window (tabnas/jsonic#121); releases | 20 |
+| 26 | transduce | css, abnf, ebnf and gbnf in the prune suites of every runtime, and PGN in Go's, as test-only dependencies (the maintainer's instruction of 2026-11-11); the unused TypeScript peers dropped; release | none |
+| 27 | c | the declaration structuring in the grammar's rules, the repeating members left to an API, one tree in every runtime (ruling 7, as amended on 2026-11-11); then the part, the window and a minor release | 25, for c |
 
 ### 13.1 Step 23: the source-ordered schemas
 
@@ -1739,3 +1742,16 @@ now. A part would follow a change like ruling 6's for markdown: the
 legacy structuring moved into the grammar's rules, so that a rule pass
 opens and closes every node, and the aliases left to the API that wants
 them. That is the maintainer's to rule.
+
+**Ruled on 2026-11-11** (admin ADR-33, as amended): it does.
+- **The structuring moves into the rules.** C's declaration structuring
+  moves into its grammar's rules in every runtime, so that a rule pass
+  opens and closes every node.
+- **The members go to an API.** The members that repeat a subtree
+  `children` holds are left to the API that wants them, out of the tree.
+- **The tree is one tree.** It is the same in every runtime, with no node
+  holding itself, and the prefix operator of a brace initializer in one
+  shape.
+
+C then ships its part, declares the window and gives up `whole` (step
+27, below).
