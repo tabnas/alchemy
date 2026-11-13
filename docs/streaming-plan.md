@@ -1480,10 +1480,11 @@ times the document.
 | 21 | parser, transduce, alchemy, c | the token items and byte offsets of ruling 7; C's part | none |
 | 22 | markdown | block decisions in the rules; references and definitions as nodes; the part | none |
 | 23 | proto; bnf, abnf, ebnf, gbnf | the source-ordered schemas, their renders and their parts | none |
-| 24 | dmog | each release taken; readers in TypeScript and Go; pruning on every part route; `--path` as a sub-stream; the streaming gate in every runtime | 14 to 23, and 25 to 27 |
+| 24 | dmog | each release taken; readers in TypeScript and Go; pruning on every part route; `--path` as a sub-stream; the streaming gate in every runtime | 14 to 23, and 25 to 28 |
 | 25 | expr, c, openapi; jsonic | each grammar built on jsonic's base declares its own window setting; then jsonic's constructors declare the window (tabnas/jsonic#121); releases | 20 |
 | 26 | transduce | css, abnf, ebnf and gbnf in the prune suites of every runtime, and PGN in Go's, as test-only dependencies (the maintainer's instruction of 2026-11-11); the unused TypeScript peers dropped; release | none |
 | 27 | c | the declaration structuring in the grammar's rules, the repeating members left to an API, one tree in every runtime (ruling 7, as amended on 2026-11-11); then the part, the window and a minor release | 25, for c |
+| 28 | c | a parser whose rule passes are `make()`'s and which builds no tree, which the part reads, as proto's `make_streaming` builds none (tabnas/c#78); each node's members written in the reader's order (tabnas/c#79); a patch release | 27 |
 
 ### 13.1 Step 23: the source-ordered schemas
 
@@ -1755,3 +1756,45 @@ them. That is the maintainer's to rule.
 
 C then ships its part, declares the window and gives up `whole` (step
 27, below).
+
+**Ruled on 2026-11-12 and 2026-11-13** (admin ADR-33, as amended on
+2026-11-13).
+- **C's expressions are read by tabnas/expr.** The rework first gave C
+  expression rules of its own. The maintainer ruled that tabnas/c must
+  use tabnas/expr, and that where expr falls short of C, expr is fixed:
+  expr 0.6.0 fixed two defects and added five options, each off by
+  default, which C sets, and 0.6.1 to 0.6.3 fixed the defects C met
+  after that.
+- **What C 0.6 accepts and refuses.** It accepts the valid C that 0.5
+  refused only because of defects in its old rule path: a cast of a cast,
+  the comma operator in `return` and in conditions, and a chained
+  ternary. It refuses with `unexpected` the invalid C that 0.5 accepted
+  where it used its rules: values side by side in parentheses or call
+  arguments, and an empty subscript.
+- **C's part places each operator.** No rule pass opens or closes an
+  expression's node: expr's rules rewrite the operator array in place as
+  each operator arrives, and C builds an expression's node at its end. So
+  the part places each operator over expr's passes, from a copy of C's
+  operator table, and holds one expression at a time. c holds the copy to
+  `C_OP_TABLE` in every runtime, and dmog holds the part's tree to the
+  reader's over every fixture and every Csmith program.
+
+**Where step 27 stands** (2026-11-13).
+- **c 0.6.0** builds every declaration in its grammar's rules and reads
+  every expression through expr, with one tree in every runtime and the
+  repeating members given back by `member()` (tabnas/c#74).
+- **c 0.6.1** ships the part, declares the window in each runtime's
+  whole-parser constructor, and gives up `whole` (tabnas/c#76).
+- **The first bytes come before the input ends.** Through the part, dmog's
+  streaming gate saw C write after 3.7 to 4.0 seconds in Rust and 0.3 to
+  0.4 seconds in Go, over its document of 300 items.
+- **Memory is not flat yet.** The parser whose passes the part reads keeps
+  every node and token of the parse in Rust's parse state, and every
+  declaration in the engine's tree in Go (tabnas/c#78). Rust holds 7.81 MB
+  at 300 items and passes its 1.25 bound at 3,000; Go holds 10.88 MB and
+  passes its 1.5 bound.
+- **Some members come in another order.** The part writes some nodes'
+  `span` after their `children` and `trivia`, where the reader writes it
+  after `kind`: the same value as other text (tabnas/c#79).
+
+Step 28 takes the last two.
