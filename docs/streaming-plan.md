@@ -1798,3 +1798,30 @@ C then ships its part, declares the window and gives up `whole` (step
   after `kind`: the same value as other text (tabnas/c#79).
 
 Step 28 takes the last two.
+
+**Where step 28 stands** (2026-11-16).
+- **c 0.6.2** ships a parser whose rule passes are `make()`'s and which
+  builds no tree: `make_streaming()` in Rust, `MakeStreaming()` in Go and
+  `makeStreaming()` in TypeScript (tabnas/c#81). It reads a reader a
+  window at a time and bounds the engine's rule history. Its part writes
+  each node's members in the reader's order (tabnas/c#79), keeps a state
+  that does not nest with the tree it reads (tabnas/c#80), and keeps no
+  token a pass did not take (tabnas/c#82).
+- **C streams in every runtime.** dmog's part reads the new parser's
+  passes (tabnas/dmog#87). Over the gate's document of 300 items, C
+  writes before its input ends, after 3.4 to 3.7 seconds in Rust, 0.2 in
+  Go and 1.8 to 2.0 in TypeScript. It holds as much over ten times the
+  document as over the document: 5.18 MB and 5.01 MB in Rust, 4.13 MB and
+  4.08 MB in Go, 5.72 MB and 5.87 MB in TypeScript.
+- **The part's tree is the reader's.** Over c's 169 fixture documents, 137
+  read alike and 32 are refused alike, in every runtime. Over c's 100
+  Csmith programs, in Rust's release run, 91 read alike, and 9 nest past
+  the default `max_depth`: both routes refuse them on it, and with no
+  limits they read alike.
+- **Every ledger is empty.** Every format the table lists passes both
+  clauses of the gate in every runtime, save expr and semver, which ruling
+  4 reads whole.
+- **One engine defect stays open.** In TypeScript, a pass on which no
+  alternate matches carries the groups of the last alternate that did
+  (tabnas/parser#340). C's part met it on an invalid document, and c 0.6.2
+  tolerates it.
