@@ -1825,3 +1825,11 @@ Step 28 takes the last two.
   alternate matches carries the groups of the last alternate that did
   (tabnas/parser#340). C's part met it on an invalid document, and c 0.6.2
   tolerates it.
+
+**Since** (2026-11-21).
+- **The engine defect is fixed.** parser 0.12.21 gives a pass on which no
+  alternate matches no groups in TypeScript, as in Go and Rust
+  (tabnas/parser#341, for tabnas/parser#340), so no engine defect is open.
+  dmog reads with it in every runtime: its Go requires it
+  (tabnas/dmog#89), and its TypeScript and Rust take it from the registry
+  and from the sibling checkout.

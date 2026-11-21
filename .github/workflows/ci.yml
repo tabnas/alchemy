@@ -14,7 +14,7 @@ jobs:
   # dependency first. alchemy depends on neither transduce nor render (the
   # maintainer's ruling of 2026-10-08): the tests that run programs on
   # them, and the `tabnas_nodecell` build tag those need, are in
-  # tabnas/alchemy-cli, which downstream.yml runs against this checkout.
+  # tabnas/dmog, which downstream.yml runs against this checkout.
   ci:
     uses: tabnas/.github/.github/workflows/polyglot-ci.yml@main
     with:

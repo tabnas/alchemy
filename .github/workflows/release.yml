@@ -42,7 +42,7 @@
 # registry), so a failing build never publishes; ci.yml gates the bump
 # PR across the full matrix. Neither the build nor the tests import
 # @tabnas/transduce or @tabnas/render (the tests that run programs on them
-# are alchemy-cli's), and both build on @tabnas/alchemy/shared, so alchemy
+# are dmog's), and both build on @tabnas/alchemy/shared, so alchemy
 # is released first of the three (admin publish.sh ORDER).
 #
 # THE FIRST PUBLISH IS THE MAINTAINER'S, BY HAND. npm registers a trusted
