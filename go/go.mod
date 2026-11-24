@@ -8,7 +8,7 @@ go 1.24.7
 // them are dmog's (github.com/tabnas/dmog/go/e2e).
 require (
 	github.com/tabnas/json/go v0.5.20
-	github.com/tabnas/parser/go v0.12.16
+	github.com/tabnas/parser/go v0.12.21
 )
 
 // The debug model and the shared fixture runner, for the tests.
