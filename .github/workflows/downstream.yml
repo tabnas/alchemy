@@ -75,8 +75,16 @@ jobs:
           go-version: 1.24.x
           cache: false
 
+      # DMOG_SIBLINGS=1: dmog's gates are standalone by default (released
+      # packages and vendored test files), so without it they would test
+      # alchemy's last release, not this change. With it they build against
+      # this checkout and the siblings, and read their test files.
       - name: dmog's TypeScript and Go gate
+        env:
+          DMOG_SIBLINGS: "1"
         run: dmog/ci/polyglot/run.sh
 
       - name: dmog's Rust gate
+        env:
+          DMOG_SIBLINGS: "1"
         run: dmog/ci/rust/run.sh
