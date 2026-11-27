@@ -1833,3 +1833,12 @@ Step 28 takes the last two.
   dmog reads with it in every runtime: its Go requires it
   (tabnas/dmog#89), and its TypeScript and Rust take it from the registry
   and from the sibling checkout.
+
+**Since** (2026-11-27).
+- **dmog is released under its new name.** dmog 0.3.0 is on npm as
+  `@tabnas/dmog`, on crates.io as `tabnas-dmog` and on the Go proxy as
+  `github.com/tabnas/dmog/go`, all three from one commit of tabnas/dmog's
+  main (tabnas/dmog#93), which its tags `ts/v0.3.0` and `go/v0.3.0` name.
+  So the streaming this plan delivered now reaches dmog's users. Its
+  first publishes to npm and crates.io were the maintainer's, by hand, as
+  admin ADR-32 rules.
